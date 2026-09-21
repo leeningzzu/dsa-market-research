@@ -12,6 +12,9 @@ jobs:
   changes:
     name: 🔎 Change Detection
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
       frontend: ${{ steps.filter.outputs.frontend }}
       futu_packaging: ${{ steps.filter.outputs.futu_packaging }}
