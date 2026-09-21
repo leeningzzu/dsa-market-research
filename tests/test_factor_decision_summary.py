@@ -677,7 +677,9 @@ def test_asset_research_brief_payload_v1_is_daily_first_and_fail_closed():
     }
     assert brief["current_price"] == {"value": 10.5, "source_state": "AVAILABLE"}
     assert "当前价格" not in brief["fused_paragraph"]
-    assert "\u5f53\u524d\u8bc1\u636e\u8986\u76d6" in brief["coverage_text"]
+    assert brief["coverage_text"] == (
+    "本次可用周期：日线。月线、周线、60分钟、30分钟、15分钟、5分钟本次暂无可用证据。"
+)
     assert brief["historical_reference"]["available"] is False
     assert brief["current_probability"]["available"] is False
     assert brief["key_levels"]["support_label"] == "结构支撑"
