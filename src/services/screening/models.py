@@ -208,6 +208,7 @@ class ScreenResult:
     strategy_category: str = ""
     snapshot_count: int = 0
     after_filter_count: int = 0
+    candidate_prefilter_diagnostics: dict[str, Any] = field(default_factory=dict)
     picks: list[Pick] = field(default_factory=list)
     run_id: str = ""
     llm_ranked: bool = False

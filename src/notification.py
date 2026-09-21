@@ -348,25 +348,6 @@ def _append_investor_notification_block(
     if coverage_text:
         lines.append(f"**多周期**: {coverage_text}")
 
-    timeframe_thesis = brief.get("timeframe_thesis") or {}
-    timeframe_details = []
-    if isinstance(timeframe_thesis, dict):
-        for label, key in (
-            ("月线", "monthly"),
-            ("周线", "weekly"),
-            ("日线", "daily"),
-            ("60m", "60m"),
-        ):
-            item = timeframe_thesis.get(key) or {}
-            if not isinstance(item, dict):
-                continue
-            status = str(item.get("status") or "").strip()
-            summary_text = str(item.get("summary") or "").strip()
-            if status in {"READY", "PROVEN_CURRENT", "PARTIAL_CURRENT"} and summary_text:
-                timeframe_details.append(f"{label}：{summary_text}")
-    if timeframe_details:
-        lines.append(f"**趋势/量价**: {'｜'.join(timeframe_details[:3])}")
-
     short_term = brief.get("short_term_execution_panel") or {}
     if isinstance(short_term, dict) and short_term.get("status") == "READY":
         rendered_short = []
@@ -1636,7 +1617,7 @@ class NotificationService(
                 ("AUTO_ETF_FOCUS", "ETF重点 Top 3"),
                 ("AUTO_STOCK_FOCUS", "股票重点 Top 3"),
                 ("AUTO_ETF_REMAINING", "ETF其余候选 4–10"),
-                ("AUTO_STOCK_REMAINING", "股票其余候选 4–10"),
+                ("AUTO_STOCK_REMAINING", "股票其余候选（含分类不足）"),
             )
             lines = ["## 🔎 晚间自动发现", ""]
             focus_results: List[AnalysisResult] = []
@@ -1805,6 +1786,10 @@ class NotificationService(
                     f"## {signal_emoji} {stock_name} ({result.code})",
                     "",
                 ])
+                delivery = self._research_delivery(result)
+                identity_text = str(delivery.get("asset_identity_text") or "").strip()
+                if identity_text:
+                    report_lines.extend([f"**身份**: {identity_text}", ""])
                 factor_decision = dashboard.get("factor_decision") if dashboard else None
                 has_investor_brief = _append_investor_brief_block(
                     report_lines,
@@ -2395,6 +2380,11 @@ class NotificationService(
             factor = dash.get("factor_decision") or {}
             if _get_valid_investor_brief(factor, report_language) is not None:
                 lines.extend([f"## {emoji} {name} ({r.code})｜{signal_text}", ""])
+                identity_text = str(
+                    self._research_delivery(r).get("asset_identity_text") or ""
+                ).strip()
+                if identity_text:
+                    lines.extend([f"**身份**: {identity_text}", ""])
                 core = dash.get("core_conclusion") or {}
                 _append_investor_notification_block(
                     lines,

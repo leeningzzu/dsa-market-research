@@ -223,6 +223,18 @@ class TestDailyAnalysisStrictSchedule(unittest.TestCase):
             self.text,
         )
         self.assertIn(
+            "AUTO_SCREEN_STOCK_EXCLUDED_SECTORS: ${{ vars.AUTO_SCREEN_STOCK_EXCLUDED_SECTORS || '' }}",
+            self.text,
+        )
+        self.assertIn(
+            "AUTO_SCREEN_STOCK_EXCLUDED_BOARDS: ${{ vars.AUTO_SCREEN_STOCK_EXCLUDED_BOARDS || '' }}",
+            self.text,
+        )
+        self.assertIn(
+            "AUTO_SCREEN_STOCK_PREFERRED_BOARDS: ${{ vars.AUTO_SCREEN_STOCK_PREFERRED_BOARDS || '' }}",
+            self.text,
+        )
+        self.assertIn(
             'if [ "$MODE" = "auto-screen" ] && [ "${GITHUB_EVENT_NAME}" != "workflow_dispatch" ]; then',
             self.text,
         )

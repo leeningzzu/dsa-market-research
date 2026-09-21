@@ -548,6 +548,9 @@ jobs:
           # 手动 AUTO_SCREEN 使用本次输入；自动 19:00 Product 路径在执行段固定 10+10 上限。
           AUTO_SCREEN_MAX_RESULTS: ${{ github.event.inputs.auto_screen_max_results || '1' }}
           AUTO_SCREEN_ETF_MAX_RESULTS: ${{ github.event.inputs.auto_screen_etf_max_results || '0' }}
+          AUTO_SCREEN_STOCK_EXCLUDED_SECTORS: ${{ vars.AUTO_SCREEN_STOCK_EXCLUDED_SECTORS || '' }}
+          AUTO_SCREEN_STOCK_EXCLUDED_BOARDS: ${{ vars.AUTO_SCREEN_STOCK_EXCLUDED_BOARDS || '' }}
+          AUTO_SCREEN_STOCK_PREFERRED_BOARDS: ${{ vars.AUTO_SCREEN_STOCK_PREFERRED_BOARDS || '' }}
           AUTO_SCREEN_BOUNDED_MODEL: ${{ github.event.inputs.auto_screen_bounded_model || '' }}
           # 仅 workflow_dispatch 的显式输入可激活 P0 有界验收；自动 schedule 为空。
           P0_STOCK_CODES: ${{ github.event.inputs.p0_stock_codes || '' }}

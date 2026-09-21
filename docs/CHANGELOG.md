@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] 收敛 `ASSET_RESEARCH_BRIEF` 的真实 compact 消费路径：共享融合段不再重复塞入现价/估值/结论，Jinja 与 Python compact renderer 不再二次展开同一高周期主段；hard veto 未解除时不再生成仅凭价格突破即可升级买入的文案，并对 NaN/Inf 等非有限数值保持 fail-closed。同步加入可撤销的股票 AUTO 行业/板块排除与板块优先配置候选；分类不足股票不进入 Top3 重点，ETF 与 SPECIFIED_CODES/watchlist 不继承股票 AUTO 偏好；资产卡由 research delivery 显示市场/板块身份，UNKNOWN 明示为待确认。当前仍是未提交的本地开发候选，完整 CI、配置样例与真实消费者验收未完成。
+
+- [文档] 将个人私有版 README 收敛为任务入口，移除上游营销/排名/赞助展示并保留许可与来源；同步操作手册、文档索引和FAQ，说明 GitHub/邮件/多Key/R2/自选/默认分支定时/模板修改与恢复，并区分已验证传输、本地开发候选、尚未部署能力与暂不启用的港美自动筛选。
+
 - [新功能] 19:00 资产研究进入 Phase-B 分组与条件投递：在同一 GitHub Actions / StockAnalysisPipeline 中将 AUTO_SCREEN 扩展为股票≤10与A股ETF≤10的独立候选上限，各自前3名作为重点、4–10名紧凑展示且允许0候选；ETF复用现有AkShare行情owner与AlphaSift-derived筛选框架的专属流动性/趋势配置，不套用个股PE/PB/市值过滤。SPECIFIED_CODES/自选保持独立额度，并以AnalysisHistory中的canonical decision/evidence摘要判断材料变化后单独投递WATCHLIST；保存报告、Email、Telegram继续消费同一AnalysisResult事实，P0 bounded-live仍锁定workflow_dispatch、1只股票、0只ETF。
 
 - [改进] PredictionOutcome research execution realism 增加 source-neutral `execution-identity-v1`：以 fail-closed XSHG exact-session 解析替代“后续三条日线”假设，calendar 未证明时阻断、已完成 session 缺 bar/执行证据 UNKNOWN/entry 或 exit hard-nonfill 时保持 `UNLABELABLE`，并以 nullable execution identity hash/json 保存可修正的后验执行证据；engine 升级为 v3，旧 outcome 不回写，provider 权利与 durable bytes 继续独立准入。

@@ -223,6 +223,11 @@ def build_auto_screen_selection_context(provenance: Any) -> Dict[str, Any]:
                     "screen_score",
                     "risk_level",
                     "industry",
+                    "listing_market",
+                    "listing_board",
+                    "preference_status",
+                    "classification_status",
+                    "focus_eligible",
                 )
                 if candidate.get(key) not in (None, "", [], {})
             }

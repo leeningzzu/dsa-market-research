@@ -183,6 +183,30 @@ class TestValidateStructuredStockList:
         assert warning.message.count("AAPL") == 1
 
 
+    def test_auto_screen_stock_board_preferences_reject_unknown_board(self):
+        cfg = _make_config(
+            auto_screen_stock_excluded_boards=["北交所", "未知板"],
+        )
+        issues = cfg.validate_structured()
+        error = next(
+            i for i in issues
+            if i.severity == "error" and i.field == "AUTO_SCREEN_STOCK_EXCLUDED_BOARDS"
+        )
+        assert "未知板" in error.message
+
+    def test_auto_screen_stock_board_preferences_reject_exclude_prefer_overlap(self):
+        cfg = _make_config(
+            auto_screen_stock_excluded_boards=["北交所"],
+            auto_screen_stock_preferred_boards=["北交所", "科创板"],
+        )
+        issues = cfg.validate_structured()
+        error = next(
+            i for i in issues
+            if i.severity == "error" and i.field == "AUTO_SCREEN_STOCK_PREFERRED_BOARDS"
+        )
+        assert "同时出现在" in error.message
+
+
 # ---------------------------------------------------------------------------
 # validate_structured() — LLM availability (three-tier check)
 # ---------------------------------------------------------------------------

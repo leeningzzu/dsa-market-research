@@ -51,6 +51,10 @@ def test_auto_screen_context_reuses_existing_provenance_without_universe_guess()
                     "asset_type": "stock",
                     "code": "600519",
                     "score": 77.2,
+                    "listing_market": "A股",
+                    "listing_board": "主板",
+                    "classification_status": "KNOWN",
+                    "focus_eligible": True,
                 }
             ],
         }
@@ -62,6 +66,10 @@ def test_auto_screen_context_reuses_existing_provenance_without_universe_guess()
     candidate = context["screening"]["selected_candidates"][0]
     assert candidate["product_group"] == "AUTO_STOCK_FOCUS"
     assert candidate["asset_type"] == "stock"
+    assert candidate["listing_market"] == "A股"
+    assert candidate["listing_board"] == "主板"
+    assert candidate["classification_status"] == "KNOWN"
+    assert candidate["focus_eligible"] is True
     assert "universe_snapshot_id" not in context
 
 

@@ -944,6 +944,29 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    @patch.object(Config, "_parse_stock_email_groups", return_value=[])
+    def test_auto_screen_stock_preferences_parse_as_reversible_lists(
+        self,
+        _mock_stock_email_groups,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ) -> None:
+        env = {
+            "STOCK_LIST": "600519",
+            "AUTO_SCREEN_STOCK_EXCLUDED_SECTORS": "医药, 银行,医药",
+            "AUTO_SCREEN_STOCK_EXCLUDED_BOARDS": "北交所",
+            "AUTO_SCREEN_STOCK_PREFERRED_BOARDS": "主板,科创板",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.auto_screen_stock_excluded_sectors, ["医药", "银行"])
+        self.assertEqual(config.auto_screen_stock_excluded_boards, ["北交所"])
+        self.assertEqual(config.auto_screen_stock_preferred_boards, ["主板", "科创板"])
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
     def test_invalid_numeric_env_values_fall_back_to_defaults(
         self,
         _mock_parse_yaml,

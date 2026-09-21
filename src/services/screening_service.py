@@ -34,6 +34,7 @@ from src.services.screening import REFERENCE_PROJECT, REFERENCE_REVISION, __vers
 from src.services.screening import hotspot as screening_hotspot
 from src.services.screening.config import Config as ScreeningPipelineConfig
 from src.services.screening.pipeline import screen as run_screening_pipeline
+from src.services.screening.normalize import safe_text as _screening_safe_text
 from src.services.screening.source_guard import parse_source_timeout_seconds
 from src.services.screening.strategy import list_strategies as load_screening_strategies
 from src.storage import DatabaseManager
@@ -1733,6 +1734,7 @@ def _call_screening_screen(
     *,
     asset_type: str = "stock",
     selection_seed: str = "",
+    candidate_prefilter: Optional[Callable[[Any], Tuple[Any, Dict[str, Any]]]] = None,
     progress_callback: Callable[[int, str], None] | None = None,
     use_llm: bool = True,
     post_analyzers: Optional[List[str]] = None,
@@ -1755,6 +1757,8 @@ def _call_screening_screen(
         "progress_callback": progress_callback,
         "daily_history_fetcher": daily_history_fetcher,
     }
+    if candidate_prefilter is not None:
+        screen_kwargs["candidate_prefilter"] = candidate_prefilter
     if post_analyzers is not None:
         screen_kwargs["post_analyzers"] = list(post_analyzers)
     if asset_type != "stock":
@@ -1765,6 +1769,186 @@ def _call_screening_screen(
 
     with _screening_litellm_headers(config):
         return run_screening_pipeline(strategy, **screen_kwargs)
+
+
+def _stock_listing_board(code: str) -> str:
+    from data_provider.base import is_bse_code, normalize_stock_code
+
+    base = normalize_stock_code(_screening_safe_text(code).upper())
+    if not (base.isdigit() and len(base) == 6):
+        return "UNKNOWN"
+    if is_bse_code(base):
+        return "北交所"
+    if base.startswith(("688", "689")):
+        return "科创板"
+    if base.startswith(("300", "301")):
+        return "创业板"
+    if base.startswith(("600", "601", "603", "605", "000", "001", "002", "003")):
+        return "主板"
+    return "UNKNOWN"
+
+
+_AUTO_STOCK_SECTOR_FAMILY_TERMS = {
+    "医药": ("医药", "制药", "医疗", "中药"),
+}
+
+
+def _auto_stock_preference_values(
+    config: Config,
+) -> Tuple[List[str], List[str], List[str]]:
+    excluded_sectors = list(dict.fromkeys(config.auto_screen_stock_excluded_sectors or []))
+    excluded_boards = list(dict.fromkeys(config.auto_screen_stock_excluded_boards or []))
+    preferred_boards = list(dict.fromkeys(config.auto_screen_stock_preferred_boards or []))
+    valid_boards = {"主板", "科创板", "创业板", "北交所"}
+    invalid_boards = [
+        item
+        for item in [*excluded_boards, *preferred_boards]
+        if item not in valid_boards
+    ]
+    if invalid_boards:
+        raise ValueError(
+            "AUTO_SCREEN stock board preference contains unsupported value(s): "
+            + ", ".join(dict.fromkeys(invalid_boards))
+        )
+    return excluded_sectors, excluded_boards, preferred_boards
+
+
+def _industry_matches_excluded_sector(industry: str, token: str) -> bool:
+    industry_key = _screening_safe_text(industry).casefold().replace(" ", "")
+    token_key = _screening_safe_text(token).casefold().replace(" ", "")
+    if not industry_key or not token_key:
+        return False
+    family_terms = _AUTO_STOCK_SECTOR_FAMILY_TERMS.get(token, (token,))
+    return any(
+        _screening_safe_text(term).casefold().replace(" ", "") in industry_key
+        for term in family_terms
+        if _screening_safe_text(term)
+    )
+
+
+def _apply_auto_stock_prefilter_frame(
+    frame: Any,
+    config: Config,
+) -> Tuple[Any, Dict[str, Any]]:
+    excluded_sectors, excluded_boards, preferred_boards = _auto_stock_preference_values(config)
+    diagnostics: Dict[str, Any] = {
+        "active": bool(excluded_sectors or excluded_boards or preferred_boards),
+        "excluded_sectors": excluded_sectors,
+        "excluded_boards": excluded_boards,
+        "preferred_boards": preferred_boards,
+        "input_count": len(frame),
+        "excluded_sector_count": 0,
+        "excluded_board_count": 0,
+        "unknown_industry_count": 0,
+        "unknown_board_count": 0,
+        "eligible_count": 0,
+        "unmatched_excluded_sectors": [],
+    }
+    if frame.empty:
+        return frame.copy(), diagnostics
+
+    preferred_index = {board: index for index, board in enumerate(preferred_boards)}
+    matched_sector_tokens = set()
+    keep_mask: List[bool] = []
+    preference_ranks: List[int] = []
+    listing_boards: List[str] = []
+    for _, row in frame.iterrows():
+        code = _screening_safe_text(row.get("code"))
+        if not code:
+            code = _screening_safe_text(row.get("代码"))
+        industry = _screening_safe_text(row.get("industry"))
+        if not industry:
+            industry = _screening_safe_text(row.get("行业"))
+        if not industry:
+            industry = _screening_safe_text(row.get("所属行业"))
+        board = _stock_listing_board(code)
+        listing_boards.append(board)
+        keep = True
+
+        if excluded_sectors:
+            if not industry:
+                diagnostics["unknown_industry_count"] += 1
+            else:
+                matched = [
+                    token
+                    for token in excluded_sectors
+                    if _industry_matches_excluded_sector(industry, token)
+                ]
+                if matched:
+                    matched_sector_tokens.update(matched)
+                    diagnostics["excluded_sector_count"] += 1
+                    keep = False
+
+        if keep and excluded_boards:
+            if board == "UNKNOWN":
+                diagnostics["unknown_board_count"] += 1
+                diagnostics["excluded_board_count"] += 1
+                keep = False
+            elif board in excluded_boards:
+                diagnostics["excluded_board_count"] += 1
+                keep = False
+
+        keep_mask.append(keep)
+        preference_ranks.append(
+            preferred_index.get(board, len(preferred_index))
+            if preferred_boards
+            else 0
+        )
+
+    annotated = frame.copy()
+    annotated["selection_listing_board"] = listing_boards
+    annotated["selection_preference_rank"] = preference_ranks
+    filtered = annotated.loc[keep_mask].copy()
+    diagnostics["eligible_count"] = len(filtered)
+    diagnostics["unmatched_excluded_sectors"] = [
+        token for token in excluded_sectors if token not in matched_sector_tokens
+    ]
+    return filtered, diagnostics
+
+
+def _apply_auto_stock_preferences(
+    candidates: List[Dict[str, Any]],
+    config: Config,
+    *,
+    prefilter_diagnostics: Optional[Dict[str, Any]] = None,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    excluded_sectors, excluded_boards, preferred_boards = _auto_stock_preference_values(config)
+    diagnostics = dict(prefilter_diagnostics or {})
+    diagnostics.setdefault("active", bool(excluded_sectors or excluded_boards or preferred_boards))
+    diagnostics.setdefault("excluded_sectors", excluded_sectors)
+    diagnostics.setdefault("excluded_boards", excluded_boards)
+    diagnostics["preferred_boards"] = preferred_boards
+    diagnostics.setdefault("input_count", len(candidates))
+    diagnostics.setdefault("excluded_sector_count", 0)
+    diagnostics.setdefault("excluded_board_count", 0)
+    diagnostics.setdefault("unknown_industry_count", 0)
+    diagnostics.setdefault("unknown_board_count", 0)
+    diagnostics.setdefault("unmatched_excluded_sectors", [])
+    diagnostics["eligible_count"] = int(
+        diagnostics.get("eligible_count", len(candidates))
+    )
+
+    projected: List[Dict[str, Any]] = []
+    for raw_candidate in candidates:
+        candidate = dict(raw_candidate)
+        board = _stock_listing_board(candidate.get("code") or "")
+        industry = _screening_safe_text(candidate.get("industry"))
+        focus_eligible = not excluded_sectors or bool(industry)
+        candidate["listing_market"] = "A股"
+        candidate["listing_board"] = board
+        candidate["classification_status"] = (
+            "KNOWN" if industry else ("UNKNOWN" if excluded_sectors else "NOT_REQUIRED")
+        )
+        candidate["focus_eligible"] = focus_eligible
+        candidate["preference_status"] = (
+            "CLASSIFICATION_INSUFFICIENT"
+            if not focus_eligible
+            else "PREFERRED_BOARD"
+            if board in preferred_boards
+            else "ELIGIBLE"
+        )
+        projected.append(candidate)
+    return projected, diagnostics
 
 
 def _resolve_auto_screen_bucket(
@@ -1778,6 +1962,16 @@ def _resolve_auto_screen_bucket(
     progress_callback: Callable[[int, str], None] | None,
 ) -> Dict[str, Any]:
     expected_post_analyzers = ["scorecard"] if asset_type == "stock" else []
+    candidate_prefilter = None
+    if asset_type == "stock" and (
+        config.auto_screen_stock_excluded_sectors
+        or config.auto_screen_stock_excluded_boards
+        or config.auto_screen_stock_preferred_boards
+    ):
+        candidate_prefilter = lambda frame: _apply_auto_stock_prefilter_frame(
+            frame,
+            config,
+        )
     raw = _call_screening_screen(
         strategy,
         market,
@@ -1788,6 +1982,7 @@ def _resolve_auto_screen_bucket(
         progress_callback=progress_callback,
         use_llm=False,
         post_analyzers=expected_post_analyzers,
+        candidate_prefilter=candidate_prefilter,
     )
     raw_data = _remove_non_finite_json_values(_to_plain(raw))
     if not isinstance(raw_data, dict):
@@ -1807,6 +2002,19 @@ def _resolve_auto_screen_bucket(
         )
 
     normalized_candidates = _normalize_candidates(raw_data)
+    preference_diagnostics = dict(
+        raw_data.get("candidate_prefilter_diagnostics") or {}
+    )
+    if asset_type == "stock":
+        normalized_candidates, preference_diagnostics = _apply_auto_stock_preferences(
+            normalized_candidates,
+            config,
+            prefilter_diagnostics=preference_diagnostics,
+        )
+        normalized_candidates = [
+            *[item for item in normalized_candidates if item.get("focus_eligible") is not False],
+            *[item for item in normalized_candidates if item.get("focus_eligible") is False],
+        ]
     selected: List[Dict[str, Any]] = []
     codes: List[str] = []
     seen_codes = set()
@@ -1820,13 +2028,26 @@ def _resolve_auto_screen_bucket(
         codes.append(code)
         group_rank = len(codes)
         group_prefix = "AUTO_ETF" if asset_type == "etf" else "AUTO_STOCK"
+        focus_eligible = (
+            True
+            if asset_type == "etf"
+            else candidate.get("focus_eligible") is not False
+        )
+        focus_count = sum(
+            1
+            for item in selected
+            if item.get("product_group") == f"{group_prefix}_FOCUS"
+        )
+        product_group = (
+            f"{group_prefix}_FOCUS"
+            if focus_eligible and focus_count < 3
+            else f"{group_prefix}_REMAINING"
+        )
         selected.append(
             {
                 "rank": candidate.get("rank"),
                 "group_rank": group_rank,
-                "product_group": (
-                    f"{group_prefix}_FOCUS" if group_rank <= 3 else f"{group_prefix}_REMAINING"
-                ),
+                "product_group": product_group,
                 "asset_type": asset_type,
                 "code": code,
                 "name": candidate.get("name") or "",
@@ -1836,6 +2057,19 @@ def _resolve_auto_screen_bucket(
                 "risk_level": candidate.get("risk_level") or "",
                 "risk_flags": list(candidate.get("risk_flags") or []),
                 "industry": candidate.get("industry") or "",
+                "listing_market": (
+                    "A股ETF"
+                    if asset_type == "etf"
+                    else candidate.get("listing_market") or "A股"
+                ),
+                "listing_board": (
+                    "ETF"
+                    if asset_type == "etf"
+                    else candidate.get("listing_board") or "UNKNOWN"
+                ),
+                "preference_status": candidate.get("preference_status") or "",
+                "classification_status": candidate.get("classification_status") or "",
+                "focus_eligible": focus_eligible,
             }
         )
 
@@ -1853,6 +2087,7 @@ def _resolve_auto_screen_bucket(
         "post_analyzers": post_analyzer_names,
         "deep_analysis_requested": False,
         "candidate_count": len(normalized_candidates),
+        "preference_diagnostics": preference_diagnostics,
         "selected_count": len(codes),
         "source_errors": _list_text_values(raw_data.get("source_errors")),
         "degradation": _list_text_values(raw_data.get("degradation")),
@@ -1962,6 +2197,7 @@ def resolve_auto_screen_analysis_targets(
         "etf_source_errors": list(etf_bucket.get("source_errors") or []),
         "degradation": list(stock_bucket.get("degradation") or []),
         "etf_degradation": list(etf_bucket.get("degradation") or []),
+        "stock_preferences": dict(stock_bucket.get("preference_diagnostics") or {}),
         "selected_candidates": selected,
         "production_boundary": {
             "llm_ranking": False,

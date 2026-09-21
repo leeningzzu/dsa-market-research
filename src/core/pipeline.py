@@ -2536,6 +2536,54 @@ class StockAnalysisPipeline:
             return str(context.get("selection_source") or "").strip()
         return ""
 
+    @staticmethod
+    def _research_asset_identity(
+        result: AnalysisResult,
+        *,
+        asset_type: str,
+    ) -> Dict[str, Any]:
+        code = normalize_stock_code(str(getattr(result, "code", "") or ""))
+        market = get_market_for_stock(str(getattr(result, "code", "") or ""))
+        market_label = {
+            "cn": "A股",
+            "hk": "港股",
+            "us": "美股",
+            "jp": "日股",
+            "kr": "韩股",
+            "tw": "台股",
+        }.get(str(market or "").lower(), "市场待确认")
+
+        if asset_type == "etf":
+            return {
+                "listing_market": "A股ETF" if market == "cn" else market_label,
+                "listing_board": "ETF",
+            }
+
+        listing_board = "UNKNOWN"
+        if market == "cn" and code.isdigit() and len(code) == 6:
+            if is_bse_code(code):
+                listing_board = "北交所"
+            elif code.startswith(("688", "689")):
+                listing_board = "科创板"
+            elif code.startswith(("300", "301")):
+                listing_board = "创业板"
+            elif code.startswith(("600", "601", "603", "605", "000", "001", "002", "003")):
+                listing_board = "主板"
+        return {
+            "listing_market": market_label,
+            "listing_board": listing_board,
+        }
+
+    @staticmethod
+    def _research_asset_identity_text(identity: Any) -> str:
+        if not isinstance(identity, dict):
+            return ""
+        market = str(identity.get("listing_market") or "").strip()
+        board = str(identity.get("listing_board") or "").strip()
+        market_text = market if market and market != "UNKNOWN" else "市场待确认"
+        board_text = board if board and board != "UNKNOWN" else "板块待确认"
+        return f"{market_text}｜{board_text}"
+
     def _attach_research_delivery_state(
         self,
         result: AnalysisResult,
@@ -2561,11 +2609,17 @@ class StockAnalysisPipeline:
             return
         asset_type = str(factor.get("asset_type") or "stock")
         current_hash = self._delivery_fact_hash(factor)
+        asset_identity = self._research_asset_identity(
+            result,
+            asset_type=asset_type,
+        )
         delivery = {
             "schema_version": "research-delivery-v1",
             "selection_source": selection_source,
             "delivery_envelope": envelope or None,
             "asset_type": asset_type,
+            "asset_identity": asset_identity,
+            "asset_identity_text": self._research_asset_identity_text(asset_identity),
             "canonical_fact_hash": current_hash,
             "product_group": None,
             "group_rank": None,
@@ -2593,6 +2647,20 @@ class StockAnalysisPipeline:
                     continue
                 delivery["product_group"] = candidate.get("product_group")
                 delivery["group_rank"] = candidate.get("group_rank")
+                candidate_identity = {
+                    "listing_market": candidate.get("listing_market"),
+                    "listing_board": candidate.get("listing_board"),
+                }
+                candidate_identity = {
+                    key: value
+                    for key, value in candidate_identity.items()
+                    if str(value or "").strip()
+                }
+                if candidate_identity:
+                    delivery["asset_identity"] = candidate_identity
+                    delivery["asset_identity_text"] = self._research_asset_identity_text(
+                        candidate_identity
+                    )
                 break
         elif envelope == "ASSET_RESEARCH_BRIEF_WATCHLIST":
             delivery["product_group"] = (

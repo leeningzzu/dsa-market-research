@@ -69,6 +69,7 @@ def screen(
     selection_seed: str = "",
     context: dict[str, object] | None = None,
     config: Config | None = None,
+    candidate_prefilter: Callable[[pd.DataFrame], tuple[pd.DataFrame, dict[str, object]]] | None = None,
     progress_callback: Callable[[int, str], None] | None = None,
     daily_history_fetcher: Callable[..., pd.DataFrame] | None = None,
 ) -> ScreenResult:
@@ -103,6 +104,7 @@ def screen(
         config: Runtime config. Defaults to Config.from_env().
         daily_history_fetcher: Optional request-scoped daily-history provider.
             It is tried in place of the bundled fetcher without global patching.
+        candidate_prefilter: Optional deterministic host filter applied after industry enrichment but before strategy L1/capping. It may add `selection_preference_rank`; lower values only break otherwise-equal deterministic ranking ties.
 
     Returns:
         ScreenResult with ranked picks.
@@ -184,6 +186,22 @@ def screen(
     snapshot_source = str(snapshot_df.attrs.get("snapshot_source", ""))
     source_errors = [str(item) for item in snapshot_df.attrs.get("source_errors", [])]
     degradation.extend(f"Snapshot source fallback: {item}" for item in source_errors)
+
+    candidate_prefilter_diagnostics: dict[str, object] = {}
+    if candidate_prefilter is not None:
+        filtered_snapshot, raw_diagnostics = candidate_prefilter(snapshot_df.copy())
+        if not isinstance(filtered_snapshot, pd.DataFrame):
+            raise TypeError("candidate_prefilter must return a pandas DataFrame")
+        if raw_diagnostics is not None and not isinstance(raw_diagnostics, dict):
+            raise TypeError("candidate_prefilter diagnostics must be a dict")
+        candidate_prefilter_diagnostics = dict(raw_diagnostics or {})
+        candidate_prefilter_diagnostics.setdefault("input_count", snapshot_count)
+        candidate_prefilter_diagnostics["eligible_count"] = len(filtered_snapshot)
+        snapshot_df = filtered_snapshot
+        degradation.append(
+            "Candidate prefilter retained "
+            f"{len(snapshot_df)}/{snapshot_count} snapshot candidates"
+        )
     if bool(snapshot_df.attrs.get("fallback_used")):
         stale_age = snapshot_df.attrs.get("stale_age_hours")
         if stale_age is None:
@@ -216,6 +234,7 @@ def screen(
             market=market,
             snapshot_count=snapshot_count,
             after_filter_count=0,
+            candidate_prefilter_diagnostics=candidate_prefilter_diagnostics,
             run_id=run_id,
             degradation=[*degradation, "No candidates after hard filter"],
             snapshot_source=snapshot_source,
@@ -315,6 +334,7 @@ def screen(
             strategy_category=strat.category,
             snapshot_count=snapshot_count,
             after_filter_count=0,
+            candidate_prefilter_diagnostics=candidate_prefilter_diagnostics,
             run_id=run_id,
             degradation=[*degradation, "No candidates after daily hard filter"],
             snapshot_source=snapshot_source,
@@ -537,6 +557,7 @@ def screen(
         strategy_category=strat.category,
         snapshot_count=snapshot_count,
         after_filter_count=after_filter_count,
+        candidate_prefilter_diagnostics=candidate_prefilter_diagnostics,
         picks=picks,
         run_id=run_id,
         llm_ranked=llm_ranked,
@@ -656,6 +677,9 @@ def _sort_screened_candidates(df: pd.DataFrame, screening=None) -> pd.DataFrame:
         if column in df.columns
     ]
     ascending = [False] * len(sort_columns)
+    if "selection_preference_rank" in df.columns:
+        sort_columns.append("selection_preference_rank")
+        ascending.append(True)
     if "code" in df.columns:
         sort_columns.append("code")
         ascending.append(True)

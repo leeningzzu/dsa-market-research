@@ -731,6 +731,9 @@ class Config:
 
     # === Built-in stock screening ===
     screening_enabled: bool = False
+    auto_screen_stock_excluded_sectors: List[str] = field(default_factory=list)
+    auto_screen_stock_excluded_boards: List[str] = field(default_factory=list)
+    auto_screen_stock_preferred_boards: List[str] = field(default_factory=list)
 
     # === AI 分析配置 ===
     generation_backend: str = LITELLM_BACKEND_ID
@@ -1267,6 +1270,20 @@ class Config:
             for c in split_stock_list(stock_list_str)
             if (c or "").strip()
         ]
+
+        def _preference_list(name: str) -> List[str]:
+            raw = os.getenv(name, "")
+            return list(dict.fromkeys(item.strip() for item in raw.split(",") if item.strip()))
+
+        auto_screen_stock_excluded_sectors = _preference_list(
+            "AUTO_SCREEN_STOCK_EXCLUDED_SECTORS"
+        )
+        auto_screen_stock_excluded_boards = _preference_list(
+            "AUTO_SCREEN_STOCK_EXCLUDED_BOARDS"
+        )
+        auto_screen_stock_preferred_boards = _preference_list(
+            "AUTO_SCREEN_STOCK_PREFERRED_BOARDS"
+        )
         
         # === LiteLLM multi-key parsing ===
         # GEMINI_API_KEYS (comma-separated) > GEMINI_API_KEY (single)
@@ -1619,6 +1636,9 @@ class Config:
 
         return cls(
             stock_list=stock_list,
+            auto_screen_stock_excluded_sectors=auto_screen_stock_excluded_sectors,
+            auto_screen_stock_excluded_boards=auto_screen_stock_excluded_boards,
+            auto_screen_stock_preferred_boards=auto_screen_stock_preferred_boards,
             feishu_app_id=os.getenv('FEISHU_APP_ID'),
             feishu_app_secret=os.getenv('FEISHU_APP_SECRET'),
             feishu_folder_token=os.getenv('FEISHU_FOLDER_TOKEN'),
@@ -2811,6 +2831,35 @@ class Config:
                     ),
                     field="STOCK_GROUP_N",
                 ))
+
+        valid_auto_stock_boards = {"主板", "科创板", "创业板", "北交所"}
+        for field_name, values in (
+            ("AUTO_SCREEN_STOCK_EXCLUDED_BOARDS", self.auto_screen_stock_excluded_boards),
+            ("AUTO_SCREEN_STOCK_PREFERRED_BOARDS", self.auto_screen_stock_preferred_boards),
+        ):
+            invalid = [item for item in values if item not in valid_auto_stock_boards]
+            if invalid:
+                issues.append(ConfigIssue(
+                    severity="error",
+                    message=(
+                        f"{field_name} 包含无法识别的板块：{', '.join(invalid)}。"
+                        "支持：主板、科创板、创业板、北交所。"
+                    ),
+                    field=field_name,
+                ))
+        overlap = sorted(
+            set(self.auto_screen_stock_excluded_boards)
+            & set(self.auto_screen_stock_preferred_boards)
+        )
+        if overlap:
+            issues.append(ConfigIssue(
+                severity="error",
+                message=(
+                    "同一板块不能同时出现在 AUTO_SCREEN_STOCK_EXCLUDED_BOARDS "
+                    f"和 AUTO_SCREEN_STOCK_PREFERRED_BOARDS：{', '.join(overlap)}。"
+                ),
+                field="AUTO_SCREEN_STOCK_PREFERRED_BOARDS",
+            ))
 
         # --- Data sources (informational only) ---
         if not self.tushare_token:

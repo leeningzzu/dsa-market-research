@@ -82,6 +82,13 @@ def _make_investor_brief_result() -> AnalysisResult:
             },
             "intelligence": {},
             "battle_plan": {},
+            "research_delivery": {
+                "schema_version": "research-delivery-v1",
+                "selection_source": "SPECIFIED_CODES",
+                "asset_type": "stock",
+                "asset_identity": {"listing_market": "A股", "listing_board": "主板"},
+                "asset_identity_text": "A股｜主板",
+            },
             "factor_decision": {
                 "conclusion": "旧因子结论（不得重复）",
                 "composite_score": 43,
@@ -98,7 +105,7 @@ def _make_investor_brief_result() -> AnalysisResult:
                         "15m": "MISSING",
                         "5m": "MISSING",
                     },
-                    "coverage_text": "当前证据覆盖：日线已分析；月线、周线、60分钟、30分钟、15分钟和5分钟尚未进入生产判断。",
+                    "coverage_text": "本次可用周期：日线。月线、周线、60分钟、30分钟、15分钟和5分钟本次暂无可用证据。",
                     "canonical": {
                         "authority": "stock_trend_quality_pullback_v1",
                         "action": "PASS",
@@ -939,7 +946,7 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         self.assertIn("**估值**: 合理｜PE/PB 仅作保守参考（不确定性：缺少历史分位）", out)
         self.assertIn("**关键位置**: 结构支撑 1400.0｜结构压力 1500.0", out)
         self.assertIn(
-            "**周期覆盖**: 当前证据覆盖：日线已分析；月线、周线、60分钟、30分钟、15分钟和5分钟尚未进入生产判断。",
+            "**周期覆盖**: 本次可用周期：日线。月线、周线、60分钟、30分钟、15分钟和5分钟本次暂无可用证据。",
             out,
         )
         self.assertNotIn("MISSING", out)
@@ -985,7 +992,7 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
             "结构压力 1500.0",
             "重新站上 1500 且放量确认",
             "跌破 1400 且放量",
-            "当前证据覆盖：日线已分析；月线、周线、60分钟、30分钟、15分钟和5分钟尚未进入生产判断。",
+            "本次可用周期：日线。月线、周线、60分钟、30分钟、15分钟和5分钟本次暂无可用证据。",
             "尚未完成 PIT 同策略验证",
             "暂不提供（尚未完成独立校准）",
             "弱趋势仍未修复",
@@ -1022,10 +1029,10 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
 
                 markers = [
                     "**综合结论**: 当前偏弱，暂不追高，等待趋势重新转强。",
+                    "**身份**: A股｜主板",
                     "日线趋势仍偏弱，量价尚未确认重新转强；当前以等待确认为主。",
                     "**估值**: 合理｜PE/PB 仅作保守参考（不确定性：缺少历史分位）",
-                    "**多周期**: 当前证据覆盖：日线已分析；月线、周线、60分钟、30分钟、15分钟和5分钟尚未进入生产判断。",
-                    "**趋势/量价**: 日线：趋势偏弱；量价尚未确认重新转强",
+                    "**多周期**: 本次可用周期：日线。月线、周线、60分钟、30分钟、15分钟和5分钟本次暂无可用证据。",
                     "**关键位置**: 结构支撑 1400.0｜结构压力 1500.0",
                     "**触发条件**: 重新站上 1500 且放量确认",
                     "**失效条件**: 跌破 1400 且放量",
@@ -1042,6 +1049,7 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
                 self.assertNotIn("第三条风险不应进入第一屏", out)
                 self.assertNotIn("MISSING", out)
                 self.assertNotIn("**技术参考分**", out)
+                self.assertNotIn("**趋势/量价**", out)
                 self.assertNotIn("**历史参考胜率**", out)
                 self.assertNotIn("**当前机会概率**", out)
                 self.assertNotIn("旧核心结论（不得出现）", out)

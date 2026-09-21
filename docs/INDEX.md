@@ -1,6 +1,21 @@
 # 文档中心
 
-这里是项目文档入口。README 负责项目概览和快速开始；更完整的配置、部署、功能说明和排障内容从这里进入。
+## 个人私有版：优先看这些
+
+[个人首页](../README.md)负责简短入口；[个人版操作手册](OPERATOR_RUNBOOK.md)按实际任务给出路径、设置形状、验证和恢复方法。
+
+| 我现在要做什么 | 直接入口 |
+|---|---|
+| 配好私有 GitHub，区分总开关与 daily 开关 | [部署](OPERATOR_RUNBOOK.md#task-start) |
+| 改邮箱、模型、多个 API Key | [配置](OPERATOR_RUNBOOK.md#task-config) |
+| 添加或取消自选股票、ETF | [自选列表](OPERATOR_RUNBOOK.md#task-watchlist) |
+| 排除医药/北交所，或者恢复纳入 | [筛选偏好](OPERATOR_RUNBOOK.md#task-preferences)（本地开发候选已实现，尚未部署） |
+| 手动测试与每天定时怎么区分 | [一次测试](OPERATOR_RUNBOOK.md#task-run) / [长期定时](OPERATOR_RUNBOOK.md#task-schedule) |
+| Cloudflare R2 怎么填、存什么、不存什么 | [R2](OPERATOR_RUNBOOK.md#task-r2) / [数据流程](OPERATOR_RUNBOOK.md#task-data) |
+| 港股、美股以后如何加入 | [多市场扩展](OPERATOR_RUNBOOK.md#task-markets) |
+| 改邮件模板、排查重复与失败 | [模板](OPERATOR_RUNBOOK.md#task-report) / [恢复](OPERATOR_RUNBOOK.md#task-recovery) |
+
+下方保留上游的专题资料导航，供按需查阅；不能把其中的所有部署方式、市场或功能都当作本私有版已验收能力。
 
 ## 按场景选择
 

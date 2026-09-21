@@ -1147,7 +1147,7 @@ def _asset_brief_v1_num(value):
         if value is None:
             return None
         number = float(value)
-        return number if number == number else None
+        return number if math.isfinite(number) else None
     except (TypeError, ValueError):
         return None
 
@@ -1174,6 +1174,7 @@ def _asset_brief_v1_usable(value):
         return False
     blockers = (
         "\u6570\u636e\u4e0d\u8db3",
+        "证据不足",
         "\u6682\u4e0d\u5224\u65ad",
         "\u672a\u5f62\u6210\u53ef\u9760",
         "\u5c1a\u672a\u5f62\u6210\u53ef\u9760",
@@ -1400,35 +1401,39 @@ def _build_asset_research_brief_v1(trend_result, summary, *, asset_type: str = "
     ):
         if status not in {"READY", "PARTIAL_CURRENT"}:
             missing_labels.append(label)
-    coverage_text = f"当前证据覆盖：{'、'.join(ready_labels)}已进入分析。"
+    coverage_text = f"本次可用周期：{'、'.join(ready_labels)}。"
     if missing_labels:
-        coverage_text += f"{'、'.join(missing_labels)}尚未进入生产判断。"
+        coverage_text += f"{'、'.join(missing_labels)}本次暂无可用证据。"
 
     paragraph_parts: List[str] = []
-    if price_text:
-        unit = "元" if asset_type == "stock" else ""
-        paragraph_parts.append(f"当前价格 {price_text}{unit}")
     for label, item in (("月线", monthly_thesis), ("周线", weekly_thesis)):
         sentence = _brief_timeframe_sentence(label, item)
-        if sentence:
+        if sentence and sentence not in paragraph_parts:
             paragraph_parts.append(sentence)
-    if daily_thesis:
+
+    daily_focus = [
+        item
+        for item in daily_components[:2]
+        if _asset_brief_v1_usable(item)
+    ]
+    if daily_focus:
         daily_sentence = _brief_timeframe_sentence(
             "日线",
-            {"status": "PARTIAL_CURRENT", "summary": daily_thesis},
+            {
+                "status": "PARTIAL_CURRENT",
+                "summary": "；".join(daily_focus),
+            },
         )
-        if daily_sentence:
+        if daily_sentence and daily_sentence not in paragraph_parts:
             paragraph_parts.append(daily_sentence)
     for event in material_events:
         if not any(event in part for part in paragraph_parts):
             paragraph_parts.append(event)
-    if valuation_displayable:
-        paragraph_parts.append(
-            f"{'底层估值' if asset_type == 'etf' else '估值'}：{valuation}"
-        )
-    if conclusion:
-        paragraph_parts.append(conclusion)
-    paragraph = "。".join(part.rstrip("。") for part in paragraph_parts if part).strip()
+    if canonical.get("hard_veto") and risks:
+        paragraph_parts.append(f"主要冲突：{risks[0]}")
+    if not paragraph_parts:
+        paragraph_parts.append("本次可用材料较少，重点结合下方周期、条件与风险观察")
+    paragraph = "；".join(part.rstrip("。；;") for part in paragraph_parts if part).strip()
     if paragraph and not paragraph.endswith("。"):
         paragraph += "。"
 
@@ -1648,7 +1653,18 @@ def build_stock_factor_decision_summary(
         if text not in why and _asset_brief_v1_usable(text):
             why.append(text)
 
-    if support is not None:
+    if canonical_decision and canonical_decision.get("hard_veto"):
+        action_condition = (
+            "当前风险或弱势条件尚未解除；先等待这些条件修复并重新满足必要的趋势、量价与风险要求。"
+            "仅价格突破本身不构成买入触发。"
+        )
+    elif canonical_decision and canonical_decision.get("evidence_state") == "UNKNOWN":
+        action_condition = (
+            "先补齐ETF专属估值与交易质量证据；证据完整且风险条件通过后，再提高关注级别。"
+            if asset_type == "etf"
+            else "先补齐必需的趋势、评分与量价证据；证据完整且风险条件通过后，再评估是否形成买入候选。"
+        )
+    elif support is not None:
         if asset_type == "etf":
             action_condition = (
                 f"若价格在主要支撑 {_format_price(support)} 上方企稳、量价重新转强，"
@@ -1656,18 +1672,20 @@ def build_stock_factor_decision_summary(
             )
         else:
             action_condition = (
-                f"若价格在主要支撑 {_format_price(support)} 上方企稳，并出现量价重新转强，可升级为买入候选。"
+                f"若价格在主要支撑 {_format_price(support)} 上方企稳，并出现量价重新转强，"
+                "再评估是否达到买入候选条件。"
             )
-        invalidation_condition = (
-            f"若放量有效跌破主要支撑 {_format_price(support)}，则取消原判断。"
-        )
     else:
         action_condition = (
             "若回调后止跌、量价重新转强，且ETF专属估值与交易质量证据完整，再提高关注级别。"
             if asset_type == "etf"
-            else "若回调后止跌并出现量价重新转强，可重新评估买入条件。"
+            else "若回调后止跌并出现量价重新转强，再评估是否达到买入候选条件。"
         )
-        invalidation_condition = "若趋势转弱并伴随放量下跌，则取消原判断。"
+    invalidation_condition = (
+        f"若放量有效跌破主要支撑 {_format_price(support)}，则取消原判断。"
+        if support is not None
+        else "若趋势转弱并伴随放量下跌，则取消原判断。"
+    )
 
     if (
         asset_type == "etf"

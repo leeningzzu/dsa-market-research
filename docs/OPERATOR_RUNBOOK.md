@@ -1,182 +1,248 @@
-# DSA 日常操作手册
+# 个人版操作手册：从配置到读懂邮件
 
-> 这是一份“以后忘了怎么操作时先看这里”的薄索引。详细参数和完整语义仍以各专题文档为准，本页不复制整套配置手册。
+本手册服务于 GitHub Actions 上的个人私有部署，不要求另装 Web 服务、Docker 或交易框架。需要其他部署方式时，再从[文档中心](INDEX.md)进入。
 
-## 1. 先记住当前边界
+核对日期：2026-09-21。**这是一份文档候选，不会替你启用任务、修改密钥或上线未实现功能。** “待实现”章节不能当成已生效的配置说明。
 
-- **公开仓库仍是代码 / CI / PR 的当前权威入口**。
-- 私有仓库目前只作为 **Shadow**：已经做过 Git 镜像与 ref/SHA parity，但 **Actions 仍关闭**，还不是 Production authority。
-- 不长期双写两个仓库。只有在材料 checkpoint 或未来私仓 Promotion 验证前，才做受控的 public → private 刷新。
-- Cloudflare R2 目前只证明了 **synthetic roundtrip** 能力；Production R2 credential / consumer 尚未晋升，不要把它当作已经启用的日常生产存储。
-- 任何新权限、付费服务、Production Secret、仓库 authority 切换，都应走单独的验收 / Promotion。
+<a id="task-start"></a>
+## 1. 第一次部署：先看对地方
 
-## 2. 永远不要写进仓库的内容
+准备私有 DSA 仓库、至少一个可用模型服务、一组邮件发送配置；R2 不是发送第一封分析邮件的必需项。已有私有仓库就继续使用，不重新 Fork、不另建第二套系统。
 
-不要把下面内容写进 README、本文、Issue、PR、日志、截图或普通配置文件：
+在私有仓库检查三处：
 
-- API Key、密码、Token、Webhook Secret；
-- 私有网关鉴权 Header、账号 ID；
-- 私人持仓；
-- 原始 Prediction Ledger / 训练原始数据；
-- 模型状态或其他仅应存在于受控私有存储中的数据。
+1. **Code**：确认默认分支是准备承载正式版本的 `main`。开发分支用于测试，不等于已经合入 `main`。
+2. **Settings → Actions → General**：这是仓库 Actions 总开关。总开关打开，只代表允许工作流运行。
+3. **Actions → 每日股票分析**：这是单个工作流开关。黄色提示 `This workflow was disabled manually` 表示它仍被暂停；并不是仓库损坏。
 
-在 GitHub Actions 中，**密钥放 Secrets**；非敏感配置优先放 Variables。更细规则见 [LLM 服务商配置指南](llm-providers.md#github-actions-配置) 和 [通知能力基线](notifications.md#github-actions-映射)。
+不要点击 `New workflow` 来启动已有任务，也不要把当前运行页的 `Cancel workflow` 当成暂停以后的定时任务。
 
-## 3. 我要更换 LLM / API 服务商
+成功检查应能回答：在哪个私有仓库、测试哪个分支、单个 daily 工作流是否启用。页面与手册不同时先保留截图，不猜按钮。
 
-优先走 Web 设置页，而不是手工改代码：
+<a id="task-config"></a>
+## 2. 配置邮件和模型
 
-1. 打开 **设置 → AI 模型配置**。
-2. 在“快速添加渠道”选择已有 provider；如果是 OpenAI-compatible 网关/中转，则创建自定义 channel。
-3. 填 API Key、Base URL、模型列表。
-4. 选择主模型、Agent 主模型、fallback、Vision 模型（只配置实际需要的）。
-5. 保存后先做**配置 / 状态检查**。
-6. 需要确认真实 JSON / tools / stream / vision 能力时，再显式运行真实 smoke test。
+统一入口：**Settings → Secrets and variables → Actions**。有两个标签：
 
-详细步骤：
-- [LLM 配置指南](LLM_CONFIG_GUIDE.md)
-- [LLM 服务商配置指南](llm-providers.md)
+- **Secrets**：API Key、SMTP 授权码等私密值。新建用 `New repository secret`。
+- **Variables**：非敏感参数。新建用 `New repository variable`，修改使用已有行的编辑按钮。
 
-### 当前支持的接入形态
+`Environment STOCK_LIST` 是工作流使用的环境名称；Repository Variable `STOCK_LIST` 才是这里使用的自选代码列表。它们不是同一个概念。先使用仓库级配置，不为相同参数再在 Environment 建一份；存在同名项时，必须核实际生效来源。
 
-当前仓库已提供这些配置形态：
+### 最小配置表
 
-- 官方 provider 预设；
-- LLM_CHANNELS 多渠道；
-- 自定义 OpenAI-compatible gateway / proxy；
-- 自定义 Base URL + API Key + model list；
-- Ollama；
-- LiteLLM YAML；
-- generation-only 的 Codex CLI / Claude Code CLI / OpenCode CLI。
+| 放置位置 | 名称 | 内容或形状 | 如何核对 |
+|---|---|---|---|
+| Secret | `GEMINI_API_KEYS` | 一个 Key，或 `KEY_A,KEY_B` | 只看名称存在；真实可用性看已批准运行 |
+| Secret | `TAVILY_API_KEYS` | 搜索服务 Key | 不把完整 Key 放到日志或截图 |
+| Secret | `EMAIL_PASSWORD` | 邮箱要求的 SMTP 授权码/App Password | 变量名虽叫 PASSWORD，不代表要填网页登录密码 |
+| Variable | `EMAIL_SENDER` | `sender@example.com` | 发件邮箱与 SMTP 授权码属于同一账号 |
+| Variable | `EMAIL_RECEIVERS` | `first@example.com,second@example.com` | 英文逗号分隔；空值按当前邮件实现使用发件邮箱 |
+| Variable | `NOTIFICATION_REPORT_CHANNELS` | `email` | 分析报告只走邮件 |
+| Variable | `NOTIFICATION_ALERT_CHANNELS` | `email` | 告警路由；不等于已启用告警任务 |
+| Variable | `NOTIFICATION_SYSTEM_ERROR_CHANNELS` | `email` | 系统错误路由；不额外启用服务 |
+| Variable | `RESEARCH_STATE_DURABILITY_ENABLED` | `false` | 本阶段保持关闭 |
 
-第三方中转站、公益站或其他厂商端点**不能只根据品牌名判断兼容**。只要不是当前文档已验证的 preset，都应把它当作候选 endpoint，用当前账号、模型和 endpoint 做一次实际能力验证。
+这不是要求重复填写已经存在的项目。每个名称只维护一处，真实邮箱也不必写进 README。
 
-### 自定义 OpenAI-compatible channel：只记这个形状
+### 模型以后怎样修改
 
-下面只有占位符，不要把真实 Key 写进文档：
+当前已经证明原生多 Key 配置入口存在。更换 Key：编辑 `GEMINI_API_KEYS`，下一次新运行读取新配置；不会改变已经启动的运行。两个 Key 的存在不证明两个都被使用过，也不保证额度相加。
 
-~~~text
-LLM_CHANNELS=my_proxy
-LLM_MY_PROXY_PROTOCOL=openai
-LLM_MY_PROXY_BASE_URL=https://example.invalid/v1
-LLM_MY_PROXY_API_KEY=<SECRET>
-LLM_MY_PROXY_MODELS=<MODEL_A>,<MODEL_B>
-~~~
+需要明确选择 Gemini 模型时，当前工作流已映射 `GEMINI_MODEL` 和 `GEMINI_MODEL_FALLBACK`。先在服务商确认准确模型 ID 和账号权限，再按单独的模型变更检查设置；不要同时更换数据源和通知配置。最新可用型号以服务商为准，不从旧 README 复制型号。
 
-运行时模型通常走 openai/<model>。Base URL 填到服务商兼容入口，不要自行再拼 /chat/completions。完整规则见 [OpenAI-compatible 与 LiteLLM 规则](llm-providers.md#openai-compatible-与-litellm-规则)。
+DeepSeek 不是第一次邮件验收的前置。增加其 Key 与配置跨服务商 fallback 是两件事；后者可能增加真实费用，须核对当前 DSA 的原生渠道/回退规则。详见 [模型配置](LLM_CONFIG_GUIDE.md)与[渠道和回退](llm-providers.md)。
 
-**GitHub Actions 额外注意：** 默认 workflow 只映射明确列出的 channel 名。自定义 channel（或默认未映射的 channel）如果以后要在 GitHub-hosted Actions 使用，需要先补 workflow env mapping；本地 .env、Docker、自托管脚本不受这个固定映射限制。
+已有可用路线出错时，先看认证、额度、限流、超时是哪一类，不通过连续重跑或同时添加多个模型掩盖问题。
 
-## 4. API Key 怎么安全轮换
+<a id="task-watchlist"></a>
+## 3. 添加、删除自选股票或 ETF
 
-1. 先在服务商控制台创建新 Key；不要把 Key 发到 Chat / Issue / PR。
-2. 本地运行时放到受控配置；GitHub Actions 放 **Repository Secrets**。
-3. 若服务商允许新旧 Key 短暂并存，先切到新 Key 并测试，再撤销旧 Key。
-4. 先做轻量状态检查；必要时再做真实 smoke。
-5. 新 Key 验证成功后再撤销旧 Key。
-6. 失败则恢复上一个已知可用 channel / model / Secret 配置。
+**自动发现**回答“系统今天筛出了谁”；**我的自选**回答“我主动指定的代码现在怎样”。两者使用同一深析流程，但自选不占自动候选额度。
 
-常用字段放置：
-- LLM_<CHANNEL>_API_KEY / API_KEYS → **Secrets**；
-- LLM_<CHANNEL>_PROTOCOL、公开 Base URL、公开 model list → 通常 **Variables**；
-- 私有 Base URL、鉴权 Header、租户/组织信息 → **Secrets**。
+在私有仓库进入 **Settings → Secrets and variables → Actions → Variables**，找到或新建 `STOCK_LIST`。值是代码列表，用英文逗号分隔。例如：
 
-## 5. “状态正常”不等于“真实模型已经跑通”
+```text
+600519,588000
+```
 
-要区分两类检查：
+这只是“一个股票代码加一个 ETF 代码”的格式示例，不是推荐。添加代码就追加，取消关注就删掉该代码；保存后对下一次新运行生效。不要为每个代码创建一个 Variable。
 
-**轻量状态 / 配置检查**
-- 读取已保存配置、草稿和本地 capability；
-- 通常不发送真实模型请求；
-- 适合先检查配置形状、模型名、Base URL。
+本工作流的 `STOCK_LIST_CONFIG` 来自 `vars.STOCK_LIST || secrets.STOCK_LIST`，再供普通分析路径使用。因此不要在 Variables 留空，却忘了 Secrets 中还有旧列表。
 
-**真实 smoke / 运行时能力检测**
-- 会真的请求模型；
-- 可能产生 token / 图片输入费用；
-- 可能触发 RPM / TPM 限流、余额不足、超时；
-- 结果只代表“当前账号 + 当前模型 + 当前 endpoint”的一次观测。
+没有配置自选时，定时 AUTO 不应把示例默认代码冒充你的自选。普通手动 `stocks-only` 在列表缺失时有默认代码行为，所以手动运行前务必检查实际输入。
 
-因此默认顺序是：**先状态检查，只有需要时才做真实 smoke**。详见 [运行时能力检测边界](llm-providers.md#运行时能力检测边界)。
+**不要用 `p0_stock_codes` 填常规股票/ETF列表。** 它是特殊的一次性有界股票验收入口，不是通用自选框。
 
-## 6. 模型或 provider 配坏了，怎么回滚
+已有本地环境的代码研究入口是 `python main.py --stocks <逗号分隔代码>`；没有本地环境时不必为改自选安装环境。GitHub 上普通指定代码分析使用 `STOCK_LIST` 与 `stocks-only`。
 
-优先恢复“最后一个已知可用配置”，不要同时改多项：
+<a id="task-preferences"></a>
+## 4. 排除医药、排除北交所：要能随时改回来
 
-- Web 设置页：禁用/删除新 channel，重新选择旧主模型 / Agent 模型 / fallback；
-- Channels → legacy：清空 LLM_CHANNELS，保留原 legacy provider key 与 LITELLM_MODEL；
-- YAML → Channels / legacy：移除 LITELLM_CONFIG / LITELLM_CONFIG_YAML；
-- WebUI / Desktop：使用之前导出的系统配置备份恢复。
+### 已接受的个人需求
 
-完整回滚语义见 [LLM 服务商配置指南 → 回滚方式](llm-providers.md#回滚方式)。
+| 对象 | 当前希望 | 性质 |
+|---|---|---|
+| 自动筛选股票 | 暂时不推荐医药类 | 可撤销的个人排除，不是永久策略定律 |
+| 自动筛选股票 | 暂时不考虑北交所 | 硬排除 |
+| 自动筛选股票 | 主板、科创板优先 | 排序偏好，不自动等于禁止创业板 |
+| 自动筛选 ETF | 暂无新增行业/主题/板块偏好限制 | 不继承股票医药排除；原有风险、流动性和数据要求仍保留 |
+| 用户主动指定代码 | 继续能研究被自动筛选排除的资产 | 仍不能跳过真实风险与数据底线 |
 
-## 7. 我要改通知 / 邮件 / Telegram
+### 本地开发候选的最小入口——尚未部署
 
-不要在本页复制所有渠道变量；直接使用 [通知能力基线](notifications.md)。
+当前本地开发候选已在现有配置层接入下面三个字段，而不是把“医药”写死在 Python 里：
 
-最小操作顺序：
+```text
+AUTO_SCREEN_STOCK_EXCLUDED_SECTORS = 医药
+AUTO_SCREEN_STOCK_EXCLUDED_BOARDS = 北交所
+AUTO_SCREEN_STOCK_PREFERRED_BOARDS = 主板,科创板
+```
 
-1. 只配置目标渠道的 **Minimal key**；
-2. Secret 类字段放 Secrets；
-3. 在 Web 中使用对应的单渠道测试能力确认真实发送；
-4. GitHub Actions 场景先核对 [Actions 映射表](notifications.md#github-actions-映射)；
-5. 再按需要增加 quiet hours、dedup、cooldown、routing 等 Advanced 配置。
+**这些字段目前只存在于未提交的本地开发候选，不要现在到 GitHub 添加并误以为私有 `main` 已经生效。** 当前候选已经贯通配置解析、工作流变量映射、股票 AUTO 筛选和本地测试；在配置样例、完整 CI、代码评审和部署验收闭合前，仍按“未上线”处理。ETF 不消费这三个股票偏好，SPECIFIED_CODES/watchlist 也不会因为 AUTO 偏好而失去研究入口。
 
-如果只是换收件人、频道或通知 token，不要顺手改模型、数据源或调度。
+正式部署后的日常操作目标：
 
-## 8. R2 现在怎么理解
+- 想重新关注医药：从行业排除列表删除“医药”；排除列表为空就不做个人行业排除。
+- 想额外排除银行：在同一列表追加“银行”，其他条件不变。
+- 想加入北交所：从板块排除列表删除“北交所”。
+- 想把创业板也列入重点：在板块优先列表追加“创业板”。
+- 想只允许某些板块：这与“优先”不同，须明确改为允许范围，不能暗中改变语义。
 
-当前项目已经证明了三层**代码能力**：synthetic R2 roundtrip、selective immutable research-state package chain、以及 boto3 低层 S3 transport。每日 workflow 也包含默认关闭的 restore-before-analysis / success-only-publish 绑定入口。
+修改偏好不需要重训模型。必须先看到有效配置和“原候选数 → 各原因排除数 → 剩余数”的检查结果；这个检查不调用模型、不发邮件。字段拼错或分类不足时不能静默忽略。
 
-但这**不等于 Production R2 已启用**。当前默认仍是：
-- `RESEARCH_STATE_DURABILITY_ENABLED=false`；
-- 未配置长期 Production R2 credential / GitHub Secrets；
-- 未执行真实 research-state cross-run trial；
-- provider-derived / rights-conditional 字段仍需单独准入；
-- R2 仍只是 immutable byte substrate，不是 Prediction Ledger / PIT / model 的逻辑数据库 owner。
+行业判定优先用已确认的行业分类，不以公司名称有没有“药”来断言属于或不属于医药。启用严格排除时，无法判断的候选不进入重点推荐，并保留原因；未启用该规则时不因这项偏好而额外拒绝全部未知行业。
 
-未来正式启用时，非敏感 `RESEARCH_STATE_DURABILITY_ENABLED`、`R2_ENDPOINT_URL`、`R2_BUCKET_NAME` 应按当时合同放 Variables；`R2_ACCESS_KEY_ID`、`R2_SECRET_ACCESS_KEY` 放 Secrets。**在项目 State 明确进入 live-effect gate 前，不要自行创建长期 Key、填写这些值或把 enable flag 打开。**
+科创板股票应明确标 `科创板`；ETF 与股票板块身份分开显示。只有跟踪指数/底层暴露证据已确认时，才可进一步写成 `科创指数ETF`；证据不足时保留 ETF 身份并标注待确认，不能按股票号段把 ETF 误写成科创板个股。
 
-default-off 的意义是：没有显式启用变量时，现有 daily analysis 行为保持不变且不会发起 R2 请求。
+<a id="task-run"></a>
+## 5. 手动验收一次：与长期自动运行分开
 
-代码同时提供一个**仅人工、仅空状态**的 `research-state-smoke` workflow mode，用于未来 live-effect gate 的两次连续性验收：先选 `publish-empty`，再在另一 fresh runner 选 `restore-empty`。这个 mode 使用独立 `research_state_smoke.db`，不执行股票分析、报告或通知；只允许三张 research-state 表均为 0 行的 generation-1 checkpoint，并要求两次运行使用同一 exact `GITHUB_SHA`，把 code SHA、generation、package/manifest key+SHA、package bytes 和表计数输出为 machine-readable JSON receipt，同时仅为该 smoke 上传一个 1 天保留的 receipt artifact，便于后续机器验收；该 artifact 不是 canonical research state。它不会替代 Production durability 开关，正常/定时分析的 `RESEARCH_STATE_DURABILITY_ENABLED` 仍默认 `false`。
+本节描述操作方法，**不授权再跑已经完成的测试**。2026-09-21 已有一次私有 daily 运行成功和实际收件截图，该次不能为了补截图重跑。
 
-在 Project State 明确授权真实 effect 之前，**不要运行该 smoke mode**；代码入口存在不代表 bucket、credential、GitHub Variables/Secrets 或 R2 写入已经获准。
+新的一次真实测试另行明确范围后：
 
-## 9. 私有 GitHub 现在怎么理解
+1. 打开私有库 **Actions → 每日股票分析**。
+2. 如有黄色 disabled 提示，点右侧 **Enable workflow**。
+3. 点 **Run workflow**，选择批准测试的开发分支，不默认选择 `main`。
+4. 自动发现测试填 `mode=auto-screen`，股票上限 `1`、ETF 上限 `1`；`force_run` 不勾；`auto_screen_bounded_live` 不勾；`auto_screen_bounded_model` 和 `p0_stock_codes` 留空；`research_state_smoke_phase` 保持默认。
+5. 最终绿色 **Run workflow** 只点一次。若提交结果不明，先查看是否已经出现新 run，不连续点。
+6. 在尚未长期上线的阶段，新 run 出现后回到该 workflow 页面，通过 `... → Disable workflow` 暂停以后新运行。不要点击运行页的 `Cancel workflow`。
+7. 记录新 run 的数字 ID、实际分支/提交与输入；查看最终状态和收件结果，不自己重新运行失败任务。
 
-当前状态：
+`auto_screen_bounded_live=true` 是旧股票专用验收路径，要求股票=1、ETF=0和指定模型。它不是所有小规模测试的通用开关。
 
-- public repo：**authority**；
-- private repo：**Shadow**；
-- private Git ref/SHA parity：已验证；
-- private fetch：已验证；
-- private Actions：**Disabled**；
-- private Secrets / Variables / Environments：未作为 Production 配置建立；
-- authority Promotion：**未发生**。
+绿色 Success 只证明本次工作流按其检查完成；实际收件证明传输；数据时间正确、没有编造和重复、解释有用，才证明这封报告合格。盘中测试不等于收盘后的晚报验收。
 
-不要为了“看起来更安全”就同时维护两套写入。默认只在材料 checkpoint 或未来 Promotion 验证前做一次受控 public → private refresh。
+<a id="task-schedule"></a>
+## 6. 怎样真正每天自动发邮件
 
-## 10. 出问题时先做这 6 件事
+开发分支测试 → 代码/报告验收 → 合入私有默认分支 `main` → 确认公开库不再重复发送 → 启用私有 daily → 观察一次自然定时运行。
 
-1. **停止继续改配置**，不要一口气换 Key、Base URL、模型和 fallback。
-2. 保存当前错误类别 / details.reason；不要复制 Secret。
-3. 检查最近一次配置备份和最后一个已知可用 channel/model。
-4. 先做轻量状态检查，再决定是否值得跑真实 smoke。
-5. 按 [错误分类](llm-providers.md#常见错误与处理建议) 判断是 Key、额度、限流、网络、URL 还是模型权限。
-6. 恢复已知可用配置；仍失败再进入项目的 exact evidence / STOP 流程，不要靠反复重试掩盖根因。
+GitHub 的 `schedule` 只运行默认分支，**不会记住你上次手动 Run 选择的开发分支**。所以“开发分支收到邮件”后不能直接认定以后定时会用同一版代码。
 
-## 11. 常用入口
+本开发版本 cron 是 `0 11 * * 1-5`，即北京时间工作日19:00；程序还需按交易日规则决定是否分析。GitHub 可能排队延迟，不保证19:00准点到邮箱。早报计划必须等对应实现和验收后再标为可用。
 
-| 我要做什么 | 入口 |
-| --- | --- |
-| 第一次配置 / 看完整 LLM 说明 | [LLM 配置指南](LLM_CONFIG_GUIDE.md) |
-| provider、Channels、Base URL、Actions 映射、错误分类 | [LLM 服务商配置指南](llm-providers.md) |
-| 邮件 / Telegram / 飞书 / Slack / Webhook 等 | [通知能力基线](notifications.md) |
-| 第一次安装客户端 | [小白客户端安装与配置](beginner-client-setup.md) |
-| 完整部署与环境变量 | [完整配置与部署指南](full-guide.md) |
-| 常见运行问题 | [FAQ](FAQ.md) |
-| 文档总入口 | [文档中心](INDEX.md) |
+在 `main` 尚未晋升、报告仍未通过时，daily 保持 disabled，不必等到晚上再重复同一个邮件链路测试。长期上线后不需要每天人工 Enable/Disable。
 
----
+<a id="task-r2"></a>
+## 7. Cloudflare R2：先配置，后按范围启用
 
-维护原则：本页只保留**稳定的日常操作顺序与安全边界**。Provider 型号、价格、模型列表、完整变量表等容易变化的内容继续由专题文档维护，避免两处同时更新造成漂移。
+R2 是保存研究状态包的存储服务，不是 SMTP，也不是模型服务。**配置了凭证不等于已经开始读写。**
+
+### 在 Cloudflare 找到四项信息
+
+进入 Cloudflare 控制台的 R2 页面，选择专用私有 bucket。记录 bucket 名和该账户的 S3 API Endpoint。管理 R2 API Tokens 时使用限定该 bucket 的权限；只读恢复和允许发布所需权限不同，不选择不必要的全账户 Admin 权限。创建页面显示的 Access Key ID、Secret Access Key 要安全保存，不能贴进 Chat。不同控制台版本入口文字可能不同，遇到不一致先按官方说明或截图确认。
+
+在 GitHub 私有库 **Settings → Secrets and variables → Actions** 填：
+
+| 类型 | 名称 | 来源 |
+|---|---|---|
+| Variable | `R2_ENDPOINT_URL` | Cloudflare 的 S3 Endpoint；不是 Token，也不是公开访问域名 |
+| Variable | `R2_BUCKET_NAME` | 专用 bucket 名 |
+| Secret | `R2_ACCESS_KEY_ID` | R2 的 S3 Access Key ID |
+| Secret | `R2_SECRET_ACCESS_KEY` | 对应 S3 Secret Access Key |
+
+保留 `RESEARCH_STATE_DURABILITY_ENABLED=false`。这个值只控制正常分析的恢复/发布路径；不要选择特殊 `research-state-smoke` 模式来验证“没有副作用”。后者有独立的空状态测试用途和授权边界。
+
+### 正式启用前核什么
+
+确认实际凭证的 bucket、权限和到期日；名称相同不证明凭证仍有效。历史空状态发布/恢复已完成，不反复重放。真实研究状态须另验导出列、隐私/数据权利、包校验、恢复和失败处理，之后才考虑将开关改为 true。
+
+恢复失败不能靠关闭完整性检查继续。关回 false 可停止后续正常分析路径访问 R2，但不删除已发布包，也不能撤回已经发生的写入。
+
+不要把私人报告、持仓、API Key、原始行情库或完整 SQLite 数据库上传到公开仓库或公开 bucket。
+
+<a id="task-data"></a>
+## 8. 数据、数据库、分析、推送分别负责什么
+
+**输入**：自动发现使用筛选范围；指定代码直接进入研究。个人排除作用于自动推荐，不篡改研究事实。
+
+**行情与信息**：DSA 现有适配器获取行情、财务和新闻，保留来源、日期、币种和已完成K线状态。没有可靠数据的部分保持未知。
+
+**分析**：确定性规则整合趋势、相对强弱、量价、结构、波动、基本面、估值和风险。月/周/日互相确认或冲突；同一摆动的多个指标不被当成多份独立证据。
+
+**解释与投递**：由同一份证据/结论生成简报和完整报告；模型可解释原因，不能改买卖方向、添加数字或制造确定性。Email 只发送简报，详细指标留在完整报告和审计结果。
+
+**运行数据库**：DSA SQLite 保存运行中的业务结果和研究身份；GitHub 托管 runner 的本地文件不天然跨运行持久化。一次 SQLite 保存成功不等于下次还能取回。
+
+**可选 R2**：经过单独验收后，仅选择性保存允许导出的研究状态包，并在后续运行校验恢复。它不是第二个可写研究数据库，也不自动保存所有自选变化历史。
+
+**以后模型研究**：不可变预测记录 → 到期结果 → 当时可知的数据集 → 明确标签 → 样本外测试与概率校准 → 前瞻观察 → 批准晋升。当前不能把邮件评分说成历史胜率或校准概率。
+
+<a id="task-markets"></a>
+## 9. 以后添加港股、美股
+
+现在主线仍是 A 股。底层已有港股、美股指定代码识别，例如 `hk00700`、`AAPL`；完整支持还取决于数据源、时区、交易日、币种、复权和已完成K线，不是名称能解析就算验收。
+
+未来先用一个指定股票/ETF样本检查：身份 → 数据与币种 → 同一分析 → 同一简报 → 收件。准确支持范围见 [市场支持](market-support.md)，但上游功能列表不等于本私有版本全部已验证。
+
+自动筛选是另一条能力：美股已有 snapshot/universe 原语，但现有内嵌策略限定 cn；港股当前 pipeline 未支持；海外 ETF 自动筛选也未准入。以后按需增加市场候选来源、策略范围、过滤和时钟测试，再通过原有深析/报告，不另建三套系统。
+
+**现在没有一个已经接通的“美股/港股自动推荐开关”。** 本轮只保留扩展契约；将来接通后，本节必须给出实际入口、示例、费用和撤销方法，不能只让用户填一个尚未被代码读取的变量。
+
+<a id="task-report"></a>
+## 10. 邮件太长、模板怎么改
+
+现有 `REPORT_SHOW_LLM_MODEL=false` 可以隐藏普通报告里的模型署名，工作流已有映射。但隐藏一行署名解决不了重复指标和机械语言，不必现在为它单独跑一次邮件。
+
+报告应先回答：**现在怎么看，为什么，什么变化会让我改判断。** 每只资产只保留一个主结论、一段融合解释、必要的关注/转弱条件；材料事件不能遗漏，缺数据只说明一次。
+
+改展示的入口：
+
+| 想改什么 | 现有代码位置 |
+|---|---|
+| 人类解释、跨周期融合、关注与失效条件 | `src/services/factor_decision_summary.py` |
+| 简报正文布局 | `templates/report_brief.j2` |
+| 完整报告布局 | `templates/report_markdown.j2` |
+| Python 渲染及 Email/Telegram 拼装 | `src/notification.py` |
+| 参数说明和 Actions 映射 | `.env.example`、`.github/workflows/00-daily-analysis.yml` |
+
+本次发现：融合字段只是拼接指标，Jinja 和 Python 简报又重复输出同一周期、估值和结论。因此要修同一个展示语义，并用同一组样本检查两条渲染路径；不能只换一个模板文件或让模型“更简洁”。风险否决存在时，不能另写一个过于宽松的“升为买入候选”条件。
+
+实现前保留当前收到的邮件作为反例。先离线生成新正文，检查手机阅读宽度、事实和数字一致、重复段落、缺失说明、材料事件、风险否决与条件一致；全量指标留在完整报告。当前文档修改本身没有修复运行模板。
+
+<a id="task-recovery"></a>
+## 11. 常见问题和恢复
+
+| 现象 | 先检查什么 | 不要做什么 |
+|---|---|---|
+| Actions 绿了但没邮件 | 实际是否选出候选、通知步骤、SMTP结果、收件箱/垃圾箱 | 不把绿色等同发送成功 |
+| 多个 Gemini Key 已填，日志仍说未配置 | 旧检查行只看单数 Key；核实际模型调用 | 不直接判定所有 Key 失效 |
+| 收到了但太长、重复、像说明书 | 最终简报生成和两种渲染路径 | 不靠换模型或删掉全部风险信息 |
+| 到19:00没邮件 | daily是否启用、默认分支、交易日、排队、运行结果 | 不连续手动触发补跑 |
+| R2名称都在仍报错 | Endpoint、bucket、凭证范围/到期、实际模式和开关 | 不扩大到全账户权限来排错 |
+| 改了配置却没生效 | 是否映射到该workflow、是否被同名配置覆盖、是否为新运行 | 不在多个位置重复堆同名项 |
+
+只退回最后一项已知可用设置；涉及发布版本则退回已记录版本，不覆盖或删除原始失败证据。完整排障参考 [FAQ](FAQ.md)。
+
+## 12. 手册维护与一手参考
+
+改功能时同时改“在哪里设置、有效值、示例、如何验证、如何撤销”，避免 README 说已经能用而运行路径未接通。个人中文入口本轮更新，英文/繁中上游文档保留作参考，不作为本私有版本上线证据。
+
+- [GitHub 工作流触发与默认分支](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows)
+- [Cloudflare R2 凭证与权限](https://developers.cloudflare.com/r2/api/tokens/)
+- [Jinja 模板复用](https://jinja.palletsprojects.com/en/stable/templates/)
+- [Freqtrade 的候选列表与排除方法](https://www.freqtrade.io/en/stable/plugins/)：仅借用配置/过滤方法，不安装交易框架。
+
+上面的外部说明核对于2026-09-21；真实 UI、服务套餐和模型可用性以后仍需重新核对。

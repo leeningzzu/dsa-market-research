@@ -129,8 +129,11 @@ def test_phase_a_stock_human_synthesis_renders_material_events_with_exact_timefr
 
     brief = summary["investor_brief"]
     fused = brief["fused_paragraph"]
-    assert "月线保持上升通道" in fused
-    assert "周线多头排列" in fused
+    assert brief["timeframe_thesis"]["monthly"]["summary"] == "月线保持上升通道，回调量能温和"
+    assert brief["timeframe_thesis"]["weekly"]["summary"] == "周线多头排列，相对强势"
+    assert fused.count("月线保持上升通道") == 1
+    assert fused.count("周线多头排列") == 1
+    assert "日线" in fused
     assert "日线顶背离已经确认" in fused
     assert "日线双底基底已经放量突破确认" in fused
     assert brief["material_events"].count("日线顶背离已经确认") == 1
@@ -183,7 +186,8 @@ def test_phase_a_etf_uses_etf_authority_and_does_not_fake_stock_or_etf_specific_
     }
     assert all(item["status"] == "MISSING" for item in brief["asset_specific"].values())
     assert "可升级为买入候选" not in summary["action_condition"]
-    assert "ETF专属估值与交易质量证据完整" in summary["action_condition"]
+    assert "先补齐ETF专属估值与交易质量证据" in summary["action_condition"]
+    assert "风险条件通过" in summary["action_condition"]
     assert "ETF专属估值与交易质量证据尚未完整" in summary["conclusion"]
 
 
@@ -224,6 +228,57 @@ def test_phase_a_valuation_never_invents_reasonable_range_from_basic_pe_pb():
     assert brief["valuation"]["status"] == "PARTIAL_CURRENT"
     assert "PE 18.0" in brief["valuation"]["summary"]
     assert "PB 2.1" in brief["valuation"]["summary"]
+
+
+def test_phase_a_fused_narrative_does_not_replay_price_valuation_or_conclusion():
+    summary = build_stock_factor_decision_summary(
+        _trend(),
+        fundamental_context={
+            "market": "cn",
+            "valuation": {"data": {"pe_ratio": 18.0, "pb_ratio": 2.1}},
+        },
+        multi_timeframe_structure_context=_mtf_context(),
+        include_canonical=True,
+    )
+    brief = summary["investor_brief"]
+    fused = brief["fused_paragraph"]
+
+    assert "当前价格" not in fused
+    assert "估值" not in fused
+    assert summary["conclusion"] not in fused
+    assert fused.count("月线保持上升通道") == 1
+    assert fused.count("周线多头排列") == 1
+    assert "日线" in fused
+    assert "尚未进入生产判断" not in brief["coverage_text"]
+    assert "本次暂无可用证据" in brief["coverage_text"]
+
+
+def test_phase_a_hard_veto_never_renders_price_only_buy_upgrade():
+    summary = build_stock_factor_decision_summary(
+        _trend(signal_score=99, volume_status="放量下跌"),
+        include_canonical=True,
+    )
+
+    assert summary["canonical_decision"]["hard_veto"] is True
+    assert summary["canonical_decision"]["action"] == "PASS"
+    assert "可升级为买入候选" not in summary["action_condition"]
+    assert "仅价格突破本身不构成买入触发" in summary["action_condition"]
+
+
+def test_phase_a_non_finite_prices_are_not_rendered_as_usable_values():
+    summary = build_stock_factor_decision_summary(
+        _trend(
+            current_price=float("inf"),
+            support_levels=[float("nan"), 10.1],
+            resistance_levels=[float("-inf"), 11.2],
+        ),
+        include_canonical=True,
+    )
+    brief = summary["investor_brief"]
+
+    assert brief["current_price"]["value"] is None
+    assert brief["key_levels"]["support"] == "10.10"
+    assert brief["key_levels"]["resistance"] == "11.20"
 
 
 def test_phase_a_pipeline_wiring_keeps_etf_p0_boundary_and_normal_canonical_consistency():

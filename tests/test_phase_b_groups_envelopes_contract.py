@@ -82,6 +82,9 @@ class TestPhaseBGroupsEnvelopesContract(unittest.TestCase):
     def test_selection_identity_binds_auto_and_watchlist_envelopes(self) -> None:
         self.assertIn('"ASSET_RESEARCH_BRIEF_AUTO"', self.pit)
         self.assertIn('"delivery_envelope"', self.pit)
+        self.assertIn('"listing_market"', self.pit)
+        self.assertIn('"listing_board"', self.pit)
+        self.assertIn('"asset_identity_text"', self.pipeline)
         self.assertIn("ASSET_RESEARCH_BRIEF_WATCHLIST", self.main)
 
     def test_watchlist_material_change_uses_history_and_skips_same_run_auto(self) -> None:
@@ -106,12 +109,13 @@ class TestPhaseBGroupsEnvelopesContract(unittest.TestCase):
             "ETF重点 Top 3",
             "股票重点 Top 3",
             "ETF其余候选 4–10",
-            "股票其余候选 4–10",
+            "股票其余候选（含分类不足）",
             "我的自选研究",
         ):
             self.assertIn(label, self.notification)
         self.assertIn("_research_conclusion", self.notification)
         self.assertIn('dashboard.get("factor_decision")', self.notification)
+        self.assertIn('**身份**:', self.notification)
 
     def test_schedule_runs_fixed_auto_then_conditional_watchlist(self) -> None:
         self.assertIn("cron: '0 11 * * 1-5'", self.workflow)

@@ -2626,6 +2626,135 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
             },
         )
 
+    def test_auto_screen_stock_preferences_filter_before_cap_and_only_tie_break_quality(self) -> None:
+        config = self._config(enabled=True)
+        config.auto_screen_stock_excluded_sectors = ["医药"]
+        config.auto_screen_stock_excluded_boards = ["北交所"]
+        config.auto_screen_stock_preferred_boards = ["主板", "科创板"]
+        def fake_screen(_strategy: str, **kwargs: Any) -> Dict[str, Any]:
+            self.assertEqual(kwargs["config"].industry_provider, "none")
+            self.assertIsNotNone(kwargs.get("candidate_prefilter"))
+            rows = [
+                {"rank": 1, "code": "600111", "name": "医药股", "final_score": 99.0, "screen_score": 99.0, "industry": "化学制药"},
+                {"rank": 2, "code": "600100", "name": "行业未知", "final_score": 95.0, "screen_score": 95.0, "industry": pd.NA},
+                {"rank": 3, "code": "920001", "name": "北交所股", "final_score": 94.0, "screen_score": 94.0, "industry": "机械"},
+                {"rank": 4, "code": "300001", "name": "创业板股", "final_score": 90.0, "screen_score": 90.0, "industry": "计算机"},
+                {"rank": 5, "code": "688001", "name": "科创板股", "final_score": 90.0, "screen_score": 90.0, "industry": "半导体"},
+                {"rank": 6, "code": "600519", "name": "主板股", "final_score": 89.0, "screen_score": 89.0, "industry": "白酒"},
+            ]
+            frame = pd.DataFrame(rows)
+            diagnostics: Dict[str, Any] = {}
+            candidate_prefilter = kwargs.get("candidate_prefilter")
+            if candidate_prefilter is not None:
+                frame, diagnostics = candidate_prefilter(frame)
+            sort_columns = ["screen_score"]
+            ascending = [False]
+            if "selection_preference_rank" in frame.columns:
+                sort_columns.append("selection_preference_rank")
+                ascending.append(True)
+            sort_columns.append("code")
+            ascending.append(True)
+            frame = frame.sort_values(
+                sort_columns,
+                ascending=ascending,
+                kind="mergesort",
+            ).head(int(kwargs["max_output"]))
+            return {
+                "strategy": "dual_low",
+                "strategy_version": "1.2",
+                "market": "cn",
+                "run_id": "preferences-run",
+                "llm_ranked": False,
+                "ranking_mode": "factor",
+                "post_analyzers": ["scorecard"],
+                "deep_analysis_requested": False,
+                "candidate_prefilter_diagnostics": diagnostics,
+                "picks": frame.to_dict("records"),
+            }
+
+        fake_module = _make_screening_core(screen=MagicMock(side_effect=fake_screen))
+
+        with _patch_screening_core(fake_module):
+            payload = screening_service.resolve_auto_screen_analysis_targets(
+                config,
+                strategy="dual_low",
+                market="cn",
+                max_results=3,
+            )
+
+        self.assertEqual(payload["stock_codes"], ["688001", "300001", "600100"])
+        selected = payload["provenance"]["selected_candidates"]
+        self.assertEqual([item["listing_board"] for item in selected], ["科创板", "创业板", "主板"])
+        self.assertEqual(
+            [item["preference_status"] for item in selected],
+            ["PREFERRED_BOARD", "ELIGIBLE", "CLASSIFICATION_INSUFFICIENT"],
+        )
+        self.assertEqual(
+            [item["product_group"] for item in selected],
+            ["AUTO_STOCK_FOCUS", "AUTO_STOCK_FOCUS", "AUTO_STOCK_REMAINING"],
+        )
+        self.assertEqual(
+            [item["focus_eligible"] for item in selected],
+            [True, True, False],
+        )
+        diagnostics = payload["provenance"]["stock_preferences"]
+        self.assertTrue(diagnostics["active"])
+        self.assertEqual(diagnostics["excluded_sector_count"], 1)
+        self.assertEqual(diagnostics["unknown_industry_count"], 1)
+        self.assertEqual(diagnostics["excluded_board_count"], 1)
+        self.assertEqual(diagnostics["eligible_count"], 4)
+
+    def test_auto_screen_stock_preferences_do_not_filter_etf_bucket(self) -> None:
+        config = self._config(enabled=True)
+        config.auto_screen_stock_excluded_sectors = ["医药"]
+        config.auto_screen_stock_excluded_boards = ["北交所"]
+        config.auto_screen_stock_preferred_boards = ["主板", "科创板"]
+
+        def fake_call(_strategy, _market, _max_results, _config, *, asset_type="stock", **_kwargs):
+            if asset_type == "etf":
+                return {
+                    "strategy": "etf_candidate_prefilter",
+                    "market": "cn",
+                    "llm_ranked": False,
+                    "ranking_mode": "factor",
+                    "post_analyzers": [],
+                    "deep_analysis_requested": False,
+                    "picks": [
+                        {"rank": 1, "code": "512010", "name": "医药ETF", "final_score": 88.0, "industry": "医药"}
+                    ],
+                }
+            return {
+                "strategy": "dual_low",
+                "market": "cn",
+                "llm_ranked": False,
+                "ranking_mode": "factor",
+                "post_analyzers": ["scorecard"],
+                "deep_analysis_requested": False,
+                "picks": [
+                    {"rank": 1, "code": "600519", "name": "主板股", "final_score": 90.0, "industry": "白酒"}
+                ],
+            }
+
+        with patch("src.services.screening_service._call_screening_screen", side_effect=fake_call):
+            payload = screening_service.resolve_auto_screen_analysis_targets(
+                config,
+                strategy="dual_low",
+                market="cn",
+                max_results=1,
+                etf_max_results=1,
+            )
+
+        self.assertEqual(payload["stock_codes"], ["600519"])
+        self.assertEqual(payload["etf_codes"], ["512010"])
+        etf_row = next(
+            item for item in payload["provenance"]["selected_candidates"]
+            if item["asset_type"] == "etf"
+        )
+        self.assertEqual(etf_row["code"], "512010")
+        self.assertEqual(etf_row["industry"], "医药")
+        self.assertEqual(etf_row["listing_board"], "")
+
+
     def test_auto_screen_analysis_targets_fail_closed_if_llm_ranking_reappears(self) -> None:
         config = self._config(enabled=True)
         fake_module = _make_screening_core(
