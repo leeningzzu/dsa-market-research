@@ -675,8 +675,8 @@ def test_asset_research_brief_payload_v1_is_daily_first_and_fail_closed():
         "15m": "MISSING",
         "5m": "MISSING",
     }
-    assert "当前价格 10.50元" in brief["fused_paragraph"]
-    assert "90%\u7b79\u7801\u96c6\u4e2d\u5ea6 12.00" in brief["fused_paragraph"]
+    assert brief["current_price"] == {"value": 10.5, "source_state": "AVAILABLE"}
+    assert "当前价格" not in brief["fused_paragraph"]
     assert "\u5f53\u524d\u8bc1\u636e\u8986\u76d6" in brief["coverage_text"]
     assert brief["historical_reference"]["available"] is False
     assert brief["current_probability"]["available"] is False

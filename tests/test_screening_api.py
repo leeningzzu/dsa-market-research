@@ -2752,7 +2752,7 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
         )
         self.assertEqual(etf_row["code"], "512010")
         self.assertEqual(etf_row["industry"], "医药")
-        self.assertEqual(etf_row["listing_board"], "")
+        self.assertEqual(etf_row["listing_board"], "ETF")
 
 
     def test_auto_screen_analysis_targets_fail_closed_if_llm_ranking_reappears(self) -> None:
