@@ -456,6 +456,60 @@ def test_reuses_same_day_market_review_history_with_full_report_payload() -> Non
     run_review.assert_not_called()
 
 
+def test_reused_history_full_report_enriches_raw_markdown_with_market_brief() -> None:
+    db = MagicMock()
+    record = _history_record(
+        created_at=datetime(2026, 6, 6, 9, 30),
+        region="cn",
+        summary="A股正文。",
+    )
+    snapshot = json.loads(record.context_snapshot)
+    payload = snapshot["market_review_payload"]
+    payload["markdown_report"] = "## A股大盘复盘\n\nA股正文。"
+    payload["market_brief"] = {
+        "schema_version": "market-regime-brief-v1",
+        "breadth": {
+            "status": "READY",
+            "up_count": 700,
+            "down_count": 1300,
+            "flat_count": 100,
+            "breadth_denominator": 2100,
+            "breadth_ratio": 0.333333,
+        },
+        "speculative_heat": {
+            "status": "READY",
+            "proxy": "limit_up_down_structure",
+            "limit_up_count": 60,
+            "limit_down_count": 10,
+            "limit_total": 70,
+            "limit_up_ratio": 0.857143,
+        },
+    }
+    record.context_snapshot = json.dumps(snapshot, ensure_ascii=False)
+    db.get_analysis_history.return_value = [record]
+    service = DailyMarketContextService(
+        db_manager=db,
+        today_fn=lambda: date(2026, 6, 6),
+    )
+
+    with patch("src.services.daily_market_context.run_market_review") as run_review:
+        context = service.get_context(
+            region="cn",
+            config=SimpleNamespace(report_language="zh"),
+            notifier=MagicMock(),
+            analyzer=MagicMock(),
+            search_service=MagicMock(),
+            allow_generate=False,
+        )
+
+    assert context is not None
+    assert context.full_report is not None
+    assert "总参与 2100" in context.full_report
+    assert "85.7%" in context.full_report
+    assert context.full_report.count("市场宽度与涨跌停结构") == 1
+    run_review.assert_not_called()
+
+
 def test_reuses_previous_trading_day_history_after_weekend() -> None:
     db = MagicMock()
     db.get_analysis_history.return_value = [

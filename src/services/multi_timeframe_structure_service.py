@@ -195,7 +195,7 @@ def _human_summary(trend: Optional[Dict[str, Any]], structure: Dict[str, Any]) -
     structure_text = _structure_text(structure)
     if structure_text:
         parts.append(structure_text)
-    return "；".join(parts[:3]) or None
+    return "；".join(parts) or None
 
 
 def _empty_timeframe(key: str, *, status: str, reason: str) -> Dict[str, Any]:

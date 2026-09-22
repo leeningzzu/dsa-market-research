@@ -632,6 +632,7 @@ from types import SimpleNamespace as _AssetBriefPayloadNamespace
 from src.services.factor_decision_summary import (
     _build_asset_research_brief_v1 as _asset_brief_payload_builder,
 )
+from src.services.multi_timeframe_structure_service import _human_summary as _mtf_human_summary
 
 
 def test_asset_research_brief_payload_v1_is_daily_first_and_fail_closed():
@@ -818,3 +819,41 @@ def test_multi_timeframe_context_fills_existing_brief_seam_without_inventing_int
     assert brief["timeframe_thesis"]["monthly"]["summary"] is None
     assert brief["short_term_execution_panel"]["status"] == "MISSING"
     assert "MISSING" not in brief["coverage_text"]
+
+
+def test_higher_timeframe_material_structure_event_reaches_investor_brief_consumer():
+    trend = _AssetBriefPayloadNamespace(
+        current_price=10.5,
+        support_levels=[10.0],
+        resistance_levels=[11.0],
+    )
+    weekly_summary = _mtf_human_summary(
+        {
+            "ma_alignment": "MA_FIXTURE",
+            "volume_status": "VOLUME_FIXTURE",
+            "macd_signal": "MACD_FIXTURE",
+        },
+        {"structure_event": {"state": "FAILED_UP_BREAKOUT"}},
+    )
+    summary = {
+        "sections": {
+            "trend": "趋势：日线均线结构偏强",
+            "volume_price": "量价：量能正常",
+        },
+        "conclusion": "保持观察。",
+        "multi_timeframe_structure_context": {
+            "timeframes": {
+                "weekly": {
+                    "status": "READY",
+                    "reason": "TIMEFRAME_READY",
+                    "role": "PRIMARY_TREND_CONTEXT",
+                    "summary": weekly_summary,
+                }
+            }
+        },
+    }
+
+    brief = _asset_brief_payload_builder(trend, summary)
+    material_text = "向上突破失败并回到结构位下方"
+    assert material_text in brief["timeframe_thesis"]["weekly"]["summary"]
+    assert material_text in brief["fused_paragraph"]

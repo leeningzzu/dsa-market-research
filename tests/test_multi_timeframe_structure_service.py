@@ -8,6 +8,7 @@ import pandas as pd
 
 from src.services.multi_timeframe_structure_service import (
     CROSS_RUN_PERSISTENCE_POLICY,
+    _human_summary,
     build_multi_timeframe_structure_context,
 )
 
@@ -232,3 +233,32 @@ def test_completed_history_identity_is_prefix_safe_and_changes_with_consumed_byt
     assert prefix_context["provider_identity"] == "AkshareFetcher"
     assert prefix_context["adjustment_basis"] == "qfq"
     assert prefix_context["available_at_max"] == "2026-09-17T10:00:00"
+
+
+def test_higher_timeframe_summary_preserves_material_structure_event_after_three_descriptors():
+    summary = _human_summary(
+        {
+            "ma_alignment": "MA_FIXTURE",
+            "volume_status": "VOLUME_FIXTURE",
+            "macd_signal": "MACD_FIXTURE",
+        },
+        {"structure_event": {"state": "FAILED_UP_BREAKOUT"}},
+    )
+
+    assert summary == (
+        "MA_FIXTURE；VOLUME_FIXTURE；MACD_FIXTURE；"
+        "向上突破失败并回到结构位下方"
+    )
+
+
+def test_higher_timeframe_summary_without_structure_event_keeps_existing_projection():
+    summary = _human_summary(
+        {
+            "ma_alignment": "MA_FIXTURE",
+            "volume_status": "VOLUME_FIXTURE",
+            "macd_signal": "MACD_FIXTURE",
+        },
+        {},
+    )
+
+    assert summary == "MA_FIXTURE；VOLUME_FIXTURE；MACD_FIXTURE"

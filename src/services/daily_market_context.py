@@ -753,11 +753,32 @@ def _extract_full_market_report(
         scoped_payload.get("markdown_report"),
         fallback_full_report,
     ]
+    raw_report: Optional[str] = None
     for candidate in candidates:
         if isinstance(candidate, str):
             value = candidate.strip()
             if value:
-                return value
+                raw_report = value
+                break
+
+    if raw_report:
+        has_structured_projection = any(
+            isinstance(scoped_payload.get(key), Mapping)
+            for key in ("market_brief", "sectors")
+        )
+        if has_structured_projection:
+            try:
+                from src.core.market_review import _render_market_review_merge_markdown
+
+                rendered = _render_market_review_merge_markdown(
+                    dict(scoped_payload),
+                    review_report=raw_report,
+                ).strip()
+                if rendered:
+                    return rendered
+            except Exception as exc:
+                logger.warning("复用大盘上下文确定性投影失败，保留原始复盘正文: %s", exc)
+        return raw_report
 
     sections = scoped_payload.get("sections")
     if isinstance(sections, Iterable) and not isinstance(sections, (str, bytes, Mapping)):

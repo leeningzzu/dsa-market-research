@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] 修复 R004 同源投影的两类材料信息丢失：月/周多周期摘要不再因前三项 MA/量价/MACD 占满而截掉已确认的突破/失败突破结构事件；复用 DailyMarketContext 时直接复用既有 market-review merge renderer，将 structured 市场宽度/涨跌停结构等确定性事实补入原始复盘正文并保持重复渲染幂等。未新增数据源、报告器、通知器、模型或外部依赖。
+
 - [改进] R004 MARKET_REGIME_BRIEF 复用现有 `MarketOverview` / `market_review_payload` / 唯一 market-review renderer，新增确定性的市场宽度分母/上涨占比与“涨跌停结构”投机热度代理，并由保存报告与通知共用同一 payload 投影；不新增 provider、第二报告或情绪模型。GF07 大小盘角色继续 fail-closed，因当前 main-index owner 尚无明确 small-cap benchmark；GF09/GF10 继续独立 Data Capability admission。
 
 - [修复] private natural CI #7 暴露 renderer-enabled `report_brief.j2` 未继承 R004 ETF 专属交易质量投影；现补齐与完整报告/Python fallback 相同的 READY-only 语义，并将 dependency-light R004 golden 同时渲染 `report_markdown.j2` 与 `report_brief.j2`，使 compact consumer drift 在本地即可提前失败，不再等完整 CI 才发现。
