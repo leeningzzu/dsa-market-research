@@ -46,6 +46,18 @@
 {% if valuation.get('bucket') or valuation.get('summary') or valuation.get('uncertainty') %}**{{ valuation.get('label') or '估值' }}**: {% if valuation.get('bucket') %}{{ valuation.get('bucket') }}{% endif %}{% if valuation.get('summary') %}{% if valuation.get('bucket') %}｜{% endif %}{{ valuation.get('summary') }}{% endif %}{% if valuation.get('uncertainty') %}（不确定性：{{ valuation.get('uncertainty') }}）{% endif %}
 {% endif %}
 {% set key_levels = investor_brief.get('key_levels') or {} %}
+{% set asset_specific = investor_brief.get('asset_specific') or {} %}
+{% if investor_brief.get('asset_type') == 'etf' %}
+{% set etf_ns = namespace(items=[]) %}
+{% for key, label in [('premium_discount', '折溢价'), ('liquidity_spread', '买卖价差'), ('tracking_quality', '跟踪质量')] %}
+{% set item = asset_specific.get(key) or {} %}
+{% if item.get('status') in ['READY', 'PROVEN_CURRENT', 'PARTIAL_CURRENT'] and item.get('summary') %}
+{% set etf_ns.items = etf_ns.items + [label ~ '：' ~ item.get('summary')] %}
+{% endif %}
+{% endfor %}
+{% if etf_ns.items %}**ETF专属交易质量**: {{ etf_ns.items|join('｜') }}
+{% endif %}
+{% endif %}
 {% if key_levels.get('support') is not none or key_levels.get('resistance') is not none %}**关键位置**: {% if key_levels.get('support') is not none %}{{ key_levels.get('support_label', '结构支撑') }} {{ key_levels.get('support') }}{% endif %}{% if key_levels.get('support') is not none and key_levels.get('resistance') is not none %}｜{% endif %}{% if key_levels.get('resistance') is not none %}{{ key_levels.get('resistance_label', '结构压力') }} {{ key_levels.get('resistance') }}{% endif %}
 {% endif %}
 {% if investor_brief.get('trigger') %}**触发条件**: {{ investor_brief.get('trigger') }}
