@@ -1108,6 +1108,17 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
             "summary": "近十年62%分位",
             "uncertainty": "",
         }
+        brief["asset_specific"] = {
+            "premium_discount": {"status": "READY", "summary": "折价0.15%"},
+            "liquidity_spread": {"status": "READY", "summary": "买卖价差0.03%"},
+            "tracking_quality": {"status": "READY", "summary": "近20日跟踪误差0.18%"},
+            "underlying_valuation": {"status": "READY", "summary": "底层估值近十年62%分位"},
+        }
+        brief["timeframe_thesis"]["60m"] = {
+            "status": "READY",
+            "role": "OPTIONAL_BRIDGE",
+            "summary": "回踩结构未破",
+        }
         brief["short_term_execution_panel"] = {
             "status": "READY",
             "state": "WAIT_FOR_TRIGGER",
@@ -1142,9 +1153,15 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
 
             for rendered in (full, compact):
                 self.assertIn("**底层估值**: 近十年62%分位", rendered)
+                self.assertIn(
+                    "**ETF专属交易质量**: 折溢价：折价0.15%｜买卖价差0.03%｜跟踪质量：近20日跟踪误差0.18%",
+                    rendered,
+                )
                 self.assertIn("30分钟：顶背离已经确认", rendered)
                 self.assertIn("15分钟：死叉后进入整理", rendered)
                 self.assertIn("5分钟：量能继续收缩", rendered)
+            self.assertIn("60分钟：回踩结构未破", full)
+            self.assertNotIn("- 60m：", full)
 
     @mock.patch("src.notification.get_config")
     def test_degraded_explanation_status_is_transparent_and_does_not_duplicate_legacy_sections(

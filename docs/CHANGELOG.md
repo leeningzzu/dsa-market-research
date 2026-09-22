@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] R004 rendered human-output review 收敛同根 consumer parity：ETF `asset_specific` 中已证明的折溢价/买卖价差/跟踪质量现在由 Jinja 完整报告、Python fallback 与 compact notification 共同消费同一 canonical brief，MISSING/UNKNOWN 继续抑制；同时将用户可见的 `60m` 统一为“60分钟”，并避免已自带标签的交易质量摘要重复前缀。
+
 - [修复] `ASSET_RESEARCH_BRIEF` 的 ETF 用户投影新增专属交易质量承接：仅当 canonical `investor_brief.asset_specific` 中折溢价、买卖价差或跟踪质量达到 READY/PROVEN_CURRENT/PARTIAL_CURRENT 且有可用摘要时，才在现有报告/通知模板显示同一事实；MISSING/UNKNOWN 不补写、不推断，底层估值仍由既有“底层估值”主行唯一承担，避免重复。
 
 - [修复] 收敛 `ASSET_RESEARCH_BRIEF` 的真实 compact 消费路径：共享融合段不再重复塞入现价/估值/结论，Jinja 与 Python compact renderer 不再二次展开同一高周期主段；hard veto 未解除时不再生成仅凭价格突破即可升级买入的文案，并对 NaN/Inf 等非有限数值保持 fail-closed。同步加入可撤销的股票 AUTO 行业/板块排除与板块优先配置候选；分类不足股票不进入 Top3 重点，ETF 与 SPECIFIED_CODES/watchlist 不继承股票 AUTO 偏好；资产卡由 research delivery 显示市场/板块身份，UNKNOWN 明示为待确认。当前仍是未提交的本地开发候选，完整 CI、配置样例与真实消费者验收未完成。

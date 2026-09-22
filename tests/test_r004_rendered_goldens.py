@@ -147,7 +147,7 @@ def test_gf01_full_mtf_alignment() -> None:
         "月线：月线平台收敛",
         "周线：周线多头排列",
         "日线：日线缩量回踩",
-        "60m：60分钟回踩结构未破",
+        "60分钟：60分钟回踩结构未破",
         "30分钟：30分钟平台收敛",
         "15分钟：15分钟等待量价确认",
         "5分钟：5分钟仅作时点",
@@ -264,6 +264,8 @@ def test_gf12_etf_specific_fields() -> None:
     assert "折价0.15%" in out
     assert "买卖价差0.03%" in out
     assert "跟踪误差0.18%" in out
+    assert "买卖价差：买卖价差0.03%" not in out
+    assert "买卖价差0.03%" in out
     missing = deepcopy(brief)
     for item in missing["asset_specific"].values():
         item["status"] = "MISSING"
@@ -310,9 +312,16 @@ def test_gf16_market_brief_no_new_asset_upgrade() -> None:
 
 
 def test_gf17_explicit_timeframe_naming() -> None:
-    out = _render_asset(_brief())
-    for marker in ("月线：", "周线：", "日线："):
+    brief = _brief()
+    brief["timeframe_thesis"]["60m"] = {
+        "status": "READY",
+        "role": "OPTIONAL_BRIDGE",
+        "summary": "回踩结构未破",
+    }
+    out = _render_asset(brief)
+    for marker in ("月线：", "周线：", "日线：", "60分钟："):
         assert marker in out
+    assert "- 60m：" not in out
     assert "周期覆盖" in out
 
 

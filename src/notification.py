@@ -146,6 +146,31 @@ def _get_valid_investor_brief(factor: Any, report_language: str) -> Optional[Dic
         return None
     return brief
 
+def _format_etf_asset_specific_items(brief: Dict[str, Any]) -> List[str]:
+    """Render only proven ETF-specific trading-quality facts without adding authority."""
+    if str(brief.get("asset_type") or "").strip().lower() != "etf":
+        return []
+    asset_specific = brief.get("asset_specific") or {}
+    if not isinstance(asset_specific, dict):
+        return []
+
+    rendered: List[str] = []
+    for key, label in (
+        ("premium_discount", "折溢价"),
+        ("liquidity_spread", "买卖价差"),
+        ("tracking_quality", "跟踪质量"),
+    ):
+        item = asset_specific.get(key) or {}
+        if not isinstance(item, dict):
+            continue
+        status = str(item.get("status") or "").strip()
+        summary = str(item.get("summary") or "").strip()
+        if status not in {"READY", "PROVEN_CURRENT", "PARTIAL_CURRENT"} or not summary:
+            continue
+        rendered.append(summary if summary.startswith(label) else f"{label}：{summary}")
+    return rendered
+
+
 
 def _append_investor_brief_block(lines: List[str], factor: Any, report_language: str) -> bool:
     """Render the DAILY-FIRST investor brief without deriving new evidence or actions."""
@@ -199,6 +224,10 @@ def _append_investor_brief_block(lines: List[str], factor: Any, report_language:
                 valuation_text += f"（不确定性：{uncertainty}）"
             valuation_label = str(valuation.get("label") or "估值").strip() or "估值"
             lines.append(f"**{valuation_label}**: {valuation_text}")
+
+    etf_specific_items = _format_etf_asset_specific_items(brief)
+    if etf_specific_items:
+        lines.append(f"**ETF专属交易质量**: {'｜'.join(etf_specific_items)}")
 
     key_levels = brief.get("key_levels") or {}
     if isinstance(key_levels, dict):
@@ -274,7 +303,7 @@ def _append_investor_brief_block(lines: List[str], factor: Any, report_language:
             ("月线", "monthly"),
             ("周线", "weekly"),
             ("日线", "daily"),
-            ("60m", "60m"),
+            ("60分钟", "60m"),
         ):
             item = timeframe_thesis.get(key) or {}
             if not isinstance(item, dict):
@@ -343,6 +372,10 @@ def _append_investor_notification_block(
                 valuation_text += f"（不确定性：{uncertainty}）"
             valuation_label = str(valuation.get("label") or "估值").strip() or "估值"
             lines.append(f"**{valuation_label}**: {valuation_text}")
+
+    etf_specific_items = _format_etf_asset_specific_items(brief)
+    if etf_specific_items:
+        lines.append(f"**ETF专属交易质量**: {'｜'.join(etf_specific_items)}")
 
     coverage_text = str(brief.get("coverage_text") or "").strip()
     if coverage_text:

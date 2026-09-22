@@ -52,7 +52,11 @@
 {% for key, label in [('premium_discount', '折溢价'), ('liquidity_spread', '买卖价差'), ('tracking_quality', '跟踪质量')] %}
 {% set item = asset_specific.get(key) or {} %}
 {% if item.get('status') in ['READY', 'PROVEN_CURRENT', 'PARTIAL_CURRENT'] and item.get('summary') %}
+{% if item.get('summary').startswith(label) %}
+{% set etf_ns.items = etf_ns.items + [item.get('summary')] %}
+{% else %}
 {% set etf_ns.items = etf_ns.items + [label ~ '：' ~ item.get('summary')] %}
+{% endif %}
 {% endif %}
 {% endfor %}
 {% if etf_ns.items %}**ETF专属交易质量**: {{ etf_ns.items|join('｜') }}
@@ -93,7 +97,7 @@
 {% endif %}
 {% if daily_thesis.get('status') in ['READY', 'PROVEN_CURRENT', 'PARTIAL_CURRENT'] and daily_thesis.get('summary') %}- 日线：{{ daily_thesis.get('summary') }}
 {% endif %}
-{% if bridge_thesis.get('status') in ['READY', 'PROVEN_CURRENT', 'PARTIAL_CURRENT'] and bridge_thesis.get('summary') %}- 60m：{{ bridge_thesis.get('summary') }}
+{% if bridge_thesis.get('status') in ['READY', 'PROVEN_CURRENT', 'PARTIAL_CURRENT'] and bridge_thesis.get('summary') %}- 60分钟：{{ bridge_thesis.get('summary') }}
 {% endif %}
 {% endif %}
 {% set short_term = investor_brief.get('short_term_execution_panel') or {} %}
