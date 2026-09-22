@@ -533,7 +533,8 @@ def _render_market_review_merge_markdown(
     markets = payload.get("markets")
     if isinstance(markets, dict) and markets:
         return _render_market_review_payload_markdown(payload)
-    return _append_missing_sector_payload_block(review_report, payload)
+    rendered = _append_missing_market_brief_payload_block(review_report, payload)
+    return _append_missing_sector_payload_block(rendered, payload)
 
 
 def _render_market_review_payload_body(payload: Dict[str, Any]) -> str:
@@ -552,6 +553,12 @@ def _render_market_review_payload_body(payload: Dict[str, Any]) -> str:
                 segment_title_prefix = title_prefix
                 if wrapper_title and _extract_market_markdown_segment(original_markdown, wrapper_title):
                     segment_title_prefix = wrapper_title
+                rendered = _append_missing_market_brief_payload_block_to_market_segment(
+                    rendered,
+                    market_payload,
+                    title_prefix=title_prefix,
+                    segment_title_prefix=segment_title_prefix,
+                )
                 rendered = _append_missing_sector_payload_block_to_market_segment(
                     rendered,
                     market_payload,
@@ -573,6 +580,7 @@ def _render_single_market_review_payload(payload: Dict[str, Any]) -> str:
     if not isinstance(sections, list) or not sections:
         markdown = payload.get("markdown_report")
         rendered = markdown if isinstance(markdown, str) else ""
+        rendered = _append_missing_market_brief_payload_block(rendered, payload)
         return _append_missing_sector_payload_block(rendered, payload)
 
     title = payload.get("title")
@@ -595,7 +603,80 @@ def _render_single_market_review_payload(payload: Dict[str, Any]) -> str:
         if should_render_section_title:
             lines.extend([f"### {section_title}", ""])
         lines.extend([markdown, ""])
-    return _append_missing_sector_payload_block("\n".join(lines).strip(), payload)
+    rendered = _append_missing_market_brief_payload_block(
+        "\n".join(lines).strip(),
+        payload,
+    )
+    return _append_missing_sector_payload_block(rendered, payload)
+
+
+def _append_missing_market_brief_payload_block(
+    markdown: str,
+    payload: Dict[str, Any],
+    *,
+    title_prefix: str = "",
+    existing_markdown: Optional[Any] = None,
+    segment_title_prefix: str = "",
+) -> str:
+    market_brief_block = _render_market_brief_payload_markdown_block(
+        payload,
+        title_prefix=title_prefix,
+    )
+    if not market_brief_block:
+        return markdown.strip()
+    markdown_to_check = markdown if existing_markdown is None else existing_markdown
+    check_title_prefix = segment_title_prefix or title_prefix
+    if _markdown_has_market_brief_block(
+        markdown_to_check,
+        title_prefix=check_title_prefix,
+    ):
+        return markdown.strip()
+
+    base = markdown.strip()
+    if not base:
+        return market_brief_block
+    return f"{base}\n\n{market_brief_block}".strip()
+
+
+def _append_missing_market_brief_payload_block_to_market_segment(
+    markdown: str,
+    payload: Dict[str, Any],
+    *,
+    title_prefix: str = "",
+    segment_title_prefix: str = "",
+) -> str:
+    base = markdown.strip()
+    check_title_prefix = segment_title_prefix or title_prefix
+    market_brief_block = _render_market_brief_payload_markdown_block(
+        payload,
+        title_prefix=title_prefix,
+    )
+    if not market_brief_block:
+        return base
+    if _markdown_has_market_brief_block(base, title_prefix=check_title_prefix):
+        return base
+
+    segment_span = _find_market_markdown_segment_span(base, check_title_prefix)
+    if segment_span is None:
+        return _append_missing_market_brief_payload_block(
+            base,
+            payload,
+            title_prefix=title_prefix,
+            existing_markdown=base,
+            segment_title_prefix=check_title_prefix,
+        )
+
+    start, end = segment_span
+    segment = base[start:end].strip()
+    rendered_segment = (
+        f"{segment}\n\n{market_brief_block}".strip()
+        if segment
+        else market_brief_block
+    )
+    suffix = base[end:]
+    if suffix and not suffix.startswith(("\n", "\r")):
+        rendered_segment = f"{rendered_segment}\n\n"
+    return f"{base[:start]}{rendered_segment}{suffix}".strip()
 
 
 def _append_missing_sector_payload_block(
@@ -652,6 +733,81 @@ def _append_missing_sector_payload_block_to_market_segment(
     if suffix and not suffix.startswith(("\n", "\r")):
         rendered_segment = f"{rendered_segment}\n\n"
     return f"{base[:start]}{rendered_segment}{suffix}".strip()
+
+
+def _render_market_brief_payload_markdown_block(
+    payload: Dict[str, Any],
+    *,
+    title_prefix: str = "",
+) -> str:
+    brief = payload.get("market_brief")
+    if not isinstance(brief, dict):
+        return ""
+
+    language = normalize_report_language(payload.get("language"))
+    title = "Market Breadth & Limit Structure" if language == "en" else "市场宽度与涨跌停结构"
+    heading = f"{title_prefix} / {title}" if title_prefix else title
+    lines = [f"### {heading}", ""]
+
+    breadth = brief.get("breadth")
+    if isinstance(breadth, dict) and breadth.get("status") == "READY":
+        denominator = breadth.get("breadth_denominator")
+        ratio = breadth.get("breadth_ratio")
+        if isinstance(denominator, int) and denominator > 0 and isinstance(ratio, (int, float)):
+            ratio_pct = float(ratio) * 100
+            if language == "en":
+                lines.append(
+                    f"- **Breadth**: advancers {breadth.get('up_count', 0)} / "
+                    f"participants {denominator} = {ratio_pct:.1f}%; "
+                    f"decliners {breadth.get('down_count', 0)}, flat {breadth.get('flat_count', 0)}."
+                )
+            else:
+                lines.append(
+                    f"- **市场宽度**：上涨 {breadth.get('up_count', 0)} / "
+                    f"总参与 {denominator} = {ratio_pct:.1f}%；"
+                    f"下跌 {breadth.get('down_count', 0)}，平盘 {breadth.get('flat_count', 0)}。"
+                )
+
+    speculative_heat = brief.get("speculative_heat")
+    if isinstance(speculative_heat, dict) and speculative_heat.get("status") == "READY":
+        limit_total = speculative_heat.get("limit_total")
+        limit_up_ratio = speculative_heat.get("limit_up_ratio")
+        if isinstance(limit_total, int) and limit_total > 0 and isinstance(limit_up_ratio, (int, float)):
+            ratio_pct = float(limit_up_ratio) * 100
+            if language == "en":
+                lines.append(
+                    f"- **Speculative-heat proxy (limit structure)**: limit-up "
+                    f"{speculative_heat.get('limit_up_count', 0)} / total {limit_total} "
+                    f"= {ratio_pct:.1f}%; limit-down {speculative_heat.get('limit_down_count', 0)}."
+                )
+            else:
+                lines.append(
+                    f"- **投机热度代理（涨跌停结构）**：涨停 "
+                    f"{speculative_heat.get('limit_up_count', 0)} / 涨跌停总数 {limit_total} "
+                    f"= {ratio_pct:.1f}%；跌停 {speculative_heat.get('limit_down_count', 0)}。"
+                )
+
+    if len(lines) == 2:
+        return ""
+    return "\n".join(lines).strip()
+
+
+def _markdown_has_market_brief_block(markdown: Any, *, title_prefix: str = "") -> bool:
+    text = str(markdown or "")
+    language_markers = (
+        "市场宽度与涨跌停结构",
+        "Market Breadth & Limit Structure",
+    )
+    if title_prefix:
+        title = title_prefix.strip()
+        prefixed_markers = tuple(f"### {title} / {marker}" for marker in language_markers)
+        if any(marker in text for marker in prefixed_markers):
+            return True
+        segment = _extract_market_markdown_segment(text, title)
+        if segment is None:
+            return False
+        text = segment
+    return any(marker in text for marker in language_markers)
 
 
 def _render_sector_payload_markdown_block(

@@ -3484,6 +3484,11 @@ Index text.
 
         assert "breadth" not in payload
         assert payload["indices"][0]["name"] == "上证指数"
+        assert payload["market_brief"]["breadth"]["status"] == "MISSING"
+        assert payload["market_brief"]["breadth_state"] == "UNKNOWN"
+        assert payload["market_brief"]["breadth_denominator"] is None
+        assert payload["market_brief"]["breadth_ratio"] is None
+        assert payload["market_brief"]["speculative_heat"]["status"] == "MISSING"
 
     def test_market_review_payload_includes_breadth_only_when_stats_available(self):
         from src.market_analyzer import MarketIndex, MarketOverview
@@ -3512,6 +3517,20 @@ Index text.
         assert payload["breadth"]["down_count"] == 900
         assert payload["breadth"]["limit_up_count"] == 12
         assert payload["breadth"]["total_amount"] == 12345.0
+        market_brief = payload["market_brief"]
+        assert market_brief["breadth_state"] == "ADVANCERS_LEAD"
+        assert market_brief["breadth_denominator"] == 2160
+        assert market_brief["breadth_ratio"] == 0.555556
+        assert market_brief["breadth"]["status"] == "READY"
+        assert market_brief["speculative_heat"] == {
+            "status": "READY",
+            "proxy": "limit_up_down_structure",
+            "limit_up_count": 12,
+            "limit_down_count": 4,
+            "limit_total": 16,
+            "limit_up_ratio": 0.75,
+            "state": "LIMIT_UP_LEAD",
+        }
 
     def test_market_review_includes_concept_rankings_in_prompt_payload_and_tables(self):
         from src.market_analyzer import MarketIndex, MarketOverview

@@ -752,6 +752,80 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         error = method()
         return error if isinstance(error, GenerationError) else None
 
+    def _build_market_regime_brief(self, overview: MarketOverview) -> Dict[str, Any]:
+        """Build deterministic market-width and limit-structure facts from the existing overview."""
+        if not self.profile.has_market_stats:
+            return {}
+
+        up_count = max(0, int(overview.up_count or 0))
+        down_count = max(0, int(overview.down_count or 0))
+        flat_count = max(0, int(overview.flat_count or 0))
+        breadth_denominator = up_count + down_count + flat_count
+        breadth_ratio = (
+            round(up_count / breadth_denominator, 6)
+            if breadth_denominator > 0
+            else None
+        )
+        if breadth_denominator <= 0:
+            breadth_state = "UNKNOWN"
+            breadth_status = "MISSING"
+        elif up_count > down_count:
+            breadth_state = "ADVANCERS_LEAD"
+            breadth_status = "READY"
+        elif down_count > up_count:
+            breadth_state = "DECLINERS_LEAD"
+            breadth_status = "READY"
+        else:
+            breadth_state = "BALANCED"
+            breadth_status = "READY"
+
+        limit_up_count = max(0, int(overview.limit_up_count or 0))
+        limit_down_count = max(0, int(overview.limit_down_count or 0))
+        limit_total = limit_up_count + limit_down_count
+        limit_up_ratio = (
+            round(limit_up_count / limit_total, 6)
+            if limit_total > 0
+            else None
+        )
+        if limit_total <= 0:
+            speculative_state = "UNKNOWN"
+            speculative_status = "MISSING"
+        elif limit_up_count > limit_down_count:
+            speculative_state = "LIMIT_UP_LEAD"
+            speculative_status = "READY"
+        elif limit_down_count > limit_up_count:
+            speculative_state = "LIMIT_DOWN_LEAD"
+            speculative_status = "READY"
+        else:
+            speculative_state = "BALANCED"
+            speculative_status = "READY"
+
+        return {
+            "schema_version": "market-regime-brief-v1",
+            "breadth_state": breadth_state,
+            "breadth_denominator": breadth_denominator or None,
+            "breadth_ratio": breadth_ratio,
+            "breadth": {
+                "status": breadth_status,
+                "up_count": up_count,
+                "down_count": down_count,
+                "flat_count": flat_count,
+                "breadth_denominator": breadth_denominator or None,
+                "breadth_ratio": breadth_ratio,
+                "state": breadth_state,
+            },
+            "speculative_heat": {
+                "status": speculative_status,
+                "proxy": "limit_up_down_structure",
+                "limit_up_count": limit_up_count,
+                "limit_down_count": limit_down_count,
+                "limit_total": limit_total or None,
+                "limit_up_ratio": limit_up_ratio,
+                "state": speculative_state,
+            },
+        }
+
+
     def build_market_review_payload(
         self,
         overview: MarketOverview,
@@ -817,6 +891,10 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 
         if light is not None:
             payload["market_light"] = light
+
+        market_brief = self._build_market_regime_brief(overview)
+        if market_brief:
+            payload["market_brief"] = market_brief
 
         if has_breadth_data:
             payload["breadth"] = {

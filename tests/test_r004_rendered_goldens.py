@@ -219,13 +219,11 @@ def test_gf07_large_cap_strong_small_cap_weak() -> None:
     assert "large_cap_role" in source and "small_cap_role" in source
 
 
-@pytest.mark.xfail(
-    reason="R004 gap: broad breadth versus speculative-heat rendering is not yet a dedicated deterministic market-brief projection.",
-    strict=True,
-)
 def test_gf08_speculative_heat_breadth_weak() -> None:
-    source = _source("src/market_analyzer.py")
-    assert "speculative_heat" in source and "breadth_state" in source
+    analyzer = _source("src/market_analyzer.py")
+    renderer = _source("src/core/market_review.py")
+    assert '"speculative_heat"' in analyzer and '"breadth_state"' in analyzer
+    assert "投机热度代理（涨跌停结构）" in renderer
 
 
 @pytest.mark.xfail(
@@ -334,13 +332,12 @@ def test_gf17_explicit_timeframe_naming() -> None:
     assert "周期覆盖" in out
 
 
-@pytest.mark.xfail(
-    reason="R004 gap: market breadth has structured counts, but the accepted MARKET_REGIME_BRIEF concrete denominator/ratio rendering is not yet bound.",
-    strict=True,
-)
 def test_gf18_breadth_concrete_facts() -> None:
-    source = _source("src/market_analyzer.py")
-    assert "breadth_denominator" in source and "breadth_ratio" in source
+    analyzer = _source("src/market_analyzer.py")
+    renderer = _source("src/core/market_review.py")
+    assert '"breadth_denominator"' in analyzer and '"breadth_ratio"' in analyzer
+    assert "上涨 {breadth.get('up_count', 0)} / " in renderer
+    assert "总参与 {denominator}" in renderer
 
 
 def test_gf19_material_event_must_render() -> None:

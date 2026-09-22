@@ -583,6 +583,80 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
         self.assertTrue(markdown.startswith("[dsa-market-region]: # (us)\n\n🎯 大盘复盘"))
         self.assertEqual(markdown.count("[dsa-market-region]: # (us)"), 1)
 
+    def test_render_market_review_payload_markdown_appends_deterministic_market_brief(self) -> None:
+        markdown = market_review_module._render_market_review_payload_markdown(
+            {
+                "title": "2026-06-03 大盘复盘",
+                "language": "zh",
+                "sections": [
+                    {
+                        "key": "overview",
+                        "title": "Overview",
+                        "markdown": "> 今日指数强弱分化。",
+                    }
+                ],
+                "market_brief": {
+                    "schema_version": "market-regime-brief-v1",
+                    "breadth": {
+                        "status": "READY",
+                        "up_count": 1200,
+                        "down_count": 900,
+                        "flat_count": 60,
+                        "breadth_denominator": 2160,
+                        "breadth_ratio": 0.555556,
+                    },
+                    "speculative_heat": {
+                        "status": "READY",
+                        "proxy": "limit_up_down_structure",
+                        "limit_up_count": 12,
+                        "limit_down_count": 4,
+                        "limit_total": 16,
+                        "limit_up_ratio": 0.75,
+                    },
+                },
+            },
+            wrapper_title="🎯 大盘复盘",
+        )
+
+        self.assertIn("### 市场宽度与涨跌停结构", markdown)
+        self.assertIn("上涨 1200 / 总参与 2160 = 55.6%", markdown)
+        self.assertIn("涨停 12 / 涨跌停总数 16 = 75.0%", markdown)
+
+
+    def test_render_market_review_merge_markdown_appends_deterministic_market_brief(self) -> None:
+        payload = {
+            "language": "zh",
+            "market_brief": {
+                "schema_version": "market-regime-brief-v1",
+                "breadth": {
+                    "status": "READY",
+                    "up_count": 1200,
+                    "down_count": 900,
+                    "flat_count": 60,
+                    "breadth_denominator": 2160,
+                    "breadth_ratio": 0.555556,
+                },
+                "speculative_heat": {
+                    "status": "READY",
+                    "proxy": "limit_up_down_structure",
+                    "limit_up_count": 12,
+                    "limit_down_count": 4,
+                    "limit_total": 16,
+                    "limit_up_ratio": 0.75,
+                },
+            },
+        }
+        markdown = market_review_module._render_market_review_merge_markdown(
+            payload,
+            review_report="## 原始大盘复盘\n\n正文",
+        )
+
+        self.assertIn("## 原始大盘复盘", markdown)
+        self.assertIn("### 市场宽度与涨跌停结构", markdown)
+        self.assertIn("上涨 1200 / 总参与 2160 = 55.6%", markdown)
+        self.assertIn("涨停 12 / 涨跌停总数 16 = 75.0%", markdown)
+
+
     def test_render_market_review_payload_markdown_appends_structured_sector_fallback(self) -> None:
         markdown = market_review_module._render_market_review_payload_markdown(
             {
@@ -633,6 +707,56 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
         self.assertNotIn("### 板块主线", markdown)
         self.assertNotIn("#### 领涨板块 Top 5", markdown)
         self.assertNotIn("#### 领跌板块 Top 5", markdown)
+
+    def test_render_market_review_payload_markdown_keeps_multimarket_brief_once(self) -> None:
+        market_brief = {
+            "schema_version": "market-regime-brief-v1",
+            "breadth": {
+                "status": "READY",
+                "up_count": 700,
+                "down_count": 1300,
+                "flat_count": 100,
+                "breadth_denominator": 2100,
+                "breadth_ratio": 0.333333,
+            },
+            "speculative_heat": {
+                "status": "READY",
+                "proxy": "limit_up_down_structure",
+                "limit_up_count": 60,
+                "limit_down_count": 10,
+                "limit_total": 70,
+                "limit_up_ratio": 0.857143,
+            },
+        }
+        payload = {
+            "language": "zh",
+            "markdown_report": (
+                "## A股大盘复盘\n\nA股正文。\n\n"
+                "---\n\n"
+                "## 港股大盘复盘\n\n港股正文。"
+            ),
+            "markets": {
+                "cn": {
+                    "title": "2026-06-03 大盘复盘",
+                    "language": "zh",
+                    "market_brief": market_brief,
+                },
+                "hk": {
+                    "title": "港股大盘",
+                    "language": "zh",
+                },
+            },
+        }
+
+        first = market_review_module._render_market_review_payload_markdown(payload)
+        self.assertEqual(first.count("市场宽度与涨跌停结构"), 1)
+        self.assertLess(first.index("市场宽度与涨跌停结构"), first.index("## 港股大盘复盘"))
+
+        replay = dict(payload)
+        replay["markdown_report"] = first
+        second = market_review_module._render_market_review_payload_markdown(replay)
+        self.assertEqual(second.count("市场宽度与涨跌停结构"), 1)
+
 
     def test_render_market_review_payload_markdown_appends_each_market_sector_fallback(self) -> None:
         markdown = market_review_module._render_market_review_payload_markdown(
