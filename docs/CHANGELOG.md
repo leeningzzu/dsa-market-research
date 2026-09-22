@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] private natural CI #7 暴露 renderer-enabled `report_brief.j2` 未继承 R004 ETF 专属交易质量投影；现补齐与完整报告/Python fallback 相同的 READY-only 语义，并将 dependency-light R004 golden 同时渲染 `report_markdown.j2` 与 `report_brief.j2`，使 compact consumer drift 在本地即可提前失败，不再等完整 CI 才发现。
+
 - [修复] R004 rendered human-output review 收敛同根 consumer parity：ETF `asset_specific` 中已证明的折溢价/买卖价差/跟踪质量现在由 Jinja 完整报告、Python fallback 与 compact notification 共同消费同一 canonical brief，MISSING/UNKNOWN 继续抑制；同时将用户可见的 `60m` 统一为“60分钟”，并避免已自带标签的交易质量摘要重复前缀。
 
 - [修复] `ASSET_RESEARCH_BRIEF` 的 ETF 用户投影新增专属交易质量承接：仅当 canonical `investor_brief.asset_specific` 中折溢价、买卖价差或跟踪质量达到 READY/PROVEN_CURRENT/PARTIAL_CURRENT 且有可用摘要时，才在现有报告/通知模板显示同一事实；MISSING/UNKNOWN 不补写、不推断，底层估值仍由既有“底层估值”主行唯一承担，避免重复。

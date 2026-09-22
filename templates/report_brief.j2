@@ -24,6 +24,22 @@
 {% if valuation.get('bucket') or valuation.get('summary') or valuation.get('uncertainty') %}**{{ valuation.get('label') or '估值' }}**: {% if valuation.get('bucket') %}{{ valuation.get('bucket') }}{% endif %}{% if valuation.get('summary') %}{% if valuation.get('bucket') %}｜{% endif %}{{ valuation.get('summary') }}{% endif %}{% if valuation.get('uncertainty') %}（不确定性：{{ valuation.get('uncertainty') }}）{% endif %}
 {% endif %}
 {% if brief.get('coverage_text') %}**多周期**: {{ brief.get('coverage_text') }}
+{% set asset_specific = brief.get('asset_specific') or {} %}
+{% if brief.get('asset_type') == 'etf' %}
+{% set etf_ns = namespace(items=[]) %}
+{% for key, label in [('premium_discount', '折溢价'), ('liquidity_spread', '买卖价差'), ('tracking_quality', '跟踪质量')] %}
+{% set item = asset_specific.get(key) or {} %}
+{% if item.get('status') in ['READY', 'PROVEN_CURRENT', 'PARTIAL_CURRENT'] and item.get('summary') %}
+{% if item.get('summary').startswith(label) %}
+{% set etf_ns.items = etf_ns.items + [item.get('summary')] %}
+{% else %}
+{% set etf_ns.items = etf_ns.items + [label ~ '：' ~ item.get('summary')] %}
+{% endif %}
+{% endif %}
+{% endfor %}
+{% if etf_ns.items %}**ETF专属交易质量**: {{ etf_ns.items|join('｜') }}
+{% endif %}
+{% endif %}
 {% endif %}
 {% set short_term = brief.get('short_term_execution_panel') or {} %}
 {% set short30 = short_term.get('30m') or {} %}

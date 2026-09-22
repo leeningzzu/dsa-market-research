@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 _JINJA_ENV = Environment(loader=FileSystemLoader(str(ROOT / "templates")))
 _REPORT_TEMPLATE = _JINJA_ENV.get_template("report_markdown.j2")
+_BRIEF_TEMPLATE = _JINJA_ENV.get_template("report_brief.j2")
 
 
 class _Labels:
@@ -77,6 +78,7 @@ def _render_asset(
     stock_name: str = "测试股票",
     composite_score: int | None = 78,
     current_probability: str = "暂不提供（尚未完成独立校准）",
+    compact: bool = False,
 ) -> str:
     brief = deepcopy(brief or _brief())
     factor = {
@@ -102,7 +104,8 @@ def _render_asset(
         localized_trend_prediction="震荡",
         localized_operation_advice="观察",
     )
-    return _REPORT_TEMPLATE.render(
+    template = _BRIEF_TEMPLATE if compact else _REPORT_TEMPLATE
+    return template.render(
         report_date="2026-09-22",
         labels=_Labels(),
         results=[result],
@@ -260,18 +263,24 @@ def test_gf12_etf_specific_fields() -> None:
         "tracking_quality": {"status": "READY", "summary": "近20日跟踪误差0.18%"},
         "underlying_valuation": {"status": "READY", "summary": "底层估值近十年62%分位"},
     }
-    out = _render_asset(brief, code="510300", stock_name="沪深300ETF")
-    assert "折价0.15%" in out
-    assert "买卖价差0.03%" in out
-    assert "跟踪误差0.18%" in out
-    assert "买卖价差：买卖价差0.03%" not in out
-    assert "买卖价差0.03%" in out
+    for out in (
+        _render_asset(brief, code="510300", stock_name="沪深300ETF"),
+        _render_asset(brief, code="510300", stock_name="沪深300ETF", compact=True),
+    ):
+        assert "折价0.15%" in out
+        assert "买卖价差0.03%" in out
+        assert "跟踪误差0.18%" in out
+        assert "买卖价差：买卖价差0.03%" not in out
+        assert "买卖价差0.03%" in out
     missing = deepcopy(brief)
     for item in missing["asset_specific"].values():
         item["status"] = "MISSING"
-    missing_out = _render_asset(missing, code="510300", stock_name="沪深300ETF")
-    assert "ETF专属交易质量" not in missing_out
-    assert "折价0.15%" not in missing_out
+    for missing_out in (
+        _render_asset(missing, code="510300", stock_name="沪深300ETF"),
+        _render_asset(missing, code="510300", stock_name="沪深300ETF", compact=True),
+    ):
+        assert "ETF专属交易质量" not in missing_out
+        assert "折价0.15%" not in missing_out
 
 
 def test_gf13_watchlist_quota_independent() -> None:
