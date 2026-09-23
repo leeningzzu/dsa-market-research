@@ -12,11 +12,17 @@ import pytest
 from src.config import Config
 from src.repositories.pit_dataset_repo import PITDatasetRepository
 from src.services.pit_dataset_service import PITDatasetService
-from src.services.prediction_ledger_service import PREDICTION_FEATURE_SCHEMA_HASH
+from src.services.prediction_ledger_service import (
+    PREDICTION_FEATURE_SCHEMA_HASH,
+    PREDICTION_LEDGER_SCHEMA_VERSION,
+)
 from src.services.prediction_outcome_service import (
     PREDICTION_OUTCOME_ENGINE_VERSION,
     PRIMARY_HORIZON_IDENTITY,
     PRIMARY_LABEL_IDENTITY,
+)
+from src.services.research_state_projection import (
+    CANONICAL_OPPORTUNITY_PROJECTION_VERSION,
 )
 from src.storage import DatabaseManager, PredictionLedgerRecord, PredictionOutcomeRecord
 
@@ -61,7 +67,7 @@ def _seed_prediction(
         session.add(
             PredictionLedgerRecord(
                 prediction_hash=prediction_hash,
-                schema_version="prediction-ledger-v2",
+                schema_version=PREDICTION_LEDGER_SCHEMA_VERSION,
                 analysis_history_id=index + 1,
                 market="cn",
                 stock_code=f"60{index:04d}"[-6:],
@@ -78,6 +84,9 @@ def _seed_prediction(
                 feature_schema_hash=PREDICTION_FEATURE_SCHEMA_HASH,
                 evidence_hash=f"{index + 10_000:064x}",
                 evidence_json=evidence_json,
+                opportunity_projection_version=CANONICAL_OPPORTUNITY_PROJECTION_VERSION,
+                canonical_evidence_state="PROVEN",
+                canonical_hard_veto=False,
                 code_sha=CODE_SHA,
                 provider_identity="AkshareFetcher",
                 adjustment_basis="qfq",
@@ -162,6 +171,25 @@ def _seed_twenty_sessions(db: DatabaseManager, *, auto_screen: bool = False) -> 
             suffix=index + 1,
         )
     return hashes
+
+
+def test_white_box_opportunity_survives_without_raw_evidence_json(isolated_db) -> None:
+    prediction_hash = _seed_prediction(
+        isolated_db,
+        index=700,
+        session_date=date(2026, 1, 1),
+    )
+    with isolated_db.session_scope() as session:
+        row = session.query(PredictionLedgerRecord).filter_by(
+            prediction_hash=prediction_hash
+        ).one()
+        row.evidence_json = None
+
+    with isolated_db.get_session() as session:
+        restored = session.query(PredictionLedgerRecord).filter_by(
+            prediction_hash=prediction_hash
+        ).one()
+        assert PITDatasetService._is_white_box_opportunity(restored) is True
 
 
 def test_manifest_is_chronological_grouped_sealed_and_idempotent(isolated_db) -> None:

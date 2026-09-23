@@ -16,10 +16,13 @@ from src.services.pit_identity import (
     canonical_json,
     normalize_research_selection_context,
 )
+from src.services.research_state_projection import (
+    build_canonical_opportunity_projection,
+)
 from src.storage import DatabaseManager
 
 
-PREDICTION_LEDGER_SCHEMA_VERSION = "prediction-ledger-v2"
+PREDICTION_LEDGER_SCHEMA_VERSION = "prediction-ledger-v3"
 PREDICTION_FEATURE_SCHEMA_VERSION = "stock-factor-evidence-v1"
 
 _FACTOR_EVIDENCE_KEYS = (
@@ -94,7 +97,8 @@ class PredictionLedgerService:
         signal = self._signal_item(decision_signal)
         metadata = self._mapping(signal.get("metadata"))
         canonical_decision = self._mapping(factor_decision.get("canonical_decision"))
-        canonical_action = self._text(canonical_decision.get("action"))
+        opportunity_projection = build_canonical_opportunity_projection(canonical_decision)
+        canonical_action = self._text(opportunity_projection.get("canonical_action"))
         signal_id = self._optional_positive_int(signal.get("id"))
         signal_horizon = self._text(signal.get("horizon"))
         signal_market = self._text(signal.get("market"))
@@ -199,6 +203,13 @@ class PredictionLedgerService:
             "strategy_id": strategy_id,
             "strategy_version": strategy_version,
             "canonical_action": action,
+            "opportunity_projection_version": opportunity_projection[
+                "opportunity_projection_version"
+            ],
+            "canonical_evidence_state": opportunity_projection[
+                "canonical_evidence_state"
+            ],
+            "canonical_hard_veto": opportunity_projection["canonical_hard_veto"],
             "horizon": signal_horizon,
             "decision_profile": self._text(signal.get("decision_profile")),
             "trigger_source": self._text(signal.get("trigger_source")),
@@ -241,6 +252,13 @@ class PredictionLedgerService:
             "feature_schema_hash": PREDICTION_FEATURE_SCHEMA_HASH,
             "evidence_hash": evidence_hash,
             "evidence_json": evidence_json,
+            "opportunity_projection_version": opportunity_projection[
+                "opportunity_projection_version"
+            ],
+            "canonical_evidence_state": opportunity_projection[
+                "canonical_evidence_state"
+            ],
+            "canonical_hard_veto": opportunity_projection["canonical_hard_veto"],
             "code_sha": bound_code_sha,
             "provider_identity": provider_identity,
             "adjustment_basis": adjustment_basis,

@@ -16,6 +16,10 @@ from src.services.prediction_outcome_service import (
     PREDICTION_OUTCOME_ENGINE_VERSION,
     PredictionOutcomeService,
 )
+from src.services.prediction_ledger_service import PREDICTION_LEDGER_SCHEMA_VERSION
+from src.services.research_state_projection import (
+    CANONICAL_OPPORTUNITY_PROJECTION_VERSION,
+)
 from src.storage import (
     AnalysisHistory,
     DatabaseManager,
@@ -119,6 +123,8 @@ def _fixed_execution_calendar(monkeypatch):
 def _seed_prediction(
     db: DatabaseManager,
     prediction_hash: str = "a" * 64,
+    *,
+    include_raw_evidence: bool = True,
 ) -> tuple[int, str]:
     with db.session_scope() as session:
         history = AnalysisHistory(
@@ -129,19 +135,23 @@ def _seed_prediction(
         )
         session.add(history)
         session.flush()
-        evidence_json = json.dumps(
-            {
-                "canonical_decision": {
-                    "action": "WAIT",
-                    "evidence_state": "PROVEN",
-                    "hard_veto": False,
-                }
-            },
-            sort_keys=True,
+        evidence_json = (
+            json.dumps(
+                {
+                    "canonical_decision": {
+                        "action": "WAIT",
+                        "evidence_state": "PROVEN",
+                        "hard_veto": False,
+                    }
+                },
+                sort_keys=True,
+            )
+            if include_raw_evidence
+            else None
         )
         ledger = PredictionLedgerRecord(
             prediction_hash=prediction_hash,
-            schema_version="prediction-ledger-v2",
+            schema_version=PREDICTION_LEDGER_SCHEMA_VERSION,
             analysis_history_id=history.id,
             market="cn",
             stock_code="600519",
@@ -157,6 +167,9 @@ def _seed_prediction(
             feature_schema_hash="b" * 64,
             evidence_hash="c" * 64,
             evidence_json=evidence_json,
+            opportunity_projection_version=CANONICAL_OPPORTUNITY_PROJECTION_VERSION,
+            canonical_evidence_state="PROVEN",
+            canonical_hard_veto=False,
             asset_identity_hash="d" * 64,
             asset_identity_json=json.dumps(
                 {
@@ -201,6 +214,22 @@ def _seed_bars(
                     data_source="AkshareFetcher",
                 )
             )
+
+
+def test_durable_projection_is_eligible_without_raw_evidence_json(isolated_db) -> None:
+    _, prediction_hash = _seed_prediction(
+        isolated_db,
+        include_raw_evidence=False,
+    )
+    _seed_bars(isolated_db)
+
+    result = PredictionOutcomeService(db_manager=isolated_db).evaluate_prediction(
+        prediction_hash=prediction_hash,
+        cost_identity=_cost_identity(),
+    )
+
+    assert result["status"] == "TAKE_SUCCESS"
+    assert result["label_value"] == 1
 
 
 def test_wait_proven_opportunity_uses_next_open_and_third_close(isolated_db) -> None:

@@ -17,6 +17,7 @@ from src.services.prediction_ledger_service import (
     PREDICTION_FEATURE_SCHEMA_HASH,
     PREDICTION_FEATURE_SCHEMA_VERSION,
 )
+from src.services.research_state_projection import is_white_box_opportunity_record
 from src.services.prediction_outcome_service import (
     PREDICTION_OUTCOME_ENGINE_VERSION,
     PRIMARY_HORIZON_IDENTITY,
@@ -280,17 +281,7 @@ class PITDatasetService:
 
     @staticmethod
     def _is_white_box_opportunity(row: PredictionLedgerRecord) -> bool:
-        try:
-            evidence = json.loads(row.evidence_json or "{}")
-        except (TypeError, ValueError):
-            return False
-        decision = evidence.get("canonical_decision") if isinstance(evidence, dict) else None
-        return bool(
-            isinstance(decision, dict)
-            and str(decision.get("action") or "").upper() == "WAIT"
-            and str(decision.get("evidence_state") or "").upper() == "PROVEN"
-            and decision.get("hard_veto") is False
-        )
+        return is_white_box_opportunity_record(row)
 
     @staticmethod
     def _pit_gap_reasons(row: PredictionLedgerRecord) -> List[str]:

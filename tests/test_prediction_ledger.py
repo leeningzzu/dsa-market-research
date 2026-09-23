@@ -21,6 +21,9 @@ from src.services.prediction_ledger_service import (
     PredictionLedgerService,
 )
 from src.services.pit_identity import build_specified_codes_selection_context
+from src.services.research_state_projection import (
+    CANONICAL_OPPORTUNITY_PROJECTION_VERSION,
+)
 from src.storage import AnalysisHistory, DatabaseManager, PredictionLedgerRecord
 
 
@@ -146,6 +149,9 @@ def test_service_freezes_factor_payload_idempotently_and_excludes_human_brief(is
     assert row.feature_schema_hash == PREDICTION_FEATURE_SCHEMA_HASH
     assert row.code_sha == code_sha
     assert row.canonical_action == "WAIT"
+    assert row.opportunity_projection_version == CANONICAL_OPPORTUNITY_PROJECTION_VERSION
+    assert row.canonical_evidence_state == "PROVEN"
+    assert row.canonical_hard_veto is False
     assert row.decision_signal_id == 17
     assert row.data_as_of.isoformat() == "2026-09-17"
 
@@ -230,7 +236,7 @@ def test_bound_first_slice_identities_can_be_semantically_pit_eligible(isolated_
     assert outcome["pit_eligible"] is True
     assert outcome["pit_ineligibility_reasons"] == []
     row = PredictionLedgerRepository(isolated_db).list_for_history(history_id)[0]
-    assert row.schema_version == "prediction-ledger-v2"
+    assert row.schema_version == PREDICTION_LEDGER_SCHEMA_VERSION
     assert row.decision_timezone == "Asia/Shanghai"
     assert row.asset_identity_hash
     assert row.data_snapshot_identity == "a" * 64

@@ -1197,7 +1197,10 @@ class PredictionLedgerRecord(Base):
     feature_schema_version = Column(String(64), nullable=False, index=True)
     feature_schema_hash = Column(String(64), nullable=False, index=True)
     evidence_hash = Column(String(64), nullable=False, index=True)
-    evidence_json = Column(Text, nullable=False)
+    evidence_json = Column(Text)
+    opportunity_projection_version = Column(String(64), index=True)
+    canonical_evidence_state = Column(String(16), index=True)
+    canonical_hard_veto = Column(Boolean, index=True)
 
     code_sha = Column(String(40), index=True)
     provider_identity = Column(String(128))
@@ -1591,7 +1594,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         self._backfill_decision_signal_profile_from_metadata()
 
     def _ensure_prediction_ledger_pit_schema(self) -> None:
-        """Add nullable PIT identity columns without guessing values for legacy rows."""
+        """Add nullable PIT and durable opportunity fields without guessing legacy values."""
         if not self._is_sqlite_engine:
             return
         inspector = inspect(self._engine)
@@ -1609,6 +1612,9 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             "selection_source": "VARCHAR(32)",
             "selection_context_hash": "VARCHAR(64)",
             "selection_context_json": "TEXT",
+            "opportunity_projection_version": "VARCHAR(64)",
+            "canonical_evidence_state": "VARCHAR(16)",
+            "canonical_hard_veto": "BOOLEAN",
         }
         for column, sql_type in expected.items():
             if column in existing:

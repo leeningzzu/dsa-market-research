@@ -24,6 +24,11 @@ import re
 import sqlite3
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Protocol, Sequence, Tuple
 
+from src.services.research_state_projection import (
+    CANONICAL_OPPORTUNITY_PROJECTION_VERSION,
+    build_canonical_opportunity_projection,
+)
+
 
 PACKAGE_SCHEMA_VERSION = "research-state-package-v1"
 MANIFEST_SCHEMA_VERSION = "research-state-manifest-v1"
@@ -53,6 +58,15 @@ RIGHTS_CLASSIFICATION_VALUES = {
 SAFE_LOW_SENSITIVITY = "SAFE_LOW_SENSITIVITY"
 RIGHTS_CONDITIONAL = "RIGHTS_CONDITIONAL"
 FORBIDDEN = "FORBIDDEN"
+
+LEGACY_FULL_PROJECTION_MODE = "LEGACY_FULL_V1"
+FULL_PROJECTION_MODE = "FULL_WITH_ADMITTED_CONDITIONAL_VALUES"
+SAFE_PROJECTION_MODE = "SAFE_LOW_SENSITIVITY_ONLY"
+_PROJECTION_MODES = {
+    LEGACY_FULL_PROJECTION_MODE,
+    FULL_PROJECTION_MODE,
+    SAFE_PROJECTION_MODE,
+}
 
 _TABLE_ORDER = (
     "prediction_ledger",
@@ -116,6 +130,9 @@ COLUMN_CLASSIFICATION: Dict[str, Dict[str, str]] = {
         "feature_schema_hash": SAFE_LOW_SENSITIVITY,
         "evidence_hash": SAFE_LOW_SENSITIVITY,
         "evidence_json": RIGHTS_CONDITIONAL,
+        "opportunity_projection_version": SAFE_LOW_SENSITIVITY,
+        "canonical_evidence_state": SAFE_LOW_SENSITIVITY,
+        "canonical_hard_veto": SAFE_LOW_SENSITIVITY,
         "code_sha": SAFE_LOW_SENSITIVITY,
         "provider_identity": SAFE_LOW_SENSITIVITY,
         "adjustment_basis": SAFE_LOW_SENSITIVITY,
@@ -346,6 +363,29 @@ def exported_columns(table: str) -> Tuple[str, ...]:
     )
 
 
+def package_columns(table: str, *, projection_mode: str) -> Tuple[str, ...]:
+    if projection_mode not in _PROJECTION_MODES:
+        raise ManifestChainError(f"unsupported package projection mode: {projection_mode}")
+    allowed = (
+        {SAFE_LOW_SENSITIVITY}
+        if projection_mode == SAFE_PROJECTION_MODE
+        else {SAFE_LOW_SENSITIVITY, RIGHTS_CONDITIONAL}
+    )
+    columns = tuple(
+        column
+        for column, disposition in COLUMN_CLASSIFICATION[table].items()
+        if disposition in allowed
+    )
+    if projection_mode == LEGACY_FULL_PROJECTION_MODE and table == "prediction_ledger":
+        new_projection_columns = {
+            "opportunity_projection_version",
+            "canonical_evidence_state",
+            "canonical_hard_veto",
+        }
+        return tuple(column for column in columns if column not in new_projection_columns)
+    return columns
+
+
 def forbidden_columns(table: str) -> Tuple[str, ...]:
     return tuple(
         column
@@ -390,32 +430,38 @@ def build_checkpoint_package(
 ) -> PackageArtifact:
     validate_current_schema(db_path)
     tables: Dict[str, Any] = {}
+    projection_mode = (
+        FULL_PROJECTION_MODE if rights_admitted else SAFE_PROJECTION_MODE
+    )
 
     with closing(_connect_ro(db_path)) as conn:
         for table in _TABLE_ORDER:
-            columns = exported_columns(table)
+            columns = package_columns(table, projection_mode=projection_mode)
+            query_columns = list(columns)
+            if (
+                table == "prediction_ledger"
+                and projection_mode == SAFE_PROJECTION_MODE
+                and "evidence_json" not in query_columns
+            ):
+                query_columns.append("evidence_json")
             identity = _IDENTITY_COLUMN[table]
             sql = (
                 "SELECT "
-                + ",".join(_quote_ident(column) for column in columns)
+                + ",".join(_quote_ident(column) for column in query_columns)
                 + f" FROM {_quote_ident(table)} ORDER BY {_quote_ident(identity)}"
             )
             rows: List[Dict[str, Any]] = []
             for raw in conn.execute(sql):
+                source = {column: value for column, value in zip(query_columns, raw)}
                 item = {
-                    column: _canonicalize_db_value(table, column, value)
-                    for column, value in zip(columns, raw)
+                    column: _canonicalize_db_value(table, column, source.get(column))
+                    for column in columns
                 }
-                if not rights_admitted:
-                    blocked = [
-                        column
-                        for column in rights_conditional_columns(table)
-                        if item.get(column) is not None
-                    ]
-                    if blocked:
-                        raise RightsAdmissionRequired(
-                            f"rights admission required for {table}: {','.join(blocked)}"
-                        )
+                if table == "prediction_ledger" and projection_mode == SAFE_PROJECTION_MODE:
+                    item = _materialize_safe_ledger_projection(
+                        item,
+                        source.get("evidence_json"),
+                    )
                 rows.append(item)
 
             row_hashes = [sha256_bytes(canonical_json_bytes(row)) for row in rows]
@@ -431,6 +477,7 @@ def build_checkpoint_package(
     document = {
         "schema_version": PACKAGE_SCHEMA_VERSION,
         "package_kind": PACKAGE_KIND,
+        "projection_mode": projection_mode,
         "durability_state_on_restore": DURABILITY_STATE,
         "tables": tables,
     }
@@ -660,16 +707,22 @@ def restore_checkpoint(
 
     validate_current_schema(db_path)
     inserted = {table: 0 for table in _TABLE_ORDER}
+    projection_mode = _projection_mode_from_document(package_doc)
     existing = {table: 0 for table in _TABLE_ORDER}
 
     conn = sqlite3.connect(str(Path(db_path)))
     try:
+        if projection_mode == SAFE_PROJECTION_MODE:
+            _require_safe_projection_target_schema(conn)
         conn.execute("BEGIN IMMEDIATE")
         for table in _TABLE_ORDER:
             table_doc = package_doc["tables"][table]
             identity = _IDENTITY_COLUMN[table]
             columns = tuple(table_doc["columns"])
-            expected_columns = exported_columns(table)
+            expected_columns = package_columns(
+                table,
+                projection_mode=projection_mode,
+            )
             if columns != expected_columns:
                 raise ManifestChainError(f"package column contract mismatch: {table}")
             for row in table_doc["rows"]:
@@ -682,7 +735,15 @@ def restore_checkpoint(
                     columns=columns,
                 )
                 if current is not None:
-                    if _canonical_projection(table, current) != _canonical_projection(table, row):
+                    if _canonical_projection(
+                        table,
+                        current,
+                        columns=columns,
+                    ) != _canonical_projection(
+                        table,
+                        row,
+                        columns=columns,
+                    ):
                         raise ImportConflictError(
                             f"same identity with different durable content: {table}:{key_value}"
                         )
@@ -733,18 +794,21 @@ def _validate_package_document(payload: bytes) -> Mapping[str, Any]:
     if not isinstance(tables, dict) or set(tables) != set(_TABLE_ORDER):
         raise ManifestChainError("package table set mismatch")
 
+    projection_mode = _projection_mode_from_document(document)
     for table in _TABLE_ORDER:
         table_doc = tables[table]
         if not isinstance(table_doc, dict):
             raise ManifestChainError(f"invalid package table document: {table}")
         columns = tuple(table_doc.get("columns") or [])
-        if columns != exported_columns(table):
+        if columns != package_columns(table, projection_mode=projection_mode):
             raise ManifestChainError(f"package column contract mismatch: {table}")
         if table_doc.get("identity_column") != _IDENTITY_COLUMN[table]:
             raise ManifestChainError(f"package identity column mismatch: {table}")
         rows = table_doc.get("rows")
         if not isinstance(rows, list):
             raise ManifestChainError(f"package rows must be a list: {table}")
+        if any(not isinstance(row, dict) or set(row) != set(columns) for row in rows):
+            raise ManifestChainError(f"package row/column contract mismatch: {table}")
         identities = [row.get(_IDENTITY_COLUMN[table]) for row in rows]
         if identities != sorted(identities):
             raise ManifestChainError(f"package rows are not identity-sorted: {table}")
@@ -904,11 +968,89 @@ def _canonicalize_db_value(table: str, column: str, value: Any) -> Any:
     return str(value)
 
 
-def _canonical_projection(table: str, row: Mapping[str, Any]) -> Mapping[str, Any]:
+def _canonical_projection(
+    table: str,
+    row: Mapping[str, Any],
+    *,
+    columns: Sequence[str],
+) -> Mapping[str, Any]:
     return {
         column: _canonicalize_db_value(table, column, row.get(column))
-        for column in exported_columns(table)
+        for column in columns
     }
+
+
+def _projection_mode_from_document(document: Mapping[str, Any]) -> str:
+    raw = document.get("projection_mode")
+    if raw is None:
+        return LEGACY_FULL_PROJECTION_MODE
+    mode = str(raw)
+    if mode not in _PROJECTION_MODES:
+        raise ManifestChainError(f"unsupported package projection mode: {mode}")
+    return mode
+
+
+def _materialize_safe_ledger_projection(
+    item: Dict[str, Any],
+    raw_evidence_json: Any,
+) -> Dict[str, Any]:
+    projected = dict(item)
+    if raw_evidence_json is not None:
+        try:
+            evidence = json.loads(str(raw_evidence_json))
+        except json.JSONDecodeError as exc:
+            raise ResearchStateError(
+                "prediction_ledger raw evidence_json is invalid"
+            ) from exc
+        decision = evidence.get("canonical_decision") if isinstance(evidence, dict) else None
+        expected = build_canonical_opportunity_projection(decision)
+        expected_hard_veto = (
+            None
+            if expected["canonical_hard_veto"] is None
+            else int(expected["canonical_hard_veto"])
+        )
+        expected_values = {
+            "opportunity_projection_version": expected[
+                "opportunity_projection_version"
+            ],
+            "canonical_action": expected["canonical_action"],
+            "canonical_evidence_state": expected["canonical_evidence_state"],
+            "canonical_hard_veto": expected_hard_veto,
+        }
+        for field, expected_value in expected_values.items():
+            current = projected.get(field)
+            if current is not None and current != expected_value:
+                raise ResearchStateError(
+                    f"prediction_ledger safe projection mismatch: {field}"
+                )
+            projected[field] = expected_value
+
+    if (
+        projected.get("opportunity_projection_version")
+        != CANONICAL_OPPORTUNITY_PROJECTION_VERSION
+        or not projected.get("canonical_action")
+        or not projected.get("canonical_evidence_state")
+        or projected.get("canonical_hard_veto") not in (0, 1, False, True)
+    ):
+        raise ResearchStateError(
+            "prediction_ledger safe canonical opportunity projection is incomplete"
+        )
+    projected["canonical_hard_veto"] = int(
+        bool(projected["canonical_hard_veto"])
+    )
+    return projected
+
+
+def _require_safe_projection_target_schema(conn: sqlite3.Connection) -> None:
+    columns = {
+        str(row[1]): row
+        for row in conn.execute("PRAGMA table_info(prediction_ledger)")
+    }
+    evidence = columns.get("evidence_json")
+    if evidence is None or int(evidence[3]) != 0:
+        raise SchemaClassificationError(
+            "safe projection restore requires nullable prediction_ledger.evidence_json"
+        )
 
 
 def _read_projection_by_identity(

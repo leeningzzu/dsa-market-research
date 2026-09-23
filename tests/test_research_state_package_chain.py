@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 import sqlite3
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine
@@ -21,11 +22,13 @@ from src.services.research_state_package_chain import (
     PACKAGE_PREFIX,
     PUBLICATION_BARRIER,
     REQUIRED_WRITER_CONCURRENCY_GROUP,
+    SAFE_PROJECTION_MODE,
     FilesystemObjectStore,
     ImportConflictError,
     ManifestChainError,
     PackageTooLarge,
     RightsAdmissionRequired,
+    ResearchStateError,
     SimulatedCrashAfterPackage,
     build_checkpoint_package,
     discover_manifest_chain,
@@ -37,6 +40,10 @@ from src.services.research_state_package_chain import (
     validate_current_schema,
 )
 from src.storage import Base
+from src.services.research_state_projection import (
+    CANONICAL_OPPORTUNITY_PROJECTION_VERSION,
+    is_white_box_opportunity_record,
+)
 
 
 CODE_SHA = "a" * 40
@@ -57,7 +64,7 @@ def _seed_state(path: Path, *, extra_ledger: bool = False) -> None:
         ledger_rows = [
             (
                 "1" * 64,
-                "prediction-ledger-v2",
+                "prediction-ledger-v3",
                 101,
                 201,
                 "trace-local-only",
@@ -95,6 +102,9 @@ def _seed_state(path: Path, *, extra_ledger: bool = False) -> None:
                     sort_keys=True,
                     separators=(",", ":"),
                 ),
+                "canonical-opportunity-v1",
+                "PROVEN",
+                0,
                 CODE_SHA,
                 "SyntheticProvider",
                 "qfq",
@@ -141,25 +151,80 @@ def _seed_state(path: Path, *, extra_ledger: bool = False) -> None:
             second[3] = 202
             second[6] = "000001"
             second[26] = "6" * 64
-            second[29] = "7" * 64
-            second[31] = "8" * 64
-            second[33] = "9" * 64
-            second[37] = "2026-09-19 10:01:00"
+            second[35] = "7" * 64
+            second[36] = json.dumps(
+                {
+                    "version": "cn-stock-asset-v1",
+                    "market": "cn",
+                    "instrument_type": "stock",
+                    "symbol": "000001",
+                    "exchange": "SZ",
+                    "calendar": "XSHG",
+                    "timezone": "Asia/Shanghai",
+                    "currency": "CNY",
+                    "identity_hash": "7" * 64,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            second[37] = "8" * 64
+            second[39] = "9" * 64
+            second[44] = "2026-09-19 10:01:00"
             ledger_rows.append(tuple(second))
 
+        ledger_columns = (
+            "prediction_hash",
+            "schema_version",
+            "analysis_history_id",
+            "decision_signal_id",
+            "trace_id",
+            "market",
+            "stock_code",
+            "instrument_type",
+            "decision_time",
+            "decision_timezone",
+            "data_as_of",
+            "available_at_max",
+            "strategy_id",
+            "strategy_version",
+            "factor_contract_version",
+            "canonical_action",
+            "horizon",
+            "decision_profile",
+            "trigger_source",
+            "source_type",
+            "entry_low",
+            "entry_high",
+            "stop_loss",
+            "target_price",
+            "feature_schema_version",
+            "feature_schema_hash",
+            "evidence_hash",
+            "evidence_json",
+            "opportunity_projection_version",
+            "canonical_evidence_state",
+            "canonical_hard_veto",
+            "code_sha",
+            "provider_identity",
+            "adjustment_basis",
+            "universe_snapshot_id",
+            "asset_identity_hash",
+            "asset_identity_json",
+            "data_snapshot_identity",
+            "selection_source",
+            "selection_context_hash",
+            "selection_context_json",
+            "pit_eligible",
+            "pit_ineligibility_json",
+            "durability_state",
+            "created_at",
+        )
         conn.executemany(
-            """INSERT INTO prediction_ledger (
-                prediction_hash,schema_version,analysis_history_id,decision_signal_id,trace_id,
-                market,stock_code,instrument_type,decision_time,decision_timezone,data_as_of,
-                available_at_max,strategy_id,strategy_version,factor_contract_version,
-                canonical_action,horizon,decision_profile,trigger_source,source_type,
-                entry_low,entry_high,stop_loss,target_price,feature_schema_version,
-                feature_schema_hash,evidence_hash,evidence_json,code_sha,provider_identity,
-                adjustment_basis,universe_snapshot_id,asset_identity_hash,asset_identity_json,
-                data_snapshot_identity,selection_source,selection_context_hash,
-                selection_context_json,pit_eligible,pit_ineligibility_json,durability_state,
-                created_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            "INSERT INTO prediction_ledger ("
+            + ",".join(ledger_columns)
+            + ") VALUES ("
+            + ",".join("?" for _ in ledger_columns)
+            + ")",
             ledger_rows,
         )
 
@@ -309,8 +374,45 @@ def test_column_classification_covers_current_schema(seeded_db: Path) -> None:
         conn.close()
 
 
-def test_rights_conditional_fields_fail_closed_without_admission(seeded_db: Path) -> None:
-    with pytest.raises(RightsAdmissionRequired):
+def test_nonempty_safe_package_excludes_conditional_fields_and_keeps_opportunity_identity(
+    seeded_db: Path,
+) -> None:
+    package = build_checkpoint_package(seeded_db)
+    document = json.loads(package.payload.decode("utf-8"))
+
+    assert document["projection_mode"] == SAFE_PROJECTION_MODE
+    for table, classes in COLUMN_CLASSIFICATION.items():
+        conditional = {
+            name for name, classification in classes.items()
+            if classification == "RIGHTS_CONDITIONAL"
+        }
+        assert conditional.isdisjoint(document["tables"][table]["columns"])
+
+    ledger = document["tables"]["prediction_ledger"]["rows"][0]
+    assert ledger["opportunity_projection_version"] == CANONICAL_OPPORTUNITY_PROJECTION_VERSION
+    assert ledger["canonical_action"] == "WAIT"
+    assert ledger["canonical_evidence_state"] == "PROVEN"
+    assert ledger["canonical_hard_veto"] == 0
+    assert "evidence_json" not in ledger
+    assert "selection_context_json" not in ledger
+    assert "synthetic_feature" not in package.payload.decode("utf-8")
+
+
+def test_safe_package_fails_closed_on_projection_raw_evidence_mismatch(
+    seeded_db: Path,
+) -> None:
+    conn = sqlite3.connect(seeded_db)
+    try:
+        conn.execute(
+            "UPDATE prediction_ledger SET canonical_evidence_state='UNKNOWN' "
+            "WHERE prediction_hash=?",
+            ("1" * 64,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    with pytest.raises(ResearchStateError, match="safe projection mismatch"):
         build_checkpoint_package(seeded_db)
 
 
@@ -323,6 +425,63 @@ def test_empty_state_is_packageable_without_rights_admission(tmp_path: Path) -> 
         "prediction_outcomes": 0,
         "pit_dataset_manifests": 0,
     }
+
+
+def test_safe_nonempty_roundtrip_restores_pit_identity_without_raw_evidence(
+    seeded_db: Path,
+    tmp_path: Path,
+) -> None:
+    store = FilesystemObjectStore(tmp_path / "safe-objects")
+    receipt = publish_checkpoint(
+        store,
+        seeded_db,
+        source_code_sha=CODE_SHA,
+        created_at=NOW,
+        rights_admitted=False,
+        rights_classification="NO_CONDITIONAL_VALUES",
+    )
+    target = tmp_path / "safe-target.db"
+    _create_db(target)
+
+    restored = restore_checkpoint(store, target)
+    assert restored.inserted == {
+        "prediction_ledger": 1,
+        "prediction_outcomes": 2,
+        "pit_dataset_manifests": 1,
+    }
+
+    conn = sqlite3.connect(target)
+    try:
+        row = conn.execute(
+            "SELECT evidence_json,selection_context_json,opportunity_projection_version,"
+            "canonical_action,canonical_evidence_state,canonical_hard_veto,durability_state "
+            "FROM prediction_ledger WHERE prediction_hash=?",
+            ("1" * 64,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert row == (
+        None,
+        None,
+        CANONICAL_OPPORTUNITY_PROJECTION_VERSION,
+        "WAIT",
+        "PROVEN",
+        0,
+        DURABILITY_STATE,
+    )
+    assert is_white_box_opportunity_record(
+        SimpleNamespace(
+            opportunity_projection_version=row[2],
+            canonical_action=row[3],
+            canonical_evidence_state=row[4],
+            canonical_hard_veto=bool(row[5]),
+            evidence_json=row[0],
+        )
+    ) is True
+
+    rebuilt = build_checkpoint_package(target)
+    assert rebuilt.payload == store.get_bytes(receipt.package_key)
 
 
 def test_roundtrip_is_deterministic_and_duplicate_restore_is_idempotent(
@@ -384,6 +543,39 @@ def test_roundtrip_is_deterministic_and_duplicate_restore_is_idempotent(
         assert json.loads(pit[0])["assignments"][0]["prediction_hash"] == "1" * 64
     finally:
         conn.close()
+
+
+def test_legacy_full_package_without_projection_mode_remains_readable(
+    seeded_db: Path,
+) -> None:
+    package = build_checkpoint_package(seeded_db, rights_admitted=True)
+    document = json.loads(package.payload.decode("utf-8"))
+    document.pop("projection_mode")
+    ledger = document["tables"]["prediction_ledger"]
+    new_projection_columns = {
+        "opportunity_projection_version",
+        "canonical_evidence_state",
+        "canonical_hard_veto",
+    }
+    ledger["columns"] = [
+        column for column in ledger["columns"]
+        if column not in new_projection_columns
+    ]
+    for row in ledger["rows"]:
+        for column in new_projection_columns:
+            row.pop(column, None)
+    _rehash_table(document, "prediction_ledger")
+    payload = json.dumps(
+        document,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+    from src.services.research_state_package_chain import _validate_package_document
+
+    validated = _validate_package_document(payload)
+    assert validated["tables"]["prediction_ledger"]["row_count"] == 1
 
 
 def test_forbidden_columns_never_enter_package(seeded_db: Path) -> None:

@@ -16,6 +16,7 @@ from src.core.trading_calendar import (
 )
 from src.repositories.prediction_ledger_repo import PredictionLedgerRepository
 from src.repositories.prediction_outcome_repo import PredictionOutcomeRepository
+from src.services.research_state_projection import is_white_box_opportunity_record
 from src.repositories.stock_repo import StockRepository
 from src.services.pit_identity import build_bar_sequence_identity, canonical_json, sha256_payload
 from src.storage import DatabaseManager, utc_naive_now
@@ -90,7 +91,7 @@ class PredictionOutcomeService:
         ledger = self.ledger_repo.get_by_prediction_hash(prediction_hash)
         if ledger is None:
             raise ValueError(f"prediction not found: {prediction_hash}")
-        if not self._is_meta_opportunity(ledger.evidence_json):
+        if not self._is_meta_opportunity(ledger):
             return {"status": "NOT_ELIGIBLE", "prediction_hash": prediction_hash}
         if ledger.data_as_of is None:
             return {"status": "UNLABELABLE", "reason": "DATA_AS_OF_NOT_BOUND"}
@@ -512,19 +513,8 @@ class PredictionOutcomeService:
             raise ValueError(f"invalid cost identity field: {field}") from exc
 
     @staticmethod
-    def _is_meta_opportunity(evidence_json: str) -> bool:
-        try:
-            evidence = json.loads(evidence_json)
-        except (TypeError, ValueError):
-            return False
-        decision = evidence.get("canonical_decision") if isinstance(evidence, dict) else None
-        if not isinstance(decision, dict):
-            return False
-        return (
-            str(decision.get("action") or "").upper() == "WAIT"
-            and str(decision.get("evidence_state") or "").upper() == "PROVEN"
-            and decision.get("hard_veto") is False
-        )
+    def _is_meta_opportunity(ledger: Any) -> bool:
+        return is_white_box_opportunity_record(ledger)
 
     @staticmethod
     def _finite(value: Any) -> Optional[float]:
