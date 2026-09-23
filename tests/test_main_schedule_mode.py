@@ -2234,6 +2234,35 @@ class MainScheduleModeTestCase(unittest.TestCase):
         pipeline.notifier.generate_brief_report.assert_called_once_with([stock_result])
         pipeline.notifier.generate_aggregate_report.assert_not_called()
 
+    def test_fused_research_notification_orders_market_global_etf_stock(self) -> None:
+        content = main._compose_fused_research_notification(
+            market_report="MARKET_SECTION",
+            global_context="GLOBAL_SECTION",
+            investor_content=(
+                "## 🔎 晚间自动发现\n\n"
+                "### ETF重点 Top 3\n\nETF_SECTION\n\n"
+                "### 股票重点 Top 3\n\nSTOCK_SECTION"
+            ),
+        )
+
+        markers = ("MARKET_SECTION", "GLOBAL_SECTION", "ETF_SECTION", "STOCK_SECTION")
+        positions = [content.index(marker) for marker in markers]
+        self.assertEqual(positions, sorted(positions))
+        self.assertEqual(content.count("GLOBAL_SECTION"), 1)
+
+    def test_fused_research_notification_omits_unavailable_global_without_inventing_facts(self) -> None:
+        content = main._compose_fused_research_notification(
+            market_report="MARKET_SECTION",
+            global_context=None,
+            investor_content="### ETF重点 Top 3\nETF_SECTION\n\n### 股票重点 Top 3\nSTOCK_SECTION",
+        )
+
+        self.assertIn("MARKET_SECTION", content)
+        self.assertIn("ETF_SECTION", content)
+        self.assertIn("STOCK_SECTION", content)
+        self.assertNotIn("全球环境", content)
+        self.assertNotIn("GLOBAL", content)
+
     def test_run_full_analysis_empty_compact_stock_projection_fails_closed(self) -> None:
         args = self._make_args()
         target_date = date(2026, 3, 26)

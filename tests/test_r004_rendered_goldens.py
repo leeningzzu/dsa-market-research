@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import ast
+
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
+from typing import List, Optional
 
 import pytest
 from jinja2 import Environment, FileSystemLoader
@@ -384,18 +387,64 @@ def test_gf23_donor_name_not_data_source() -> None:
         assert donor not in out
 
 
-@pytest.mark.xfail(
-    reason="R004 gap: the final fused user product does not yet have one deterministic Market -> Global -> ETF -> Stock renderer.",
-    strict=True,
-)
 def test_gf24_market_global_etf_stock_order() -> None:
-    source = _source("src/notification.py")
-    market = source.find("Market")
-    global_ = source.find("Global")
-    etf = source.find("ETF重点 Top 3")
-    stock = source.find("股票重点 Top 3")
-    assert min(market, global_, etf, stock) >= 0
-    assert market < global_ < etf < stock
+    main_path = ROOT / "main.py"
+    tree = ast.parse(main_path.read_text(encoding="utf-8"))
+    composer_node = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_compose_fused_research_notification"
+    )
+    namespace = {"List": List, "Optional": Optional}
+    exec(compile(ast.Module(body=[composer_node], type_ignores=[]), str(main_path), "exec"), namespace)
+    compose = namespace["_compose_fused_research_notification"]
+
+    investor_content = (
+        "## 🔎 晚间自动发现\n\n"
+        "### ETF重点 Top 3\n\nETF_SECTION\n\n"
+        "### 股票重点 Top 3\n\nSTOCK_SECTION"
+    )
+    rendered = compose(
+        market_report="MARKET_SECTION",
+        global_context="GLOBAL_SECTION",
+        investor_content=investor_content,
+    )
+    markers = ("MARKET_SECTION", "GLOBAL_SECTION", "ETF_SECTION", "STOCK_SECTION")
+    positions = [rendered.index(marker) for marker in markers]
+    assert positions == sorted(positions)
+
+    missing_global = compose(
+        market_report="MARKET_SECTION",
+        global_context=None,
+        investor_content=investor_content,
+    )
+    assert "全球环境" not in missing_global
+    assert "GLOBAL_SECTION" not in missing_global
+
+
+def test_gf24_missing_global_preserves_legacy_two_block_projection() -> None:
+    main_path = ROOT / "main.py"
+    tree = ast.parse(main_path.read_text(encoding="utf-8"))
+    composer_node = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_compose_fused_research_notification"
+    )
+    namespace = {"List": List, "Optional": Optional}
+    exec(compile(ast.Module(body=[composer_node], type_ignores=[]), str(main_path), "exec"), namespace)
+    compose = namespace["_compose_fused_research_notification"]
+    investor_content = "ETF_SECTION\n\nSTOCK_SECTION"
+    rendered = compose(
+        market_report="MARKET_SECTION",
+        global_context=None,
+        investor_content=investor_content,
+    )
+    assert rendered == (
+        "# 📈 大盘复盘\n\nMARKET_SECTION\n\n---\n\n"
+        "# 🚀 个股投资者简报\n\nETF_SECTION\n\nSTOCK_SECTION"
+    )
 
 
 def test_gf25_information_moved_not_dropped() -> None:

@@ -310,6 +310,8 @@ SUPPORTING_REGRESSIONS = {
         "tests/test_notification.py::test_etf_valuation_label_and_explicit_short_timeframes_render_from_same_brief",
     "GF22_CONDITIONAL_WATCHLIST_ENVELOPE":
         "tests/test_phase_b_groups_envelopes_contract.py::test_selection_identity_binds_auto_and_watchlist_envelopes",
+    "GF24_MARKET_GLOBAL_ETF_STOCK_ORDER":
+        "tests/test_r004_rendered_goldens.py::test_gf24_missing_global_preserves_legacy_two_block_projection",
 }
 
 

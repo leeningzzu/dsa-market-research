@@ -784,6 +784,31 @@ def _market_review_report_text(review_result: Any) -> str:
     return review_result if isinstance(review_result, str) else ""
 
 
+def _compose_fused_research_notification(
+    *,
+    market_report: Optional[str],
+    investor_content: Optional[str],
+    global_context: Optional[str] = None,
+) -> str:
+    """Compose the existing fused product in Market -> Global -> Asset order.
+
+    This helper owns presentation order only.  It never manufactures missing
+    Global evidence and leaves ETF -> Stock ordering to the existing investor
+    projection carried inside ``investor_content``.
+    """
+    parts: List[str] = []
+    market_text = str(market_report or "").strip()
+    global_text = str(global_context or "").strip()
+    investor_text = str(investor_content or "").strip()
+    if market_text:
+        parts.append(f"# 📈 大盘复盘\n\n{market_text}")
+    if global_text:
+        parts.append(f"# 🌍 全球环境\n\n{global_text}")
+    if investor_text:
+        parts.append(f"# 🚀 个股投资者简报\n\n{investor_text}")
+    return "\n\n---\n\n".join(parts)
+
+
 def _save_reused_market_review_report(
     notifier: Any,
     market_report: str,
@@ -1153,21 +1178,21 @@ def run_full_analysis(
 
         # Issue #190: 合并推送（个股+大盘复盘）
         if merge_notification and (results or market_report) and not args.no_notify:
-            parts = []
-            if market_report:
-                parts.append(f"# 📈 大盘复盘\n\n{market_report}")
+            investor_content = ""
             if results:
                 investor_content = pipeline.notifier.generate_brief_report(results)
                 if not isinstance(investor_content, str) or not investor_content.strip():
                     raise ValueError("merged investor notification projection is empty")
-                parts.append(f"# 🚀 个股投资者简报\n\n{investor_content}")
-            if parts:
-                combined_content = "\n\n---\n\n".join(parts)
-                if pipeline.notifier.is_available():
-                    if pipeline.notifier.send(combined_content, email_send_to_all=True, route_type="report"):
-                        logger.info("已合并推送（个股+大盘复盘）")
-                    else:
-                        logger.warning("合并推送失败")
+            combined_content = _compose_fused_research_notification(
+                market_report=market_report,
+                investor_content=investor_content,
+                global_context=None,
+            )
+            if combined_content and pipeline.notifier.is_available():
+                if pipeline.notifier.send(combined_content, email_send_to_all=True, route_type="report"):
+                    logger.info("已合并推送（个股+大盘复盘）")
+                else:
+                    logger.warning("合并推送失败")
 
         # 输出摘要
         if results:
