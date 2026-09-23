@@ -231,10 +231,10 @@ REQUIREMENT_BINDINGS = {
         "missingness": "Unknown required evidence fails closed; LLM text never becomes action authority.",
     },
     "CHANNEL-001": {
-        "data_capability": "PARTIAL_CURRENT__FULL_R004_PARITY_NOT_YET_PROVEN",
+        "data_capability": "READY_CURRENT__DIRECT_FULL_COMPACT_PARITY_REGRESSION",
         "code_owner": "src/core/pipeline.py",
         "consumer": "_save_local_report / _send_notifications",
-        "test_or_regression": "tests/test_notification.py::test_etf_valuation_label_and_explicit_short_timeframes_render_from_same_brief / GF14_REPORT_EMAIL_TELEGRAM_SAME_AUTHORITY",
+        "test_or_regression": "tests/test_notification.py::TestNotificationServiceReportGeneration::test_full_and_compact_reports_preserve_canonical_material_fact_parity / tests/test_pipeline_notification_image_routing.py::TestPipelineReportRouteFiltering::test_saved_full_report_and_email_telegram_compact_share_exact_result_set / GF14_REPORT_EMAIL_TELEGRAM_SAME_AUTHORITY",
         "missingness": "A channel may omit presentation-only detail but may not invent or contradict canonical facts.",
     },
     "MISSING-001": {

@@ -296,12 +296,16 @@ def test_gf13_watchlist_quota_independent() -> None:
 def test_gf14_report_email_telegram_same_authority() -> None:
     pipeline = _source("src/core/pipeline.py")
     notification = _source("src/notification.py")
+    semantic_tests = _source("tests/test_notification.py")
+    routing_tests = _source("tests/test_pipeline_notification_image_routing.py")
     assert "_save_local_report" in pipeline
     assert "_send_notifications" in pipeline
     assert "dashboard.get(\"factor_decision\")" in notification
     assert "investor_brief" in notification
     assert "send_to_telegram" in notification
     assert "send_to_email" in notification
+    assert "test_full_and_compact_reports_preserve_canonical_material_fact_parity" in semantic_tests
+    assert "test_saved_full_report_and_email_telegram_compact_share_exact_result_set" in routing_tests
 
 
 def test_gf15_no_internal_language_or_repeated_disclaimer() -> None:

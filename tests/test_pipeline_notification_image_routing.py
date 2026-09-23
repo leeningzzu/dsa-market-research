@@ -302,6 +302,35 @@ class TestPipelineReportRouteFiltering(unittest.TestCase):
         self.assertEqual(noise_kwargs["cooldown_key"], "report:aggregate:simple:000001")
         pipeline.notifier.record_noise_control.assert_called_once()
 
+    def test_saved_full_report_and_email_telegram_compact_share_exact_result_set(self):
+        pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+        pipeline.notifier = _FakeRoutedNotifier(
+            [NotificationChannel.TELEGRAM, NotificationChannel.EMAIL]
+        )
+        pipeline.config = SimpleNamespace(stock_email_groups=[])
+        results = [SimpleNamespace(code="000001")]
+
+        pipeline._save_local_report(results, ReportType.SIMPLE)
+        pipeline._send_notifications(results, ReportType.SIMPLE)
+
+        self.assertGreaterEqual(
+            pipeline.notifier.generate_dashboard_report.call_count,
+            2,
+        )
+        for call in pipeline.notifier.generate_dashboard_report.call_args_list:
+            self.assertIs(call.args[0], results)
+        pipeline.notifier.generate_brief_report.assert_called_once_with(results)
+        self.assertIs(
+            pipeline.notifier.generate_brief_report.call_args.args[0],
+            results,
+        )
+        pipeline.notifier.save_report_to_file.assert_called_once_with(
+            "report:000001",
+            filename=None,
+        )
+        pipeline.notifier.send_to_telegram.assert_called_once_with("brief-report")
+        pipeline.notifier.send_to_email.assert_called_once_with("brief-report")
+
     def test_markdown_to_image_uses_route_filtered_channels(self):
         pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
         pipeline.notifier = _FakeRoutedNotifier(

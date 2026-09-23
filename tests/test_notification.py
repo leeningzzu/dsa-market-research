@@ -34,6 +34,10 @@ from src.config import Config
 from src.notification import NotificationBuilder, NotificationChannel, NotificationService
 from src.notification_noise import reset_notification_noise_state
 from src.analyzer import AnalysisResult
+from src.services.factor_decision_summary import (
+    apply_canonical_decision_to_result,
+    assert_canonical_consumer_consistency,
+)
 from src.share_image import build_share_image_html
 from bot.models import BotMessage, ChatType
 import requests
@@ -1162,6 +1166,114 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
                 self.assertIn("5分钟：量能继续收缩", rendered)
             self.assertIn("60分钟：回踩结构未破", full)
             self.assertNotIn("- 60m：", full)
+
+    @mock.patch("src.notification.get_config")
+    def test_full_and_compact_reports_preserve_canonical_material_fact_parity(
+        self, mock_get_config: mock.MagicMock
+    ):
+        result = _make_investor_brief_result()
+        factor = result.dashboard["factor_decision"]
+        brief = factor["investor_brief"]
+        brief["asset_type"] = "etf"
+        brief["asset_specific"] = {
+            "premium_discount": {"status": "READY", "summary": "折价0.15%"},
+            "liquidity_spread": {"status": "READY", "summary": "买卖价差0.03%"},
+            "tracking_quality": {"status": "READY", "summary": "近20日跟踪误差0.18%"},
+        }
+        brief["short_term_execution_panel"] = {
+            "status": "READY",
+            "state": "WAIT_FOR_TRIGGER",
+            "30m": {
+                "status": "READY",
+                "role": "PRIMARY_STRUCTURE",
+                "summary": "顶背离已经确认",
+            },
+            "15m": {
+                "status": "READY",
+                "role": "TRIGGER_CONFIRMATION",
+                "summary": "死叉后进入整理",
+            },
+            "5m": {
+                "status": "READY",
+                "role": "MICRO_TIMING",
+                "summary": "量能继续收缩",
+            },
+            "summary": None,
+        }
+        factor.update(
+            {
+                "conclusion": brief["one_line_conclusion"],
+                "action_condition": brief["trigger"],
+                "invalidation_condition": brief["invalidation"],
+                "canonical_decision": {
+                    "authority": "stock_trend_quality_pullback_v1",
+                    "action": "PASS",
+                    "public_action": "avoid",
+                    "evidence_state": "PROVEN",
+                    "hard_veto": True,
+                    "reason_codes": ["WEAK_TREND"],
+                },
+            }
+        )
+        apply_canonical_decision_to_result(result, factor, scope="production")
+        assert_canonical_consumer_consistency(result, scope="production")
+
+        for renderer_enabled in (False, True):
+            with self.subTest(report_renderer_enabled=renderer_enabled):
+                mock_get_config.return_value = _make_config(
+                    report_renderer_enabled=renderer_enabled
+                )
+                service = NotificationService()
+                full = service.generate_dashboard_report(
+                    [result],
+                    report_date="2026-09-14",
+                )
+                compact = service.generate_brief_report(
+                    [result],
+                    report_date="2026-09-14",
+                )
+
+                shared_markers = (
+                    brief["one_line_conclusion"],
+                    brief["fused_paragraph"],
+                    "PE/PB 仅作保守参考",
+                    "结构支撑 1400.0",
+                    "结构压力 1500.0",
+                    brief["trigger"],
+                    brief["invalidation"],
+                    brief["coverage_text"],
+                    "弱趋势仍未修复",
+                    "估值证据仍有限",
+                    "折溢价：折价0.15%",
+                    "买卖价差0.03%",
+                    "跟踪质量：近20日跟踪误差0.18%",
+                    "30分钟：顶背离已经确认",
+                    "15分钟：死叉后进入整理",
+                    "5分钟：量能继续收缩",
+                )
+                for marker in shared_markers:
+                    with self.subTest(marker=marker):
+                        self.assertIn(marker, full)
+                        self.assertIn(marker, compact)
+
+                for allowed_full_only in (
+                    "**技术参考分**: 43/100",
+                    "**当前价格**: 1450.0",
+                    "**历史参考胜率**:",
+                    "**当前机会概率**:",
+                    "日线：趋势偏弱；量价尚未确认重新转强",
+                ):
+                    self.assertIn(allowed_full_only, full)
+                    self.assertNotIn(allowed_full_only, compact)
+
+                for forbidden in (
+                    "旧核心结论（不得出现）",
+                    "旧因子结论（不得重复）",
+                    "第三条风险不应进入第一屏",
+                    "UNBOUND_",
+                ):
+                    self.assertNotIn(forbidden, full)
+                    self.assertNotIn(forbidden, compact)
 
     @mock.patch("src.notification.get_config")
     def test_degraded_explanation_status_is_transparent_and_does_not_duplicate_legacy_sections(
