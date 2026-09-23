@@ -2234,6 +2234,128 @@ class MainScheduleModeTestCase(unittest.TestCase):
         pipeline.notifier.generate_brief_report.assert_called_once_with([stock_result])
         pipeline.notifier.generate_aggregate_report.assert_not_called()
 
+    def test_run_full_analysis_projects_existing_global_market_payload_into_actual_fused_notification(self) -> None:
+        args = self._make_args()
+        config = self._make_config(
+            trading_day_check_enabled=False,
+            market_review_enabled=True,
+            daily_market_context_enabled=False,
+            single_stock_notify=False,
+            merge_email_notification=True,
+            analysis_delay=0,
+            database_path=str(Path(self.temp_dir.name) / "stock_analysis.db"),
+            report_type="simple",
+        )
+        stock_result = SimpleNamespace(
+            code="600519",
+            name="贵州茅台",
+            sentiment_score=43,
+            operation_advice="回避",
+            trend_prediction="看空",
+            get_emoji=lambda: "🟡",
+        )
+        pipeline = MagicMock()
+        pipeline.run.return_value = [stock_result]
+        pipeline.notifier = MagicMock(
+            is_available=MagicMock(return_value=True),
+            generate_brief_report=MagicMock(
+                return_value=(
+                    "### ETF重点 Top 3\nETF_SECTION\n\n"
+                    "### 股票重点 Top 3\nSTOCK_SECTION"
+                )
+            ),
+            send=MagicMock(return_value=True),
+        )
+        structured_payload = {
+            "language": "zh",
+            "markets": {
+                "cn": {
+                    "title": "A股大盘",
+                    "sections": [{"key": "overview", "title": "A股大盘", "markdown": "CN_SECTION"}],
+                },
+                "hk": {
+                    "title": "港股大盘",
+                    "sections": [{"key": "overview", "title": "港股大盘", "markdown": "HK_SECTION"}],
+                },
+                "us": {
+                    "title": "美股大盘",
+                    "sections": [{"key": "overview", "title": "美股大盘", "markdown": "US_SECTION"}],
+                },
+            },
+        }
+        review_result = SimpleNamespace(
+            report="LEGACY_COMBINED_MARKET_REPORT",
+            market_review_payload=structured_payload,
+        )
+
+        with patch.object(main, "_refresh_stock_index_cache_for_analysis"), \
+             patch("main._compute_trading_day_filter", return_value=([], "cn,us,hk", False)), \
+             patch("src.core.pipeline.StockAnalysisPipeline", return_value=pipeline), \
+             patch("main._run_market_review_with_shared_lock", return_value=review_result) as run_with_lock, \
+             patch("src.core.market_review.run_market_review") as run_market_review:
+            main.run_full_analysis(config, args, [])
+
+        run_market_review.assert_not_called()
+        self.assertTrue(run_with_lock.call_args.kwargs["return_structured"])
+        notifier_message = pipeline.notifier.send.call_args.args[0]
+        markers = ("CN_SECTION", "HK_SECTION", "US_SECTION", "ETF_SECTION", "STOCK_SECTION")
+        positions = [notifier_message.index(marker) for marker in markers]
+        self.assertEqual(positions, sorted(positions))
+        self.assertEqual(notifier_message.count("CN_SECTION"), 1)
+        self.assertEqual(notifier_message.count("HK_SECTION"), 1)
+        self.assertEqual(notifier_message.count("US_SECTION"), 1)
+        self.assertIn("# 🌍 全球环境", notifier_message)
+        self.assertNotIn("LEGACY_COMBINED_MARKET_REPORT", notifier_message)
+
+    def test_run_full_analysis_cn_only_payload_omits_global_section(self) -> None:
+        args = self._make_args()
+        config = self._make_config(
+            trading_day_check_enabled=False,
+            market_review_enabled=True,
+            daily_market_context_enabled=False,
+            single_stock_notify=False,
+            merge_email_notification=True,
+            analysis_delay=0,
+            database_path=str(Path(self.temp_dir.name) / "stock_analysis.db"),
+            report_type="simple",
+        )
+        stock_result = SimpleNamespace(
+            code="600519",
+            name="贵州茅台",
+            sentiment_score=43,
+            operation_advice="回避",
+            trend_prediction="看空",
+            get_emoji=lambda: "🟡",
+        )
+        pipeline = MagicMock()
+        pipeline.run.return_value = [stock_result]
+        pipeline.notifier = MagicMock(
+            is_available=MagicMock(return_value=True),
+            generate_brief_report=MagicMock(return_value="ETF_SECTION\n\nSTOCK_SECTION"),
+            send=MagicMock(return_value=True),
+        )
+        review_result = SimpleNamespace(
+            report="CN_LEGACY_REPORT",
+            market_review_payload={
+                "region": "cn",
+                "title": "A股大盘",
+                "sections": [{"key": "overview", "title": "A股大盘", "markdown": "CN_ONLY"}],
+            },
+        )
+
+        with patch.object(main, "_refresh_stock_index_cache_for_analysis"), \
+             patch("main._compute_trading_day_filter", return_value=([], "cn", False)), \
+             patch("src.core.pipeline.StockAnalysisPipeline", return_value=pipeline), \
+             patch("main._run_market_review_with_shared_lock", return_value=review_result), \
+             patch("src.core.market_review.run_market_review") as run_market_review:
+            main.run_full_analysis(config, args, [])
+
+        run_market_review.assert_not_called()
+        notifier_message = pipeline.notifier.send.call_args.args[0]
+        self.assertIn("CN_ONLY", notifier_message)
+        self.assertNotIn("# 🌍 全球环境", notifier_message)
+        self.assertNotIn("CN_LEGACY_REPORT", notifier_message)
+
     def test_fused_research_notification_orders_market_global_etf_stock(self) -> None:
         content = main._compose_fused_research_notification(
             market_report="MARKET_SECTION",

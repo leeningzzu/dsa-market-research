@@ -902,7 +902,7 @@ def run_full_analysis(
 
     # Import pipeline modules outside the broad try/except so that import-time
     # failures propagate to the caller instead of being silently swallowed.
-    from src.core.market_review import run_market_review
+    from src.core.market_review import render_market_review_region_projection, run_market_review
     from src.core.pipeline import StockAnalysisPipeline
 
     try:
@@ -979,6 +979,7 @@ def run_full_analysis(
                 analysis_reference_time,
             )
         market_report = ""
+        global_context = ""
         market_context_summary = ""
         market_context_full_report = ""
         market_context_generated_during_stock = False
@@ -1147,6 +1148,7 @@ def run_full_analysis(
                     override_region=market_review_region,
                     query_id=query_id,
                     trigger_source=review_trigger_source,
+                    return_structured=merge_notification,
                 )
                 # 如果复盘仍未执行成功，再做一次复用历史/缓存读取（防止与并发运行竞态）。
                 if not review_result and should_use_daily_market_context:
@@ -1173,6 +1175,18 @@ def run_full_analysis(
             # 如果有结果，赋值给 market_report 用于后续飞书文档生成
             if review_result:
                 market_report = _market_review_report_text(review_result)
+                if merge_notification:
+                    market_review_payload = getattr(review_result, "market_review_payload", None)
+                    if isinstance(market_review_payload, dict) and market_review_payload:
+                        market_projection = render_market_review_region_projection(
+                            market_review_payload,
+                            regions=("cn",),
+                        )
+                        global_context = render_market_review_region_projection(
+                            market_review_payload,
+                            regions=("hk", "us", "jp", "kr"),
+                        )
+                        market_report = market_projection
             elif can_reuse_market_context:
                 market_report = market_context_full_report or market_context_summary
 
@@ -1186,7 +1200,7 @@ def run_full_analysis(
             combined_content = _compose_fused_research_notification(
                 market_report=market_report,
                 investor_content=investor_content,
-                global_context=None,
+                global_context=global_context or None,
             )
             if combined_content and pipeline.notifier.is_available():
                 if pipeline.notifier.send(combined_content, email_send_to_all=True, route_type="report"):

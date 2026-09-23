@@ -15,7 +15,7 @@ import inspect
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, Optional
 import uuid
 
 from src.config import get_config
@@ -535,6 +535,44 @@ def _render_market_review_merge_markdown(
         return _render_market_review_payload_markdown(payload)
     rendered = _append_missing_market_brief_payload_block(review_report, payload)
     return _append_missing_sector_payload_block(rendered, payload)
+
+
+def render_market_review_region_projection(
+    payload: Any,
+    *,
+    regions: Iterable[str],
+) -> str:
+    """Render only already-produced market payloads for the requested regions."""
+
+    if not isinstance(payload, dict) or not payload:
+        return ""
+
+    requested = {
+        str(region or "").strip().lower()
+        for region in regions
+        if str(region or "").strip().lower() in _MARKET_REVIEW_REGION_ORDER
+    }
+    if not requested:
+        return ""
+
+    markets = payload.get("markets")
+    if isinstance(markets, dict) and markets:
+        parts = []
+        for market in _MARKET_REVIEW_REGION_ORDER:
+            if market not in requested:
+                continue
+            market_payload = markets.get(market)
+            if not isinstance(market_payload, dict) or not market_payload:
+                continue
+            rendered = _render_single_market_review_payload(market_payload).strip()
+            if rendered:
+                parts.append(rendered)
+        return "\n\n---\n\n".join(parts).strip()
+
+    region = str(payload.get("region") or "").strip().lower()
+    if region not in requested:
+        return ""
+    return _render_single_market_review_payload(payload).strip()
 
 
 def _render_market_review_payload_body(payload: Dict[str, Any]) -> str:

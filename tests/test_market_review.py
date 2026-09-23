@@ -758,6 +758,49 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
         self.assertEqual(second.count("市场宽度与涨跌停结构"), 1)
 
 
+    def test_render_market_review_region_projection_uses_only_existing_requested_markets(self) -> None:
+        payload = {
+            "language": "zh",
+            "markets": {
+                "cn": {
+                    "title": "A股大盘",
+                    "sections": [{"key": "overview", "title": "A股大盘", "markdown": "CN_BODY"}],
+                },
+                "hk": {
+                    "title": "港股大盘",
+                    "sections": [{"key": "overview", "title": "港股大盘", "markdown": "HK_BODY"}],
+                },
+                "us": {
+                    "title": "美股大盘",
+                    "sections": [{"key": "overview", "title": "美股大盘", "markdown": "US_BODY"}],
+                },
+            },
+        }
+
+        market = market_review_module.render_market_review_region_projection(
+            payload,
+            regions=("cn",),
+        )
+        global_context = market_review_module.render_market_review_region_projection(
+            payload,
+            regions=("hk", "us", "jp", "kr"),
+        )
+
+        self.assertIn("CN_BODY", market)
+        self.assertNotIn("HK_BODY", market)
+        self.assertNotIn("US_BODY", market)
+        self.assertNotIn("CN_BODY", global_context)
+        self.assertIn("HK_BODY", global_context)
+        self.assertIn("US_BODY", global_context)
+        self.assertLess(global_context.index("HK_BODY"), global_context.index("US_BODY"))
+        self.assertEqual(
+            market_review_module.render_market_review_region_projection(
+                payload,
+                regions=("jp", "kr"),
+            ),
+            "",
+        )
+
     def test_render_market_review_payload_markdown_appends_each_market_sector_fallback(self) -> None:
         markdown = market_review_module._render_market_review_payload_markdown(
             {
