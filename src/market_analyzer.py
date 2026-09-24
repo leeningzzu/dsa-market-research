@@ -752,8 +752,60 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         error = method()
         return error if isinstance(error, GenerationError) else None
 
+    def _build_representative_index_roles(self, overview: MarketOverview) -> Dict[str, Any]:
+        """Map observed A-share indices to stable R004 representative roles without filling gaps."""
+        if self.region != "cn":
+            return {}
+
+        role_specs = (
+            ("broad_all_market", "全市场广度", ("上证指数", "深证成指")),
+            ("large_core", "大盘核心", ("沪深300",)),
+            ("large_value", "大盘价值/蓝筹", ("上证50",)),
+            ("mid_cap", "中盘", ("中证500",)),
+            ("small_cap", "小盘/微小盘", ("中证1000", "中证2000")),
+            ("growth", "成长", ("创业板指",)),
+            ("technology_innovation", "科技创新", ("科创50",)),
+        )
+        by_name = {str(index.name or "").strip(): index for index in overview.indices}
+        roles: Dict[str, Dict[str, Any]] = {}
+        for key, label, names in role_specs:
+            observed = [by_name[name] for name in names if name in by_name]
+            roles[key] = {
+                "status": "READY" if observed else "MISSING",
+                "label": label,
+                "expected_indices": list(names),
+                "indices": [
+                    {
+                        "name": item.name,
+                        "code": item.code,
+                        "current": item.current,
+                        "change_pct": item.change_pct,
+                    }
+                    for item in observed
+                ],
+            }
+
+        def combine_role(keys: tuple[str, ...], label: str) -> Dict[str, Any]:
+            observed = [
+                item
+                for key in keys
+                for item in (roles.get(key, {}).get("indices") or [])
+            ]
+            return {
+                "status": "READY" if observed else "MISSING",
+                "label": label,
+                "indices": observed,
+            }
+
+        return {
+            "status": "READY" if overview.indices else "MISSING",
+            "roles": roles,
+            "large_cap_role": combine_role(("large_core", "large_value"), "大盘权重"),
+            "small_cap_role": combine_role(("mid_cap", "small_cap"), "中小盘"),
+        }
+
     def _build_market_regime_brief(self, overview: MarketOverview) -> Dict[str, Any]:
-        """Build deterministic market-width and limit-structure facts from the existing overview."""
+        """Build deterministic market-width, role and limit-structure facts from the overview."""
         if not self.profile.has_market_stats:
             return {}
 
@@ -805,6 +857,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             "breadth_state": breadth_state,
             "breadth_denominator": breadth_denominator or None,
             "breadth_ratio": breadth_ratio,
+            "representative_index_roles": self._build_representative_index_roles(overview),
             "breadth": {
                 "status": breadth_status,
                 "up_count": up_count,
@@ -1455,20 +1508,23 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             return "\n\n".join(sections)
 
         if self.profile.has_market_stats and self.profile.has_sector_rankings:
-            return """### 三、板块主线
-（区分行业板块与概念题材，分析领涨/领跌背后的逻辑、持续性和是否形成主线）
+            return """### 三、市场宽度与投机热度
+（用具体上涨/下跌/平盘家数、分母和涨跌停结构分别判断广度与投机热度；两者不得互相替代）
 
-### 四、资金与情绪
-（解读成交额、涨跌停结构、市场宽度和风险偏好）
+### 四、成交、资金、杠杆、信用、估值与波动
+（只使用已提供且时点明确的数据；两融、ETF份额、信用、ERP、估值或波动证据未提供时，明确说明本次暂无可靠数据，不得补写）
 
-### 五、消息催化
-（结合近三日新闻，提炼真正影响明日交易的催化或扰动）
+### 五、全球环境与传导
+（只使用已提供的全球市场/新闻线索解释可能的传导；利率、美元、USD/CNH、A50、油金铜等未提供时明确数据不足，不得猜测）
 
-### 六、明日交易计划
-（给出进攻/均衡/防守结论、仓位区间、关注方向、回避方向和一个触发失效条件）
+### 六、行业与资产主线
+（区分行业板块与概念题材，分析领涨/领跌背后的逻辑、持续性以及对ETF/股票研究的影响）
 
-### 七、风险提示
-（列出需要关注的风险点；最后补充“建议仅供参考，不构成投资建议”。）"""
+### 七、今日观察与计划变化
+（给出进攻/均衡/防守结论、仓位框架、今日优先观察项、触发失效条件；没有可核前次计划时明确说明无法比较）
+
+### 八、数据时点与质量
+（说明已使用数据、缺失证据及其限制；最后补充“建议仅供参考，不构成投资建议”。）"""
 
         numerals = ["一", "二", "三", "四", "五", "六", "七", "八"]
         section_number = 3
@@ -1592,9 +1648,9 @@ Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
                 else ""
             )
             market_summary_hint = (
-                "2-3 sentences summarizing overall market tone, index moves, and liquidity."
+                "State the overall market tone, core conflict, index-role divergence, breadth and liquidity evidence without a fixed sentence limit."
                 if self.profile.has_market_stats
-                else "2-3 sentences summarizing overall market tone, index moves, and available news context."
+                else "State the overall market tone, core conflict, index moves and available news context without inventing missing breadth or flow evidence."
             )
         else:
             indices_placeholder = indices_text if indices_text else "暂无指数数据（接口异常）"
@@ -1605,9 +1661,9 @@ Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
                 else ""
             )
             market_summary_hint = (
-                "2-3句话概括指数、涨跌家数、成交额和情绪温度，明确“强势/偏暖/震荡/偏弱”判断"
+                "先给市场状态与核心矛盾，再结合代表指数职责、涨跌家数分母、成交额和情绪证据展开；不设固定句数"
                 if self.profile.has_market_stats
-                else "2-3句话概括指数表现、新闻线索和整体风险状态，不要补写未提供的市场宽度或资金流数据"
+                else "先给市场状态与核心矛盾，再结合指数表现和可用新闻线索展开；不要补写未提供的市场宽度或资金流数据"
             )
 
         output_template_sections = self._build_output_template_sections(review_language)
@@ -1623,7 +1679,7 @@ Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
 
         if review_language == "en":
             report_title = self._get_review_title(overview.date).removeprefix("## ").strip()
-            return f"""You are a professional {self._get_market_scope_name('en')} analyst. Please produce a concise market recap report based on the data below.
+            return f"""You are a professional {self._get_market_scope_name('en')} analyst. Please produce a conclusion-first, information-dense market research brief based only on the data below.
 
 [Requirements]
 - Output pure Markdown only
@@ -1721,8 +1777,8 @@ Output the report content directly, no extra commentary.
 ### 一、盘面总览
 （{market_summary_hint}）
 
-### 二、指数结构
-（{self._get_index_hint()}，说明谁在护盘、谁在拖累，以及关键支撑/压力）
+### 二、代表指数职责与结构
+（{self._get_index_hint()}；按已提供指数区分全市场、大盘核心/蓝筹、成长、科技创新及可用中小盘角色，缺失角色明确数据不足；说明谁在护盘、谁在拖累，以及关键支撑/压力）
 
 {output_template_sections}
 
@@ -1760,7 +1816,7 @@ Output the report content directly, no extra commentary.
         
         # 指数行情（简洁格式）
         indices_text = ""
-        for idx in overview.indices[:4]:
+        for idx in overview.indices:
             marker = self._get_index_change_arrow(idx.change_pct)
             indices_text += f"- **{idx.name}**: {idx.current:.2f} ({marker} {idx.change_pct:+.2f}%)\n"
         
@@ -1854,6 +1910,24 @@ Market conditions can change quickly. The data above is for reference only and d
             if self.profile.has_market_stats
             else ""
         )
+        representative_roles = self._build_representative_index_roles(overview)
+        roles = representative_roles.get("roles") if isinstance(representative_roles, dict) else {}
+        missing_role_labels = []
+        if isinstance(roles, dict):
+            for role in roles.values():
+                if isinstance(role, dict) and role.get("status") != "READY":
+                    label = str(role.get("label") or "").strip()
+                    if label:
+                        missing_role_labels.append(label)
+        missing_role_text = "、".join(missing_role_labels)
+        data_gap_lines = [
+            "两融、ETF份额、信用、ERP、估值等证据本次暂无可靠数据，不据此判断。",
+            "利率、美元、USD/CNH、A50、油金铜等全球传导证据未形成可核输入，不补写。",
+        ]
+        if missing_role_text:
+            data_gap_lines.append(f"代表指数角色缺口：{missing_role_text}。")
+        data_gap_text = "\n".join(f"- {item}" for item in data_gap_lines)
+
         return f"""## {overview.date} 大盘复盘
 
 > 今日{market_label}市场整体呈现**{market_mood}**态势，优先观察{summary_focus}。
@@ -1861,21 +1935,33 @@ Market conditions can change quickly. The data above is for reference only and d
 ### 一、盘面总览
 {market_summary_block}
 
-### 二、指数结构
+### 二、代表指数职责与结构
 {indices_block or indices_text or "暂无指数数据。"}
-{sector_section}
-{funds_section}
 
-### 五、消息催化
-- 暂无可用新闻时，应降低对题材持续性的确定性判断。
+### 三、市场宽度与投机热度
+{dashboard_block or "- 本次暂无可靠市场宽度/涨跌停结构数据。"}
+
+### 四、成交、资金、杠杆、信用、估值与波动
+{funds_section.strip() or "- 本次只保留已取得的成交/宽度证据；其他资金与估值证据按数据不足处理。"}
+{data_gap_text.splitlines()[0]}
+
+### 五、全球环境与传导
+{data_gap_text.splitlines()[1]}
+
+### 六、行业与资产主线
+{sector_block or "- 本次暂无可靠行业/概念排行，不据此定义主线。"}
+
+### 七、今日观察与计划变化
+- 今日优先观察{summary_focus}。
+- 本次无可核前次计划对象时，不强行判断“维持/升级/失效”。
+
+### 八、数据时点与质量
+{chr(10).join(data_gap_text.splitlines()[2:]) if len(data_gap_text.splitlines()) > 2 else "- 代表指数角色以本次实际取得的数据为准。"}
+- 复盘时间：{datetime.now().strftime('%H:%M')}；缺失数据不视为中性证据。
 
 {self._get_strategy_markdown_block(template_language)}
 
-### 七、风险提示
 - 市场有风险，投资需谨慎。以上数据仅供参考，不构成投资建议。
-
----
-*复盘时间: {datetime.now().strftime('%H:%M')}*
 """
     
     def _run_daily_review_parts(self) -> MarketLightReviewResult:

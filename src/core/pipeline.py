@@ -4297,6 +4297,17 @@ class StockAnalysisPipeline:
                 ):
                     raise ValueError("investor notification projection is empty")
 
+                subject_builder = getattr(
+                    self.notifier,
+                    "build_research_email_subject",
+                    None,
+                )
+                email_subject = (
+                    subject_builder(results)
+                    if callable(subject_builder)
+                    else None
+                )
+
                 def _send_channel_safely(
                     channel_label: str,
                     send_func: Callable[[], bool],
@@ -4595,13 +4606,29 @@ class StockAnalysisPipeline:
                                     use_image = self.notifier._should_use_image_for_channel(
                                         channel, grp_image_bytes
                                     )
+                                    group_subject = (
+                                        subject_builder(group_results)
+                                        if callable(subject_builder)
+                                        else None
+                                    )
                                     if use_image:
+                                        image_kwargs: Dict[str, Any] = {
+                                            "receivers": receivers,
+                                        }
+                                        if group_subject:
+                                            image_kwargs["subject"] = group_subject
                                         return self.notifier._send_email_with_inline_image(
-                                            grp_image_bytes, receivers=receivers
+                                            grp_image_bytes,
+                                            **image_kwargs,
                                         )
+                                    email_kwargs: Dict[str, Any] = {
+                                        "receivers": receivers,
+                                    }
+                                    if group_subject:
+                                        email_kwargs["subject"] = group_subject
                                     return self.notifier.send_to_email(
                                         strip_hidden_markdown_metadata(grp_report).strip(),
-                                        receivers=receivers,
+                                        **email_kwargs,
                                     )
 
                                 email_label = (
@@ -4625,7 +4652,19 @@ class StockAnalysisPipeline:
                                     channel, notification_image_bytes
                                 )
                                 if use_image:
-                                    return self.notifier._send_email_with_inline_image(notification_image_bytes)
+                                    if email_subject:
+                                        return self.notifier._send_email_with_inline_image(
+                                            notification_image_bytes,
+                                            subject=email_subject,
+                                        )
+                                    return self.notifier._send_email_with_inline_image(
+                                        notification_image_bytes
+                                    )
+                                if email_subject:
+                                    return self.notifier.send_to_email(
+                                        strip_hidden_markdown_metadata(notification_report).strip(),
+                                        subject=email_subject,
+                                    )
                                 return self.notifier.send_to_email(
                                     strip_hidden_markdown_metadata(notification_report).strip()
                                 )

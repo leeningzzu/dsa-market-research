@@ -1572,6 +1572,37 @@ class MainScheduleModeTestCase(unittest.TestCase):
         run_with_lock.assert_called_once()
         refresh.assert_called_once_with(config)
 
+
+    def test_summary_only_market_context_cannot_replace_full_market_review(self) -> None:
+        args = self._make_args()
+        config = self._make_config(
+            trading_day_check_enabled=False,
+            market_review_enabled=True,
+            daily_market_context_enabled=True,
+            single_stock_notify=False,
+            merge_email_notification=False,
+            analysis_delay=0,
+            database_path=str(Path(self.temp_dir.name) / "stock_analysis.db"),
+        )
+        pipeline = MagicMock()
+        pipeline.run.return_value = []
+
+        with patch.object(main, "_refresh_stock_index_cache_for_analysis"), \
+             patch("main._compute_trading_day_filter", return_value=([], "cn", False)), \
+             patch("src.core.pipeline.StockAnalysisPipeline", return_value=pipeline), \
+             patch(
+                 "main._prime_daily_market_context",
+                 side_effect=[("", ""), ("缓存摘要", "")],
+             ) as prime_context, \
+             patch(
+                 "main._run_market_review_with_shared_lock",
+                 return_value=SimpleNamespace(report="完整复盘正文"),
+             ) as run_with_lock:
+            main.run_full_analysis(config, args, [])
+
+        self.assertEqual(prime_context.call_count, 2)
+        run_with_lock.assert_called_once()
+
     def test_run_full_analysis_primes_daily_market_context_before_stock_analysis(self) -> None:
         args = self._make_args()
         target_date = date(2026, 3, 26)

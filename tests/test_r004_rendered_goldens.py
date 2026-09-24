@@ -213,13 +213,13 @@ def test_gf06_same_swing_no_double_count() -> None:
     assert out.count("合并为一次确认") == 1
 
 
-@pytest.mark.xfail(
-    reason="R004 gap: representative-index role/style rendering is not yet a deterministic MARKET_REGIME_BRIEF consumer.",
-    strict=True,
-)
 def test_gf07_large_cap_strong_small_cap_weak() -> None:
-    source = _source("src/market_analyzer.py")
-    assert "large_cap_role" in source and "small_cap_role" in source
+    analyzer = _source("src/market_analyzer.py")
+    renderer = _source("src/core/market_review.py")
+    assert "large_cap_role" in analyzer and "small_cap_role" in analyzer
+    assert "representative_index_roles" in analyzer
+    assert "代表指数职责" in renderer
+    assert "代表指数缺口" in renderer
 
 
 def test_gf08_speculative_heat_breadth_weak() -> None:
@@ -460,14 +460,14 @@ def test_gf25_information_moved_not_dropped() -> None:
     brief["trigger"] = "R004_INFO_TRIGGER"
     brief["invalidation"] = "R004_INFO_INVALIDATION"
     brief["risk_notes"] = ["R004_INFO_RISK"]
-    out = _render_asset(brief)
-    for marker in (
-        "R004_INFO_FUSED",
-        "R004_INFO_MONTHLY",
-        "R004_INFO_WEEKLY",
-        "R004_INFO_DAILY",
-        "R004_INFO_TRIGGER",
-        "R004_INFO_INVALIDATION",
-        "R004_INFO_RISK",
-    ):
-        assert marker in out
+    for out in (_render_asset(brief), _render_asset(brief, compact=True)):
+        for marker in (
+            "R004_INFO_FUSED",
+            "R004_INFO_MONTHLY",
+            "R004_INFO_WEEKLY",
+            "R004_INFO_DAILY",
+            "R004_INFO_TRIGGER",
+            "R004_INFO_INVALIDATION",
+            "R004_INFO_RISK",
+        ):
+            assert marker in out

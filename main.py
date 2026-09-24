@@ -902,7 +902,11 @@ def run_full_analysis(
 
     # Import pipeline modules outside the broad try/except so that import-time
     # failures propagate to the caller instead of being silently swallowed.
-    from src.core.market_review import render_market_review_region_projection, run_market_review
+    from src.core.market_review import (
+        _build_market_review_email_subject,
+        render_market_review_region_projection,
+        run_market_review,
+    )
     from src.core.pipeline import StockAnalysisPipeline
 
     try:
@@ -1102,7 +1106,7 @@ def run_full_analysis(
             can_skip_market_review = (
                 (merge_notification or market_context_generated_during_stock)
                 and can_reuse_market_context
-                and bool(market_context_full_report or market_context_summary)
+                and bool(market_context_full_report)
             )
             if can_skip_market_review:
                 market_report = market_context_full_report or market_context_summary
@@ -1122,10 +1126,17 @@ def run_full_analysis(
                     and not args.no_notify
                     and pipeline.notifier.is_available()
                 ):
+                    market_email_subject = _build_market_review_email_subject(
+                        {
+                            "date": str(daily_market_context_target_date or ""),
+                            "region": market_review_region,
+                        }
+                    )
                     if pipeline.notifier.send(
                         f"# 📈 大盘复盘\n\n{market_report}",
                         email_send_to_all=True,
                         route_type="report",
+                        email_subject=market_email_subject,
                     ):
                         logger.info("复用本轮大盘上下文推送大盘复盘成功")
                     else:
@@ -1187,8 +1198,8 @@ def run_full_analysis(
                             regions=("hk", "us", "jp", "kr"),
                         )
                         market_report = market_projection
-            elif can_reuse_market_context:
-                market_report = market_context_full_report or market_context_summary
+            elif can_reuse_market_context and market_context_full_report:
+                market_report = market_context_full_report
 
         # Issue #190: 合并推送（个股+大盘复盘）
         if merge_notification and (results or market_report) and not args.no_notify:
@@ -1203,7 +1214,27 @@ def run_full_analysis(
                 global_context=global_context or None,
             )
             if combined_content and pipeline.notifier.is_available():
-                if pipeline.notifier.send(combined_content, email_send_to_all=True, route_type="report"):
+                send_kwargs: Dict[str, Any] = {
+                    "email_send_to_all": True,
+                    "route_type": "report",
+                }
+                subject_builder = getattr(
+                    pipeline.notifier,
+                    "build_research_email_subject",
+                    None,
+                )
+                if results and callable(subject_builder):
+                    email_subject = subject_builder(results)
+                    if email_subject:
+                        send_kwargs["email_subject"] = email_subject
+                elif market_report:
+                    send_kwargs["email_subject"] = _build_market_review_email_subject(
+                        {
+                            "date": str(daily_market_context_target_date or ""),
+                            "region": market_review_region,
+                        }
+                    )
+                if pipeline.notifier.send(combined_content, **send_kwargs):
                     logger.info("已合并推送（个股+大盘复盘）")
                 else:
                     logger.warning("合并推送失败")

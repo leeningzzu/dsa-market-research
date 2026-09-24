@@ -17,6 +17,7 @@ TODO:
 import os
 import sys
 import unittest
+from copy import deepcopy
 from datetime import date
 from unittest import mock
 from typing import Optional
@@ -820,6 +821,123 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
 
 
 class TestNotificationServiceReportGeneration(unittest.TestCase):
+
+    @mock.patch("src.notification.get_config")
+    def test_research_email_subject_distinguishes_auto_and_watchlist(
+        self, mock_get_config: mock.MagicMock
+    ):
+        mock_get_config.return_value = _make_config(report_renderer_enabled=False)
+        service = NotificationService()
+        result = _make_investor_brief_result()
+        delivery = result.dashboard["research_delivery"]
+        delivery.update(
+            {
+                "selection_source": "AUTO_SCREEN",
+                "delivery_envelope": "ASSET_RESEARCH_BRIEF_AUTO",
+                "product_group": "AUTO_STOCK_FOCUS",
+                "group_rank": 1,
+            }
+        )
+
+        self.assertEqual(
+            service.build_research_email_subject([result], report_date="2026-09-24"),
+            "【晚间自动发现｜2026-09-24】0只ETF + 1只股票｜完整研究",
+        )
+
+        delivery.update(
+            {
+                "selection_source": "SPECIFIED_CODES",
+                "delivery_envelope": "ASSET_RESEARCH_BRIEF_WATCHLIST",
+                "product_group": "WATCHLIST_STOCK",
+            }
+        )
+        self.assertEqual(
+            service.build_research_email_subject([result], report_date="2026-09-24"),
+            "【我的自选研究｜2026-09-24】1只材料变化标的",
+        )
+
+    @mock.patch("src.notification.get_config")
+    def test_auto_remaining_rows_keep_reason_risk_and_invalidation(
+        self, mock_get_config: mock.MagicMock
+    ):
+        mock_get_config.return_value = _make_config(report_renderer_enabled=False)
+        service = NotificationService()
+
+        focus = _make_investor_brief_result()
+        focus.code = "510300"
+        focus.name = "沪深300ETF"
+        focus.dashboard["factor_decision"]["investor_brief"]["asset_type"] = "etf"
+        focus.dashboard["research_delivery"].update(
+            {
+                "selection_source": "AUTO_SCREEN",
+                "delivery_envelope": "ASSET_RESEARCH_BRIEF_AUTO",
+                "product_group": "AUTO_ETF_FOCUS",
+                "group_rank": 1,
+            }
+        )
+
+        remaining = deepcopy(_make_investor_brief_result())
+        remaining.code = "600000"
+        remaining.name = "浦发银行"
+        remaining.dashboard["research_delivery"].update(
+            {
+                "selection_source": "AUTO_SCREEN",
+                "delivery_envelope": "ASSET_RESEARCH_BRIEF_AUTO",
+                "product_group": "AUTO_STOCK_REMAINING",
+                "group_rank": 4,
+            }
+        )
+        remaining_brief = remaining.dashboard["factor_decision"]["investor_brief"]
+        remaining_brief["fused_paragraph"] = "R004_REMAINING_REASON"
+        remaining_brief["risk_notes"] = ["R004_REMAINING_RISK"]
+        remaining_brief["invalidation"] = "R004_REMAINING_INVALIDATION"
+
+        out = service.generate_brief_report(
+            [focus, remaining],
+            report_date="2026-09-24",
+        )
+
+        self.assertIn("### ETF重点 Top 3", out)
+        self.assertIn("### 股票其余候选（含分类不足）", out)
+        self.assertIn("**浦发银行（600000）**", out)
+        self.assertIn("核心理由：R004_REMAINING_REASON", out)
+        self.assertIn("主要风险：R004_REMAINING_RISK", out)
+        self.assertIn("失效条件：R004_REMAINING_INVALIDATION", out)
+
+    @mock.patch("src.notification.get_config")
+    def test_watchlist_envelope_keeps_complete_delivered_asset_cards(
+        self, mock_get_config: mock.MagicMock
+    ):
+        mock_get_config.return_value = _make_config(report_renderer_enabled=False)
+        service = NotificationService()
+        first = _make_investor_brief_result()
+        first.dashboard["research_delivery"].update(
+            {
+                "selection_source": "SPECIFIED_CODES",
+                "delivery_envelope": "ASSET_RESEARCH_BRIEF_WATCHLIST",
+                "product_group": "WATCHLIST_STOCK",
+            }
+        )
+        second = deepcopy(first)
+        second.code = "000001"
+        second.name = "平安银行"
+        second.dashboard["factor_decision"]["investor_brief"][
+            "one_line_conclusion"
+        ] = "R004_WATCHLIST_SECOND_CONCLUSION"
+        second.dashboard["factor_decision"]["investor_brief"][
+            "fused_paragraph"
+        ] = "R004_WATCHLIST_SECOND_DETAIL"
+
+        out = service.generate_brief_report(
+            [first, second],
+            report_date="2026-09-24",
+        )
+
+        self.assertIn("## ⭐ 我的自选研究", out)
+        self.assertIn("贵州茅台", out)
+        self.assertIn("平安银行", out)
+        self.assertIn("R004_WATCHLIST_SECOND_CONCLUSION", out)
+        self.assertIn("R004_WATCHLIST_SECOND_DETAIL", out)
     """报告生成与选路相关测试。"""
 
     def test_signal_metadata_uses_resolved_eight_state_action(self):
@@ -961,7 +1079,7 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         self.assertIn("**当前机会概率**: 暂不提供（尚未完成独立校准）", out)
         self.assertIn("- 弱趋势仍未修复", out)
         self.assertIn("- 估值证据仍有限", out)
-        self.assertNotIn("第三条风险不应进入第一屏", out)
+        self.assertIn("第三条风险不应进入第一屏", out)
         self.assertNotIn("旧核心结论（不得出现）", out)
         self.assertNotIn("旧因子结论（不得重复）", out)
         self.assertNotIn("旧空仓建议（不得出现）", out)
@@ -1050,12 +1168,12 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
 
                 positions = [out.index(marker) for marker in markers[:10]]
                 self.assertEqual(positions, sorted(positions))
-                self.assertNotIn("第三条风险不应进入第一屏", out)
+                self.assertIn("第三条风险不应进入第一屏", out)
                 self.assertNotIn("MISSING", out)
                 self.assertNotIn("**技术参考分**", out)
                 self.assertNotIn("**趋势/量价**", out)
-                self.assertNotIn("**历史参考胜率**", out)
-                self.assertNotIn("**当前机会概率**", out)
+                self.assertIn("**历史参考胜率**", out)
+                self.assertIn("**当前机会概率**", out)
                 self.assertNotIn("旧核心结论（不得出现）", out)
                 self.assertNotIn("旧因子结论（不得重复）", out)
                 self.assertNotIn("### 📊 数据透视", out)
@@ -1256,20 +1374,22 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
                         self.assertIn(marker, full)
                         self.assertIn(marker, compact)
 
-                for allowed_full_only in (
-                    "**技术参考分**: 43/100",
+                for shared_detail in (
                     "**当前价格**: 1450.0",
                     "**历史参考胜率**:",
                     "**当前机会概率**:",
                     "日线：趋势偏弱；量价尚未确认重新转强",
+                    "第三条风险不应进入第一屏",
                 ):
-                    self.assertIn(allowed_full_only, full)
-                    self.assertNotIn(allowed_full_only, compact)
+                    self.assertIn(shared_detail, full)
+                    self.assertIn(shared_detail, compact)
+
+                self.assertIn("**技术参考分**: 43/100", full)
+                self.assertNotIn("**技术参考分**: 43/100", compact)
 
                 for forbidden in (
                     "旧核心结论（不得出现）",
                     "旧因子结论（不得重复）",
-                    "第三条风险不应进入第一屏",
                     "UNBOUND_",
                 ):
                     self.assertNotIn(forbidden, full)

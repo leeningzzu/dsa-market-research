@@ -1071,12 +1071,20 @@ class TestEmailSender(unittest.TestCase):
         )
         sender = EmailSender(cfg)
 
-        result = sender._send_email_with_inline_image(b"PNG_BYTES", receivers=["b@qq.com"])
+        result = sender._send_email_with_inline_image(
+            b"PNG_BYTES",
+            receivers=["b@qq.com"],
+            subject="【我的自选研究｜2026-09-24】材料变化",
+        )
 
         self.assertTrue(result)
         server = mock_smtp_ssl.return_value
         server.send_message.assert_called_once()
         msg = server.send_message.call_args[0][0]
+        self.assertEqual(
+            str(make_header(decode_header(msg["Subject"]))),
+            "【我的自选研究｜2026-09-24】材料变化",
+        )
         realname, addr = parseaddr(msg["From"])
         self.assertEqual(addr, "a@qq.com")
         self.assertEqual(

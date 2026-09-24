@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] 收敛 R004 三封用户邮件的真实消费者契约：开盘前 MARKET_REGIME_BRIEF、晚间 AUTO 与条件 WATCHLIST 继续共享同一 canonical evidence/decision；Email/Telegram 的结论先行简报不再以“compact/mobile”为由删除已 READY 的月/周/日/60分钟与30/15/5分钟材料证据或固定截断风险，AUTO 4–10 保留既有核心理由、主要风险和失效/下一触发，自选触发对象保持完整研究；文本与内联图片 Email 复用 envelope-aware subject，Market 上下文仅在完整报告可用时才复用。加入 exact R004 Gold Master ZIP 作为私有回归 fixture；当前仅有 dependency-light / syntax / diff 本地证据，完整集成仍以 private natural CI 与后续 bounded consumer acceptance 为准。
+
 - [修复] 修复 R004 同源投影的两类材料信息丢失：月/周多周期摘要不再因前三项 MA/量价/MACD 占满而截掉已确认的突破/失败突破结构事件；复用 DailyMarketContext 时直接复用既有 market-review merge renderer，将 structured 市场宽度/涨跌停结构等确定性事实补入原始复盘正文并保持重复渲染幂等。未新增数据源、报告器、通知器、模型或外部依赖。
 
 - [改进] R004 MARKET_REGIME_BRIEF 复用现有 `MarketOverview` / `market_review_payload` / 唯一 market-review renderer，新增确定性的市场宽度分母/上涨占比与“涨跌停结构”投机热度代理，并由保存报告与通知共用同一 payload 投影；不新增 provider、第二报告或情绪模型。GF07 大小盘角色继续 fail-closed，因当前 main-index owner 尚无明确 small-cap benchmark；GF09/GF10 继续独立 Data Capability admission。

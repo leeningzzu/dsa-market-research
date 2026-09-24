@@ -79,6 +79,27 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
                     expected,
                 )
 
+
+    def test_market_review_email_subject_uses_market_envelope_identity(self) -> None:
+        self.assertEqual(
+            market_review_module._build_market_review_email_subject(
+                {"date": "2026-09-24", "region": "cn"}
+            ),
+            "【开盘前市场｜2026-09-24】A股｜完整市场研究",
+        )
+        self.assertEqual(
+            market_review_module._build_market_review_email_subject(
+                {
+                    "date": "2026-09-24",
+                    "markets": {
+                        "cn": {"date": "2026-09-24"},
+                        "us": {"date": "2026-09-24"},
+                    },
+                }
+            ),
+            "【开盘前市场｜2026-09-24】A股 + 美股｜完整市场研究",
+        )
+
     def test_run_market_review_uses_english_notification_title(self) -> None:
         notifier = self._make_notifier()
         market_analyzer = MagicMock()

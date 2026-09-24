@@ -164,6 +164,43 @@ def _market_review_region_metadata(region: Any) -> str:
     return ""
 
 
+def _build_market_review_email_subject(payload: Any) -> str:
+    """Build a stable Market-envelope subject from already-produced payload facts."""
+    if not isinstance(payload, dict):
+        payload = {}
+    date_text = str(payload.get("date") or "").strip()
+    regions: list[str] = []
+    markets = payload.get("markets")
+    if isinstance(markets, dict) and markets:
+        regions = [region for region in _MARKET_REVIEW_REGION_ORDER if region in markets]
+        if not date_text:
+            for region in regions:
+                market_payload = markets.get(region)
+                if isinstance(market_payload, dict):
+                    date_text = str(market_payload.get("date") or "").strip()
+                    if date_text:
+                        break
+    else:
+        region = str(payload.get("region") or "").strip().lower()
+        if region:
+            regions = [item for item in region.split(",") if item]
+
+    if not date_text:
+        date_text = datetime.now().strftime("%Y-%m-%d")
+
+    labels = {
+        "cn": "A股",
+        "hk": "港股",
+        "us": "美股",
+        "jp": "日股",
+        "kr": "韩股",
+    }
+    scope = " + ".join(labels.get(region, region.upper()) for region in regions if region)
+    if not scope:
+        scope = "市场"
+    return f"【开盘前市场｜{date_text}】{scope}｜完整市场研究"
+
+
 def _resolve_market_review_regions(raw_region: Optional[str]) -> list[str]:
     """Normalize MARKET_REVIEW_REGION into an ordered, non-empty region list."""
 
@@ -370,13 +407,15 @@ def run_market_review(
                     "route_type": "report",
                 }
                 try:
-                    supports_payload = (
-                        "structured_payload" in inspect.signature(notifier.send).parameters
-                    )
+                    send_parameters = inspect.signature(notifier.send).parameters
                 except (TypeError, ValueError):
-                    supports_payload = False
-                if supports_payload:
+                    send_parameters = {}
+                if "structured_payload" in send_parameters:
                     send_kwargs["structured_payload"] = market_review_payload
+                if "email_subject" in send_parameters:
+                    send_kwargs["email_subject"] = _build_market_review_email_subject(
+                        market_review_payload
+                    )
                 success = notifier.send(report_content, **send_kwargs)
                 _record_market_review_notification_run(
                     query_id=history_query_id,
@@ -786,6 +825,49 @@ def _render_market_brief_payload_markdown_block(
     title = "Market Breadth & Limit Structure" if language == "en" else "市场宽度与涨跌停结构"
     heading = f"{title_prefix} / {title}" if title_prefix else title
     lines = [f"### {heading}", ""]
+
+    representative_roles = brief.get("representative_index_roles")
+    if isinstance(representative_roles, dict):
+        roles = representative_roles.get("roles")
+        if isinstance(roles, dict):
+            rendered_roles = []
+            missing_roles = []
+            for role in roles.values():
+                if not isinstance(role, dict):
+                    continue
+                label = str(role.get("label") or "").strip()
+                indices = role.get("indices")
+                if role.get("status") == "READY" and isinstance(indices, list) and indices:
+                    items = []
+                    for index in indices:
+                        if not isinstance(index, dict):
+                            continue
+                        name = str(index.get("name") or "").strip()
+                        change_pct = index.get("change_pct")
+                        if name and isinstance(change_pct, (int, float)):
+                            items.append(f"{name} {float(change_pct):+.2f}%")
+                        elif name:
+                            items.append(name)
+                    if label and items:
+                        rendered_roles.append(f"{label}：{'、'.join(items)}")
+                elif label:
+                    missing_roles.append(label)
+            if rendered_roles:
+                role_label = "Representative index roles" if language == "en" else "代表指数职责"
+                lines.append(f"- **{role_label}**：{'；'.join(rendered_roles)}")
+            if missing_roles:
+                if language == "en":
+                    lines.append(
+                        "- **Role coverage gap**: no reliable current data for "
+                        + ", ".join(missing_roles)
+                        + "."
+                    )
+                else:
+                    lines.append(
+                        "- **代表指数缺口**：本次暂无"
+                        + "、".join(missing_roles)
+                        + "的可靠当前数据，不据此补写风格结论。"
+                    )
 
     breadth = brief.get("breadth")
     if isinstance(breadth, dict) and breadth.get("status") == "READY":

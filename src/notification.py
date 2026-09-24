@@ -290,8 +290,6 @@ def _append_investor_brief_block(lines: List[str], factor: Any, report_language:
             text = str(item or "").strip()
             if text:
                 rendered_risks.append(text)
-            if len(rendered_risks) >= 2:
-                break
     if rendered_risks:
         lines.append("**主要风险**:")
         lines.extend(f"- {item}" for item in rendered_risks)
@@ -349,7 +347,7 @@ def _append_investor_notification_block(
     *,
     position_advice: Any = None,
 ) -> bool:
-    """Render the compact investor notification projection from canonical brief evidence."""
+    """Render the investor Email projection without deleting material canonical evidence."""
     brief = _get_valid_investor_brief(factor, report_language)
     if brief is None:
         return False
@@ -357,6 +355,12 @@ def _append_investor_notification_block(
     one_line = str(brief.get("one_line_conclusion") or "").strip()
     fused = str(brief.get("fused_paragraph") or "").strip()
     lines.extend([f"**综合结论**: {one_line}", "", fused, ""])
+
+    current_price = brief.get("current_price") or {}
+    if isinstance(current_price, dict):
+        value = current_price.get("value")
+        if value is not None and str(value).strip():
+            lines.append(f"**当前价格**: {value}")
 
     valuation = brief.get("valuation") or {}
     if isinstance(valuation, dict):
@@ -381,6 +385,28 @@ def _append_investor_notification_block(
     if coverage_text:
         lines.append(f"**多周期**: {coverage_text}")
 
+    timeframe_thesis = brief.get("timeframe_thesis") or {}
+    rendered_timeframes = []
+    if isinstance(timeframe_thesis, dict):
+        for label, key in (
+            ("月线", "monthly"),
+            ("周线", "weekly"),
+            ("日线", "daily"),
+            ("60分钟", "60m"),
+        ):
+            item = timeframe_thesis.get(key) or {}
+            if not isinstance(item, dict):
+                continue
+            status = str(item.get("status") or "").strip()
+            summary_text = str(item.get("summary") or "").strip()
+            if status in {"READY", "PROVEN_CURRENT", "PARTIAL_CURRENT"} and summary_text:
+                rendered_timeframes.append(
+                    summary_text if summary_text.startswith(label) else f"{label}：{summary_text}"
+                )
+    if rendered_timeframes:
+        lines.append("**多周期量价与形态**:")
+        lines.extend(f"- {item}" for item in rendered_timeframes)
+
     short_term = brief.get("short_term_execution_panel") or {}
     if isinstance(short_term, dict) and short_term.get("status") == "READY":
         rendered_short = []
@@ -395,11 +421,12 @@ def _append_investor_notification_block(
                     summary_text if summary_text.startswith(label) else f"{label}：{summary_text}"
                 )
         if rendered_short:
-            lines.append(f"**短线**: {'｜'.join(rendered_short)}")
+            lines.append("**短线波段**:")
+            lines.extend(f"- {item}" for item in rendered_short)
         else:
             short_summary = str(short_term.get("summary") or "").strip()
             if short_summary:
-                lines.append(f"**短线**: {short_summary}")
+                lines.append(f"**短线波段**: {short_summary}")
 
     key_levels = brief.get("key_levels") or {}
     if isinstance(key_levels, dict):
@@ -422,6 +449,37 @@ def _append_investor_notification_block(
     if invalidation:
         lines.append(f"**失效条件**: {invalidation}")
 
+    scenario = brief.get("scenario") or {}
+    alternative = scenario.get("alternative") if isinstance(scenario, dict) else {}
+    if isinstance(alternative, dict) and alternative.get("status") == "READY":
+        condition = str(alternative.get("condition") or "").strip()
+        if condition:
+            lines.append(f"**备选情景**: {condition}")
+
+    historical = brief.get("historical_reference") or {}
+    if isinstance(historical, dict):
+        if historical.get("available") is False:
+            reason = str(historical.get("reason") or "").strip()
+            suffix = f"（{reason}）" if reason else ""
+            lines.append(f"**历史参考胜率**: 暂不提供{suffix}")
+        elif (
+            historical.get("available") is True
+            and isinstance(historical.get("positive_rate"), (int, float))
+            and isinstance(historical.get("n"), (int, float))
+        ):
+            positive_rate = float(historical["positive_rate"])
+            if positive_rate <= 1:
+                positive_rate *= 100
+            lines.append(
+                f"**历史参考胜率**: {positive_rate:.1f}%（n={int(historical['n'])}）"
+            )
+
+    probability = factor.get("current_probability") if isinstance(factor, dict) else {}
+    if isinstance(probability, dict):
+        display = str(probability.get("display") or "").strip()
+        if display:
+            lines.append(f"**当前机会概率**: {display}")
+
     if isinstance(position_advice, dict):
         no_position = str(position_advice.get("no_position") or "").strip()
         has_position = str(position_advice.get("has_position") or "").strip()
@@ -440,8 +498,6 @@ def _append_investor_notification_block(
             text = str(item or "").strip()
             if text:
                 rendered_risks.append(text)
-            if len(rendered_risks) >= 2:
-                break
     if rendered_risks:
         lines.append("**主要风险**:")
         lines.extend(f"- {item}" for item in rendered_risks)
@@ -1625,6 +1681,94 @@ class NotificationService(
                 return conclusion
         return str(getattr(result, "analysis_summary", "") or "").strip()
 
+    @staticmethod
+    def _research_remaining_detail_lines(
+        result: AnalysisResult,
+        report_language: str,
+    ) -> List[str]:
+        """Project existing canonical facts for AUTO 4-10 rows without recomputation."""
+        if report_language != "zh":
+            return []
+        dashboard = getattr(result, "dashboard", None)
+        dashboard = dashboard if isinstance(dashboard, dict) else {}
+        factor = dashboard.get("factor_decision")
+        factor = factor if isinstance(factor, dict) else {}
+        brief = factor.get("investor_brief")
+        if not isinstance(brief, dict):
+            return []
+
+        detail_lines: List[str] = []
+        reason = str(brief.get("fused_paragraph") or "").strip()
+        if reason:
+            detail_lines.append(f"  - 核心理由：{reason}")
+
+        risk_notes = brief.get("risk_notes") or []
+        if isinstance(risk_notes, list):
+            first_risk = next(
+                (str(item).strip() for item in risk_notes if str(item or "").strip()),
+                "",
+            )
+            if first_risk:
+                detail_lines.append(f"  - 主要风险：{first_risk}")
+
+        invalidation = str(brief.get("invalidation") or "").strip()
+        trigger = str(brief.get("trigger") or "").strip()
+        if invalidation:
+            detail_lines.append(f"  - 失效条件：{invalidation}")
+        elif trigger:
+            detail_lines.append(f"  - 下一触发：{trigger}")
+        return detail_lines
+
+    def build_research_email_subject(
+        self,
+        results: List[AnalysisResult],
+        report_date: Optional[str] = None,
+    ) -> Optional[str]:
+        """Return an envelope-aware Email subject from existing delivery identities."""
+        if not results:
+            return None
+        report_language = self._get_report_language(results)
+        if report_language != "zh":
+            return None
+        date_text = report_date or datetime.now().strftime("%Y-%m-%d")
+        deliveries = [self._research_delivery(result) for result in results]
+        envelopes = {
+            str(item.get("delivery_envelope") or "")
+            for item in deliveries
+            if item
+        }
+        if "ASSET_RESEARCH_BRIEF_WATCHLIST" in envelopes:
+            return f"【我的自选研究｜{date_text}】{len(results)}只材料变化标的"
+
+        sources = {
+            str(item.get("selection_source") or "")
+            for item in deliveries
+            if item
+        }
+        if sources == {"AUTO_SCREEN"}:
+            etf_count = 0
+            stock_count = 0
+            for result in results:
+                dashboard = getattr(result, "dashboard", None)
+                dashboard = dashboard if isinstance(dashboard, dict) else {}
+                factor = dashboard.get("factor_decision")
+                factor = factor if isinstance(factor, dict) else {}
+                brief = factor.get("investor_brief")
+                asset_type = (
+                    str(brief.get("asset_type") or "").strip().lower()
+                    if isinstance(brief, dict)
+                    else ""
+                )
+                if asset_type == "etf":
+                    etf_count += 1
+                else:
+                    stock_count += 1
+            return (
+                f"【晚间自动发现｜{date_text}】"
+                f"{etf_count}只ETF + {stock_count}只股票｜完整研究"
+            )
+        return None
+
     def _research_product_projection(
         self,
         results: List[AnalysisResult],
@@ -1679,6 +1823,10 @@ class NotificationService(
                     conclusion = self._research_conclusion(result)
                     suffix = f"｜{conclusion}" if conclusion else ""
                     lines.append(f"- {rank_text}**{name}（{result.code}）**{suffix}")
+                    if group_key.endswith("_REMAINING"):
+                        lines.extend(
+                            self._research_remaining_detail_lines(result, report_language)
+                        )
                 lines.append("")
                 if group_key.endswith("_FOCUS"):
                     focus_results.extend(grouped)
@@ -3062,6 +3210,7 @@ class NotificationService(
         email_stock_codes: Optional[List[str]],
         email_send_to_all: bool,
         route_type: Optional[str] = None,
+        email_subject: Optional[str] = None,
     ) -> bool:
         use_image = self._should_use_image_for_channel(channel, image_bytes)
         sanitized_content = strip_hidden_markdown_metadata(content).strip()
@@ -3089,11 +3238,14 @@ class NotificationService(
                 receivers = self.get_all_email_receivers()
             elif email_stock_codes and self._stock_email_groups:
                 receivers = self.get_receivers_for_stocks(email_stock_codes)
+            email_kwargs: Dict[str, Any] = {"receivers": receivers}
+            if email_subject:
+                email_kwargs["subject"] = email_subject
             if use_image:
-                return self._send_email_with_inline_image(image_bytes, receivers=receivers)
+                return self._send_email_with_inline_image(image_bytes, **email_kwargs)
             return self.send_to_email(
                 sanitized_content,
-                receivers=receivers,
+                **email_kwargs,
             )
         if channel == NotificationChannel.PUSHOVER:
             return self.send_to_pushover(content)
@@ -3130,6 +3282,7 @@ class NotificationService(
         dedup_key: Optional[str] = None,
         cooldown_key: Optional[str] = None,
         structured_payload: Optional[Dict[str, Any]] = None,
+        email_subject: Optional[str] = None,
     ) -> NotificationDispatchResult:
         """
         Send a notification and return per-channel diagnostics.
@@ -3151,6 +3304,7 @@ class NotificationService(
             dedup_key: 可选稳定去重 key；未设置时使用内容 hash
             cooldown_key: 可选冷却 key；未设置时使用路由/级别默认 key
             structured_payload: 可选的个股或市场结构化结果，仅用于图片模板精确填充
+            email_subject: 可选的邮件主题；仅 Email 渠道消费，其他渠道忽略
 
         Returns:
             Structured dispatch diagnostics.
@@ -3286,6 +3440,7 @@ class NotificationService(
                     email_stock_codes=email_stock_codes,
                     email_send_to_all=email_send_to_all,
                     route_type=route_type,
+                    email_subject=email_subject,
                 )
                 latency_ms = int((time.monotonic() - started_at) * 1000)
 
@@ -3348,6 +3503,7 @@ class NotificationService(
         dedup_key: Optional[str] = None,
         cooldown_key: Optional[str] = None,
         structured_payload: Optional[Dict[str, Any]] = None,
+        email_subject: Optional[str] = None,
     ) -> bool:
         """
         统一发送接口 - 向所有已配置的渠道发送。
@@ -3364,6 +3520,7 @@ class NotificationService(
             dedup_key=dedup_key,
             cooldown_key=cooldown_key,
             structured_payload=structured_payload,
+            email_subject=email_subject,
         )
         return bool(result.success)
 

@@ -82,7 +82,7 @@
 {% if current_probability.get('display') %}**当前机会概率**: {{ current_probability.get('display') }}
 {% endif %}
 {% if investor_brief.get('risk_notes') %}**主要风险**:
-{% for item in investor_brief.get('risk_notes')[:2] %}- {{ item }}
+{% for item in investor_brief.get('risk_notes') %}- {{ item }}
 {% endfor %}
 {% endif %}
 {% set timeframe_thesis = investor_brief.get('timeframe_thesis') or {} %}

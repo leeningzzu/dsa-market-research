@@ -206,7 +206,9 @@ R2 是保存研究状态包的存储服务，不是 SMTP，也不是模型服务
 
 现有 `REPORT_SHOW_LLM_MODEL=false` 可以隐藏普通报告里的模型署名，工作流已有映射。但隐藏一行署名解决不了重复指标和机械语言，不必现在为它单独跑一次邮件。
 
-报告应先回答：**现在怎么看，为什么，什么变化会让我改判断。** 每只资产只保留一个主结论、一段融合解释、必要的关注/转弱条件；材料事件不能遗漏，缺数据只说明一次。
+当前用户侧基线是已接受的 R004 information-dense Gold Master。邮件应先回答：**现在怎么看，为什么，什么变化会让我改判断。** 第一屏可以结论先行，但同一封邮件后续必须让全部材料证据可达；“compact/mobile”只允许调整层级和去重，不允许删除已 READY 的重要周期、量价/形态、估值、触发、失效或风险证据，也没有固定整封邮件长度上限。稳定/无事件状态可只说明一次；缺数据只说明一次，不能由模型补齐。
+
+三个 envelope 共享同一 canonical evidence/decision：开盘前 `MARKET_REGIME_BRIEF`、晚间 `ASSET_RESEARCH_BRIEF_AUTO`、条件触发的 `ASSET_RESEARCH_BRIEF_WATCHLIST`。AUTO 的重点 Top 3 保持完整深析；4–10 可以紧凑，但至少保留现有 canonical 结论、核心理由、主要风险和失效/下一触发。WATCHLIST 即使结论为 WAIT/AVOID/失效，也不能降低研究完整度。文本 Email 与内联图片 Email 应消费同一 envelope-aware subject，不能因为走不同发送形式退回通用标题。
 
 改展示的入口：
 
@@ -215,12 +217,14 @@ R2 是保存研究状态包的存储服务，不是 SMTP，也不是模型服务
 | 人类解释、跨周期融合、关注与失效条件 | `src/services/factor_decision_summary.py` |
 | 简报正文布局 | `templates/report_brief.j2` |
 | 完整报告布局 | `templates/report_markdown.j2` |
-| Python 渲染及 Email/Telegram 拼装 | `src/notification.py` |
+| Python 渲染、AUTO/WATCHLIST 分组与 Email/Telegram 拼装 | `src/notification.py` |
+| Email 文本/内联图片主题 | `src/notification_sender/email_sender.py` + `src/core/pipeline.py` |
+| Market 保存/通知/复用投影 | `src/core/market_review.py` + `main.py` |
 | 参数说明和 Actions 映射 | `.env.example`、`.github/workflows/00-daily-analysis.yml` |
 
-本次发现：融合字段只是拼接指标，Jinja 和 Python 简报又重复输出同一周期、估值和结论。因此要修同一个展示语义，并用同一组样本检查两条渲染路径；不能只换一个模板文件或让模型“更简洁”。风险否决存在时，不能另写一个过于宽松的“升为买入候选”条件。
+修改报告时不能只检查“用了同一个 `AnalysisResult`”或某个字段/字符串是否存在；必须用同一组 canonical 输入比较保存报告、Jinja/Python compact、Email/Telegram 的实际输出，确认材料事实没有在最终消费者丢失。R004 exact Gold Master fixture 是内容/结构回归基线，不代表真实数据、策略效果、胜率或概率已经得到证明。
 
-实现前保留当前收到的邮件作为反例。先离线生成新正文，检查手机阅读宽度、事实和数字一致、重复段落、缺失说明、材料事件、风险否决与条件一致；全量指标留在完整报告。当前文档修改本身没有修复运行模板。
+实现前保留当前收到的错误邮件作为反例。离线检查第一屏可读性、完整详细区、事实和数字一致、重复预算、missingness、材料事件、风险否决、AUTO 4–10、自选触发以及 subject/body 一致性；随后以 private natural CI 做完整依赖环境验证，再经单独授权的 bounded consumer acceptance 验证真实收件效果。
 
 <a id="task-recovery"></a>
 ## 11. 常见问题和恢复

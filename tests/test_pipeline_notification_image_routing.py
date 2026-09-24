@@ -260,6 +260,7 @@ class _FakeRoutedNotifier:
             )
         )
         self.generate_brief_report = MagicMock(return_value="brief-report")
+        self.build_research_email_subject = MagicMock(return_value=None)
         self._send_wechat_image = MagicMock(return_value=True)
         self.send_to_wechat = MagicMock(return_value=True)
         self._send_telegram_photo = MagicMock(return_value=True)
@@ -330,6 +331,45 @@ class TestPipelineReportRouteFiltering(unittest.TestCase):
         )
         pipeline.notifier.send_to_telegram.assert_called_once_with("brief-report")
         pipeline.notifier.send_to_email.assert_called_once_with("brief-report")
+
+
+    def test_email_text_route_propagates_envelope_subject(self):
+        pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+        pipeline.notifier = _FakeRoutedNotifier([NotificationChannel.EMAIL])
+        pipeline.notifier.build_research_email_subject.return_value = (
+            "【晚间自动发现｜2026-09-24】完整研究"
+        )
+        pipeline.config = SimpleNamespace(stock_email_groups=[])
+        results = [SimpleNamespace(code="000001")]
+
+        with patch("src.md2img.markdown_to_image", return_value=None):
+            pipeline._send_notifications(results, ReportType.SIMPLE)
+
+        pipeline.notifier.send_to_email.assert_called_once_with(
+            "brief-report",
+            subject="【晚间自动发现｜2026-09-24】完整研究",
+        )
+
+    def test_email_inline_image_route_propagates_same_envelope_subject(self):
+        pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+        pipeline.notifier = _FakeRoutedNotifier(
+            [NotificationChannel.EMAIL],
+            image_channels={"email"},
+        )
+        pipeline.notifier.build_research_email_subject.return_value = (
+            "【我的自选研究｜2026-09-24】材料变化"
+        )
+        pipeline.config = SimpleNamespace(stock_email_groups=[])
+        results = [SimpleNamespace(code="000001")]
+
+        with patch("src.md2img.markdown_to_image", return_value=b"png"):
+            pipeline._send_notifications(results, ReportType.SIMPLE)
+
+        pipeline.notifier._send_email_with_inline_image.assert_called_once_with(
+            b"png",
+            subject="【我的自选研究｜2026-09-24】材料变化",
+        )
+        pipeline.notifier.send_to_email.assert_not_called()
 
     def test_markdown_to_image_uses_route_filtered_channels(self):
         pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)

@@ -1,9 +1,18 @@
 from __future__ import annotations
 
+import hashlib
+import zipfile
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+R004_FIXTURE = (
+    ROOT
+    / "tests"
+    / "fixtures"
+    / "r004"
+    / "STOCK_DSA_INFORMATION_DENSE_EMAIL_GOLD_MASTER_R004.zip"
+)
 
 R004_BASELINE_ID = "STOCK_DSA_INFORMATION_DENSE_EMAIL_GOLD_MASTER_R004"
 R004_ACCEPTANCE_ID = "STOCK_DSA_INFORMATION_DENSE_GOLD_MASTER_R004_ACCEPTANCE_20260922_R001"
@@ -50,10 +59,10 @@ EXPECTED_REQUIREMENT_IDS = {
     "MISSING-001",
 }
 
-# Exact private@83e6612 pre-authoring binding.  "data_capability" is deliberately
-# conservative: READY means the current private tree has the bound deterministic
-# surface; PARTIAL/SCHEMA states must remain fail-closed until rendered goldens
-# and later data admission prove more.
+# R004 requirement binding. "data_capability" is deliberately conservative:
+# READY means the current tree has the bound deterministic surface;
+# PARTIAL/SCHEMA states stay fail-closed until rendered goldens and data admission
+# prove more. Repository currentness is verified separately from this contract.
 REQUIREMENT_BINDINGS = {
     "ORDER-001": {
         "data_capability": "PARTIAL_CURRENT",
@@ -322,6 +331,23 @@ def test_r004_baseline_identity_and_artifact_hashes_are_frozen() -> None:
     )
     assert len(R004_ARTIFACT_SHA256) == 5
     assert all(len(value) == 64 for value in R004_ARTIFACT_SHA256.values())
+
+
+    assert R004_FIXTURE.is_file()
+    fixture_bytes = R004_FIXTURE.read_bytes()
+    assert hashlib.sha256(fixture_bytes).hexdigest() == R004_ARTIFACT_SHA256[
+        "STOCK_DSA_INFORMATION_DENSE_EMAIL_GOLD_MASTER_R004.zip"
+    ]
+
+    with zipfile.ZipFile(R004_FIXTURE) as archive:
+        for name in (
+            "00_STOCK_DSA_INFORMATION_DENSE_GOLD_MASTER_PREVIEW_R004.html",
+            "01_MARKET_REGIME_BRIEF_INFORMATION_DENSE_SIMULATION_R004.html",
+            "02_ASSET_RESEARCH_BRIEF_AUTO_INFORMATION_DENSE_SIMULATION_R004.html",
+            "03_ASSET_RESEARCH_BRIEF_WATCHLIST_INFORMATION_DENSE_SIMULATION_R004.html",
+        ):
+            assert name in archive.namelist()
+            assert hashlib.sha256(archive.read(name)).hexdigest() == R004_ARTIFACT_SHA256[name]
 
 
 def test_r004_requirement_coverage_matrix_is_complete_and_source_bound() -> None:
