@@ -321,22 +321,24 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
         self.assertIn("# Korea Market Recap\n\nKR body", result)
         saved_content = notifier.save_report_to_file.call_args.args[0]
         self.assertTrue(saved_content.startswith("# 🎯 Market Review\n\n"))
-        self.assertIn("# A-share Market Recap\n\nCN body", saved_content)
+        self.assertIn("# A-share Market Recap", saved_content)
+        self.assertEqual(saved_content.count("### Pre-open: six questions first"), 1)
+        self.assertLess(saved_content.index("### Pre-open: six questions first"), saved_content.index("CN body"))
         self.assertIn("> Next market recap follows", saved_content)
         self.assertIn("# HK Market Recap\n\nHK body", saved_content)
         self.assertIn("# US Market Recap\n\nUS body", saved_content)
         self.assertIn("# Japan Market Recap\n\nJP body", saved_content)
         self.assertIn("# Korea Market Recap\n\nKR body", saved_content)
-        self.assertIn(
-            "# A-share Market Recap\n\nCN body",
-            persist_history.call_args.kwargs["markdown_report"],
-        )
+        persisted_markdown = persist_history.call_args.kwargs["markdown_report"]
+        self.assertIn("### Pre-open: six questions first", persisted_markdown)
+        self.assertIn("CN body", persisted_markdown)
         self.assertEqual(
             set(persist_history.call_args.kwargs["market_light_snapshots"]),
             {"cn", "hk", "us"},
         )
         sent_content = notifier.send.call_args.args[0]
         self.assertTrue(sent_content.startswith("🎯 Market Review\n\n"))
+        self.assertIn("### Pre-open: six questions first", sent_content)
         self.assertIn("# US Market Recap\n\nUS body", sent_content)
         self.assertIn("# Japan Market Recap\n\nJP body", sent_content)
         self.assertIn("# Korea Market Recap\n\nKR body", sent_content)
@@ -677,6 +679,192 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
         self.assertIn("上涨 1200 / 总参与 2160 = 55.6%", markdown)
         self.assertIn("涨停 12 / 涨跌停总数 16 = 75.0%", markdown)
 
+
+    def test_morning_plain_language_overlay_is_additive_to_full_r004_sections(self) -> None:
+        detailed_report = """## 2026-09-23 大盘复盘
+
+> 原有R004结论先行内容保持不变。
+
+### 一、盘面总览
+原有盘面总览完整保留。
+
+### 二、代表指数职责与结构
+原有指数职责完整保留。
+
+### 三、市场宽度与投机热度
+原有宽度详细区完整保留。
+
+### 四、成交、资金、杠杆、信用、估值与波动
+原有资金详细区完整保留。
+
+### 五、全球环境与传导
+原有全球详细区完整保留。
+
+### 六、行业与资产主线
+原有行业详细区完整保留。
+
+### 七、今日观察与计划变化
+原有计划变化完整保留。
+
+### 八、数据时点与质量
+原有时点质量完整保留。
+"""
+        payload = {
+            "region": "cn",
+            "language": "zh",
+            "date": "2026-09-23",
+            "generated_at": "2026-09-24T09:06:30+08:00",
+            "markdown_report": detailed_report,
+            "market_light": {
+                "status": "yellow",
+                "label": "需观察",
+                "score": 52,
+                "guidance": "控制仓位并等待指数、宽度和量价进一步确认。",
+                "data_quality": "partial",
+            },
+            "market_brief": {
+                "breadth": {
+                    "status": "READY",
+                    "up_count": 2300,
+                    "down_count": 2600,
+                    "flat_count": 100,
+                    "breadth_denominator": 5000,
+                    "breadth_ratio": 0.46,
+                },
+                "speculative_heat": {
+                    "status": "READY",
+                    "limit_up_count": 55,
+                    "limit_down_count": 18,
+                    "limit_total": 73,
+                    "limit_up_ratio": 0.753425,
+                },
+            },
+            "sectors": {
+                "top": [{"name": "半导体", "change_pct": 2.1}],
+                "bottom": [{"name": "煤炭", "change_pct": -1.6}],
+            },
+            "concepts": {
+                "top": [{"name": "机器人", "change_pct": 3.0}],
+                "bottom": [{"name": "高位题材", "change_pct": -2.2}],
+            },
+        }
+
+        markdown = market_review_module._render_market_review_payload_markdown(payload)
+
+        self.assertEqual(markdown.count("### 开盘前先看这六件事"), 1)
+        self.assertLess(markdown.index("原有R004结论先行内容保持不变"), markdown.index("### 开盘前先看这六件事"))
+        self.assertLess(markdown.index("### 开盘前先看这六件事"), markdown.index("### 一、盘面总览"))
+        self.assertIn("原有R004结论先行内容保持不变", markdown)
+        for heading in (
+            "### 一、盘面总览",
+            "### 二、代表指数职责与结构",
+            "### 三、市场宽度与投机热度",
+            "### 四、成交、资金、杠杆、信用、估值与波动",
+            "### 五、全球环境与传导",
+            "### 六、行业与资产主线",
+            "### 七、今日观察与计划变化",
+            "### 八、数据时点与质量",
+        ):
+            self.assertEqual(markdown.count(heading), 1)
+        self.assertIn("市场宽度（有多少股票一起上涨）", markdown)
+        self.assertIn("不等于已经证明主力或机构资金净流入", markdown)
+        self.assertIn("数据日期 2026-09-23", markdown)
+        self.assertIn("缺失项不按中性证据处理", markdown)
+        self.assertIn("先给综合结论", markdown)
+        self.assertIn("大环境需观察", markdown)
+        self.assertIn("成交和量能是否支持", markdown)
+        self.assertIn("不把“量能足/不足”硬猜出来", markdown)
+
+
+    def test_morning_plain_language_overlay_treats_vix_as_risk_pressure_and_is_idempotent(self) -> None:
+        payload = {
+            "region": "cn,us",
+            "language": "zh",
+            "markdown_report": (
+                "## A股大盘复盘\n\nA股原有完整正文。\n\n"
+                "---\n\n"
+                "## 美股大盘复盘\n\n美股原有完整正文。"
+            ),
+            "markets": {
+                "cn": {
+                    "title": "A股大盘复盘",
+                    "language": "zh",
+                    "date": "2026-09-23",
+                    "generated_at": "2026-09-24T09:06:30+08:00",
+                    "market_light": {
+                        "status": "yellow",
+                        "label": "需观察",
+                        "score": 48,
+                        "guidance": "先看宽度能否改善。",
+                        "data_quality": "ok",
+                    },
+                    "market_brief": {
+                        "breadth": {
+                            "status": "READY",
+                            "up_count": 2100,
+                            "down_count": 2800,
+                            "flat_count": 100,
+                            "breadth_denominator": 5000,
+                            "breadth_ratio": 0.42,
+                        },
+                        "speculative_heat": {
+                            "status": "READY",
+                            "limit_up_count": 60,
+                            "limit_down_count": 20,
+                            "limit_total": 80,
+                            "limit_up_ratio": 0.75,
+                        },
+                    },
+                    "sectors": {
+                        "top": [{"name": "通信", "change_pct": 1.8}],
+                        "bottom": [{"name": "房地产", "change_pct": -2.4}],
+                    },
+                },
+                "us": {
+                    "title": "美股大盘复盘",
+                    "language": "zh",
+                    "indices": [
+                        {
+                            "code": "SPX",
+                            "name": "标普500",
+                            "current": 6600.0,
+                            "change_pct": -0.8,
+                            "instrument_role": "equity_index",
+                        },
+                        {
+                            "code": "VIX",
+                            "name": "VIX",
+                            "current": 25.2,
+                            "change_pct": 18.0,
+                            "instrument_role": "risk_pressure",
+                        },
+                    ],
+                },
+            },
+        }
+
+        first = market_review_module._render_market_review_payload_markdown(payload)
+        self.assertIn("VIX 25.20（+18.00%，风险压力升高）", first)
+        self.assertIn("美股未来约30天预期波动/风险压力", first)
+        self.assertNotIn("VIX上涨利好", first)
+        self.assertIn("价格领先线索：通信 +1.80%", first)
+        self.assertIn("短期较弱线索：房地产 -2.40%", first)
+        self.assertIn("海外风险压力正在升高", first)
+        self.assertIn("A股下跌家数多于上涨家数（2800 比 2100），内部参与偏弱", first)
+        self.assertIn("> **先给综合结论**：大环境需观察", first)
+        self.assertIn("板块强弱并存，市场分化明显", first)
+        self.assertIn("板块主线与需要回避的方向", first)
+        self.assertNotIn("先给综合结论**：综合结论：", first)
+        self.assertEqual(first.count("价格领先线索：通信 +1.80%"), 1)
+        self.assertEqual(first.count("短期较弱线索：房地产 -2.40%"), 1)
+
+
+        replay = dict(payload)
+        replay["markdown_report"] = first
+        second = market_review_module._render_market_review_payload_markdown(replay)
+        self.assertEqual(second.count("### 开盘前先看这六件事"), 1)
+        self.assertEqual(second.count("A股原有完整正文"), 1)
+        self.assertEqual(second.count("美股原有完整正文"), 1)
 
     def test_render_market_review_payload_markdown_appends_structured_sector_fallback(self) -> None:
         markdown = market_review_module._render_market_review_payload_markdown(

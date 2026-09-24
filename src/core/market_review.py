@@ -558,6 +558,7 @@ def _render_market_review_payload_markdown(
     """Render Markdown from the structured market-review payload for file/push compatibility."""
     metadata = _market_review_region_metadata(payload.get("region"))
     body = _render_market_review_payload_body(payload)
+    body = _insert_morning_plain_language_overlay(body, payload)
     if wrapper_title:
         return f"{metadata}{wrapper_title}\n\n{body}".strip()
     return f"{metadata}{body}".strip()
@@ -573,7 +574,8 @@ def _render_market_review_merge_markdown(
     if isinstance(markets, dict) and markets:
         return _render_market_review_payload_markdown(payload)
     rendered = _append_missing_market_brief_payload_block(review_report, payload)
-    return _append_missing_sector_payload_block(rendered, payload)
+    rendered = _append_missing_sector_payload_block(rendered, payload)
+    return _insert_morning_plain_language_overlay(rendered, payload)
 
 
 def render_market_review_region_projection(
@@ -810,6 +812,408 @@ def _append_missing_sector_payload_block_to_market_segment(
     if suffix and not suffix.startswith(("\n", "\r")):
         rendered_segment = f"{rendered_segment}\n\n"
     return f"{base[:start]}{rendered_segment}{suffix}".strip()
+
+
+def _iter_market_payloads(payload: Dict[str, Any]) -> Iterable[Dict[str, Any]]:
+    markets = payload.get("markets")
+    if isinstance(markets, dict) and markets:
+        for region in _MARKET_REVIEW_REGION_ORDER:
+            market_payload = markets.get(region)
+            if isinstance(market_payload, dict):
+                yield market_payload
+        return
+    yield payload
+
+
+def _payload_for_market(payload: Dict[str, Any], region: str) -> Optional[Dict[str, Any]]:
+    markets = payload.get("markets")
+    if isinstance(markets, dict):
+        candidate = markets.get(region)
+        return candidate if isinstance(candidate, dict) else None
+    payload_region = str(payload.get("region") or "").strip().lower()
+    if payload_region == region:
+        return payload
+    return None
+
+
+def _is_risk_pressure_index(index: Dict[str, Any]) -> bool:
+    role = str(index.get("instrument_role") or "").strip().lower()
+    if role == "risk_pressure":
+        return True
+    code = str(index.get("code") or "").strip().upper()
+    name = str(index.get("name") or "").strip().upper()
+    if code in {"VIX", "^VIX", "VIX1D", "^VIX1D", "VIX3M", "^VIX3M", "VVIX", "^VVIX", "VSTOXX", "VHSI", "MOVE"}:
+        return True
+    return any(
+        marker in name
+        for marker in ("VIX", "VVIX", "VSTOXX", "VHSI", "VOLATILITY", "波动率", "恐慌指数", "MOVE INDEX")
+    )
+
+
+def _format_ranked_names(rows: Any, *, limit: int = 3) -> str:
+    if not isinstance(rows, list):
+        return ""
+    items = []
+    for row in rows[:limit]:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("name") or "").strip()
+        change_pct = row.get("change_pct")
+        if not name:
+            continue
+        if isinstance(change_pct, (int, float)):
+            items.append(f"{name} {float(change_pct):+.2f}%")
+        else:
+            items.append(name)
+    return "、".join(items)
+
+
+def _plain_market_backdrop(payload: Dict[str, Any], *, language: str) -> str:
+    light = payload.get("market_light")
+    if not isinstance(light, dict) or light.get("data_quality") == "unavailable":
+        return (
+            "Insufficient equity-index or participation data; no composite market view."
+            if language == "en"
+            else "可用的权益指数或市场参与数据不足，暂不生成综合判断。"
+        )
+    status = str(light.get("status") or "").strip().lower()
+    label = {
+        "green": "偏进攻",
+        "yellow": "需观察",
+        "red": "偏防守",
+    }.get(status, str(light.get("label") or "需观察"))
+    quality = "数据完整" if light.get("data_quality") == "ok" else "部分数据"
+    score = light.get("score")
+    guidance = str(light.get("guidance") or "").strip()
+    if language == "en":
+        score_text = f"reference score {score}/100" if isinstance(score, (int, float)) else "score unavailable"
+        return f"{light.get('label') or 'mixed'}; {score_text}; {light.get('data_quality')}. {guidance}".strip()
+    score_text = f"市场参考分 {int(score)}/100" if isinstance(score, (int, float)) else "参考分暂不提供"
+    return f"{label}；{score_text}，{quality}。{guidance}".strip()
+
+
+def _plain_global_risk(payload: Dict[str, Any], *, language: str) -> str:
+    risk_indices = []
+    for market_payload in _iter_market_payloads(payload):
+        indices = market_payload.get("indices")
+        if not isinstance(indices, list):
+            continue
+        for index in indices:
+            if isinstance(index, dict) and _is_risk_pressure_index(index):
+                risk_indices.append(index)
+    if not risk_indices:
+        return (
+            "No reliable VIX or comparable risk-pressure input was available; no value is filled in."
+            if language == "en"
+            else "本次未取得可核的VIX或同类风险压力数据，不补写、不按中性处理。"
+        )
+    parts = []
+    for index in risk_indices[:2]:
+        name = str(index.get("name") or index.get("code") or "VIX").strip()
+        current = index.get("current")
+        change_pct = index.get("change_pct")
+        level = f" {float(current):.2f}" if isinstance(current, (int, float)) else ""
+        if isinstance(change_pct, (int, float)):
+            if float(change_pct) > 0:
+                direction = "风险压力升高" if language != "en" else "risk pressure increased"
+            elif float(change_pct) < 0:
+                direction = "风险压力缓和" if language != "en" else "risk pressure eased"
+            else:
+                direction = "风险压力变化不大" if language != "en" else "risk pressure was little changed"
+            parts.append(f"{name}{level}（{float(change_pct):+.2f}%，{direction}）")
+        else:
+            parts.append(f"{name}{level}")
+    joined = "；".join(parts)
+    if language == "en":
+        return f"{joined}. VIX-type indices describe expected volatility / risk pressure, not next-day direction."
+    return f"{joined}。VIX类指标表示美股未来约30天预期波动/风险压力，不是明日涨跌预测。"
+
+
+def _plain_a_share_health(payload: Dict[str, Any], *, language: str) -> str:
+    cn_payload = _payload_for_market(payload, "cn")
+    if cn_payload is None:
+        return (
+            "No A-share participation data in this report."
+            if language == "en"
+            else "本次报告没有A股内部参与数据，不据此判断A股是否健康。"
+        )
+    brief = cn_payload.get("market_brief")
+    if not isinstance(brief, dict):
+        return (
+            "A-share breadth and limit structure are unavailable."
+            if language == "en"
+            else "本次没有可靠的上涨/下跌家数和涨跌停结构，不用指数涨跌替代。"
+        )
+    parts = []
+    breadth = brief.get("breadth")
+    if isinstance(breadth, dict) and breadth.get("status") == "READY":
+        denominator = breadth.get("breadth_denominator")
+        ratio = breadth.get("breadth_ratio")
+        if isinstance(denominator, int) and denominator > 0 and isinstance(ratio, (int, float)):
+            parts.append(
+                f"市场宽度（有多少股票一起上涨）：上涨 {breadth.get('up_count', 0)} / "
+                f"总参与 {denominator} = {float(ratio) * 100:.1f}%，"
+                f"下跌 {breadth.get('down_count', 0)}、平盘 {breadth.get('flat_count', 0)}"
+            )
+    speculative = brief.get("speculative_heat")
+    if isinstance(speculative, dict) and speculative.get("status") == "READY":
+        parts.append(
+            f"短线投机温度：涨停 {speculative.get('limit_up_count', 0)}、"
+            f"跌停 {speculative.get('limit_down_count', 0)}"
+        )
+    if parts:
+        return "；".join(parts) + "。宽度与涨跌停热度分开判断。"
+    return "本次A股宽度或涨跌停数据不足，不补成中性结论。"
+
+
+def _plain_sector_leadership(
+    payload: Dict[str, Any],
+    *,
+    avoid: bool = False,
+    language: str = "zh",
+) -> str:
+    cn_payload = _payload_for_market(payload, "cn") or payload
+    section = cn_payload.get("sectors")
+    concepts = cn_payload.get("concepts")
+    key = "bottom" if avoid else "top"
+    items = []
+    if isinstance(section, dict):
+        rendered = _format_ranked_names(section.get(key), limit=3)
+        if rendered:
+            items.append(rendered)
+    if isinstance(concepts, dict):
+        rendered = _format_ranked_names(concepts.get(key), limit=2)
+        if rendered:
+            items.append(rendered)
+    if not items:
+        if language == "en":
+            return (
+                "No reliable laggard ranking; no avoid list is forced."
+                if avoid
+                else "No reliable leader ranking; news attention is not relabelled as money flow."
+            )
+        return (
+            "本次没有可靠的领跌板块排行，不强行列回避方向。"
+            if avoid
+            else "本次没有可靠的领涨板块排行，不把新闻热度写成资金流向。"
+        )
+    joined = "；".join(items)
+    if language == "en":
+        if avoid:
+            return f"Short-term laggards: {joined}. Check for stabilization; a large decline is not an automatic dip-buy signal."
+        return f"Price leadership: {joined}. Relative performance is not proof of institutional net inflow."
+    if avoid:
+        return f"短期较弱线索：{joined}。先核趋势是否止跌，不因跌幅大就自动抄底。"
+    return (
+        f"价格领先线索：{joined}。这里表示相对表现较强，"
+        "不等于已经证明主力或机构资金净流入。"
+    )
+
+
+def _plain_turnover_context(payload: Dict[str, Any], *, language: str) -> str:
+    cn_payload = _payload_for_market(payload, "cn") or payload
+    breadth = cn_payload.get("breadth")
+    if not isinstance(breadth, dict):
+        return (
+            "Comparable turnover data are unavailable; volume strength is not guessed."
+            if language == "en"
+            else "本次没有可靠的成交额或可比量能数据，不把“量能足/不足”硬猜出来。"
+        )
+    total_amount = breadth.get("total_amount")
+    unit = str(breadth.get("turnover_unit") or "").strip()
+    if not isinstance(total_amount, (int, float)) or float(total_amount) <= 0:
+        return (
+            "Comparable turnover data are unavailable; volume strength is not guessed."
+            if language == "en"
+            else "本次没有可靠的成交额或可比量能数据，不把“量能足/不足”硬猜出来。"
+        )
+    amount_text = f"{float(total_amount):,.2f}"
+    if language == "en":
+        return (
+            f"Turnover {amount_text} {unit or 'reported units'}; "
+            "without a comparable baseline, one absolute value is not called expansion or contraction."
+        )
+    return (
+        f"两市成交额 {amount_text}{unit}；本次若没有可靠的历史可比基准，"
+        "只报事实，不把单日绝对额直接写成“放量”或“缩量”。"
+    )
+
+
+def _plain_fused_market_judgment(payload: Dict[str, Any], *, language: str) -> str:
+    cn_payload = _payload_for_market(payload, "cn")
+    primary_payload = cn_payload or next(iter(_iter_market_payloads(payload)), payload)
+    light = primary_payload.get("market_light") if isinstance(primary_payload, dict) else None
+    status = str(light.get("status") or "").strip().lower() if isinstance(light, dict) else ""
+
+    risk_changes = []
+    for market_payload in _iter_market_payloads(payload):
+        indices = market_payload.get("indices")
+        if not isinstance(indices, list):
+            continue
+        for index in indices:
+            if not isinstance(index, dict) or not _is_risk_pressure_index(index):
+                continue
+            change_pct = index.get("change_pct")
+            if isinstance(change_pct, (int, float)):
+                risk_changes.append(float(change_pct))
+
+    if risk_changes and all(value > 0 for value in risk_changes):
+        global_clause = "海外风险压力正在升高"
+    elif risk_changes and all(value < 0 for value in risk_changes):
+        global_clause = "海外风险压力正在缓和"
+    elif risk_changes:
+        global_clause = "海外风险信号有分歧"
+    else:
+        global_clause = "海外风险压力数据不足"
+
+    breadth_clause = "A股内部参与数据不足"
+    if isinstance(cn_payload, dict):
+        brief = cn_payload.get("market_brief")
+        breadth = brief.get("breadth") if isinstance(brief, dict) else None
+        if isinstance(breadth, dict) and breadth.get("status") == "READY":
+            up_count = int(breadth.get("up_count") or 0)
+            down_count = int(breadth.get("down_count") or 0)
+            if up_count > down_count:
+                breadth_clause = f"A股上涨家数多于下跌家数（{up_count} 比 {down_count}），短线参与偏正面"
+            elif down_count > up_count:
+                breadth_clause = f"A股下跌家数多于上涨家数（{down_count} 比 {up_count}），内部参与偏弱"
+            else:
+                breadth_clause = f"A股上涨与下跌家数接近（各 {up_count}），内部参与没有明显优势"
+
+    def has_ranked_rows(section: Any, key: str) -> bool:
+        if not isinstance(section, dict):
+            return False
+        rows = section.get(key)
+        return bool(
+            isinstance(rows, list)
+            and any(
+                isinstance(row, dict) and str(row.get("name") or "").strip()
+                for row in rows
+            )
+        )
+
+    sectors = cn_payload.get("sectors") if isinstance(cn_payload, dict) else None
+    concepts = cn_payload.get("concepts") if isinstance(cn_payload, dict) else None
+    has_leaders = has_ranked_rows(sectors, "top") or has_ranked_rows(concepts, "top")
+    has_laggards = has_ranked_rows(sectors, "bottom") or has_ranked_rows(concepts, "bottom")
+    if has_leaders and has_laggards:
+        leadership_clause = "板块强弱并存，市场分化明显"
+    elif has_leaders:
+        leadership_clause = "出现价格领先方向，但仍需观察持续性"
+    elif has_laggards:
+        leadership_clause = "弱势方向存在扩散迹象"
+    else:
+        leadership_clause = "板块领导性数据不足"
+
+    if status == "green":
+        action = (
+            "大环境偏进攻，但只允许精选强势方向，不等于全面追涨。"
+            "没有高周期结构确认时，不把短线强弱直接升级成“牛市/熊市”结论。"
+        )
+    elif status == "red":
+        action = (
+            "大环境偏防守，暂停新增风险敞口；已有持仓按各自失效条件逐项复核，"
+            "不因为一份晨报就一刀切空仓。只有月/周/日高周期结构也同步转坏时，"
+            "才把表述升级为“牛转熊风险明显上升”。"
+        )
+    elif status == "yellow":
+        action = (
+            "大环境需观察，先控制新增风险，等指数、市场宽度、量价和领涨板块重新形成共振。"
+            "短线风险升高不等于已经牛转熊。"
+        )
+    else:
+        action = "关键证据不足，暂不提高风险暴露，等更多独立证据确认。"
+
+    if language == "en":
+        return (
+            "Integrated view: combine global risk pressure, A-share participation, turnover, "
+            "leadership and the existing market-permission state; do not infer a bull/bear regime "
+            "or portfolio liquidation from one indicator."
+        )
+
+    return (
+        f"{action} 主要依据：{global_clause}；{breadth_clause}；{leadership_clause}。"
+    )
+
+
+def _render_morning_plain_language_overlay(payload: Dict[str, Any]) -> str:
+    language = normalize_report_language(payload.get("language"))
+    english = language in {"en", "ko"}
+    display_language = "en" if english else "zh"
+    cn_payload = _payload_for_market(payload, "cn")
+    primary_payload = cn_payload or next(iter(_iter_market_payloads(payload)), payload)
+    generated_at = str(primary_payload.get("generated_at") or payload.get("generated_at") or "").strip()
+    data_date = str(primary_payload.get("date") or payload.get("date") or "").strip()
+
+    if english:
+        lines = [
+            "### Pre-open: six questions first",
+            "",
+            f"- **Overall backdrop**: {_plain_market_backdrop(primary_payload, language=display_language)}",
+            f"- **Has overseas risk increased?**: {_plain_global_risk(payload, language=display_language)}",
+            f"- **Is A-share participation healthy?**: {_plain_a_share_health(payload, language=display_language)}",
+            f"- **Where is leadership?**: {_plain_sector_leadership(payload, language=display_language)}",
+            f"- **What should not be chased?**: {_plain_sector_leadership(payload, avoid=True, language=display_language)}",
+            "- **What matters today / what changes the view?**: watch whether major indices, participation and leading groups improve together; downgrade if they weaken together or risk pressure keeps rising.",
+        ]
+    else:
+        lines = [
+            "### 开盘前先看这六件事",
+            "",
+            f"> **先给综合结论**：{_plain_fused_market_judgment(payload, language=display_language)}",
+            "",
+            f"- **今天的大环境**：{_plain_market_backdrop(primary_payload, language=display_language)}",
+            f"- **海外风险有没有升高**：{_plain_global_risk(payload, language=display_language)}",
+            f"- **A股内部健康吗**：{_plain_a_share_health(payload, language=display_language)}",
+            f"- **成交和量能是否支持**：{_plain_turnover_context(payload, language=display_language)}",
+            f"- **板块主线与需要回避的方向**：{_plain_sector_leadership(payload)} {_plain_sector_leadership(payload, avoid=True)}",
+            "- **今天重点看什么 / 什么变化会推翻判断**：重点看主要指数、上涨家数、量能和领涨板块能否同向改善，以及海外风险压力是否继续走高；只有多项独立证据一起变化，才调整大环境判断。",
+        ]
+    time_parts = []
+    if data_date:
+        time_parts.append(f"data date {data_date}" if english else f"数据日期 {data_date}")
+    if generated_at:
+        time_parts.append(f"generated {generated_at}" if english else f"生成时间 {generated_at}")
+    if time_parts:
+        suffix = "; missing inputs are not treated as neutral evidence." if english else "；缺失项不按中性证据处理。"
+        lines.extend(["", "> " + "；".join(time_parts) + suffix])
+    return "\n".join(lines).strip()
+
+
+def _insert_morning_plain_language_overlay(markdown: Any, payload: Dict[str, Any]) -> str:
+    text = str(markdown or "").strip()
+    block = _render_morning_plain_language_overlay(payload)
+    if not block:
+        return text
+    markers = ("### 开盘前先看这六件事", "### Pre-open: six questions first")
+    if any(marker in text for marker in markers):
+        return text
+    if not text:
+        return block
+
+    # Preserve the accepted R004 conclusion-first lead.  The additive overlay
+    # sits between that existing lead and the first detailed section instead of
+    # replacing or pushing the original conclusion below a new top summary.
+    detail_heading = re.search(r"(?m)^###\s+.+$", text)
+    if detail_heading is not None:
+        return (
+            text[: detail_heading.start()].rstrip()
+            + "\n\n"
+            + block
+            + "\n\n"
+            + text[detail_heading.start() :].lstrip()
+        ).strip()
+
+    top_heading = re.search(r"(?m)^#{1,2}\s+.+$", text)
+    if top_heading is None:
+        return f"{block}\n\n{text}".strip()
+    return (
+        text[: top_heading.end()].rstrip()
+        + "\n\n"
+        + block
+        + "\n\n"
+        + text[top_heading.end() :].lstrip()
+    ).strip()
 
 
 def _render_market_brief_payload_markdown_block(

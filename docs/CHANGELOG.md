@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] 在 exact R004 晨报基础上增加非损失的人话风险导航，不重画或缩短原模板：第一屏先把海外风险、A股参与、量能和板块分化融合成一个综合判断，再分别展开大环境、VIX风险压力、市场宽度、成交与量能、板块价格领先/弱势方向和判断失效条件；具体板块名称只在明细行出现一次，原有八段详细证据继续完整可达。MarketLight 同步区分权益指数与 VIX 等风险压力指标，VIX 上涨不再被当作股票上涨的正向票；缺失维度保留缺失身份但不再以中性 50 分参与综合。当前候选不新增数据源、依赖、工作流、晨报计划、模型或数据库；提交前必须由用户核查基于 exact R004 生成的完整模拟版。
+
 - [修复] 收敛 R004 三封用户邮件的真实消费者契约：开盘前 MARKET_REGIME_BRIEF、晚间 AUTO 与条件 WATCHLIST 继续共享同一 canonical evidence/decision；Email/Telegram 的结论先行简报不再以“compact/mobile”为由删除已 READY 的月/周/日/60分钟与30/15/5分钟材料证据或固定截断风险，AUTO 4–10 保留既有核心理由、主要风险和失效/下一触发，自选触发对象保持完整研究；文本与内联图片 Email 复用 envelope-aware subject，Market 上下文仅在完整报告可用时才复用。加入 exact R004 Gold Master ZIP 作为私有回归 fixture；当前仅有 dependency-light / syntax / diff 本地证据，完整集成仍以 private natural CI 与后续 bounded consumer acceptance 为准。
 
 - [修复] 修复 R004 同源投影的两类材料信息丢失：月/周多周期摘要不再因前三项 MA/量价/MACD 占满而截掉已确认的突破/失败突破结构事件；复用 DailyMarketContext 时直接复用既有 market-review merge renderer，将 structured 市场宽度/涨跌停结构等确定性事实补入原始复盘正文并保持重复渲染幂等。未新增数据源、报告器、通知器、模型或外部依赖。

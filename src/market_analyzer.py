@@ -52,6 +52,53 @@ _CHINESE_SECTION_PATTERNS = {
     "news_catalysts": r"###\s*五、(?:消息催化|后市展望)",
 }
 
+_RISK_PRESSURE_INDEX_CODES = frozenset({
+    "VIX",
+    "^VIX",
+    "VIX1D",
+    "^VIX1D",
+    "VIX3M",
+    "^VIX3M",
+    "VVIX",
+    "^VVIX",
+    "VSTOXX",
+    "VHSI",
+    "MOVE",
+})
+_RISK_PRESSURE_NAME_MARKERS = (
+    "VIX",
+    "VVIX",
+    "VSTOXX",
+    "VHSI",
+    "VOLATILITY",
+    "波动率",
+    "恐慌指数",
+    "MOVE INDEX",
+)
+
+
+def _classify_market_index_role(index: Any) -> str:
+    """Keep price direction separate from volatility / risk-pressure direction."""
+
+    code = str(getattr(index, "code", "") or "").strip().upper()
+    name = str(getattr(index, "name", "") or "").strip().upper()
+    if code in _RISK_PRESSURE_INDEX_CODES:
+        return "risk_pressure"
+    if any(marker in name for marker in _RISK_PRESSURE_NAME_MARKERS):
+        return "risk_pressure"
+    return "equity_index"
+
+
+def _split_market_indices(indices: List[Any]) -> tuple[List[Any], List[Any]]:
+    equity_indices: List[Any] = []
+    risk_pressure_indices: List[Any] = []
+    for index in indices or []:
+        if _classify_market_index_role(index) == "risk_pressure":
+            risk_pressure_indices.append(index)
+        else:
+            equity_indices.append(index)
+    return equity_indices, risk_pressure_indices
+
 
 @dataclass
 class MarketIndex:
@@ -82,6 +129,7 @@ class MarketIndex:
             'volume': self.volume,
             'amount': self.amount,
             'amplitude': self.amplitude,
+            'instrument_role': _classify_market_index_role(self),
         }
 
 
@@ -205,9 +253,16 @@ class MarketAnalyzer:
             return f"{amount_raw / 1e8:.0f}"
         return f"{amount_raw:.0f}"
 
-    def _get_index_change_arrow(self, change_pct: float) -> str:
+    def _get_index_change_arrow(
+        self,
+        change_pct: float,
+        *,
+        instrument_role: str = "equity_index",
+    ) -> str:
         if change_pct == 0:
             return "⚪"
+        if instrument_role == "risk_pressure":
+            return "🟠" if change_pct > 0 else "🟢"
         color_scheme = getattr(getattr(self, "config", None), "market_review_color_scheme", "green_up")
         if color_scheme == "red_up":
             return "🔴" if change_pct > 0 else "🟢"
@@ -1097,7 +1152,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         light = self.build_market_light_snapshot(overview) if has_market_signal else None
         if self._get_review_language() == "en":
             lines = []
-            if isinstance(light, dict):
+            if isinstance(light, dict) and light.get("data_quality") != "unavailable":
                 lines.extend(
                     [
                         f"- **Market Signal**: {light['score']}/100 "
@@ -1105,6 +1160,10 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                         f"- **Drivers**: {'; '.join(light['reasons'])}",
                         f"- **Guidance**: {light['guidance']}",
                     ]
+                )
+            elif isinstance(light, dict):
+                lines.append(
+                    "- **Market backdrop**: insufficient equity-index or participation data; no composite score."
                 )
             if has_stats:
                 if lines:
@@ -1122,13 +1181,22 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         participation = overview.up_count + overview.down_count
         up_ratio = overview.up_count / participation if participation else 0.0
         limit_spread = overview.limit_up_count - overview.limit_down_count
-        if isinstance(light, dict) and score is not None:
+        if (
+            isinstance(light, dict)
+            and score is not None
+            and light.get("data_quality") != "unavailable"
+        ):
+            coverage_text = "数据完整" if light.get("data_quality") == "ok" else "部分数据"
             lines.extend(
                 [
-                    f"- **盘面信号**：{score}/100（{label}，{light['label']}）",
-                    f"- **信号依据**：{'；'.join(light['reasons'])}",
-                    f"- **操作建议**：{light['guidance']}",
+                    f"- **今天的大环境**：{light['label']}（市场参考分 {score}/100，{coverage_text}）",
+                    f"- **为什么**：{'；'.join(light['reasons'])}",
+                    f"- **怎么应对**：{light['guidance']}",
                 ]
+            )
+        elif isinstance(light, dict):
+            lines.append(
+                "- **今天的大环境**：可用的权益指数或市场参与数据不足，暂不生成综合分。"
             )
         if has_stats:
             if lines:
@@ -1206,10 +1274,25 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 reasons.append(f"上涨家数占比 {up_ratio:.0%}，亏钱效应较强")
             else:
                 reasons.append(f"上涨家数占比 {up_ratio:.0%}，市场分化")
-        index_changes = [idx.change_pct for idx in overview.indices if idx.change_pct is not None]
+        equity_indices, risk_pressure_indices = _split_market_indices(overview.indices)
+        index_changes = [idx.change_pct for idx in equity_indices if idx.change_pct is not None]
         if index_changes:
             avg_change = sum(index_changes) / len(index_changes)
-            reasons.append(f"主要指数平均涨跌幅 {avg_change:+.2f}%")
+            reasons.append(f"权益指数平均涨跌幅 {avg_change:+.2f}%")
+        for index in risk_pressure_indices[:1]:
+            change_pct = index.change_pct
+            if change_pct is None:
+                continue
+            if change_pct > 0:
+                reasons.append(
+                    f"{index.name} 上升 {change_pct:+.2f}%，美股未来约30天预期波动/风险压力升高"
+                )
+            elif change_pct < 0:
+                reasons.append(
+                    f"{index.name} 下降 {change_pct:+.2f}%，美股未来约30天风险压力缓和"
+                )
+            else:
+                reasons.append(f"{index.name} 持平，美股未来约30天风险压力变化不大")
         if overview.limit_up_count or overview.limit_down_count:
             reasons.append(f"涨跌停差 {overview.limit_up_count - overview.limit_down_count:+d}")
         if not reasons and overview.total_amount:
@@ -1229,10 +1312,26 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 reasons.append(f"advancers ratio {up_ratio:.0%}, downside pressure dominates")
             else:
                 reasons.append(f"advancers ratio {up_ratio:.0%}, breadth is mixed")
-        index_changes = [idx.change_pct for idx in overview.indices if idx.change_pct is not None]
+        equity_indices, risk_pressure_indices = _split_market_indices(overview.indices)
+        index_changes = [idx.change_pct for idx in equity_indices if idx.change_pct is not None]
         if index_changes:
             avg_change = sum(index_changes) / len(index_changes)
-            reasons.append(f"average major-index change {avg_change:+.2f}%")
+            reasons.append(f"average equity-index change {avg_change:+.2f}%")
+        for index in risk_pressure_indices[:1]:
+            change_pct = index.change_pct
+            if change_pct is None:
+                continue
+            direction = "rose" if change_pct > 0 else "fell" if change_pct < 0 else "was flat"
+            pressure = (
+                "risk pressure increased"
+                if change_pct > 0
+                else "risk pressure eased"
+                if change_pct < 0
+                else "risk pressure was little changed"
+            )
+            reasons.append(
+                f"{index.name} {direction} {change_pct:+.2f}%; 30-day expected volatility / {pressure}"
+            )
         if overview.limit_up_count or overview.limit_down_count:
             reasons.append(f"limit-up/down spread {overview.limit_up_count - overview.limit_down_count:+d}")
         if not reasons and overview.total_amount:
@@ -1256,7 +1355,11 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 "|------|------|--------|------|------|------|------|-----------|",
             ]
         for idx in overview.indices:
-            arrow = self._get_index_change_arrow(idx.change_pct)
+            role = _classify_market_index_role(idx)
+            arrow = self._get_index_change_arrow(
+                idx.change_pct,
+                instrument_role=role,
+            )
             amount_raw = idx.amount or 0.0
             amount_str = self._format_turnover_value(amount_raw)
             lines.append(
@@ -1400,7 +1503,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         return "暂无数据"
 
     def _build_market_light_scores(self, overview: MarketOverview) -> Dict[str, Any]:
-        """Build the canonical Market Light scores used by reports and alerts."""
+        """Build Market Light without mixing risk-pressure direction or missing neutral votes."""
 
         participants = overview.up_count + overview.down_count
         breadth_available = bool(self.profile.has_market_stats and participants > 0)
@@ -1408,8 +1511,13 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         if breadth_available:
             breadth_score = int(overview.up_count / participants * 100)
 
-        index_changes = [idx.change_pct for idx in overview.indices if idx.change_pct is not None]
-        index_available = bool(overview.indices and index_changes)
+        equity_indices, _ = _split_market_indices(overview.indices)
+        index_changes = [
+            idx.change_pct
+            for idx in equity_indices
+            if idx.change_pct is not None
+        ]
+        index_available = bool(index_changes)
         index_score = 50
         if index_available:
             avg_change = sum(index_changes) / len(index_changes)
@@ -1426,15 +1534,28 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             "index": {"score": index_score, "available": index_available},
             "limit": {"score": limit_score, "available": limit_available},
         }
+        weights = {"breadth": 0.45, "index": 0.35, "limit": 0.20}
+        available_dimensions = [
+            (float(dimensions[name]["score"]), weight)
+            for name, weight in weights.items()
+            if dimensions[name]["available"]
+        ]
 
-        if not index_available:
+        if not available_dimensions:
             data_quality = "unavailable"
-        elif all(dimension["available"] for dimension in dimensions.values()):
-            data_quality = "ok"
+            score = 50
         else:
-            data_quality = "partial"
+            available_weight = sum(weight for _, weight in available_dimensions)
+            score = int(round(
+                sum(value * weight for value, weight in available_dimensions)
+                / available_weight
+            ))
+            data_quality = (
+                "ok"
+                if all(dimension["available"] for dimension in dimensions.values())
+                else "partial"
+            )
 
-        score = int(round(breadth_score * 0.45 + index_score * 0.35 + limit_score * 0.20))
         if self._get_review_language() == "en":
             if score >= 70:
                 label = "risk-on"
@@ -1558,7 +1679,18 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         indices_text = ""
         for idx in overview.indices:
             direction = "↑" if idx.change_pct > 0 else "↓" if idx.change_pct < 0 else "-"
-            indices_text += f"- {idx.name}: {idx.current:.2f} ({direction}{abs(idx.change_pct):.2f}%)\n"
+            role = _classify_market_index_role(idx)
+            role_suffix = (
+                " (risk pressure)"
+                if role == "risk_pressure" and review_language == "en"
+                else "（风险压力）"
+                if role == "risk_pressure"
+                else ""
+            )
+            indices_text += (
+                f"- {idx.name}{role_suffix}: {idx.current:.2f} "
+                f"({direction}{abs(idx.change_pct):.2f}%)\n"
+            )
         
         # 板块信息
         top_sectors_text = self._format_ranking_summary(overview.top_sectors)
@@ -1741,6 +1873,9 @@ Output the report content directly, no extra commentary.
 - emoji 仅在标题处少量使用（每个标题最多1个）
 - {workflow_hint}
 - 不要重复列出已由系统注入的表格数据；正文负责解释表格背后的含义
+- 第一屏使用普通投资者能理解的中文；必要术语第一次出现时用括号解释，不输出内部状态码或治理术语
+- 保留下面八段完整结构；第一屏摘要只负责导航，不得删除材料事实、冲突、条件、风险或数据时点
+- VIX等波动率指数上涨表示风险压力上升，不得按股票指数上涨解释为利好
 {data_boundary_requirement}
 
 ---
@@ -1817,8 +1952,16 @@ Output the report content directly, no extra commentary.
         # 指数行情（简洁格式）
         indices_text = ""
         for idx in overview.indices:
-            marker = self._get_index_change_arrow(idx.change_pct)
-            indices_text += f"- **{idx.name}**: {idx.current:.2f} ({marker} {idx.change_pct:+.2f}%)\n"
+            role = _classify_market_index_role(idx)
+            marker = self._get_index_change_arrow(
+                idx.change_pct,
+                instrument_role=role,
+            )
+            role_suffix = "（风险压力）" if role == "risk_pressure" else ""
+            indices_text += (
+                f"- **{idx.name}{role_suffix}**: {idx.current:.2f} "
+                f"({marker} {idx.change_pct:+.2f}%)\n"
+            )
         
         # 板块信息
         separator = ", " if template_language == "en" else "、"

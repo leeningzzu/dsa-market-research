@@ -3031,20 +3031,20 @@ Sector text.
 
         result = ma._inject_data_into_review(review, overview, news)
 
-        assert "盘面信号" in result
-        assert "66/100（偏暖，可进攻）" in result
+        assert "今天的大环境" in result
+        assert "市场参考分 66/100" in result
         assert "绿灯（可进攻）" not in result
         assert "大盘红绿灯" not in result
         assert "green（可进攻）" not in result
-        assert "信号依据" in result
-        signal_line = next(line for line in result.splitlines() if "**盘面信号**" in line)
-        drivers_line = next(line for line in result.splitlines() if "**信号依据**" in line)
+        assert "为什么" in result
+        signal_line = next(line for line in result.splitlines() if "**今天的大环境**" in line)
+        drivers_line = next(line for line in result.splitlines() if "**为什么**" in line)
         assert signal_line.startswith("- ")
         assert "66/100" in signal_line
         assert "█" not in result
         assert "░" not in result
         assert "盘面温度" not in drivers_line
-        assert "操作建议" in result
+        assert "怎么应对" in result
         assert "盘面温度" not in result
         assert "| 上涨/下跌/平盘 | 3200 / 1800 / 100 |" in result
         assert "| 指数 | 最新 | 涨跌幅 | 开盘 | 最高 | 最低 | 振幅 | 成交额(亿) |" in result
@@ -3165,8 +3165,8 @@ Index text.
 
         result = ma._generate_template_review(overview, [])
 
-        assert f"- **盘面信号**：{snapshot['score']}/100" in result
-        assert f"- **操作建议**：{snapshot['guidance']}" in result
+        assert f"市场参考分 {snapshot['score']}/100" in result
+        assert f"- **怎么应对**：{snapshot['guidance']}" in result
         assert "| 上涨/下跌/平盘 |" not in result
 
     def test_generate_template_review_uses_configured_red_up_markers_in_english_fallback(self):
@@ -3381,6 +3381,113 @@ Index text.
         assert snapshot["dimensions"]["breadth"] == {"score": 50, "available": False}
         assert snapshot["dimensions"]["index"]["available"] is True
         assert snapshot["dimensions"]["limit"] == {"score": 50, "available": False}
+
+    def test_market_light_excludes_vix_from_equity_score_and_keeps_typed_risk_fact(self):
+        from src.core.market_profile import US_PROFILE
+        from src.market_analyzer import MarketIndex, MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value="review")
+        ma.region = "us"
+        ma.profile = US_PROFILE
+        overview_without_vix = MarketOverview(
+            date="2026-09-23",
+            indices=[
+                MarketIndex(code="SPX", name="S&P 500", current=6500, change_pct=-1.0),
+                MarketIndex(code="IXIC", name="Nasdaq", current=22000, change_pct=-1.0),
+                MarketIndex(code="DJI", name="Dow", current=45000, change_pct=-1.0),
+            ],
+        )
+        overview_with_vix = MarketOverview(
+            date="2026-09-23",
+            indices=[
+                *overview_without_vix.indices,
+                MarketIndex(code="VIX", name="VIX恐慌指数", current=24.8, change_pct=20.0),
+            ],
+        )
+
+        baseline = ma.build_market_light_snapshot(overview_without_vix)
+        with_vix = ma.build_market_light_snapshot(overview_with_vix)
+        payload = ma.build_market_review_payload(
+            overview_with_vix,
+            [],
+            "## 美股复盘\n\n正文",
+            market_light_snapshot=with_vix,
+        )
+
+        assert baseline["score"] == 38
+        assert with_vix["score"] == baseline["score"]
+        assert with_vix["status"] == "red"
+        assert with_vix["data_quality"] == "partial"
+        assert any("未来约30天预期波动/风险压力升高" in reason for reason in with_vix["reasons"])
+        vix_payload = next(item for item in payload["indices"] if item["code"] == "VIX")
+        assert vix_payload["instrument_role"] == "risk_pressure"
+        assert "| VIX恐慌指数 | 24.80 | 🟠 +20.00% |" in ma._build_indices_block(overview_with_vix)
+
+    def test_market_light_missing_dimensions_do_not_cast_neutral_votes(self):
+        from src.core.market_profile import US_PROFILE
+        from src.market_analyzer import MarketIndex, MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value="review")
+        ma.region = "us"
+        ma.profile = US_PROFILE
+        overview = MarketOverview(
+            date="2026-09-23",
+            indices=[MarketIndex(code="SPX", name="S&P 500", current=6500, change_pct=0.5)],
+        )
+
+        snapshot = ma.build_market_light_snapshot(overview)
+
+        assert snapshot["score"] == 56
+        assert snapshot["data_quality"] == "partial"
+        assert snapshot["dimensions"]["breadth"] == {"score": 50, "available": False}
+        assert snapshot["dimensions"]["index"] == {"score": 56, "available": True}
+        assert snapshot["dimensions"]["limit"] == {"score": 50, "available": False}
+
+    def test_market_light_only_risk_pressure_is_unavailable_and_not_rendered_as_signal(self):
+        from src.core.market_profile import US_PROFILE
+        from src.market_analyzer import MarketIndex, MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value="review")
+        ma.region = "us"
+        ma.profile = US_PROFILE
+        overview = MarketOverview(
+            date="2026-09-23",
+            indices=[MarketIndex(code="VIX", name="VIX恐慌指数", current=24.8, change_pct=20.0)],
+        )
+
+        snapshot = ma.build_market_light_snapshot(overview)
+        block = ma._build_stats_block(overview)
+
+        assert snapshot["data_quality"] == "unavailable"
+        assert snapshot["dimensions"]["index"]["available"] is False
+        assert "暂不生成综合分" in block
+        assert "市场参考分 50/100" not in block
+
+    def test_cn_prompt_requires_plain_language_without_dropping_r004_detail_sections(self):
+        from src.market_analyzer import MarketIndex, MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value="review")
+        prompt = ma._build_review_prompt(
+            MarketOverview(
+                date="2026-09-23",
+                indices=[MarketIndex(code="000001", name="上证指数", current=3400, change_pct=0.2)],
+            ),
+            [],
+        )
+
+        assert "第一屏使用普通投资者能理解的中文" in prompt
+        assert "VIX等波动率指数上涨表示风险压力上升" in prompt
+        for heading in (
+            "### 一、盘面总览",
+            "### 二、代表指数职责与结构",
+            "### 三、市场宽度与投机热度",
+            "### 四、成交、资金、杠杆、信用、估值与波动",
+            "### 五、全球环境与传导",
+            "### 六、行业与资产主线",
+            "### 七、今日观察与计划变化",
+            "### 八、数据时点与质量",
+        ):
+            assert heading in prompt
 
     @pytest.mark.parametrize(
         ("region", "profile_name", "index_code", "index_name"),
