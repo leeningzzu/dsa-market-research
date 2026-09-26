@@ -282,6 +282,45 @@ class TestDailyAnalysisStrictSchedule(unittest.TestCase):
         self.assertNotIn("AUTO_SCREEN", schedule_gate)
         self.assertIn("cron: '0 11 * * 1-5'", self.text)
 
+    def test_v25_baseline_transport_is_manual_only_and_bypasses_analysis(self):
+        self.assertIn("- baseline-transport", self.text)
+        self.assertIn(
+            "github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'baseline-transport'",
+            self.text,
+        )
+        self.assertIn("python -m src.services.v2_5_baseline_transport", self.text)
+
+        start = self.text.index("- name: 发送V2.5原件运输验收（仅人工）")
+        end = self.text.index("- name: 研究状态空检查点 Smoke（仅人工）", start)
+        block = self.text[start:end]
+        for key in ("EMAIL_SENDER:", "EMAIL_PASSWORD:", "EMAIL_RECEIVERS:", "EMAIL_SENDER_NAME:"):
+            self.assertIn(key, block)
+        for forbidden in ("GEMINI_API_KEY", "OPENAI_API_KEY", "TUSHARE_TOKEN", "BOCHA_API_KEYS"):
+            self.assertNotIn(forbidden, block)
+
+        analysis_start = self.text.index("- name: 执行股票分析")
+        analysis_condition_end = self.text.index("        env:", analysis_start)
+        analysis_condition = self.text[analysis_start:analysis_condition_end]
+        self.assertIn("github.event.inputs.mode != 'baseline-transport'", analysis_condition)
+
+        restore_start = self.text.index("- name: 恢复研究状态（默认关闭）")
+        restore_end = self.text.index("        env:", restore_start)
+        self.assertIn(
+            "github.event.inputs.mode != 'baseline-transport'",
+            self.text[restore_start:restore_end],
+        )
+
+        publish_start = self.text.index("- name: 发布研究状态（默认关闭）")
+        publish_end = self.text.index("        env:", publish_start)
+        self.assertIn(
+            "github.event.inputs.mode != 'baseline-transport'",
+            self.text[publish_start:publish_end],
+        )
+
+        schedule_gate = self._gate_source()
+        self.assertNotIn("baseline-transport", schedule_gate)
+
+
     def test_p0_input_is_manual_only_and_does_not_change_the_schedule_gate(self):
         self.assertIn("p0_stock_codes:", self.text)
         self.assertIn(

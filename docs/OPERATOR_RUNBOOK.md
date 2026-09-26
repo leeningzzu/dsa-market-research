@@ -204,6 +204,9 @@ R2 是保存研究状态包的存储服务，不是 SMTP，也不是模型服务
 <a id="task-report"></a>
 ## 10. 邮件太长、模板怎么改
 
+> **2026-09-26 当前优先：V2.5 原件运输先行。** 唯一已接受原件是 `templates/v2_5/STOCK_DSA_V2_5_PRODUCTION_MAIL_BASELINE_R001.html`，固定为 125919 bytes / SHA256 `039ca6394baf9cf39494cc29f512802b114c8227f8c965723197a8df4b9de823`。当前只允许 `read_bytes → identity guard → existing EmailSender`；HTML 字句、日期、示例值、DOM、CSS、空白均不得变化。原件含模拟事实，运输验收主题必须明确“模拟事实/非当日研究”。动态 Market/AUTO/WATCHLIST renderer、slot projection、Markdown fallback 都不是当前原件运输入口；本节下方 R004/动态模板说明仅作历史/未来设计背景，不能覆盖本条当前运输限制。GitHub 真实收件验收只复用既有 `00-daily-analysis.yml` 的手动 `baseline-transport` 模式；该模式不执行正常分析/研究状态读写，实际 dispatch 与 SMTP 仍需独立授权。
+
+
 现有 `REPORT_SHOW_LLM_MODEL=false` 可以隐藏普通报告里的模型署名，工作流已有映射。但隐藏一行署名解决不了重复指标和机械语言，不必现在为它单独跑一次邮件。
 
 当前用户侧基线是已接受的 R004 information-dense Gold Master。邮件应先回答：**现在怎么看，为什么，什么变化会让我改判断。** 第一屏可以结论先行，但同一封邮件后续必须让全部材料证据可达；“compact/mobile”只允许调整层级和去重，不允许删除已 READY 的重要周期、量价/形态、估值、触发、失效或风险证据，也没有固定整封邮件长度上限。稳定/无事件状态可只说明一次；缺数据只说明一次，不能由模型补齐。

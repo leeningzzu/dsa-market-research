@@ -138,6 +138,7 @@ class EmailSender:
         receivers: Optional[List[str]] = None,
         *,
         timeout_seconds: Optional[float] = None,
+        html_content: Optional[str] = None,
     ) -> bool:
         """
         通过 SMTP 发送邮件（自动识别 SMTP 服务器）
@@ -146,6 +147,7 @@ class EmailSender:
             content: 邮件内容（支持 Markdown，会转换为 HTML）
             subject: 邮件主题（可选，默认自动生成）
             receivers: 收件人列表（可选，默认使用配置的 receivers）
+            html_content: 已完成渲染的富 HTML（可选；提供时不做 Markdown 转换或正文改写）
             
         Returns:
             是否发送成功
@@ -166,10 +168,13 @@ class EmailSender:
                 subject = f"📈 股票智能分析报告 - {date_str}"
 
             sanitized_content = strip_hidden_markdown_metadata(content).strip()
-            
-            # 将 Markdown 转换为简单 HTML
-            html_content = markdown_to_html_document(sanitized_content)
-            
+            if html_content is None:
+                resolved_html_content = markdown_to_html_document(sanitized_content)
+            elif not isinstance(html_content, str) or not html_content:
+                raise ValueError("pre-rendered rich Email HTML must be a non-empty string")
+            else:
+                resolved_html_content = html_content
+
             # 构建邮件
             msg = MIMEMultipart('alternative')
             msg['Subject'] = Header(subject, 'utf-8')
@@ -178,7 +183,7 @@ class EmailSender:
             
             # 添加纯文本和 HTML 两个版本
             text_part = MIMEText(sanitized_content, 'plain', 'utf-8')
-            html_part = MIMEText(html_content, 'html', 'utf-8')
+            html_part = MIMEText(resolved_html_content, 'html', 'utf-8')
             msg.attach(text_part)
             msg.attach(html_part)
             

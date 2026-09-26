@@ -1,0 +1,656 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>STOCK_DSA V2.5｜Production Mail Baseline</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#f2f4f7;color:#20242b;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",Arial,sans-serif;line-height:1.78}
+.shell{max-width:920px;margin:0 auto;padding:22px 14px 52px}
+.mail{background:#fff;border:1px solid #e2e6ea;border-radius:15px;overflow:hidden;box-shadow:0 5px 20px rgba(15,23,42,.07)}
+.sim{padding:10px 22px;background:#fff8e7;border-bottom:1px solid #f1dfad;color:#895b00;font-size:13px;font-weight:750}
+.head{padding:25px 28px 18px;border-bottom:1px solid #edf0f2}
+.subject{font-size:23px;line-height:1.42;font-weight:850;color:#111827}
+.meta{margin-top:7px;color:#6d7682;font-size:12px}
+.body{padding:24px 28px 36px}
+.lead{padding:17px 19px;background:#f7f9fb;border-left:5px solid #253746;border-radius:9px;font-size:18px;font-weight:850;color:#101827;margin-bottom:16px}
+.mainline{padding:14px 16px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;margin:12px 0 18px}
+.mainline b{color:#111827}
+.section{border-top:1px solid #e5e9ed;padding-top:21px;margin-top:24px}
+.section h2{font-size:19px;margin:0 0 11px;color:#111827}
+.section h3{font-size:16px;margin:18px 0 7px;color:#111827}
+.section h4{font-size:14px;margin:15px 0 6px;color:#263442}
+p{margin:8px 0 13px}
+ul,ol{padding-left:23px;margin:8px 0 14px}
+li{margin:5px 0}
+.note,.warn,.good,.data-note{padding:12px 14px;border-radius:9px;margin:11px 0}
+.note{background:#f8fafc;border:1px solid #e2e8f0}
+.warn{background:#fff7ed;border:1px solid #fed7aa}
+.good{background:#f0fdf4;border:1px solid #bbf7d0}
+.data-note{background:#f5f3ff;border:1px solid #ddd6fe}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:12px 0 18px}
+.kpi{padding:11px 12px;border:1px solid #e3e7eb;background:#fafafa;border-radius:10px}
+.kpi b{display:block;color:#111827;font-size:15px}
+.kpi span{font-size:12px;color:#667085}
+.card{margin:18px 0;border:1px solid #d8dfe6;border-radius:13px;padding:17px;background:#fff}
+.card-title{font-size:18px;font-weight:850;color:#111827}
+.identity{font-size:13px;color:#657080;margin:4px 0 11px}
+.one-line{font-size:16px;font-weight:800;color:#111827;background:#f7f9fb;padding:11px 13px;border-radius:8px;margin:10px 0 13px}
+.why{padding:11px 13px;background:#f8fafc;border-left:4px solid #64748b;border-radius:7px;margin:10px 0}
+.cycle{padding:13px 0;border-top:1px dashed #dde3e9}
+.cycle:first-of-type{border-top:none}
+.cycle-title{font-size:15px;font-weight:850;color:#17202a;margin-bottom:5px}
+.label{font-weight:750;color:#334155}
+.synthesis{padding:13px 15px;background:#eef6ff;border:1px solid #bfdbfe;border-radius:9px;margin:13px 0}
+.counter{padding:13px 15px;background:#fff7ed;border:1px solid #fed7aa;border-radius:9px;margin:13px 0}
+.action{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:13px 0}
+.action>div{padding:12px 13px;border-radius:9px;font-size:13px}
+.attn{background:#eff6ff;border:1px solid #bfdbfe}
+.fail{background:#fff1f2;border:1px solid #fecdd3}
+.table{width:100%;border-collapse:collapse;font-size:13px;margin:12px 0 18px}
+.table th,.table td{border:1px solid #d9e0e7;padding:8px 9px;vertical-align:top;text-align:left}
+.table th{background:#f8fafc;color:#111827}
+.small{font-size:12px;color:#667085}
+.footer{padding:17px 28px 23px;border-top:1px solid #e5e9ed;background:#fafbfc;color:#687280;font-size:11px}
+.nav{max-width:920px;margin:0 auto 12px;padding:10px 14px;background:#17202a;color:#fff;border-radius:10px}
+.nav a{color:#cfe2ff;text-decoration:none;margin-right:15px}
+.asset-summary{display:grid;grid-template-columns:1.2fr .8fr;gap:12px;margin:11px 0}
+.asset-summary>div{border:1px solid #e2e8f0;border-radius:9px;padding:11px 12px;background:#fafafa}
+@media(max-width:700px){.body,.head{padding-left:16px;padding-right:16px}.subject{font-size:19px}.action,.grid3,.asset-summary{grid-template-columns:1fr}}
+
+.valuation{background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:13px 15px;margin:13px 0}
+.valuation h3,.indicator-box h3,.flow-box h3{margin:0 0 8px;font-size:15px;color:#111827}
+.indicator-box{background:#f8fafc;border:1px solid #dbe3ea;border-radius:10px;padding:13px 15px;margin:13px 0}
+.flow-box{background:#fffaf0;border:1px solid #f5d99f;border-radius:10px;padding:13px 15px;margin:13px 0}
+.status-row{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
+.badge{display:inline-block;padding:3px 8px;border-radius:999px;font-size:11px;font-weight:750;background:#e8eef5;color:#334155}
+.badge-good{background:#dcfce7;color:#166534}
+.badge-warn{background:#ffedd5;color:#9a3412}
+.badge-bad{background:#ffe4e6;color:#9f1239}
+.calc{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;background:#f8fafc;padding:3px 6px;border-radius:5px}
+
+
+body{color:#18212a;line-height:1.86}.body{font-size:16px}.body p{margin:10px 0 15px}.body strong,.body b{color:#101010;font-weight:800}.cycle-title{font-size:17px;color:#101010;font-weight:800;line-height:1.55}.cycle{padding:18px 0}.cycle p{font-size:16px}.label{font-weight:600}.event-alert{margin:14px 0;padding:12px 15px;background:#f6f7f8;border:1px solid #c9ced4;border-left:5px solid #111;border-radius:6px;line-height:1.6}.event-alert strong{color:#111!important;font-weight:850}.position-note,.method-note{margin:17px 0;padding:15px 17px;border:1px solid #dbe2e9;border-radius:9px;background:#fafbfc}.method-note h3,.position-note h3{font-size:17px;margin:0 0 8px}.method-note a,.valuation a{color:#235582}.term-note{font-size:13px;color:#425263;border-left:3px solid #aab6c2;padding:8px 12px;background:#f8fafb}.leader-note{border-left:3px solid #596c7c;padding-left:12px}.table-intro{font-size:14px}.table{font-size:13px;table-layout:auto;overflow-wrap:anywhere}.review-cover{max-width:920px;margin:20px auto 18px;padding:22px 26px;background:white;border:1px solid #d8dfe6;border-radius:13px}.eyebrow{font-size:12px;color:#586674;letter-spacing:1px}.review-cover h1{font-size:28px;line-height:1.4;margin:10px 0 15px;color:#111}.review-cover p{font-size:15px}.review-key{border-top:1px solid #e0e5ea;padding-top:12px}.nav{line-height:2;font-size:14px;position:static}.nav a{display:inline-block}.small{font-size:13px;color:#4b5b6b}.review-methods{max-width:920px;margin:24px auto;padding:25px 28px;background:white;border:1px solid #d8dfe6;border-radius:13px;font-size:15px}.review-methods h2{font-size:23px}.review-methods h3{font-size:18px;margin-top:24px}.review-methods a{color:#235582}.source-list{font-size:13px;word-break:break-word}.source-list li{margin:9px 0}.scope-note{font-size:14px;padding:14px;background:#f4f6f8;border-left:4px solid #334155}.note{font-size:14px}.valuation-interpretation{font-size:16px}.action .attn,.action .fail{color:#111;font-weight:650}.card{padding:19px}.synthesis{color:#15212c}.mail{margin-bottom:25px}
+@media(max-width:700px){.shell{padding:10px 7px 24px}.body{padding:18px 14px 24px;font-size:16px}.head{padding:18px 14px}.card{padding:12px}.cycle-title{font-size:16px}.review-cover,.review-methods{margin:12px 7px;padding:17px 16px}.review-cover h1{font-size:23px}.nav{margin:0 7px 12px;padding:9px 12px}.table{font-size:12px}.table td,.table th{padding:7px 6px}.method-note,.position-note{padding:12px}.subject{font-size:20px}.sim{padding:10px 14px}}
+@media print{.nav,.review-cover{display:none}.shell,.review-methods{max-width:none;margin:0;padding:0}.mail{box-shadow:none;border:0}.card,.cycle{break-inside:avoid}.event-alert{background:white}.body{font-size:11pt}.cycle p{font-size:11pt}}
+
+.candidate-pool{margin:23px 0 4px;padding-top:18px;border-top:2px solid #d8dfe6}
+.candidate-pool h3{font-size:18px;margin:0 0 8px}
+.candidate-note{background:#f8fafc;border-left:4px solid #64748b;padding:10px 12px;border-radius:7px}
+.candidate-table td:nth-child(1),.candidate-table td:nth-child(3){white-space:nowrap}
+@media(max-width:700px){
+  .candidate-table{font-size:11px}
+  .candidate-table th,.candidate-table td{padding:6px 5px}
+}
+</style>
+</head>
+<body>
+<div class="shell">
+<div class="mail">
+<div class="head"><div class="subject">【开盘前市场】上证综指完整七周期｜宽度短强中弱｜全球科技强、实际利率压估值</div><div class="meta">DSA 股票研究｜长文研究版｜目标到达约 09:10（触发时间待实跑校准）｜Asia/Shanghai</div></div>
+<div class="body">
+<div class="lead"><strong>今天适合精选，不适合全面追涨。</strong>海外科技偏强，但实际利率、美元和人民币压力限制高估值；A股权重蓝筹月周结构相对稳，短期上涨扩散，中长期参与和成交仍不足。科技仍有短周期背离，小盘周线也偏弱；当前红盘更多体现结构性修复，多数股票的中期趋势尚未同步转强。</div>
+<div class="grid3">
+<div class="kpi"><b>现在怎么做？</b><span>结构性寻找机会，不追指数加速</span></div>
+<div class="kpi"><b>多数股票跟上了吗？</b><span>短强中弱；20日线覆盖快于50/200日线</span></div>
+<div class="kpi"><b>资金是否支持？</b><span>温和增量，杠杆偏快，效率要核对</span></div>
+</div>
+<div class="mainline"><b>今天为什么只做精选：</b>大盘月周结构仍稳，日线上涨家数扩散，60分钟也没有破坏；但科创50出现<strong>30分钟确认顶背离</strong>，15分钟继续转弱，科技追价动力不足。国内资金更偏宽基和红利，海外科技偏强又受到实际利率、美元和人民币压力。<strong>结论：大盘、红利和工业方向优先；科技等背离消化；小盘继续观察。</strong></div>
+<div class="section">
+<h2>当前市场结论与五条依据</h2>
+<div class="lead" style="margin-top:14px;">
+<b>今天的结论：</b>大盘月周结构仍稳，短线参与面改善，但50/200日线覆盖和成交确认不足。红利、大盘和部分工业方向更稳；科技受海外景气支持，但科创50有30分钟背离；小盘周线仍弱。<br/>
+<b>优先顺序：</b>大盘/红利、工业链 ＞ 等背离消化后的科技 ＞ 小盘修复观察。
+</div>
+<table class="table">
+<tr><th>主线</th><th>具体依据</th><th>今天怎么处理</th></tr>
+<tr><td><b>全球风险与资金价格</b></td><td>VIX回落，海外科技偏强；但10年实际利率、美元和人民币仍偏紧，高估值扩张受限。</td><td>科技景气可以继续研究，但高估值方向不追加速。</td></tr>
+<tr><td><b>A股趋势和参与度</b></td><td>核心指数月周结构未坏；上涨3560家、下跌1540家；20日线覆盖改善，但50/200日线只有43%/36%。</td><td>短线扩散真实，中期趋势尚未普遍跟上，继续精选。</td></tr>
+<tr><td><b>成交、杠杆和ETF份额</b></td><td>成交增加4%，融资参与加快；ETF份额偏宽基/红利，科技份额分化。</td><td>资金支持结构性行情，但全面增量尚未确认。</td></tr>
+<tr><td><b>行业强弱</b></td><td>宽基/红利、工业自动化、电网相对更稳；科技有景气支持但短线背离；小盘周线偏弱。</td><td>优先大盘/红利和工业链；科技等背离消化；小盘继续观察。</td></tr>
+<tr><td><b>市场转弱条件</b></td><td>若月/周/日结构、50/200日线覆盖、新高新低、成交量价、领涨板块和全球风险环境同步恶化。</td><td>由“精选”转为减少新增风险；局部转弱时仍按各方向自身趋势与失效条件处理。</td></tr>
+</table>
+<div class="mainline"><b>数据截至：</b>两融、ETF份额等按最近已公布交易日使用；尚未更新到上一交易日时直接标注“尚未更新”。</div>
+</div>
+<div class="section">
+<h2>一、代表指数职责与上证综指完整分析</h2>
+<table class="table">
+<tr><th>代表指数</th><th>在晨报里回答什么</th><th>状态</th><th>当前最重要冲突</th></tr>
+<tr><td><b>上证综指</b></td><td>沪市全市场整体价格结构、权重与一般股票共同表现</td><td>月周修复、日线偏强，短线靠近压力</td><td>指数趋势改善，但中长期宽度尚未全面恢复</td></tr>
+<tr><td><b>深证成指</b></td><td>深市制造、成长和民营企业整体状态</td><td>日线修复快于周线</td><td>成长弹性较高，利率和估值约束也更强</td></tr>
+<tr><td><b>沪深300</b></td><td>大盘核心、机构宽基与盈利质量</td><td>周线最稳定</td><td>上涨较稳，但成交扩张仍不足</td></tr>
+<tr><td><b>上证50</b></td><td>权重蓝筹、金融与高股息风格</td><td>相对强势</td><td>防守价值较高，短期乖离需要消化</td></tr>
+<tr><td><b>中证500</b></td><td>中盘景气与市场扩散的中间层</td><td>修复中</td><td>尚未形成持续相对强势</td></tr>
+<tr><td><b>中证1000</b></td><td>小盘风险偏好与流动性敏感度</td><td>日线反弹、周线仍弱</td><td>短线宽度改善，长期成本与资金仍压制</td></tr>
+<tr><td><b>中证2000</b></td><td>更小市值和高弹性投机环境</td><td>月周偏弱</td><td>月周偏弱，题材热度尚未带来趋势和流动性改善</td></tr>
+<tr><td><b>创业板指</b></td><td>成长风格、盈利预期和利率敏感度</td><td>日线修复</td><td>国内风险偏好改善与海外实际利率上升冲突</td></tr>
+<tr><td><b>科创50</b></td><td>硬科技、半导体和高估值科技风险</td><td>高周期未坏、30分钟背离</td><td>全球科技偏强，但A股自身30分钟背离仍压制短线追价</td></tr>
+</table>
+<div class="card">
+<div class="card-title">上证综指｜模拟3386点｜长期结构修复，短线靠近压力</div>
+<div class="identity">全市场角色：沪市综合指数数据截至前一交易日收盘</div>
+<div class="one-line">长中期修复尚在，日线趋势和参与面有改善；但近端3420–3450点供给区、30分钟动量减速和杠杆效率下降，仍限制追涨。<strong>现价模拟3386点：先精选，不追指数加速。</strong></div>
+<div class="cycle fused-cycle" data-original-cycle="0" id="cycle-00"><div class="cycle-title">月线｜修复在继续，长期压力还没有突破</div>
+<p>上证综指仍在长期箱体上半部，也没有跌回上一轮月线突破区。5月线上穿10月线、10月线由走平转为上行，20月线缓慢抬升，与回调时没有持续放量、向下推进效率不高相互印证：长期卖压暂未集中释放，趋势正在修复。长期成交密集区和锚定成交均价位于3150–3260点，为这轮修复提供了位置参照；但本轮成交只温和增加，距离3420–3500点长期压力仍近，买盘尚未证明能带动长期突破。</p><p>动量也在改善：MACD在零轴附近金叉、RSI约57、ROC转正，且<strong>尚未确认月线顶背离</strong>。模拟PE为13.8倍、PB为1.35倍，分别处历史48%和42%分位；股票相对债券的风险补偿（ERP）处中部，估值没有提供特别宽厚的安全垫。合起来看，<strong>这是箱体内向上修复，不是已经确认的箱体突破</strong>：可以继续寻找权益机会，但不能因为接近前高就无条件提高仓位。</p></div>
+<div class="cycle fused-cycle" data-original-cycle="1" id="cycle-01"><div class="cycle-title">周线｜趋势与承接一起改善，3420点仍待确认</div>
+<p>高点、低点缓慢抬高并重新站上20周线，5周线上穿10周线，二者都在20周线上方且斜率改善；上涨周成交温和增加、回调周缩量，说明价格修复得到了卖压收缩的支持，而不是只靠一根均线金叉。MACD的快线DIF在零轴附近上穿慢线DEA，柱体连续回升，成交方向代理OBV和ADL也同步改善，进一步支持中期修复。</p><p>但这些变化还没有明显加速：方向指标+DI高于-DI，趋势强度ADX约21，仍属一般；周线平台上沿3420点附近也尚需放量确认。<strong>修复持续与新一轮大级别突破是两回事</strong>。现在可以跟踪强势对象，但平台突破仍未确认，暂按修复阶段处理。</p></div>
+<div class="cycle fused-cycle" data-original-cycle="2" id="cycle-02"><div class="cycle-title">日线｜更多股票参与修复，但还不能当成全面上涨</div>
+<p>指数站在60日均线之上，5日均线上穿10日均线，10日均线又高于20日均线；MACD在零轴上方金叉、柱体扩大，RSI约63且ROC为正，说明短中期方向与主要动量相互支持，动量偏强但尚未过热。KDJ虽然出现高位死叉，表达的是更短节奏的降温，<strong>短线死叉只反映降温，中期趋势目前尚未确认反转</strong>；方向指标仍偏多（+DI占优），ADX也在缓慢回升。</p><p>成交增加4%，OBV改善、CMF为正，资金代理并未明显拖后腿；但成交扩张弱于上涨家数的扩散，站上20日线的股票比例又比50日线、200日线恢复得快。这说明短期参与扩大，中期跟随仍不足，且日线平台尚未有效突破。<strong>目前是修复延续，不是全面主升确认</strong>；若放量跌回20日线并伴随市场宽度恶化，本轮修复才按原情景降级。</p></div>
+<div class="cycle fused-cycle" data-original-cycle="3" id="cycle-03"><div class="cycle-title">60分钟｜日线修复有承接，但没有独立追涨理由</div>
+<p>指数在60分钟成交均价（VWAP）和主要成交区上方，短中期均线温和向上，更高的低点还在；回调缩量、反弹量略高，也没有放量跌破支撑，说明日线修复仍有中短周期承接。MACD在零轴附近金叉后扩张有限，RSI约58，属于中性偏强，尚不是加速状态。前高压力没有突破，所以<strong>承接未坏只支持继续观察，当前仍需等待更好的价格和触发</strong>。</p></div>
+<div class="cycle fused-cycle" data-original-cycle="4" id="cycle-04"><div class="cycle-title">30分钟｜冲高无量、动量降温，先等重新确认</div>
+<p>局部高点接近压力区，平台仍未突破，而冲高成交没有继续扩大。MACD在零轴上方死叉、柱体转弱，RSI从68回落、ROC减速，KDJ也在高位死叉；MACD、RSI/ROC和KDJ共同指向同一轮上涨动力下降，合并理解为一组短线动量衰减信号。价格又从布林上轨回到中轨附近、带宽收窄，说明此前扩张正在降温。</p><p><strong>30分钟高位死叉与量价不配合，要求等待重新确认</strong>。平台尚未放量跌破，因此当前属于动量降温而非结构反转；确认背离只作用于已经取得对应证据的指数和周期。</p></div>
+<div class="cycle fused-cycle" data-original-cycle="5" id="cycle-05"><div class="cycle-title">15分钟｜有止跌反弹，还不足以解除30分钟的约束</div>
+<p>短均线仍粘连，MACD虽然在零轴上方，DIF却还低于DEA；KDJ低位金叉、RSI回到52附近，只显示局部反弹和卖压缓解。反弹成交一般，价格也没有重新站回前一高点，买盘尚未提供结构确认。<strong>这次低位金叉不是新的追涨信号</strong>，必须结合30分钟压力未破和死叉仍在的背景，等待量价、结构一起改善。</p></div>
+<div class="cycle fused-cycle" data-original-cycle="6" id="cycle-06"><div class="cycle-title">5分钟｜微观反弹不改方向，不能抢在上级周期前面</div>
+<p>这里看的是5分钟图：短期均线MA5上穿MA10。价格仍围绕VWAP反复，MACD只是零轴下方的小金叉；反弹量不足，主动买入代理也没有明显扩大。局部低点暂未破坏，说明微观承接尚在，但买盘并未形成持续推进。<strong>这是5分钟反弹，不是指数方向反转</strong>；等30分钟重新走强、15分钟量价确认后，这个时点信号才有实际参考意义。</p></div><div class="indicator-box">
+<h3>技术核对：上面的判断由哪些具体状态支持</h3><p>这是同一组证据的核对明细，不再另算一次支持。先读周期中的判断，再核指标是否真的与价格、量能和结构相符。</p>
+<table class="table">
+<tr><th>指标族</th><th>状态</th><th>正确解释</th></tr>
+<tr><td>均线</td><td>日线MA5上穿MA10，MA10高于MA20；周线MA5仍高于MA10/20</td><td>短中趋势改善；金叉是滞后确认，不单独构成加仓。</td></tr>
+<tr><td>MACD</td><td>日线在零轴上方金叉；30分钟高位死叉；15分钟仍在零轴上方收敛</td><td>高周期偏强、短周期降温；零轴上方死叉更接近整理，目前没有大趋势反转证据。</td></tr>
+<tr><td>RSI / ROC / KDJ</td><td>日线RSI 63、ROC为正；30分钟RSI回落；15分钟KDJ低位金叉但量能一般</td><td>KDJ反应快，只能作为短线节奏；与RSI/MACD同属动量，不重复计票。</td></tr>
+<tr><td>DMI / ADX</td><td>日线+DI高于-DI，ADX 24缓慢抬升</td><td>方向偏多、趋势强度中等，还不是强单边。</td></tr>
+<tr><td>布林 / ATR</td><td>日线布林带温和扩张，ATR处中位；30分钟带宽先扩后收</td><td>波动支持趋势延续，但短线扩张减速。</td></tr>
+<tr><td>OBV / ADL / CMF</td><td>OBV缓慢创新高，ADL改善，CMF为正但未显著扩大</td><td>资金代理偏正面，尚不足以称“大资金全面涌入”。</td></tr>
+<tr><td>成本与结构</td><td>日线AVWAP和成交密集区上移，3420–3450点为前期供给区</td><td>成本抬高支持修复；压力位未突破，当前仍处修复阶段，尚未进入新主升。</td></tr>
+</table>
+</div>
+<div class="flow-box">
+<h3>资金行为与“吸筹/洗盘/派发”如何表述</h3>
+<div class="status-row"><span class="badge badge-good">承接改善：中等</span><span class="badge">吸筹迹象：较弱至中等</span><span class="badge">洗盘：未确认</span><span class="badge badge-warn">派发风险：低至中</span></div>
+<p>模拟资金代理显示：宽基ETF份额增加、OBV/ADL缓慢改善、CMF为正、回调缩量，说明承接有所增强；但成交并未显著放大，融资买入增长快于指数推进，也没有“跌破重要支撑后快速收回并经低量复测”的完整洗盘序列。因此只能写“承接改善/吸筹迹象”，不能写“主力资金大举涌入”或“洗盘完成”。若后续出现高位放量滞涨、连续上影、失败突破、资金代理转弱和宽度恶化，派发风险才上调。</p>
+</div>
+<div class="synthesis"><b>上证综指结论：</b>高周期修复与日线趋势改善仍是主要支持；短线压力、30分钟死叉和融资效率下降限制追价。当前以精选强势方向为主。</div>
+</div>
+</div>
+<div class="section">
+<h2>二、市场宽度：短线扩散，中期参与仍不足</h2>
+<p>上涨3560家、下跌1540家，全A收益中位数+0.63%，说明上涨并非只靠少数权重；但站上50/200日线的股票只有43%/36%，中期趋势仍未普遍修复。<strong>当前宽度支持精选强势方向，尚不足以支持全面提高风险。</strong></p>
+<table class="table">
+<tr><th>宽度证据</th><th>值</th><th>怎样解读</th></tr>
+<tr><td>上涨/下跌家数及覆盖</td><td>3560 / 1540，覆盖5100只</td><td>短线参与面扩大。</td></tr>
+<tr><td>全A收益中位数</td><td>+0.63%</td><td>普通股票整体也有上涨，指数不是单靠权重支撑。</td></tr>
+<tr><td>站上20/50/200日线</td><td>58% / 43% / 36%</td><td>短期修复快，中长期覆盖仍不足。</td></tr>
+<tr><td>20日新高/新低</td><td>184 / 67</td><td>新高占优，但趋势扩散还不充分。</td></tr>
+<tr><td>行业上涨比例</td><td>24/31个一级行业</td><td>行业扩散较好，科技、工业占优，医药、地产偏弱。</td></tr>
+<tr><td>等权/市值加权差</td><td>全A等权+0.74%，沪深300+0.58%</td><td>行情不只是权重推动，但小盘参与质量仍弱于大盘。</td></tr>
+<tr><td>涨停/跌停/炸板</td><td>73 / 9 / 34%</td><td>题材活跃，同时炸板率较高，短线情绪偏热。</td></tr>
+<tr><td>大盘/小盘参与</td><td>沪深300成分72%上涨；中证2000成分57%上涨</td><td>小盘在修复，但参与强度仍弱于大盘。</td></tr>
+</table>
+<div class="synthesis"><b>宽度结论：</b>短线扩散真实，中期趋势覆盖仍不足。继续精选大盘、红利、工业和高周期稳定方向。</div>
+</div>
+<div class="section">
+<h2>三、其他代表指数与风格：七周期、多证据融合</h2>
+<div class="cycle fused-cycle" data-original-cycle="7" id="cycle-07"><div class="cycle-title">月线｜大盘质量方向较稳，小盘仍是箱体修复</div><p>沪深300和上证50仍在长期上升通道中上部，没有跌回上一轮月线平台内部；沪深300的5/10/20月均线保持多头，上证50斜率更稳。大盘核心指数近三个月调整又没有持续放量、下行效率不高，趋势与供需共同支持长期结构仍在。沪深300的MACD在零轴附近缓慢改善、RSI处中强区，也没有确认月线顶背离。</p><p>小盘不是同一种状态：中证1000在大箱体中部，中证2000仍低于20月线，长期均线偏粘连，反弹成交改善不连续，中证2000动量也弱。估值位置分别提供另一层约束——沪深300约在自身十年52%分位、上证50约43%、中证1000约68%。<strong>月线更支持大盘与质量方向，小盘仍只是箱体修复；当前优先关注大盘和质量风格</strong>，小盘箱体内反弹也不是长期突破。</p></div><div class="cycle fused-cycle" data-original-cycle="8" id="cycle-08"><div class="cycle-title">周线｜大盘强、小盘弱，科技平台仍在形成</div><p>沪深300守住20周线和周线成交密集区，上证50主要成本继续上移；权重蓝筹高低点持续抬高，相对全A与小盘继续占优。大盘回调缩量、反弹量温和增加，沪深300的MACD柱回升、ROC转正，说明主趋势与承接大致同向。</p><p>中证1000和中证2000仍受20周线及前期套牢区压制，上攻量不足，MACD虽改善仍偏弱；成长与科技相对强弱有所改善，却没有全面共振。尤其<strong>科创50周线均线粘连、平台右侧尚未放量突破，形态仍是“形成中”</strong>。因此周线仍以大盘和质量方向为主，科技与小盘需要更多趋势和量价确认。</p></div><div class="cycle fused-cycle" data-original-cycle="9" id="cycle-09"><div class="cycle-title">日线｜上涨在扩散，增量成交还未充分跟上</div><p>沪深300收复5日线和20日线，创业板从回调低点修复，科创50仍在前期平台上方。上涨3560家、下跌1540家，全A收益中位数+0.63%，说明普通股票确有参与，而不只是少数权重拉指数。但站上20/50/200日线的比例为58%/43%/36%，短期覆盖明显好于中长期；两市成交只增加4%，也弱于参与面的扩张。</p><p>创业板MACD金叉、RSI回到50上方，沪深300ADX抬升而未进入强趋势区、ATR处中位，和上述量价一起支持“修复但尚未全面确认”。<strong>若以后指数继续涨，50/200日线覆盖却下降、创新低增加，要醒目标出“指数强、内部转弱”</strong>。当前可以结构性寻找机会；中期覆盖仍不足，所以仓位扩张需要更多宽度和成交确认。</p></div><div class="cycle fused-cycle" data-original-cycle="10" id="cycle-10"><div class="cycle-title">60分钟｜修复尚有守护，前高供给仍未化解</div><p>沪深300站在60分钟VWAP和主要成交区上方，局部成本缓慢上移，科创50也仍高于本轮反弹主要成本区；沪深300短中均线由粘连转为温和多头，高低点缓慢抬高。回调缩量、反弹量略高且没有放量破位，说明日线修复没有被立即破坏。</p><p>但MACD靠近零轴、柱体反复，买盘加速度不足；前高附近仍有供给，没有形成干净突破。<strong>支撑仍在，但突破尚未确认</strong>，这层只为日线提供支持，不独立构成加仓理由。</p></div><div class="cycle fused-cycle" data-original-cycle="11" id="cycle-11"><div class="cycle-title">30分钟｜科创50确认顶背离，科技先别追高</div><p>科创50价格创反弹新高，局部平台还在，沪深300结构则相对更稳；但科创50新高时成交没有同步扩大，价格推进效率下降，MACD柱体、RSI和ROC也没有同步创新高。短均线虽仍在多头区，价格却已远离短期成本、乖离扩大，量价与动量共同提示短线性价比变差。</p><p><strong>科创50的30分钟顶背离已确认，当前停止追高、等待消化</strong>。这是趋势中的动量衰竭；平台尚未跌破，趋势反转也未确认。MACD、RSI和ROC都在描述同一轮短线衰减。只有背离消化并重新得到量能支持，才重新评估短线触发。</p></div><div class="cycle fused-cycle" data-original-cycle="12" id="cycle-12"><div class="cycle-title">15分钟｜科技买盘未重新确认，降级等待而非判反转</div><p>承接上一段科技指数的短线观察，短均线开始走平、价格未能持续抬高，MACD快慢线在零轴上方向下收敛并死叉，RSI和ROC也没有形成新的动量扩张。反弹成交低于上一轮上攻，说明买盘尚未重新确认，30分钟的衰竭正向更短周期传导。</p><p>局部支撑尚未放量跌破，所以<strong>当前是反弹力度不足，继续等待；大趋势反转尚未确认</strong>。不同指数的短周期状态存在分化，以下结论只作用于已经取得对应数据的指数。</p></div><div class="cycle fused-cycle" data-original-cycle="13" id="cycle-13"><div class="cycle-title">5分钟｜小反弹无量，上级周期恢复前不抢跑</div><p>相关短线价格围绕VWAP反复、冲高后回落，每次小反弹成交继续缩小，向上推进效率下降；低点尚未明显破坏，但也没有放量重新站回关键位置。即便出现一次金叉，也只说明微观反弹；30分钟背离仍然有效。<strong>先等30分钟背离消化、15分钟转强，再看5分钟缩量回踩后是否放量</strong>；它只优化短线时点，月周日方向仍由高周期结构决定。</p></div>
+</div>
+<div class="section">
+<h2>四、成交、资金、杠杆、信用、估值与波动</h2>
+<p>两市成交增加4%，融资买入占成交由8.6%升至9.4%，ETF份额更偏宽基和红利；资金有增量，但杠杆增长快、科技份额分化。<strong>当前资金更支持结构性行情，而非全面扩张。</strong></p>
+<table class="table">
+<tr><th>层次</th><th>观察</th><th>主线含义</th><th>需要警惕的反证</th></tr>
+<tr><td>成交与换手</td><td>两市成交1.18万亿元，较前日+4%；全A换手2.14%</td><td>有增量但未全面放量；宽度改善快于资金扩张。</td><td>指数继续涨但成交萎缩、上涨中位数转负。</td></tr>
+<tr><td>两融与杠杆</td><td>两融余额连续5日增加；融资买入占成交由8.6%升至9.4%</td><td>杠杆参与加快，趋势弹性和拥挤敏感度同时上升。</td><td>融资继续加速而指数不前进，说明资金效率下降。</td></tr>
+<tr><td>ETF份额与风格资金</td><td>沪深300、红利ETF份额增加；半导体ETF价格上涨但份额分化；小盘ETF流入有限</td><td>增量偏向宽基和确定性，科技交易热度高于持续增量。</td><td>科技价格涨而份额持续下降，可能是存量博弈。</td></tr>
+<tr><td>行业资金</td><td>工业自动化、电网设备、红利获得净流入；医药、地产偏弱</td><td>信用与制造修复支持工业链，风格仍未全面扩散。</td><td>行业价格上涨但资金与宽度不同步。</td></tr>
+<tr><td>信用与货币</td><td>社融存量同比小幅回升；企业中长期贷款改善；M1-M2剪刀差仍弱</td><td>信用边际改善，但资金活化不足。</td><td>社融改善主要来自政府融资、企业/居民需求未同步。</td></tr>
+<tr><td>景气与国内通胀</td><td>制造业PMI回到50附近；CPI温和；PPI仍负但降幅收窄</td><td>制造与周期有修复条件，再通胀尚不强。</td><td>原材料上涨快于终端需求，挤压中下游利润。</td></tr>
+<tr><td>估值与ERP</td><td>沪深30052%分位；10年国债2.18%；ERP处历史中部</td><td>估值大致合理，但没有明显低估保护。</td><td>盈利预期下修会使当前PE迅速变贵。</td></tr>
+<tr><td>波动与下行压力</td><td>全A HV30回落；科创50短周期ATR重新上升</td><td>广义风险下降，科技局部波动抬头。</td><td>波动上升同时宽度恶化，会压低市场风险偏好。</td></tr>
+</table>
+</div>
+<div class="section">
+<h2>五、全球背景怎样影响A股方向</h2>
+<p>海外科技上涨、VIX回落，风险偏好改善；但实际利率、美元和人民币压力仍压制高估值扩张。<strong>对A股最直接的影响是：科技景气仍值得研究，但本地量价和短周期触发不足时继续等待；红利和大盘相对更稳。</strong></p>
+<table class="table">
+<tr><th>全球线索</th><th>事实</th><th>对A股的支持</th><th>对A股的约束</th></tr>
+<tr><td>全球风险偏好</td><td>标普+0.7%、纳指+1.1%、VIX降至15.8</td><td>支持成长情绪与风险偏好。</td><td>A股仍需自身宽度、成交和价格结构确认。</td></tr>
+<tr><td>全球科技资金</td><td>费城半导体+1.8%；大型科技ETF连续第3日流入；半导体ETF流入强于软件ETF</td><td>支持半导体设备、算力、电子链的景气关注。</td><td>A股科技量价和估值不配合时，继续等待短线触发。</td></tr>
+<tr><td>美国通胀</td><td>核心CPI同比3.3%降至3.2%；服务通胀仍有韧性；5年通胀预期小幅回升</td><td>通胀没有重新失控，风险偏好获得支持。</td><td>降温不够快，限制快速降息预期。</td></tr>
+<tr><td>利率与实际利率</td><td>美债2年+5bp、10年+7bp，10年实际利率+5bp</td><td>金融和部分价值风格可能相对占优。</td><td>实际利率上升压制高估值科技估值扩张。</td></tr>
+<tr><td>美元与人民币</td><td>DXY+0.4%，USD/CNH升至7.16，A50夜盘-0.2%</td><td>出口链可能获得部分汇率支持。</td><td>人民币承压，抵消部分海外科技利好。</td></tr>
+<tr><td>港股/中概科技</td><td>恒生科技+0.6%，成交只温和放大；中概科技分化</td><td>情绪外溢偏正面。</td><td>尚未形成全面资金回流确认。</td></tr>
+<tr><td>商品与周期</td><td>铜+0.8%、原油-1.2%、黄金-0.5%</td><td>铜支持制造、电网景气；油弱缓解输入型通胀。</td><td>铜价上涨仍需真实订单配合。</td></tr>
+</table>
+<div class="synthesis"><b>全球合成：</b>科技景气偏强，但资金价格偏紧。A股科技保留研究价值、短线等自身确认；红利和大盘当前更稳。</div>
+</div>
+<div class="section">
+<h2>六、今天优先看哪些行业和资产</h2>
+<p><strong>第一优先：红利/大盘、工业自动化、电网。</strong> 科技景气仍强，但先等30分钟背离消化；小盘只处修复阶段。个股优先找行业持续强、相对市场和同业领先、量价健康、估值不过热且短周期触发清楚的对象。</p>
+<table class="table">
+<tr><th>方向</th><th>支持证据</th><th>反证</th><th>今天的处理</th></tr>
+<tr><td>成长/半导体ETF</td><td>全球科技资金、SOX、A股行业相对强弱</td><td>实际利率、估值、科创50 30分钟背离</td><td>继续研究，等待回踩与量价重新确认。</td></tr>
+<tr><td>红利/大盘宽基</td><td>国内ETF份额、月周结构、相对估值、低波动</td><td>短期乖离、利率风格突然切换</td><td>优先研究，但不追短期加速。</td></tr>
+<tr><td>小盘ETF</td><td>短期宽度改善、日线底背离、估值偏低</td><td>周线弱、资金有限、杠杆敏感</td><td>反弹观察，周线反转尚未确认。</td></tr>
+<tr><td>工业自动化/电网</td><td>信用边际改善、PMI、铜、行业相对强弱</td><td>终端需求、原材料成本、订单兑现</td><td>等个股日线回踩和短周期触发。</td></tr>
+<tr><td>高估值科技股</td><td>行业景气、全球科技资金、趋势</td><td>实际利率、美元、估值、低周期背离</td><td>高周期保留，短线继续等待。</td></tr>
+</table>
+</div>
+<div class="section">
+<h2>七、今天看四件事与昨晚计划变化</h2>
+<ol>
+<li>沪深300能否放量站稳日线前高，同时站上50日线的股票比例继续提高；</li>
+<li>中证1000能否站回日线60日线，确认小盘修复不只是跟涨；</li>
+<li>科创50能否消化30分钟背离，并由15分钟重新放量确认；</li>
+<li>融资买入占比是否继续上升而指数不前进——若是，拥挤风险上调。</li>
+</ol>
+<ul>
+<li><b>示例工业自动化A：</b>维持观察，等日线支撑与30分钟触发共振；</li>
+<li><b>示例成长科技ETF：</b>降级等待，全球科技偏强，但A股30分钟背离仍未消化；</li>
+<li><b>示例小盘股：</b>原计划失效，日线已经跌破主要成本区；</li>
+<li><b>示例红利ETF：</b>计划维持，但不在短期乖离扩大时追价。</li>
+</ul>
+</div>
+<div class="section">
+<h2>八、数据时点与质量</h2>
+<table class="table">
+<tr><th>数据</th><th>截至</th><th>使用口径</th></tr>
+<tr><td>A股K线、宽度、成交</td><td>前一交易日收盘</td><td>完整市场覆盖；分钟只使用已完成交易时段。</td></tr>
+<tr><td>两融、ETF份额</td><td>最近已公布交易日</td><td>完整实值与估算代理分开。</td></tr>
+<tr><td>社融、M1/M2、PMI、CPI/PPI</td><td>各自最新公布日</td><td>慢变量按公布时间使用，不以后见之明回填。</td></tr>
+<tr><td>全球指数、科技资金、利率、通胀、汇率、商品</td><td>各市场最近完成时点</td><td>实际数据、预期和价格反应分开。</td></tr>
+</table>
+</div>
+</div>
+<div class="footer">数据说明：正文只引用当前可核材料；缺失、估算或未更新值会明确标注。</div>
+</div><div class="mail">
+<div class="head"><div class="subject">【晚间自动发现】ETF 3只重点 + 7只观察｜股票3只重点 + 7只观察</div><div class="meta">DSA 股票研究｜长文研究版｜目标发送 19:00｜Asia/Shanghai</div></div>
+<div class="body">
+<div class="lead"><strong>今晚重点：</strong>ETF和股票分别保留3只重点研究对象，并各列7只合法候选观察。重点对象做完整七周期深析；观察池保留排序、筛选理由、估值口径、触发和失效，便于以后比较Top 3是否持续优于第4–10名。<strong>观察池不是自动买入清单。</strong></div>
+<div class="mainline"><b>市场背景与筛选方向：</b>国内权重月周结构稳定，宽度短期扩散但中长期覆盖不足；全球科技偏强，实际利率和汇率仍限制高估值。因此ETF优先看大盘/红利、工业和回调后的科技，股票优先看强行业中的领导候选；短线过热、估值偏高、派发风险或结构失效仍会下调排序。</div>
+<div class="section">
+<h2>一、ETF重点 Top 3｜完整七周期深析</h2>
+<div class="card" id="growth-etf">
+<div class="card-title">1. 示例成长科技ETF（5109X1）｜中期偏强，短线先等背离消化</div>
+<div class="identity">现价1.264元｜近20日成交额26亿元｜点差0.03%｜溢价0.08%｜规模186亿元｜数据截至19:00</div>
+<div class="event-alert"><strong>30分钟顶背离已确认｜研究价值仍在，当前不追高</strong></div><div class="one-line">海外科技与同类相对强弱支持中期研究，月周趋势和日线平台未坏；但30分钟量价、动量不配合，15分钟没有恢复，底层估值又谈不上便宜。<strong>中期研究价值仍在，短线等待过热消化和重新确认。</strong></div>
+<div class="why"><b>筛选依据：</b>同类ETF中20日相对强弱排名前15%，成交、点差、规模和跟踪合格；底层指数周线强于沪深300。入选只代表值得深析，不代表当前位置可买。</div>
+<div class="cycle fused-cycle" data-original-cycle="14" id="cycle-14"><div class="cycle-title">月线｜平台突破仍在，靠近长期压力要留余地</div><p>底层成长科技指数位于长期上升通道上半部，5/10/20月均线多头，前一轮月线突破伴随成交放大，随后整理又没有持续放量滞涨，说明长期趋势与供需暂未明显背离。MACD在零轴上方、RSI中强，未确认月线顶背离，长期波动处中位，也支持<strong>原平台突破仍有效、尚未失败</strong>。但价格离长期压力不远，与均线的距离又扩大；结合底层估值，安全边际只属一般，值得继续研究不等于现在追价合算。</p></div><div class="cycle fused-cycle" data-original-cycle="15" id="cycle-15"><div class="cycle-title">周线｜回踩质量尚可，强势不等于追涨合适</div><p>周线高点和低点持续抬高，相对沪深300及同类ETF处于前列；回踩守住周线成交密集区和20周线，成交缩小，突破后也没有放量跌回。趋势、相对表现与回踩质量互相支持，<strong>杯柄／平台突破仍有效</strong>。但本周量能没有进一步扩张，MACD虽在零轴上方，ADX也只属中等，趋势还在而加速度已下降。因此可以保留中期关注，“强于同类”误读成当前位置可以追。</p></div><div class="cycle fused-cycle" data-original-cycle="16" id="cycle-16"><div class="cycle-title">日线｜突破结构未坏，波动增大需要短线降温</div><p>价格在20日线、锚定成交均价（AVWAP）和主要成交区上方，突破时放量、整理时缩量；OBV随价格大体同步、CMF仍为正，说明原有需求没有被明显供给冲击破坏。MACD与RSI保持强势，但ROC放缓、ATR上升，上行动力减速而波动扩大。<strong>当前是突破后的高位整理，尚未跌回原平台，也未形成失败突破</strong>；日线仍有研究价值，短线却需要先消化过热。</p></div><div class="cycle fused-cycle" data-original-cycle="17" id="cycle-17"><div class="cycle-title">60分钟｜支撑守住，但不足以解除30分钟背离</div><p>高低点继续抬高，价格位于VWAP和主要成本区之上，中短均线仍多头；回调缩量说明卖压有限。反弹量却没有重新扩张，均线斜率趋缓，MACD在零轴上方收敛、RSI回落到中强区，说明动量正在降温。支撑未破、前高压力仍在，<strong>这能说明日线突破没有坏，不能说明30分钟背离已经解除</strong>。</p></div><div class="cycle fused-cycle" data-original-cycle="18" id="cycle-18"><div class="cycle-title">30分钟｜价格新高却缺少量能与动量配合</div><p>价格创出反弹新高，局部平台尚未跌破；但新高时成交没有同步增加，MACD柱体、RSI和ROC也都没有同步创新高，价格又远离短期均线与成本区。量价推进效率下降与动量衰减互相印证，<strong>30分钟顶背离已经确认，先停止追高</strong>。多个动量指标来自同一波段，不增加独立票数；平台未破也意味着不能直接叫趋势反转。现在等的是背离消化与量价重新确认，而不是猜最高点。</p></div><div class="cycle fused-cycle" data-original-cycle="19" id="cycle-19"><div class="cycle-title">15分钟｜第二波买盘还没有确认</div><p>短均线走平，局部高点没有继续抬升；MACD快慢线向下收敛，尚未出现零轴上方再次金叉，RSI也从强区回落。价格尝试站回关键位时成交不足，说明买盘还没有把30分钟的衰竭修复。<strong>支撑仍在，但新触发尚未出现</strong>；可以等待，没有破位当成已经可以追涨。</p></div><div class="cycle fused-cycle" data-original-cycle="20" id="cycle-20"><div class="cycle-title">5分钟｜承接还在，需等上级周期先恢复</div><p>价格围绕VWAP震荡、冲高后回落，缩量回踩尚可，局部低点也未破；但再上攻成交不足，小级别金叉反复，说明这一层噪声较高。<strong>只有30／15分钟先恢复，再出现5分钟缩量回踩后放量，才值得关注较低风险时点</strong>。这里不负责制造方向，也微观金叉不足以恢复短线触发。</p></div>
+<div class="valuation">
+<h3>ETF价格是否合理</h3>ETF应分开回答三件事：净值有没有买贵、底层资产贵不贵、技术位置适不适合。1.264元接近交易合理参考上沿，底层估值在十年62%分位，不能因为溢价仅0.08%就叫便宜；点差0.03%、成交与跟踪合格，只解决交易质量，不替代价格和时点判断。
+<p>iNAV：1.263元；近20日正常折溢价带约为－0.05%至+0.10%，对应的<b>交易合理参考价</b>约1.262–1.264元。现价1.264元接近净值合理上沿，没有明显价格失真。</p>
+<p><b>底层资产估值：</b>十年62%分位，谈不上便宜；这决定长期安全边际。<b>技术关注区：</b>1.235–1.248元，是成本和支撑区域，不是内在价值。三者不能混称“合理目标价”。</p>
+</div>
+<div class="indicator-box">
+<h3>指标一致与冲突</h3>
+<table class="table">
+<tr><th>证据族</th><th>状态</th><th>含义</th></tr>
+<tr><td>均线/趋势</td><td>月周多头；日线MA5/10/20多头；60分钟斜率放缓</td><td>高周期偏强，短线增速下降。</td></tr>
+<tr><td>MACD</td><td>周日零轴上方；30分钟死叉；15分钟未再金叉</td><td>趋势未坏，短线触发缺失。</td></tr>
+<tr><td>RSI/ROC/KDJ</td><td>日线强；30分钟RSI/ROC背离；5分钟KDJ反复</td><td>动量冲突来自同一波上攻减速，合并理解为一组短线衰竭信号。</td></tr>
+<tr><td>DMI/ADX</td><td>日线+DI占优、ADX 28；30分钟ADX下降</td><td>日线趋势较强，短线趋势强度回落。</td></tr>
+<tr><td>ATR/布林</td><td>日线ATR抬升；30分钟布林带由扩张转收窄</td><td>波动高，短线进入消化期。</td></tr>
+<tr><td>OBV/ADL/CMF</td><td>日线资金代理仍正；30分钟新高未获同步确认</td><td>中期资金未撤退，短线追价不足。</td></tr>
+</table>
+</div>
+<div class="flow-box">
+<h3>资金行为</h3>
+<p>ETF份额近5日增加1.6%，成交额保持高位，价格突破后没有异常溢价；但新高阶段份额增速和主动买入代理放慢。结论是“中期资金仍在、短线边际流入减速”，当前更准确的判断是“中期资金仍在、短线边际流入减速”。</p>
+</div>
+<div class="section">
+<h3>资产专属证据</h3>
+<p>底层指数估值处十年62%分位，前十大权重集中度48%，半导体与软件暴露较高；ETF本身无异常溢价，跟踪误差稳定。全球半导体资金流入支持行业景气，实际利率上升限制估值。</p>
+<h3>资金、供需与派发/吸筹观察</h3>
+<p>ETF份额近5日温和增加，成交活跃；突破后没有持续放量滞涨，暂未看到明显派发。若价格继续新高而份额下降、成交效率恶化、同类相对强弱转弱，才提高资金撤退风险。</p>
+</div>
+<div class="synthesis"><b>跨周期合成：</b>高周期偏强与低周期过热同时存在。估值和位置削弱安全边际，当前只保留中期研究许可，短线等待背离消化。</div>
+<div class="action"><div class="attn"><b>关注/触发</b><br/>回踩1.245附近承接；30分钟背离消化，15分钟重新放量，5分钟缩量回踩后再放量。</div><div class="fail"><b>转弱/失效</b><br/>跌破1.230且同类相对强弱转弱，或底层指数日线形成失败突破。</div></div>
+<p><b>主要风险：</b>底层估值偏高；全球科技资金逆转；30分钟背离扩大。</p>
+<p class="small">历史参考胜率：样本不足，暂不展示。当前机会概率：尚未完成独立校准，暂不提供。</p>
+</div>
+<div class="card" id="dividend-etf">
+<div class="card-title">2. 示例红利ETF（5109X2）｜趋势稳定，当前位置不宜追</div>
+<div class="identity">现价1.086元｜成交额18亿元｜点差0.02%｜折溢价正常｜规模245亿元</div>
+<div class="event-alert"><strong>趋势稳定，箱体未突破｜防守方向也要防追价</strong></div><div class="one-line">月周趋势、相对估值和国内宽基资金同向，日线回调健康；但短期乖离、份额拥挤和30分钟箱体仍限制追价。<strong>更合适的等待对象不等于更合适的当前买点。</strong></div>
+<div class="why"><b>筛选依据：</b>同类ETF中波动较低、跟踪稳定，底层指数估值处历史中低位，近期份额净增加。</div>
+<div class="cycle fused-cycle" data-original-cycle="21" id="cycle-21"><div class="cycle-title">月线｜趋势与估值较友好，但已经不是低位</div><p>底层红利指数仍在长期上升通道，5/10/20月均线多头，价格高于长期成交密集区，月线回调没有持续放量，说明长期供给暂时有限。MACD在零轴上方但柱体扩张放慢，未确认月线顶背离，更多是上涨后的减速而非反转。底层估值约处十年38%分位，股息率相对国债仍有吸引力；趋势与相对估值共同支持防守配置研究，但<strong>长期估值相对友好，但当前买入性价比仍取决于回踩位置和拥挤程度</strong>。</p></div><div class="cycle fused-cycle" data-original-cycle="22" id="cycle-22"><div class="cycle-title">周线｜资金支持趋势，仍需防过度拥挤</div><p>周线高低点持续抬高，回调守住20周线与主要成本区，相对全A和低波宽基的表现稳定。回调量缩、反弹量温和且没有放量跌破，MACD仍为正、ADX处中等趋势区，说明主趋势未被破坏。近期ETF份额持续增加，可以作为资金支持线索；但<strong>若份额继续增加，价格推进却越来越慢，就要从“趋势资金”转而警惕拥挤</strong>，不能只看净流入方向。</p></div><div class="cycle fused-cycle" data-original-cycle="23" id="cycle-23"><div class="cycle-title">日线｜健康降温，问题在买入价格而不是方向</div><p>价格守住20日线和AVWAP，回调量缩、OBV平稳，说明下跌没有明显供给冲击；RSI从高位回落、MACD柱体收窄、ATR下降，又显示强趋势正在降温，回调波动有所收敛。<strong>这些证据更像健康整理，而不是趋势已经坏了</strong>。价格仍高于短期成本，因此眼下最需要改善的是入场性价比，不是反复寻找一个新“看多”指标。</p></div><div class="cycle fused-cycle" data-original-cycle="24" id="cycle-24"><div class="cycle-title">60分钟｜回归成交均价，有利于等更好位置</div><p>价格从明显偏离VWAP逐步回归，均线仍向上；回调量低于前期上涨量，主要支撑没有破坏，说明回落暂未带来明显卖压。MACD靠近零轴上方，动量只属普通，与“趋势未坏但不宜追价”相符。<strong>这一层支持等待更好的价格，不支持现在立即追进</strong>。</p></div><div class="cycle fused-cycle" data-original-cycle="25" id="cycle-25"><div class="cycle-title">30分钟｜箱体尚未上破，试探压力不能当突破</div><p>局部箱体还在，上沿虽多次被测试，却始终缺少量能配合；MACD在零轴上方横向、RSI中性偏强且没有确认背离，说明整理没有明显转坏，但也没有加速。成本区逐步上移是支持，<strong>有效放量突破尚未出现</strong>则是限制。短线继续等待，平台突破尚未确认。</p></div><div class="cycle fused-cycle" data-original-cycle="26" id="cycle-26"><div class="cycle-title">15分钟｜一次金叉只说明卖压减弱</div><p>出现一次金叉，但其零轴位置与量能都一般，价格没有突破30分钟箱体上沿。它和上级周期一起看，只能说明局部卖压可能减弱，缺少新需求推动的确认。<strong>不能凭这一条金叉把等待升级为买入机会</strong>。</p></div><div class="cycle fused-cycle" data-original-cycle="27" id="cycle-27"><div class="cycle-title">5分钟｜低点未破，仍在等持续承接</div><p>反弹后量缩，价格围绕VWAP波动，局部低点未破，却没有连续放量。承接尚在与需求未扩张同时成立，<strong>可以观察支撑附近的低风险承接，不能用小反弹改写月周判断</strong>。</p></div>
+<div class="valuation">
+<h3>ETF价格是否合理</h3><p class="valuation-interpretation">底层红利估值约十年38%分位、股息率相对国债有吸引力，仍要核分红是否由可持续盈利和现金流支持。现价1.086元基本贴近净值，解决的是没有明显交易溢价；能否在1.065–1.072的技术区间获得更好承接，是另一件事。</p>
+<p>iNAV：1.085元；正常折溢价带－0.05%至+0.10%，交易合理参考约1.084–1.086元。现价1.086元基本贴近净值。底层红利指数估值约处十年38%分位，长期估值相对友好；技术关注区1.065–1.072元仅表示回踩性价比。</p>
+</div>
+<div class="indicator-box">
+<h3>指标一致与冲突</h3>
+<table class="table">
+<tr><td>均线/趋势</td><td>月周日多头，短线乖离偏大</td><td>方向稳定、价格性价比下降</td></tr>
+<tr><td>MACD</td><td>周日零轴上方；30分钟横向；15分钟金叉量能一般</td><td>趋势有效，短线未确认新一轮加速</td></tr>
+<tr><td>RSI/KDJ</td><td>日线RSI从高位回落；15分钟KDJ金叉</td><td>降温后反弹，不能单凭KDJ升级</td></tr>
+<tr><td>ADX/ATR/布林</td><td>ADX中等，ATR下降，布林带收窄</td><td>稳定趋势进入整理</td></tr>
+<tr><td>OBV/CMF/份额</td><td>OBV平稳、CMF为正、份额持续增加</td><td>资金支持仍在，但需监控拥挤</td></tr>
+</table>
+</div>
+<div class="flow-box">
+<h3>资金行为</h3>
+<p>ETF份额连续增加、价格同步上升，属于趋势资金支持；若后续份额仍高速增加而价格不再前进、折溢价扩大、成交效率下降，则从“资金流入”转为“拥挤风险”。</p>
+</div>
+<div class="section">
+<h3>资产专属证据</h3>
+<p>底层指数估值约在十年38%分位，股息率相对国债仍有吸引力；ETF规模、流动性、点差和跟踪质量均合格，集中度中等。</p>
+<h3>资金、供需与派发/吸筹观察</h3>
+<p>份额持续增加与价格上涨同向，暂属趋势资金；但若份额继续快速增加而价格推进变慢、折溢价扩大，就要防范拥挤回撤。</p>
+</div>
+<div class="synthesis"><b>跨周期合成：</b>高周期趋势完整，日线回调健康，短线仍在箱体内。当前主要问题不是方向，而是买入价格与拥挤程度。</div>
+<div class="action"><div class="attn"><b>关注/触发</b><br/>1.065–1.072区域缩量企稳；日线重新放量，30分钟箱体上破并回踩确认。</div><div class="fail"><b>转弱/失效</b><br/>跌破1.050且同类相对强弱转差，或底层高股息成分盈利预期明显恶化。</div></div>
+<p><b>主要风险：</b>短期拥挤；利率风格切换；部分高股息成分盈利下修。</p>
+<p class="small">历史参考胜率：样本不足，暂不展示。当前机会概率：尚未完成独立校准，暂不提供。</p>
+</div>
+<div class="card" id="small-etf">
+<div class="card-title">3. 示例小盘ETF（5109X3）｜底背离修复，周线尚未反转</div>
+<div class="identity">现价0.932元｜成交额6.2亿元｜点差0.08%｜规模42亿元</div>
+<div class="event-alert"><strong>日线底背离确认｜只是修复，周线反转未证实</strong></div><div class="one-line">低估值和日线、30分钟修复提供观察理由；周线下降结构、有限份额流入、市场宽度深度和流动性却仍是约束。<strong>便宜与卖压减轻不能一起冒充趋势已经反转。</strong></div>
+<div class="why"><b>筛选依据：</b>同类小盘ETF中流动性尚可、折溢价正常；日线底背离与市场短期宽度改善使其进入观察池。</div>
+<div class="cycle fused-cycle" data-original-cycle="28" id="cycle-28"><div class="cycle-title">月线｜估值有修复空间，长期趋势未确认</div><p>底层小盘指数仍在大箱体中部、20月线附近反复，长期均线没有稳定多头，月线成交也没有显示新的长期突破。估值处历史较低区域，能提供修复空间的研究理由；但成分盈利波动大、对流动性敏感，低估值不是足够的趋势证据。<strong>月线只能写“有估值修复空间”，不能写“已经反转”</strong>。</p></div><div class="cycle fused-cycle" data-original-cycle="29" id="cycle-29"><div class="cycle-title">周线｜卖压减弱，下降结构仍未扭转</div><p>价格仍在20周线下方，高点不断下移的结构没有突破，相对沪深300仍弱。MACD柱体回升、回调成交开始减少，说明下跌动量和供给压力有所减轻；但这些改善并未伴随主结构被收复。<strong>下跌减速不等于转为上升趋势</strong>，周线仍是日线修复必须面对的约束。</p></div><div class="cycle fused-cycle" data-original-cycle="30" id="cycle-30"><div class="cycle-title">日线｜底背离已确认，反转还缺结构与广度</div><p>价格再探低位时，MACD柱体、RSI和ROC没有同步创新低，且成交没有继续放大，说明抛压正在减轻、下跌动量不再跟随价格。<strong>日线底背离已确认，但并不自动等于趋势反转</strong>。仍需站回60日线，并有更多小盘成分股一起改善；否则只是弱周线背景下的一次技术修复。</p></div><div class="cycle fused-cycle" data-original-cycle="31" id="cycle-31"><div class="cycle-title">60分钟｜局部成本收回，前平台仍是阻力</div><p>价格站回短期成本区，高低点开始抬高，反弹量温和改善、MACD回升，说明修复开始获得局部承接。但前一平台以及VWAP上方套牢区仍压制价格，尚未形成强趋势。<strong>反弹在推进，不能忽略前平台的卖压</strong>。</p></div><div class="cycle fused-cycle" data-original-cycle="32" id="cycle-32"><div class="cycle-title">30分钟｜局部下降线突破，只够确认修复</div><p>局部下降线被突破，并形成更高的低点，RSI回到50上方，量能也有所改善。结构和动量方向一致，但量能尚不强，也没有消除周线弱势。<strong>30分钟从下跌转向修复，尚未转为主升</strong>，应继续观察突破后是否能获得持续承接。</p></div><div class="cycle fused-cycle" data-original-cycle="33" id="cycle-33"><div class="cycle-title">15分钟｜反弹得到确认，但金叉位置仍偏弱</div><p>MACD金叉还靠近零轴下方，RSI回升、回踩量缩，说明局部反弹有一定延续和承接。<strong>这只是低位修复的确认，不能覆盖周线仍弱的事实</strong>；金叉所在位置与上级结构比“出现了金叉”四个字更重要。</p></div><div class="cycle fused-cycle" data-original-cycle="34" id="cycle-34"><div class="cycle-title">5分钟｜二次回踩有承接，先观察再放量</div><p>缩量回踩没有跌破局部低点，VWAP附近出现承接，说明短线卖压没有重新扩大。若随后再放量，可以改善观察入场时点；但<strong>5分钟承接只优化短线时点，周线反转仍未确认</strong>。</p></div>
+<div class="valuation">
+<h3>ETF价格是否合理</h3>小盘指数历史27%分位是相对历史的价格线索，不会自动消除成分盈利波动和流动性风险。0.932元没有异常溢价，只能说明相对净值未明显失真；日线60日线及成分股参与能否改善，才关系到结构修复是否扩展。
+<p>iNAV：0.931元；正常折溢价带－0.10%至+0.15%，交易合理参考约0.930–0.932元。现价0.932元没有异常溢价。底层小盘指数估值约处历史27%分位，但低估值不能证明趋势反转；技术关注区0.915–0.925元。</p>
+</div>
+<div class="indicator-box">
+<h3>指标一致与冲突</h3>
+<table class="table">
+<tr><td>均线/趋势</td><td>月线箱体、周线仍在20周线下；日线尝试收复中期均线</td><td>高周期弱、日线修复</td></tr>
+<tr><td>MACD</td><td>日线底背离后金叉；15分钟金叉仍靠近零轴下方</td><td>反弹成立，反转未证实</td></tr>
+<tr><td>RSI/ROC/KDJ</td><td>日线RSI/ROC底背离；5分钟KDJ反复</td><td>动量正在修复，但仍属于同一组修复证据</td></tr>
+<tr><td>DMI/ADX</td><td>-DI优势缩小，ADX下降</td><td>下跌趋势减弱，但尚未转为上升趋势</td></tr>
+<tr><td>资金代理</td><td>OBV止跌、CMF接近零、ETF份额流入有限</td><td>抛压减轻，资金认可不足</td></tr>
+</table>
+</div>
+<div class="flow-box">
+<h3>资金行为</h3>
+<p>当前更接近“卖压衰减”而非“大资金回流”。融资与小盘价格若继续背离，去杠杆风险仍高；只有份额、成交、宽度和相对强弱同时改善，才可把修复升级。</p>
+</div>
+<div class="section">
+<h3>资产专属证据</h3>
+<p>底层指数估值处历史低位，但成分盈利波动大；ETF点差、规模和跟踪稳定性弱于大盘宽基。小盘高度依赖市场宽度、成交扩张与融资效率。</p>
+<h3>资金、供需与派发/吸筹观察</h3>
+<p>价格修复但份额流入有限，说明资金认可度不高；若两融上升、指数不前进，小盘对去杠杆最敏感。当前是抛压减轻，不是资金全面回流。</p>
+</div>
+<div class="synthesis"><b>跨周期合成：</b>高周期仍弱，日线底背离和分钟修复只能把结论从“回避”提升到“观察”，不能提升到趋势反转。</div>
+<div class="action"><div class="attn"><b>关注/触发</b><br/>底层指数站回日线60日线；站上50日线的成分比例继续提高；30/15分钟量价共振。</div><div class="fail"><b>转弱/失效</b><br/>ETF跌破0.905，或小盘宽度、成交和份额重新收缩。</div></div>
+<p><b>主要风险：</b>周线下降延续；流动性收缩；杠杆资金撤退。</p>
+<p class="small">历史参考胜率：样本不足，暂不展示。当前机会概率：尚未完成独立校准，暂不提供。</p>
+</div>
+<div class="candidate-pool"><h3>ETF合法候选观察池｜第4–10名</h3><p class="candidate-note">以下对象已经通过基础身份、数据覆盖、流动性和硬排除条件；当前排序低于Top 3，保留观察，不自动升级为买入建议。</p><table class="table candidate-table"><tr><th>排名</th><th>ETF / 方向</th><th>排序分</th><th>筛选依据</th><th>当前价格与相应估值</th><th>下一触发</th><th>失效条件</th><th>后续观察</th></tr><tr><td><b>4</b></td><td><b>5109X4｜示例大盘质量ETF</b></td><td>74/100<br/><span class="small">研究排序分</span></td><td>大盘质量方向月周稳定、同类RS前25%、回调量价健康。</td><td>现价1.138元；iNAV 1.137元；正常折溢价带对应1.136–1.139元。底层PE/PB约处历史48%/42%分位，盈利质量较稳，结论为<strong>交易价正常、底层估值合理</strong>。</td><td>回踩1.112–1.122元成本区企稳并重新放量。</td><td>周线跌破成本区且同类RS转弱。</td><td>待到期</td></tr><tr><td><b>5</b></td><td><b>5109X5｜示例中证A500ETF</b></td><td>71/100<br/><span class="small">研究排序分</span></td><td>市场覆盖均衡、流动性好、跟踪稳定，宽度优于小盘方向。</td><td>现价1.024元；iNAV 1.023元；交易合理参考1.022–1.025元。底层PE/PB与ERP约处历史中位，结论为<strong>价格正常、估值中性</strong>。</td><td>日线站稳1.006–1.014元支撑并扩大市场宽度。</td><td>份额、相对强弱和市场宽度同步转差。</td><td>待到期</td></tr><tr><td><b>6</b></td><td><b>5109X6｜示例工业制造ETF</b></td><td>69/100<br/><span class="small">研究排序分</span></td><td>行业RS改善、成交参与增加，工业链景气仍有支持。</td><td>现价0.987元；iNAV 0.986元；交易合理参考0.985–0.988元。底层正常化PE/FCFF约处历史61%分位，结论为<strong>交易价正常、底层估值合理偏上</strong>。</td><td>缩量回踩0.958–0.970元后，30分钟重新转强。</td><td>行业RS跌破中期基准且订单景气下修。</td><td>待到期</td></tr><tr><td><b>7</b></td><td><b>5109X7｜示例电网设备ETF</b></td><td>67/100<br/><span class="small">研究排序分</span></td><td>订单景气、周线趋势和行业宽度较稳，供给压力暂未扩大。</td><td>现价1.216元；iNAV 1.214元；交易合理参考1.213–1.217元。底层正常化EPS/PE与FCFF约处历史57%分位，结论为<strong>估值合理</strong>。</td><td>日线在1.185–1.198元成本区企稳并放量。</td><td>周线结构与订单预期同步转弱。</td><td>待到期</td></tr><tr><td><b>8</b></td><td><b>5139X8｜示例港股互联网ETF</b></td><td>65/100<br/><span class="small">研究排序分</span></td><td>月线筑底，全球科技景气支持，但汇率和实际利率仍是约束。</td><td>现价0.842元；iNAV 0.840元；交易合理参考0.839–0.843元。底层EV/Sales、利润率和情景DCF约处历史43%分位，结论为<strong>估值中性偏低，但不确定性高</strong>。</td><td>人民币与利率压力缓和，日线突破0.805–0.820元平台后回踩守住。</td><td>底层指数放量跌破平台且资金份额下降。</td><td>待到期</td></tr><tr><td><b>9</b></td><td><b>1599X9｜示例创新药ETF</b></td><td>63/100<br/><span class="small">研究排序分</span></td><td>日线底背离与行业事件改善提供修复线索，但成分盈利分化大。</td><td>现价0.776元；iNAV 0.775元；交易合理参考0.773–0.777元。盈利成分用PE/PEG，亏损成分用管线、收入和现金消耗情景；当前结论为<strong>交易价正常、底层估值证据分化</strong>。</td><td>周线止跌、份额连续增加并站稳0.742–0.755元。</td><td>底背离失败并放量破位。</td><td>待到期</td></tr><tr><td><b>10</b></td><td><b>5129X0｜示例有色资源ETF</b></td><td>61/100<br/><span class="small">研究排序分</span></td><td>铜价和行业RS改善，现金流预期回升，但周期位置已不低。</td><td>现价1.352元；iNAV 1.349元；交易合理参考1.347–1.353元。底层采用中周期正常化盈利、EV/EBITDA和资产价值，约处历史68%分位，结论为<strong>交易价正常、周期估值偏高</strong>。</td><td>商品趋势、ETF份额和1.310–1.325元支撑继续确认。</td><td>商品趋势与行业RS同步转弱。</td><td>待到期</td></tr></table></div>
+</div>
+<div class="section">
+<h2>二、股票重点 Top 3｜完整七周期深析</h2>
+<div class="card" id="industrial-stock">
+<div class="card-title">1. 示例工业自动化A（6009X1）｜A股·主板｜工业自动化｜中期偏强，等回踩确认</div>
+<div class="identity">现价23.68元｜行业相对强弱前12%PE 22.1x｜自身5年47%分位｜同行中位23.8x｜数据截至19:00</div>
+<div class="event-alert"><strong>周线杯柄突破情景有效｜现价与分钟成本口径待核</strong></div><div class="one-line">行业、相对表现、杯柄突破、缩量回踩和成本抬高，本来形成中期研究的同向证据；但<strong>现价23.68元低于30分钟所写23.9–24.1成本区，且另有“回踩24.10”的条件</strong>。当前时点存在口径冲突，暂不据此给出可执行买点；待时点统一后再评估触发是否仍成立。</div>
+<div class="why"><b>筛选依据：</b>工业自动化行业近20日强于全A，个股相对强弱领先同行，成交与流动性合格，属于强行业中的领导候选；龙头候选来自行业强度、相对强弱、量价与基本面，而非市值。</div><p class="leader-note"><b>龙头候选依据：</b>行业近20日强于全A、个股相对行业和沪深300领先、回调量价健康，足以列为<strong>工业自动化领导候选</strong>。现有数据只证明相对强弱领先，尚缺完整同业持续性与财务对照，因此当前定位为龙头候选；现价／时点冲突还需先解决。</p>
+<div class="cycle fused-cycle" data-original-cycle="35" id="cycle-35"><div class="cycle-title">月线｜长期平台有效，压力与估值限制追价</div><p>，价格位于两年平台上沿和长期成交密集区之上，尚未越过25.5元长期压力；5/10/20月均线由粘连转为向上发散，说明长期方向由整理转向偏强。平台突破月成交温和放大，随后两个月整理没有持续放量下跌，需求与供给的变化支持<strong>月线平台突破仍有效，未出现失败突破</strong>，杯柄的大级别基础仍完整。</p><p>长期锚定成交均价（AVWAP）与成交密集区在20.8–22.0元，价格高于成本但不极端远离；MACD在零轴附近改善、RSI中强、ROC为正，未确认月线顶背离，ATR处历史中位。它们共同支持中期研究，而不是保证上涨：<strong>25.5元压力和估值仍约束追价</strong>。</p></div><div class="cycle fused-cycle" data-original-cycle="36" id="cycle-36"><div class="cycle-title">周线｜杯柄突破与缩量回踩相互确认</div><p>周线高低点持续抬高，个股相对行业和沪深300处于前列，5/10/20周均线多头且斜率未恶化。更关键的是，杯柄突破周成交明显放大，回踩周成交缩小，价格仍守住突破位，主要周线成交密集区上移到22.8–23.2元；这不是仅凭形状命名，而是<strong>杯柄突破已确认，随后回踩显示供给收缩</strong>。</p><p>MACD柱仍正、RSI中强，没有确认周线顶背离，也暂未出现高位放量滞涨、多次失败突破、OBV与CMF同步走弱的组合。趋势、量价和成本共同支持中期偏强，23.2附近则是重要失效参考；<strong>“未见完整派发”不等于已识别机构正在买入</strong>。</p></div><div class="cycle fused-cycle" data-original-cycle="37" id="cycle-37"><div class="cycle-title">日线｜回踩健康，但第二次启动还需确认</div><p>回调守住20日线、AVWAP和主要成交区，价格没有跌回突破平台；成交连续收缩，OBV未明显走坏、CMF维持正值，说明抛压减轻与结构承接相互确认。短均线重新拐头向上，中期均线仍多头，MACD柱重新放大、RSI回到50上方、ROC转正，动量也开始配合。</p><p>ATR回落说明回调波动低于突破阶段，但ADX仍处中等，价格结构仍只是突破后回踩、尚未完成二次突破。<strong>日线回踩健康，是研究的核心理由；重新启动仍须量价和结构一起确认</strong>。供给减少支持承接改善，但洗盘序列尚未确认。</p></div><div class="cycle fused-cycle" data-original-cycle="38" id="cycle-38"><div class="cycle-title">60分钟｜承接开始修复，尚有前高压力</div><p>中短周期情景显示，价格重新站上60分钟VWAP和短中均线，局部成本抬高，反弹量高于回调量，说明买盘改善、卖压缩小。MACD在零轴附近金叉、RSI回升、ROC转正，更高低点也开始形成，且暂无确认顶背离。<strong>日线回踩开始得到中短周期修复</strong>，但前高压力仍在，还要30分钟给出主结构确认；具体时点与现价口径按本卡提示核对。</p></div><div class="cycle fused-cycle" data-original-cycle="39" id="cycle-39"><div class="cycle-title">30分钟｜平台突破情景有效，现价口径须先核对</div><p>30分钟情景中，局部平台放量突破，回踩没有跌回平台；短中均线转为多头、斜率改善，突破量高于平台平均而回踩缩量，MACD在零轴上方、RSI强、ROC为正且暂无顶背离。结构、量价和动量共同支持<strong>平台突破确认后，等待低风险触发</strong>，当前数据主要成交区上移到23.9–24.1元。</p><p>这里存在必须先核对的口径：卡片现价23.68元低于23.9–24.1元。这些价位来自不同时间情景，当前先统一时点，再评估平台是否仍然站稳。</p></div><div class="cycle fused-cycle" data-original-cycle="40" id="cycle-40"><div class="cycle-title">15分钟｜回踩确认依赖30分钟结构继续有效</div><p>当前触发情景中，突破后第一次回踩守住平台上沿，回踩量缩、再启动时成交回升；MACD在零轴上方再次金叉，RSI回踩未跌入弱区后回升，也没有确认顶背离。承接、需求和动量一起确认了这次回踩，而不是单靠金叉。<strong>15分钟确认始终以30分钟平台仍有效为前提</strong>，不能脱离前述时点与现价口径。</p></div><div class="cycle fused-cycle" data-original-cycle="41" id="cycle-41"><div class="cycle-title">5分钟｜第一波不追，等回踩后买盘重新出现</div><p>第一波冲高后回到VWAP附近，低点仍抬高，回踩也没有放量砸盘，说明微观支撑未坏。但冲高后成交下降、追价效率变差，短均线乖离仍偏大，MACD在高位收敛，体现的是第一波降温。<strong>不追第一波，等缩量回踩后再放量</strong>更符合当前数据条件；5分钟降温本身不改变中期判断。</p></div>
+<div class="indicator-box">
+<h3>常用技术指标：一致在哪里、冲突在哪里</h3>
+<table class="table">
+<tr><th>指标族</th><th>状态</th><th>解释</th></tr>
+<tr><td>均线</td><td>月线MA5上穿MA10；周线5/10/20多头；日线MA5重新上穿MA10；60/30分钟均线转多</td><td>趋势改善具有跨周期连续性，但均线金叉属于确认，不是独立买点。</td></tr>
+<tr><td>MACD</td><td>月线零轴附近改善；周日零轴上方；60分钟零轴附近金叉；15分钟零轴上方再金叉</td><td>金叉发生位置越高、上级结构越完整，可信度越高。</td></tr>
+<tr><td>RSI / ROC / KDJ</td><td>日线RSI回到55、ROC转正；15分钟RSI回升；5分钟KDJ高位死叉</td><td>趋势动量改善，但5分钟高位死叉只提示第一波降温。</td></tr>
+<tr><td>DMI / ADX</td><td>日线+DI高于-DI，ADX由19升至23</td><td>趋势正在增强，仍未进入极强单边。</td></tr>
+<tr><td>ATR / 布林</td><td>日线ATR回落；周线布林带突破后未重新收回；30分钟带宽扩张</td><td>回调风险收缩，短线突破波动开始扩张。</td></tr>
+<tr><td>OBV / ADL / CMF / MFI</td><td>OBV接近新高、ADL抬升、CMF+0.09、MFI中强</td><td>资金代理支持，但与量价属于同一供需族，不重复加分。</td></tr>
+</table>
+</div>
+<div class="valuation">
+<h3>价格是否合理</h3>工业制造不能只看低于同行的PE，还要核订单兑现、收入与现金流是否匹配、应收库存、维护及扩张资本开支。估值采用正常化盈利倍数与企业自由现金流（FCFF）情景交叉；下方EPS、增长、利润率、折现率和敏感性全部保留，22.0–25.5只是情景区间，不是保证目标价，也不能抵消23.20的结构风险。
+<p><b>方法一：正常化盈利与有依据的倍数。</b>模拟正常化EPS为1.12–1.18元；参考自身历史35%–65%分位、同行盈利质量与增长后，合理PE取19–22倍，得到<span class="calc">21.3–26.0元</span>。</p>
+<p><b>方法二：FCFF情景交叉核验。</b>收入复合增速8%–11%、EBIT利润率12%–13%、WACC 8.8%–9.6%、永续增速2.0%–2.8%，并完成净债务/现金与稀释股数桥接后，模拟每股价值<span class="calc">22.1–25.4元</span>。</p>
+<p><b>综合合理区间：</b><strong>22.0–25.5元</strong>；现价23.68元位于区间中部。若WACC上升1个百分点或利润率低1个百分点，区间可下移到约20.8–23.9元。<b>不确定性：中等。</b></p>
+<p>这不是保证达到的目标价，也不能覆盖23.20元结构失效；合理价回答“价格是否大致合算”，触发条件回答“现在是否适合行动”。</p>
+</div>
+<div class="flow-box">
+<h3>资金、吸筹、洗盘与派发：只写可观察证据</h3>
+<table class="table">
+<tr><th>资金/供需代理</th><th>观察</th><th>含义</th></tr>
+<tr><td>成交与相对量</td><td>突破日相对量1.35，回踩期0.72</td><td>突破有需求，回踩供给收缩。</td></tr>
+<tr><td>主动买卖代理</td><td>主动买入占比54%，大单净流入代理为流通成交的0.8%</td><td>只说明大额成交方向偏正，不等于已识别机构身份。</td></tr>
+<tr><td>OBV / ADL / CMF / MFI</td><td>OBV接近新高、ADL抬升、CMF为正、MFI中强</td><td>价格回调期间资金代理没有同步恶化。</td></tr>
+<tr><td>成本结构</td><td>成交密集区22.8–23.2，AVWAP上移</td><td>中期持仓成本抬高，23.2成为重要结构位。</td></tr>
+<tr><td>大宗/异常成交</td><td>无持续折价大宗与异常放量滞涨</td><td>暂未增加派发证据。</td></tr>
+</table>
+<div class="status-row"><span class="badge badge-good">吸筹迹象：中等</span><span class="badge">洗盘：未确认</span><span class="badge badge-good">派发风险：低</span></div>
+<p>回调缩量、测试支撑后快速收回、资金代理未确认价格弱势，支持“承接与吸筹迹象中等”。但没有“跌破关键支撑—快速收回—低量复测—随后突破”的完整序列，所以不能写“洗盘完成”。</p>
+</div>
+<div class="section">
+<h3>资产专属证据</h3>
+<p>模拟基本面显示收入、经营现金流与订单稳定，应收和库存没有异常恶化；制造业PMI、信用边际改善和铜价形成行业支持。PE只说明大致合理，不能因为略低于同行就写低估；完整合理价需要历史、同业和现金流输入。</p>
+<h3>资金、供需与派发/吸筹观察</h3>
+<p>目前未见“高位持续放量滞涨 + 多次失败突破 + OBV/CMF走弱 + 行业相对强弱下降”的一致派发组合。周线突破后量缩回踩、日线卖压收缩，更接近供给减少。若上述负面组合出现，派发风险才上调。</p>
+</div>
+<div class="synthesis"><b>跨周期合成：</b>高周期给出研究许可，日线提供健康的主要机会结构，60分钟开始修复，30分钟形成主结构，15分钟完成确认，5分钟要求等更好的时点。结论是中期偏强、短线等待回踩确认。</div>
+<div class="action"><div class="attn"><b>关注/触发</b><br/>回踩24.10附近企稳；30分钟结构不坏，15分钟重新转强，5分钟缩量回踩后再放量。</div><div class="fail"><b>转弱/失效</b><br/>放量跌回23.20下方，同时60分钟与日线转弱；或行业相对强弱显著下滑。</div></div>
+<p><b>主要风险：</b>突破后量能衰减；制造景气不及预期；行业相对强弱转弱。</p>
+<p class="small">历史参考胜率：样本不足，暂不展示。当前机会概率：尚未完成独立校准，暂不提供。</p>
+</div>
+<div class="card" id="semiconductor-stock">
+<div class="card-title">2. 示例半导体设备C（6889X3）｜A股·科创板｜半导体设备｜趋势强，短线过热</div>
+<div class="identity">现价48.20元｜行业相对强弱前8%PE 48x｜自身历史78%分位｜数据截至19:00</div>
+<div class="event-alert"><strong>15分钟顶背离确认，派发风险中等｜强势股也不能追</strong></div><div class="one-line">全球半导体与行业相对强弱支持，月周日趋势尚未坏；但自身估值偏高、周线高位分歧、30分钟效率下降与15分钟确认背离相互约束。<strong>当前重点是高位回撤风险，不是因为它像龙头就增加追价理由。</strong></div>
+<div class="why"><b>筛选依据：</b>半导体设备行业与全球SOX同步偏强，个股RS和成交活跃度领先；筛选领先不等于当前位置适合买。</div><p class="leader-note"><b>龙头候选依据：</b>半导体设备与全球科技同步偏强，当前数据个股相对表现前8%、成交活跃，说明它值得优先研究；但高位估值和短线背离使它仍是<strong>领导候选，不是无条件可买的龙头</strong>。全球与本地半导体暴露相关，不能当作完全独立的两份加分。</p>
+<div class="cycle fused-cycle" data-original-cycle="42" id="cycle-42"><div class="cycle-title">月线｜趋势有资格继续研究，估值使回撤更敏感</div><p>价格仍在长期上升结构，月均线多头，长期成交没有派发式放量，MACD强势且尚无确认顶背离，说明长期趋势没有明显破坏。与此同时，价格接近历史压力区、远离长期成本，估值处自身历史高分位，意味着即使趋势成立，买入安全边际也不宽。<strong>月线支持“继续研究”，同时提醒“高位回撤敏感”</strong>，不是无条件追高。</p></div><div class="cycle fused-cycle" data-original-cycle="43" id="cycle-43"><div class="cycle-title">周线｜平台突破仍在，高位分歧正在增加</div><p>周线平台突破仍有效，行业相对强弱位于前列，突破量价匹配，MACD仍正、RSI强，也没有确认周线顶背离。这些支持不能掩盖新变化：本周上影增多、成交效率下降，说明高位买卖分歧扩大。<strong>平台未失败，但分歧上升时不宜追价</strong>；要观察下一次回落是缩量承接，还是供给继续增强。</p></div><div class="cycle fused-cycle" data-original-cycle="44" id="cycle-44"><div class="cycle-title">日线｜尚未形成派发组合，但高位波动更大</div><p>日线均线多头，MACD在零轴上方、RSI强势，成交与价格推进总体匹配，OBV没有明显转弱，说明日线趋势及资金代理尚未共同恶化。ATR抬升、价格乖离扩大却提示波动和回撤速度可能增加。<strong>现在应写“高位风险加大，尚未形成日线派发组合”</strong>，不能一见波动就宣布出货，也不能因为趋势还强就忽略回撤。</p></div><div class="cycle fused-cycle" data-original-cycle="45" id="cycle-45"><div class="cycle-title">60分钟｜成本尚未失守，动量已经先降温</div><p>价格仍在60分钟主要成本区上方，高点继续抬高但速度下降；MACD柱体收缩，RSI从强区回落，说明上涨动力正在减速。回调量没有明显放大又说明卖压暂未全面接管。<strong>趋势未坏与动量转弱可以同时成立</strong>，当前先等承接，而不是在加速度下降时追涨。</p></div><div class="cycle fused-cycle" data-original-cycle="46" id="cycle-46"><div class="cycle-title">30分钟｜新高缺少量价跟随，属于早期衰竭</div><p>价格创新高，ROC和MACD柱却没有同步增强，量能也低于上一推动段，说明继续上攻的效率下降。局部平台仍在，结构未给出反转确认，<strong>应提醒30分钟量价不配合、动量早期衰竭</strong>。15分钟顶背离已确认；30分钟目前只是动量减速，两个周期的确认状态不同。</p></div><div class="cycle fused-cycle" data-original-cycle="47" id="cycle-47"><div class="cycle-title">15分钟｜顶背离已经确认，追高应暂停</div><p>价格创新高时MACD柱体和RSI没有同步，随后快慢线DIF／DEA转向下，冲高成交也缩小，动量与量价共同提示新高的延续基础变弱。<strong>15分钟确认顶背离，当前不追高</strong>。这提高短线回撤警惕，但还不能单独证明日线机构出货或长期趋势反转。</p></div><div class="cycle fused-cycle" data-original-cycle="48" id="cycle-48"><div class="cycle-title">5分钟｜冲高后回落加快，微观金叉越来越弱</div><p>价格多次上冲偏离VWAP后很快回落，回撤速度增加，小级别金叉持续时间变短，显示追价需求不足以维持推进。<strong>微观反弹不能解除15分钟背离</strong>；短促金叉持续性不足，当前仍等待背离消化后的新触发。</p></div>
+<div class="indicator-box">
+<h3>常用技术指标：趋势强，动量先衰减</h3>
+<table class="table">
+<tr><td>均线</td><td>月周日多头；60分钟斜率放缓；15分钟短均线死叉</td><td>高周期强，低周期降温</td></tr>
+<tr><td>MACD</td><td>周日零轴上方；30分钟柱体缩短；15分钟高位死叉</td><td>趋势未坏，短线动量转弱</td></tr>
+<tr><td>RSI/ROC/KDJ</td><td>日线RSI强；30分钟ROC下降；15分钟RSI/MACD顶背离；5分钟KDJ反复</td><td>多个动量指标来自同一波段，只算一组衰竭证据</td></tr>
+<tr><td>DMI/ADX</td><td>日线ADX 31、+DI占优；30分钟ADX回落</td><td>日线强趋势，短线趋势强度下降</td></tr>
+<tr><td>ATR/布林</td><td>日线ATR与布林带宽上升</td><td>波动扩大，提高高位回撤速度</td></tr>
+<tr><td>OBV/CMF</td><td>日线未走坏；15分钟冲高时CMF回落</td><td>尚非日线派发，短线资金追价减弱</td></tr>
+</table>
+</div>
+<div class="valuation">
+<h3>价格是否合理</h3><p class="valuation-interpretation">高成长设备企业应把订单转收入、利润质量、研发与资本开支、现金流和增速持续性放进估值。未来12个月EPS与DCF是同一成长逻辑的两种观察，不是两张独立赞成票；48.20元略高于39.5–47.8的模拟区间，增长不达预期或资金价格上升都会使区间下移，结论必须保留高不确定性。</p>
+<p><b>前瞻盈利倍数：</b>模拟未来12个月EPS 1.05–1.15元；结合高成长但高波动属性、同行增速和实际利率环境，合理PE取36–42倍，得到<span class="calc">37.8–48.3元</span>。</p>
+<p><b>DCF情景：</b>收入增速15%–22%、利润率14%–17%、WACC 9.5%–11.0%、永续增速2.5%–3.0%，模拟每股价值<span class="calc">40.5–47.0元</span>。</p>
+<p><b>综合合理区间：</b><strong>39.5–47.8元</strong>；现价48.20元略高于上沿。增长若低于预期或实际利率再升，合理区间可明显下移。<b>不确定性：高。</b></p>
+</div>
+<div class="flow-box">
+<h3>资金与派发风险</h3>
+<p>模拟大单净流入代理仍为正、日线OBV未破坏，但周线高位成交效率下降、30分钟量价背离、15分钟CMF与动量转弱。结论应写为“筹码分歧扩大、派发风险中等”，不能直接写“机构出货已确认”。</p>
+<div class="status-row"><span class="badge">吸筹迹象：弱</span><span class="badge">洗盘：无证据</span><span class="badge badge-warn">派发风险：中等</span></div>
+</div>
+<div class="section">
+<h3>资产专属证据</h3>
+<p>模拟收入、订单和利润增长较快，但现金流与估值敏感；当前PE处自身历史高位。全球科技ETF流入与SOX上涨支持景气，美债实际利率、美元与人民币压力压制估值。主要成本区46.5–47.0，50附近压力明显。</p>
+<h3>资金、供需与派发/吸筹观察</h3>
+<p>周线高位分歧、30分钟动量衰竭和15分钟顶背离说明筹码交换加快，当前属于过热与分歧；日线派发尚未确认。</p>
+</div>
+<div class="synthesis"><b>跨周期合成：</b>高周期趋势没有坏，低周期追高许可已经关闭。最重要的不是猜顶部，而是等待价格回到成本区、背离消化并重新获得量价确认。</div>
+<div class="action"><div class="attn"><b>关注/触发</b><br/>46.80–47.20回踩企稳；30分钟动量止跌，15分钟重新放量转强。</div><div class="fail"><b>转弱/失效</b><br/>放量跌回45.90下方、日线突破失败，或行业与全球半导体相对强弱同步转弱。</div></div>
+<p><b>主要风险：</b>高估值回撤；全球科技资金逆转；订单兑现低于预期。</p>
+<p class="small">历史参考胜率：样本不足，暂不展示。当前机会概率：尚未完成独立校准，暂不提供。</p>
+</div>
+<div class="card" id="grid-stock">
+<div class="card-title">3. 示例电网设备D（3009X4）｜A股·创业板｜电网设备｜结构收缩，等待突破</div>
+<div class="identity">现价18.46元｜行业相对强弱前20%PE 25x｜现金流改善但估值依据有限</div>
+<div class="event-alert"><strong>周线收缩形态形成中｜18.90未确认突破，继续等</strong></div><div class="one-line">行业改善、月周收敛、日线卖压减少提供观察价值；但平台仍未突破、分钟需求没有确认。<strong>当前仍是收缩候选，只有有效突破并经回踩确认后才升级。</strong>估值输入仍不完整，演示区间只作情景参考，当前尚无已验证合理价。</div>
+<div class="why"><b>筛选依据：</b>电网设备行业受信用改善、铜价与投资预期支持；个股量价收缩、流动性合格，进入收缩形态观察池，但形态仍需有效突破确认。</div><p class="leader-note"><b>龙头候选依据：</b>行业相对表现前20%、成交收缩与流动性合格，支持进入<strong>结构观察池</strong>；没有持续领先与突破确认，不能升格成已证实龙头。铜价上行同时可能挤压利润，行业景气与企业成本要分开。</p>
+<div class="cycle fused-cycle" data-original-cycle="49" id="cycle-49"><div class="cycle-title">月线｜箱体上沿酝酿方向，收盘尚未确认突破</div><p>价格在长期箱体上沿，5/10/20月均线从粘连开始轻微向上，突破前成交温和增加；MACD靠近零轴、RSI中性偏强且没有确认背离，说明长期方向有改善迹象。但尚未形成月线收盘突破确认，<strong>接近箱体上沿，突破尚未确认</strong>。</p></div><div class="cycle fused-cycle" data-original-cycle="50" id="cycle-50"><div class="cycle-title">周线｜波动与成交一起收缩，形态仍在形成</div><p>周线高低波幅连续收窄，成交量逐步下降，主要成本区缓慢抬高，同时行业相对强弱改善，说明供给在减少、走势开始收敛。这些共同构成<strong>类似VCP的收缩形态，仍在形成中</strong>；关键枢轴价还没有被放量突破，需求未证明能接走供给。收缩提供观察价值，不自动等于上涨方向已经选定。</p></div><div class="cycle fused-cycle" data-original-cycle="51" id="cycle-51"><div class="cycle-title">日线｜卖压减少，但18.9元仍是未突破压力</div><p>价格守住60日线，回调成交持续缩小，OBV平稳，说明下跌时卖压在减轻；MACD靠近零轴、RSI中性、ADX较低，又说明当前更像整理而非趋势加速。<strong>平台上沿18.9元尚未突破</strong>，所以重点不是数有几个指标转好，而是等待价格越过压力时是否有真实量能配合。</p></div><div class="cycle fused-cycle" data-original-cycle="52" id="cycle-52"><div class="cycle-title">60分钟｜供给收缩，买盘还没选出方向</div><p>价格在60分钟VWAP附近，均线由空头转为粘连，回调量缩，MACD在零轴附近反复。卖压减少与下跌结构放缓互相印证，但还没有明显需求扩张。<strong>这是方向选择前的整理，不是已确认上涨</strong>。</p></div><div class="cycle fused-cycle" data-original-cycle="53" id="cycle-53"><div class="cycle-title">30分钟｜低点抬高，箱体上沿仍缺成交确认</div><p>箱体清晰，低点抬高，RSI改善、ROC转正，MACD靠近零轴，说明局部动量比先前好；但每次测试上沿都没有放量，价格还未完成有效突破。<strong>动量改善，但平台突破仍未确认</strong>，短线主结构继续等待需求确认。</p></div><div class="cycle fused-cycle" data-original-cycle="54" id="cycle-54"><div class="cycle-title">15分钟｜回踩尚可，临近压力仍没有新触发</div><p>均线轻微多头，回踩缩量，说明局部承接未坏；但每次接近平台上沿都缺少成交扩张，需求仍不足以确认突破。<strong>回踩健康不是突破已经发生</strong>，不能在上级箱体未打开前自行升级。</p></div><div class="cycle fused-cycle" data-original-cycle="55" id="cycle-55"><div class="cycle-title">5分钟｜小金叉反复，先等30分钟真正突破</div><p>多次小金叉持续性一般，在30分钟平台尚未突破的背景下没有独立方向意义。<strong>先等30分钟放量突破，再看5分钟第一次缩量回踩能否守住</strong>，才有微观确认价值；当前5分钟暂无独立买点信号。</p></div>
+<div class="indicator-box">
+<h3>常用技术指标：收缩候选尚未变成突破</h3>
+<table class="table">
+<tr><td>均线</td><td>月线开始向上、周线粘连、日线MA20/60支撑；30分钟仍在箱体</td><td>方向改善，尚未选择</td></tr>
+<tr><td>MACD</td><td>月日靠近零轴；30分钟反复；15分钟小金叉</td><td>早期修复，不是确认突破</td></tr>
+<tr><td>RSI/ROC/KDJ</td><td>日线中性，30分钟ROC转正；15分钟KDJ金叉</td><td>快速指标改善，需量价与结构确认</td></tr>
+<tr><td>DMI/ADX</td><td>ADX低位</td><td>当前是收缩整理，不是趋势行情</td></tr>
+<tr><td>ATR/布林</td><td>周日ATR下降、布林带宽收窄</td><td>波动收缩与VCP-like同源，不重复计票</td></tr>
+<tr><td>OBV/CMF</td><td>OBV平稳、CMF接近零上方</td><td>供给减少，但需求尚未放大</td></tr>
+</table>
+</div>
+<div class="event-alert"><strong>估值证据不足｜下方区间仅作情景参考</strong></div><div class="valuation">
+<h3>价格是否合理</h3>电网设备的价值要与订单交付、回款、铜等原料成本、利润率和资本开支相连，行业投资预期不等于企业已经赚到现金。16.5–19.7区间仅是所列假设下的估值计算；在历史同行与现金流输入不足时，保留演示和缺口，当前估值结论仍是依据有限。
+<p><b>正常化盈利：</b>模拟正常化EPS 0.78–0.84元，参考历史/同行与现金流质量后合理PE 20–23倍，得到<span class="calc">15.6–19.3元</span>。</p>
+<p><b>FCFF情景：</b>订单增速8%–14%、利润率9%–11%、WACC 9.0%–10.2%、永续增速2.0%–2.8%，模拟每股价值<span class="calc">17.0–20.1元</span>。</p>
+<p><b>综合合理区间：</b><strong>16.5–19.7元</strong>；现价18.46元位于区间中上部。铜价、回款和资本开支口径使不确定性为中高。</p>
+</div>
+<div class="flow-box">
+<h3>资金、吸筹与洗盘观察</h3>
+<p>成交持续收缩、低点抬高、OBV稳定，说明潜在供给减少；但没有放量SOS或突破。当前只能写“吸筹迹象较弱至中等”。若后续短暂跌破平台后快速收回、低量复测不再创新低并放量突破，才可写“疑似洗盘后重新转强”。</p>
+<div class="status-row"><span class="badge">吸筹迹象：较弱至中等</span><span class="badge">洗盘：候选条件未满足</span><span class="badge badge-good">派发风险：低</span></div>
+</div>
+<div class="section">
+<h3>资产专属证据</h3>
+<p>模拟订单、收入与经营现金流改善，但原材料成本和回款周期仍是风险；估值方法与历史同行数据不完整，因此只写“估值依据有限”，不提供虚假合理价。</p>
+<h3>资金、供需与派发/吸筹观察</h3>
+<p>周线和日线成交逐步收缩，说明潜在供给减少；尚无放量突破，也没有明确吸筹结论。只有突破时量能扩张、回踩供给继续收缩，才能把“收缩”升级为可操作触发。</p>
+</div>
+<div class="synthesis"><b>跨周期合成：</b>高周期提供潜在方向，日线提供供给收缩，分钟周期尚未给出突破许可。它是结构观察，不是已确认机会。</div>
+<div class="action"><div class="attn"><b>关注/触发</b><br/>日线放量突破18.90；30分钟收盘站稳平台，15分钟回踩确认，5分钟第一次缩量回踩不破。</div><div class="fail"><b>转弱/失效</b><br/>跌破17.85且日线放量，或周线收缩结构被破坏。</div></div>
+<p><b>主要风险：</b>形态失败；铜价上升挤压利润；创业板风格转弱。</p>
+<p class="small">历史参考胜率：样本不足，暂不展示。当前机会概率：尚未完成独立校准，暂不提供。</p>
+</div>
+<div class="candidate-pool"><h3>股票合法候选观察池｜第4–10名</h3><p class="candidate-note">以下对象已经通过基础身份、数据覆盖、流动性和硬排除条件；当前排序低于Top 3，保留观察，不自动升级为买入建议。</p><table class="table candidate-table"><tr><th>排名</th><th>股票 / 行业</th><th>排序分</th><th>筛选依据</th><th>当前价格与相应估值</th><th>下一触发</th><th>失效条件</th><th>后续观察</th></tr><tr><td><b>4</b></td><td><b>6019X4｜示例银行E</b></td><td>73/100<br/><span class="small">研究排序分</span></td><td>低波动、分红稳定、行业RS改善，资产质量暂未恶化。</td><td>现价6.84元；PB 0.62倍、可持续ROE约10.8%。以P/B–ROE和剩余收益交叉，合理区间6.40–7.50元，结论为<strong>合理偏低</strong>。</td><td>回踩净资产估值支撑后守住周线。</td><td>ROE、资产质量或资本充足率预期恶化。</td><td>待到期</td></tr><tr><td><b>5</b></td><td><b>6009X5｜示例消费F</b></td><td>70/100<br/><span class="small">研究排序分</span></td><td>现金流和毛利率改善，日线平台收敛，品牌与渠道数据稳定。</td><td>现价43.20元；正常化EPS 1.92–2.05元，合理PE 20–23倍；FCFE/DCF交叉后合理区间39–46元，结论为<strong>合理区间中上部</strong>。</td><td>平台放量突破且收入/销量预期上修。</td><td>现金流、毛利率或同店/销量转弱。</td><td>待到期</td></tr><tr><td><b>6</b></td><td><b>6019X6｜示例资源G</b></td><td>68/100<br/><span class="small">研究排序分</span></td><td>商品趋势偏强、自由现金流改善，但仍需防周期高位。</td><td>现价12.68元；采用中周期EPS 0.95–1.10元、EV/EBITDA 5.5–6.5倍与资产价值，合理区间10.8–13.6元，结论为<strong>接近合理区间上部</strong>。</td><td>商品价格与周线结构继续确认。</td><td>商品价格、成本曲线和现金流同步转弱。</td><td>待到期</td></tr><tr><td><b>7</b></td><td><b>6889X7｜示例软件H</b></td><td>66/100<br/><span class="small">研究排序分</span></td><td>收入增长、毛利率与行业RS较强，但盈利尚未完全稳定。</td><td>现价28.60元；采用前瞻收入、EV/Sales、续费率和情景DCF，合理区间24–31元，结论为<strong>合理偏上、估值不确定性高</strong>。</td><td>收入兑现，日线回踩守住并重新放量。</td><td>收入增速、续费率或毛利率预期下修。</td><td>待到期</td></tr><tr><td><b>8</b></td><td><b>6009X8｜示例公用事业I</b></td><td>64/100<br/><span class="small">研究排序分</span></td><td>现金流稳定、低波动、股息支撑，周线仍处修复。</td><td>现价5.42元；采用DDM、FCFE/DCF，结合监管回报、债务和维护资本开支，合理区间5.0–5.8元，结论为<strong>估值合理</strong>。</td><td>收益率稳定且周线重新转强。</td><td>负债成本上升或现金分配覆盖下降。</td><td>待到期</td></tr><tr><td><b>9</b></td><td><b>6019X9｜示例保险J</b></td><td>62/100<br/><span class="small">研究排序分</span></td><td>估值低位、资产端改善预期，但负债成本和利率敏感。</td><td>现价11.86元；采用P/EV、新业务价值增长和偿付能力，合理区间10.9–13.2元，结论为<strong>估值合理偏低</strong>。</td><td>长端利率与新业务价值同步改善。</td><td>投资收益、偿付能力或新业务价值恶化。</td><td>待到期</td></tr><tr><td><b>10</b></td><td><b>3009X0｜示例通信设备K</b></td><td>60/100<br/><span class="small">研究排序分</span></td><td>订单、研发投入和行业RS改善，但现金转化仍需确认。</td><td>现价19.75元；正常化EPS 0.80–0.88元、合理PE 21–24倍，并用FCFF交叉，合理区间17.5–21.2元，结论为<strong>合理区间中上部</strong>。</td><td>30/15分钟量价重新共振且订单兑现。</td><td>订单预期、现金流和行业RS同步转弱。</td><td>待到期</td></tr></table></div>
+<div class="data-note"><b>候选后续观察：</b>未到期显示“待到期”；数据、复权、成交或成本证据不完整显示“不可评价”；成熟后显示相对基准表现、最大回撤、是否触发以及是否先失效。</div></div>
+</div>
+<div class="footer">数据说明：正文只引用当前可核材料；缺失、估算或未更新值会明确标注。</div>
+</div><div class="mail">
+<div class="head"><div class="subject">【我的自选研究】X失效｜Y等待｜Z/W维持｜合理价格、指标与资金行为完整保留</div><div class="meta">DSA 股票研究｜长文研究版｜晚间条件触发｜Asia/Shanghai</div></div>
+<div class="body">
+<div class="lead"><strong>今晚自选结论：X原计划失效；Y中期继续关注但短线等待；Z与W维持原计划。</strong> 先处理已经发生材料变化的对象，再看是否出现新的触发或失效。</div>
+<div class="section">
+<h2>一、先看变化</h2>
+<ul>
+<li><b>自选股X：</b>周线供给增强、日线放量破位，原上升逻辑失效；</li>
+<li><b>自选股Y：</b>高周期没有坏，30分钟顶背离使短线降级等待；</li>
+<li><b>自选ETF Z：</b>七周期没有材料性破坏，计划维持；</li>
+<li><b>自选股W：</b>没有新触发也没有失效，完整证据维持原判断。</li>
+</ul>
+</div>
+<div class="section">
+<h2>二、完整自选研究</h2>
+<div class="card" id="watch-x">
+<div class="card-title">自选股X（6008X9）｜A股·主板｜高端制造｜原计划失效</div>
+<div class="identity">现价15.72元估值合理偏低｜数据截至19:00</div>
+<div class="event-alert"><strong>原计划失效｜放量破位、成本失守、派发风险高</strong></div><div class="one-line">周线供给增强、日线放量跌破、成本区转压力，且分钟反弹弱，已经破坏原有上升逻辑。<strong>估值不贵，但结构已失效；当前更接近供给增强，洗盘条件未成立。</strong>这里说的是可观察的派发风险，不断言哪家机构已经出货。</div>
+<div class="why"><b>筛选依据：</b>周线供给增强、日线放量破位和成本区失守，使这只自选进入重点复核。</div>
+<div class="cycle fused-cycle" data-original-cycle="56" id="cycle-56"><div class="cycle-title">月线｜大箱体未破，但原有长期优势已减弱</div><p>价格仍在长期箱体内，没有跌破月线下沿；但长期均线重新粘连，相对强弱下滑，反弹成交不足，说明维持原上升预期的条件在减弱。<strong>月线不是已经崩溃，而是此前优势消失</strong>。它不能替已经破坏的周日线提供无条件持有理由。</p></div><div class="cycle fused-cycle" data-original-cycle="57" id="cycle-57"><div class="cycle-title">周线｜供给增强，原上升逻辑受到实质破坏</div><p>周线高点下移、20周线失守，行业相对强弱转差；回落阶段成交放大，OBV与CMF下降，主要成交区也从支撑变为压力。方向、成本和供需共同恶化，不只是某一个指标出现死叉。<strong>周线供给增强是原计划失效的核心证据</strong>，应先处理风险，再谈估值是否便宜。</p></div><div class="cycle fused-cycle" data-original-cycle="58" id="cycle-58"><div class="cycle-title">日线｜放量破位与成本失守同时发生</div><p>日线放量跌破主要成交区和60日线，MACD死叉后柱体扩大，RSI跌破强弱分界，ATR又上升，说明价格破坏同时得到卖压与动量的确认，回撤波动也在加大。<strong>失败突破、成本区失守和放量破位已经同时出现</strong>，当前更接近供给增强与结构失效，洗盘条件未成立。</p></div><div class="cycle fused-cycle" data-original-cycle="59" id="cycle-59"><div class="cycle-title">60分钟｜反弹收不回成本，零轴下金叉只是缓冲</div><p>反弹无法站回VWAP与套牢区，量能低于下跌阶段，高点继续下移；即使MACD出现零轴下方金叉，价格和需求也没有形成修复。<strong>这是弱势反弹，尚不能收回日线失地</strong>，不能用金叉抵消上级周期破坏。</p></div><div class="cycle fused-cycle" data-original-cycle="60" id="cycle-60"><div class="cycle-title">30分钟｜下降结构未破，局部反弹没有供给改善</div><p>下降通道和更低高点仍在，成交没有显示供给收缩，说明抛压没有被有效吸收。局部金叉只能放在这个背景下理解为反弹。<strong>30分钟没有结构修复证据，原计划不能恢复</strong>。</p></div><div class="cycle fused-cycle" data-original-cycle="61" id="cycle-61"><div class="cycle-title">15分钟｜反复金叉不带来突破，触发质量低</div><p>多次金叉都没有带来价格突破，RSI每次反弹又很快回落，说明动量短暂改善没有换来持续需求。<strong>信号出现得多，不代表证据更强</strong>；这些低质量反弹不足以扭转弱势结构。</p></div><div class="cycle fused-cycle" data-original-cycle="62" id="cycle-62"><div class="cycle-title">5分钟｜反弹停留短，不能修复日线破位</div><p>局部反弹后快速回落，价格在VWAP上方停留时间短，表明微观买盘没有形成持续承接。<strong>5分钟噪声不能修复日线破位</strong>，不应为弱反弹重新建立原上涨计划。</p></div>
+<div class="indicator-box">
+<h3>指标状态</h3>
+<p>日线MA5下穿MA10并跌破MA60；MACD在零轴下方死叉、-DI高于+DI且ADX上升；RSI弱、ATR扩大。60分钟虽有零轴下方金叉，但只代表弱势反弹。OBV/ADL/CMF同步走弱，和放量破位属于同一供给增强证据。</p>
+</div>
+<div class="valuation">
+<h3>价格是否合理</h3>这只高端制造对象的合理区间14.8–17.2，并没有改变“结构失效”的事实。盈利预期仍可能下调；估值输入与技术风险回答不同问题。当前先停止沿用原上涨计划，再核实日周结构是否重建，不因落在估值区间中部就补仓。
+<p>模拟正常化盈利/同行倍数与现金流情景得到合理区间<strong>14.8–17.2元</strong>，现价15.72元位于区间中部。估值不贵，但技术和供给结构已经失效；估值不贵，但结构已失效；当前仍以结构重新修复为前提。</p>
+</div>
+<div class="flow-box">
+<h3>资金行为</h3>
+<p>放量跌破成本区、大单卖出代理上升、OBV/CMF走弱、周线RS下降，构成派发风险较高的可观察组合。</p>
+<div class="status-row"><span class="badge">吸筹迹象：无</span><span class="badge">洗盘：不成立</span><span class="badge badge-bad">派发风险：高</span></div>
+</div>
+<div class="section">
+<h3>资产专属证据</h3>
+<p>模拟基本面未立即恶化，但盈利预期下调风险上升；估值只提供背景。原主要成交区16.0–16.3已转为压力。</p>
+<h3>资金、供需与派发/吸筹观察</h3>
+<p>日线放量跌破成本区、周线相对强弱下降、OBV/CMF走弱构成供给增强组合，派发风险较此前显著提高。这里可以写“供给增强/派发风险上升”，不能断言主力行为。</p>
+</div>
+<div class="synthesis"><b>跨周期合成：</b>月线尚未崩溃，但周线与日线已经破坏，分钟反弹质量又低。当前结论必须服从更高周期破坏：停止原计划，等待结构重建。</div>
+<div class="action"><div class="attn"><b>关注/触发</b><br/>日线重新收回16.20并稳定3个交易日；周线停止走弱，60/30分钟量价重新转强。</div><div class="fail"><b>转弱/失效</b><br/>跌破15.20，周线箱体下沿失守。</div></div>
+<p><b>主要风险：</b>周线下行加速；盈利预期下修；反弹无量。</p>
+<p class="small">历史参考胜率：样本不足，暂不展示。当前机会概率：尚未完成独立校准，暂不提供。</p>
+</div>
+<div class="card" id="watch-y">
+<div class="card-title">自选股Y（6008X8）｜A股·主板｜电子设备｜中期趋势仍在，短线等待</div>
+<div class="identity">现价31.40元估值位于参考区间上半部｜数据截至19:00</div>
+<div class="event-alert"><strong>30分钟顶背离确认｜中期尚稳，前高附近不追</strong></div><div class="one-line">月周趋势、行业相对强弱和日线结构尚在，短线却有量价效率下降、30分钟顶背离和15分钟死叉；价格又位于估值参考区间上半部。<strong>中期结构未坏，短线仍需等待背离消化。</strong></div>
+<div class="why"><b>筛选依据：</b>高周期仍稳，但30分钟顶背离和前高压力使其值得重点跟踪。</div>
+<div class="cycle fused-cycle" data-original-cycle="63" id="cycle-63"><div class="cycle-title">月线｜长期趋势未坏，压力与估值限制追价</div><p>长期上升通道仍在，月均线多头，成交正常，没有确认长期顶背离，说明月线没有新的结构性破坏。但价格已靠近长期压力区，估值又在参考区间上半部，向上空间与回撤风险需要一起衡量。<strong>月线支持继续跟踪，不支持在压力旁追价</strong>。</p></div><div class="cycle fused-cycle" data-original-cycle="64" id="cycle-64"><div class="cycle-title">周线｜趋势、行业与成本稳定，不必因短线降温恐慌</div><p>周线多头结构保持，行业相对强弱未转差，回调缩量，主要成本区继续上移，也没有放量滞涨或确认顶背离。趋势与供需没有形成一致恶化，<strong>周线仍支持中期关注</strong>；周线继续支持中期关注；30分钟仍决定短线是否适合追价。</p></div><div class="cycle fused-cycle" data-original-cycle="65" id="cycle-65"><div class="cycle-title">日线｜结构还在，接近前高时追价意愿下降</div><p>价格接近前高，成交却低于上一轮上攻，OBV走平；MACD仍为正，RSI强但没有创新高，说明趋势还在而推进动力跟不上。<strong>前高附近量价效率下降，当前不宜追</strong>，日线结构尚未确认破坏，当前仍属于推进效率下降。</p></div><div class="cycle fused-cycle" data-original-cycle="66" id="cycle-66"><div class="cycle-title">60分钟｜均线仍多头，动量已放慢</div><p>价格高于主要成本区，均线多头但斜率放缓，MACD柱收缩；回调量没有明显放大，说明动量减速并未伴随明显供给冲击。<strong>成本守住与短线降温并存</strong>，维持观察，不因一项偏弱指标恐慌，也不因均线仍多头追涨。</p></div><div class="cycle fused-cycle" data-original-cycle="67" id="cycle-67"><div class="cycle-title">30分钟｜顶背离已确认，追涨改为等待</div><p>价格创新高而MACD、RSI与ROC没有同步，确认同一波段动量衰减；主结构仍未破坏，说明风险首先体现在追价性价比，而不是已经确认的趋势反转。<strong>30分钟顶背离已确认，当前由追涨转为等待</strong>，多项动量指标不能重复加权。</p></div><div class="cycle fused-cycle" data-original-cycle="68" id="cycle-68"><div class="cycle-title">15分钟｜反弹高点下降，降温得到进一步确认</div><p>15分钟死叉出现，成交缩小、反弹高点下移，且没有新的放量站回，说明局部买盘还没有修复30分钟背离。<strong>短线继续降温，尚无重新启动确认</strong>，不能凭5分钟的一次反弹提前升级。</p></div><div class="cycle fused-cycle" data-original-cycle="69" id="cycle-69"><div class="cycle-title">5分钟｜反弹无量，前高附近没有追价依据</div><p>微观反弹成交不足，VWAP附近承接一般，说明买盘尚不足以支撑前高附近持续推进。<strong>5分钟只提醒等待承接，不能支持前高附近追涨</strong>。</p></div>
+<div class="indicator-box">
+<h3>指标状态</h3>
+<p>月周均线多头，日线MACD仍在零轴上方；30分钟价格创新高而MACD/RSI/ROC未同步，顶背离确认；15分钟死叉，5分钟KDJ反弹但量能不足。高周期趋势与低周期动量衰竭同时存在。</p>
+</div>
+<div class="valuation">
+<h3>价格是否合理</h3>电子设备企业仍需核盈利、现金流和同行质量。正常化EPS／同业倍数与FCFF得到28.5–34.0的假设区间，31.40位于中上部；它和29.8–30.5的技术成本区不是同一种“合理价”。利率、美元和前高卖压共同限制追价。
+<p>模拟正常化EPS/同行倍数与FCFF交叉得到合理区间<strong>28.5–34.0元</strong>，现价31.40元位于中上部。估值尚可，但前高附近缺少追价安全边际。</p>
+</div>
+<div class="flow-box">
+<h3>资金行为</h3>
+<p>日线OBV未破坏、周线回调缩量，尚无完整派发；30分钟冲高量能不足、CMF回落，说明短线资金追价下降。</p>
+<div class="status-row"><span class="badge">吸筹迹象：弱</span><span class="badge">洗盘：无证据</span><span class="badge badge-warn">派发风险：中低</span></div>
+</div>
+<div class="section">
+<h3>资产专属证据</h3>
+<p>模拟基本面稳定，估值处合理偏上；全球科技偏强提供支持，实际利率和美元上升构成反证。主要成本区29.8–30.5。</p>
+<h3>资金、供需与派发/吸筹观察</h3>
+<p>当前派发尚未确认；若前高附近放量滞涨、OBV转弱、行业相对强弱下降同时出现，派发风险再上调。</p>
+</div>
+<div class="synthesis"><b>跨周期合成：</b>高周期告诉我们不必恐慌，低周期告诉我们不能追。当前最合理的是维持中期关注、短线等待背离消化。</div>
+<div class="action"><div class="attn"><b>关注/触发</b><br/>30.20–30.50回踩企稳；30分钟背离消化，15分钟重新放量。</div><div class="fail"><b>转弱/失效</b><br/>放量跌破29.80，日线平台结构转弱。</div></div>
+<p><b>主要风险：</b>前高回落；行业相对强弱下降；估值压缩。</p>
+<p class="small">历史参考胜率：样本不足，暂不展示。当前机会概率：尚未完成独立校准，暂不提供。</p>
+</div>
+<div class="card" id="watch-etf-z">
+<div class="card-title">自选ETF Z（5108X9）｜宽基ETF｜计划维持</div>
+<div class="identity">现价1.520元｜底层估值合理｜点差/折溢价正常｜跟踪稳定</div>
+<div class="event-alert"><strong>计划维持｜暂无新触发或失效</strong></div><div class="one-line">底层月周趋势、日线量价、ETF交易质量与同类相对强弱仍一致；分钟只是整理，没有材料性破坏。<strong>维持计划是一项有证据的判断，不是遗漏分析。</strong></div>
+<div class="why"><b>筛选依据：</b>月周趋势、日线量价、同类相对强弱和交易质量均无明显异常，继续跟踪原计划。</div>
+<div class="cycle fused-cycle" data-original-cycle="70" id="cycle-70"><div class="cycle-title">月线｜底层趋势与估值没有出现新变化</div><p>底层指数长期上升，月均线多头，估值处合理区间，也没有确认长期背离；ETF规模与长期流动性稳定，趋势和交易条件没有新异常。<strong>维持原研究判断有证据基础</strong>，当前维持原研究判断，等待新的触发或失效信号。</p></div><div class="cycle fused-cycle" data-original-cycle="71" id="cycle-71"><div class="cycle-title">周线｜趋势与回踩质量一致，原计划继续跟踪</div><p>周线上升通道完整，回调缩量，同类相对强弱稳定，主要成本区守住，没有放量跌破，说明趋势与供需仍相互支持。<strong>周线没有出现应推翻原计划的新材料</strong>；持续观察这些条件是否保持。</p></div><div class="cycle fused-cycle" data-original-cycle="72" id="cycle-72"><div class="cycle-title">日线｜缩量回踩与波动回落，仍是健康整理</div><p>价格守住20日线和主要成本区，成交缩小、ATR回落，说明回调没有明显供给冲击，波动也在收敛，且未出现失败突破。<strong>日线回踩仍健康</strong>，既没有新增追涨依据，也没有新的失效证据。</p></div><div class="cycle fused-cycle" data-original-cycle="73" id="cycle-73"><div class="cycle-title">60分钟｜成本区上方震荡，没有供给冲击</div><p>高低点稳定，价格在VWAP上方，回落没有供给冲击，MACD中性偏强，说明短中期承接与日线并不冲突。<strong>正常整理，不必把每次波动都当成计划变化</strong>。</p></div><div class="cycle fused-cycle" data-original-cycle="74" id="cycle-74"><div class="cycle-title">30分钟｜箱体缩量整理，突破和背离都未确认</div><p>价格在30分钟平台内缩量整理，没有确认顶背离，也没有放量突破。<strong>现在既不是新突破，也不是新的背离风险</strong>，保持原观察条件比强行给出买卖结论更符合证据。</p></div><div class="cycle fused-cycle" data-original-cycle="75" id="cycle-75"><div class="cycle-title">15分钟｜方向未变，也没有新的触发</div><p>均线粘连，MACD在零轴附近反复，既未形成新触发，也未转弱。<strong>这是中性确认</strong>，没有理由单独上调或下调原计划。</p></div><div class="cycle fused-cycle" data-original-cycle="76" id="cycle-76"><div class="cycle-title">5分钟｜只有普通波动，不增加交易含义</div><p>5分钟噪声较多，没有材料事件，原计划依据也没有变化。<strong>暂无材料性变化，维持原计划</strong>。</p></div>
+<div class="valuation">
+<h3>ETF价格是否合理</h3><p class="valuation-interpretation">先核交易价与净值，再核底层估值。iNAV1.519、交易合理参考1.518–1.520、现价1.520说明无异常溢价；底层估值合理及跟踪稳定提供背景，技术关注区1.485–1.500则用于观察时点。三者不混作目标价。</p>
+<p>模拟iNAV 1.519元，正常折溢价带－0.05%至+0.08%，交易合理参考约<strong>1.518–1.520元</strong>；现价1.520元无异常溢价。底层估值合理，技术关注区1.485–1.500元。</p>
+</div>
+<div class="indicator-box">
+<h3>指标状态</h3>
+<p>月周日均线多头，日线MACD与RSI中性偏强；30分钟平台整理、15分钟零轴附近反复、5分钟无材料事件。OBV、份额和同类RS稳定，没有升级或失效证据。</p>
+</div>
+<div class="flow-box">
+<h3>资金行为</h3>
+<p>ETF份额温和增加、折溢价稳定、成交效率正常，属于资金稳定而非大幅涌入。</p>
+</div>
+<div class="section">
+<h3>资产专属证据</h3>
+<p>底层估值、同类相对强弱、流动性、点差、折溢价、跟踪误差、规模和集中度均无明显异常；ETF份额温和增加。</p>
+<h3>资金、供需与派发/吸筹观察</h3>
+<p>份额温和增加与价格趋势一致，没有出现价涨份额降、溢价扩大、成交效率下降的组合。当前未见明显资金撤退。</p>
+</div>
+<div class="synthesis"><b>跨周期合成：</b>所有周期都没有出现新的升级或失效材料，维持原计划。</div>
+<div class="action"><div class="attn"><b>关注/触发</b><br/>1.490附近缩量企稳，日线重新放量。</div><div class="fail"><b>转弱/失效</b><br/>跌破1.465，同时底层周线相对强弱转差。</div></div>
+<p><b>主要风险：</b>风格轮动；底层估值快速上升；份额转为持续流出。</p>
+<p class="small">历史参考胜率：样本不足，暂不展示。当前机会概率：尚未完成独立校准，暂不提供。</p>
+</div>
+<div class="card" id="watch-w">
+<div class="card-title">自选股W（3008X7）｜A股·创业板｜电气设备｜计划不变</div>
+<div class="identity">现价26.30元｜估值数据有限｜数据截至19:00</div>
+<div class="event-alert"><strong>原条件维持｜没有新触发，估值资料仍有限</strong></div><div class="one-line">高周期趋势仍强、日线回调健康、分钟整理中性，没有新的触发也没有失效。<strong>不为“每天有观点”而编造变化。</strong>24.2–29.0元仅为估值情景参考；历史与同行资料不足，当前尚无已验证合理价值。</div>
+<div class="why"><b>筛选依据：</b>高周期仍强、日线回调健康、分钟周期中性，继续跟踪原触发与失效条件。</div>
+<div class="cycle fused-cycle" data-original-cycle="77" id="cycle-77"><div class="cycle-title">月线｜长期平台突破仍有效，压力依然存在</div><p>长期上升趋势仍在，月线平台突破有效，均线多头，成交没有异常，说明长期结构没有新增破坏。但上方压力仍在，<strong>有效突破不等于后续没有阻力</strong>，保持原计划而不因平稳上涨追加结论。</p></div><div class="cycle fused-cycle" data-original-cycle="78" id="cycle-78"><div class="cycle-title">周线｜缩量回调和成本守住，原有支持仍在</div><p>周线回调缩量，行业相对强弱稳定，主要成本区守住，MACD仍正且没有确认顶背离，说明供需、趋势与动量暂未发生材料变化。<strong>继续跟踪原条件，不凭没有新风险就增加新的乐观判断</strong>。</p></div><div class="cycle fused-cycle" data-original-cycle="79" id="cycle-79"><div class="cycle-title">日线｜健康回踩尚未重新启动</div><p>价格回踩20日线后企稳，成交缩小，MACD柱体收缩但没有明显转弱，说明回落更像动量降温与供给收缩。结构仍处于回踩等待，<strong>企稳不等于新一轮启动已经确认</strong>；原关注与失效条件保持。</p></div><div class="cycle fused-cycle" data-original-cycle="80" id="cycle-80"><div class="cycle-title">60分钟｜围绕成本区整理，买卖暂时均衡</div><p>价格围绕主要成本区震荡，反弹与回落量能大体对称，没有明显供给增加，说明短中周期还在整理。<strong>没有新的供需偏移，原判断维持</strong>。</p></div><div class="cycle fused-cycle" data-original-cycle="81" id="cycle-81"><div class="cycle-title">30分钟｜平台内等待方向，没有触发也未失效</div><p>局部平台仍在，均线粘连，MACD在零轴附近反复，说明方向尚未重新选出。<strong>没有新触发，也没有结构失效</strong>，保持等待比把每次交叉解读成买点更可靠。</p></div><div class="cycle fused-cycle" data-original-cycle="82" id="cycle-82"><div class="cycle-title">15分钟｜量能普通，不能独立升级</div><p>短均线粘连，量能普通，尚未出现明确需求扩张或结构变化。<strong>15分钟不提供独立升级理由</strong>，继续服从30分钟整理状态。</p></div><div class="cycle fused-cycle" data-original-cycle="83" id="cycle-83"><div class="cycle-title">5分钟｜关键位未破，小级别涨跌不改计划</div><p>小级别涨跌没有持续性，关键位也未破，说明暂时只有微观噪声。<strong>保留“未破关键位”这个事实，不额外制造操作含义</strong>，原计划不变。</p></div>
+<div class="indicator-box">
+<h3>指标状态</h3>
+<p>月周均线多头，日线回调缩量；MACD柱收缩但仍在零轴上方，RSI中性偏强；30分钟均线粘连、ADX较低，15/5分钟没有有效交叉触发。月周日与分钟周期均未出现材料性变化，结论维持。</p>
+</div>
+<div class="event-alert"><strong>估值证据不足｜下方区间仅作情景参考</strong></div><div class="valuation">
+<h3>价格是否合理</h3>电气设备应把订单、现金流、原材料成本及风格风险一起核实。26.30位于参考区间中部，不等于估值证据齐全；25.4–25.8主要成本区和25.40失效条件仍各自有效，不由未完成的估值分析覆盖。
+<p>模拟正常化盈利、同行估值和FCFF情景得到合理区间<strong>24.2–29.0元</strong>，现价26.30元位于中部。不确定性来自原材料成本与订单兑现。</p>
+</div>
+<div class="flow-box">
+<h3>资金行为</h3>
+<p>周日回调缩量、OBV平稳、CMF接近零上方，没有派发或新增吸筹的材料变化。</p>
+<div class="status-row"><span class="badge">吸筹迹象：弱</span><span class="badge">洗盘：无材料</span><span class="badge badge-good">派发风险：低</span></div>
+</div>
+<div class="section">
+<h3>资产专属证据</h3>
+<p>模拟基本面稳定，但估值历史和同行数据不足，暂不提供合理价；行业受国内信用、铜价和创业板风格影响。主要成本区25.4–25.8。</p>
+<h3>资金、供需与派发/吸筹观察</h3>
+<p>周线与日线没有供给增强，分钟成交普通；当前无新的吸筹或派发信号，资金状态维持。</p>
+</div>
+<div class="synthesis"><b>跨周期合成：</b>高周期结构与日线回踩仍有效，分钟未给出新触发。原关注与失效条件保持。</div>
+<div class="action"><div class="attn"><b>关注/触发</b><br/>回踩25.80附近缩量企稳，30分钟放量突破整理平台。</div><div class="fail"><b>转弱/失效</b><br/>跌破25.40且日线放量，原回踩逻辑失效。</div></div>
+<p><b>主要风险：</b>原材料成本；创业板风格转弱；估值信息不足。</p>
+<p class="small">历史参考胜率：样本不足，暂不展示。当前机会概率：尚未完成独立校准，暂不提供。</p>
+</div>
+</div>
+<div class="section">
+<h2>三、今晚的处理顺序</h2>
+<ol>
+<li>停止沿用X原来的上升计划，除非日周结构重新修复；</li>
+<li>Y维持中期观察，但等30分钟背离消化，不在前高附近追；</li>
+<li>Z继续原ETF计划，重点监测份额、同类相对强弱和底层估值；</li>
+<li>W保持原条件，没有新触发前维持原计划。</li>
+</ol>
+</div>
+</div>
+<div class="footer">数据说明：正文只引用当前可核材料；缺失、估算或未更新值会明确标注。</div>
+</div>
+</div>
+</body>
+</html>
