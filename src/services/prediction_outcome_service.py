@@ -12,6 +12,7 @@ from typing import Any, Dict, Optional
 from src.core.backtest_engine import BacktestEngine
 from src.core.trading_calendar import (
     resolve_forward_sessions_fail_closed,
+    resolve_historical_daily_bar_date,
     resolve_latest_completed_session_fail_closed,
 )
 from src.repositories.prediction_ledger_repo import PredictionLedgerRepository
@@ -19,6 +20,7 @@ from src.repositories.prediction_outcome_repo import PredictionOutcomeRepository
 from src.services.research_state_projection import is_white_box_opportunity_record
 from src.repositories.stock_repo import StockRepository
 from src.services.pit_identity import build_bar_sequence_identity, canonical_json, sha256_payload
+from src.services.prediction_ledger_service import PREDICTION_LEDGER_SCHEMA_VERSION
 from src.storage import DatabaseManager, utc_naive_now
 
 
@@ -93,8 +95,45 @@ class PredictionOutcomeService:
             raise ValueError(f"prediction not found: {prediction_hash}")
         if not self._is_meta_opportunity(ledger):
             return {"status": "NOT_ELIGIBLE", "prediction_hash": prediction_hash}
-        if ledger.data_as_of is None:
-            return {"status": "UNLABELABLE", "reason": "DATA_AS_OF_NOT_BOUND"}
+        if ledger.schema_version != PREDICTION_LEDGER_SCHEMA_VERSION:
+            return {
+                "status": "UNLABELABLE",
+                "reason": "LEDGER_CLOCK_SCHEMA_NOT_ADMITTED",
+                "prediction_hash": ledger.prediction_hash,
+            }
+        if ledger.outcome_label_anchor is None:
+            return {
+                "status": "UNLABELABLE",
+                "reason": "OUTCOME_LABEL_ANCHOR_NOT_BOUND",
+                "prediction_hash": ledger.prediction_hash,
+            }
+        if (
+            ledger.decision_phase != "postmarket"
+            or ledger.session_date is None
+            or ledger.effective_daily_bar_date is None
+            or ledger.data_as_of is None
+            or not (
+                ledger.session_date
+                == ledger.effective_daily_bar_date
+                == ledger.outcome_label_anchor
+                == ledger.data_as_of
+            )
+        ):
+            return {
+                "status": "UNLABELABLE",
+                "reason": "POSTMARKET_CLOCK_CONTRACT_MISMATCH",
+                "prediction_hash": ledger.prediction_hash,
+            }
+        if resolve_historical_daily_bar_date(
+            "cn",
+            ledger.session_date,
+            ledger.decision_phase,
+        ) != ledger.outcome_label_anchor:
+            return {
+                "status": "UNLABELABLE",
+                "reason": "POSTMARKET_SESSION_NOT_CALENDAR_PROVEN",
+                "prediction_hash": ledger.prediction_hash,
+            }
 
         normalized_cost = self.normalize_cost_identity(cost_identity)
         self._validate_cost_identity_for_ledger(normalized_cost, ledger)
@@ -113,7 +152,7 @@ class PredictionOutcomeService:
 
         expected_sessions = resolve_forward_sessions_fail_closed(
             "cn",
-            ledger.data_as_of,
+            ledger.outcome_label_anchor,
             3,
         )
         if expected_sessions is None:
@@ -253,7 +292,7 @@ class PredictionOutcomeService:
             "execution_identity_hash": execution_hash,
             "execution_identity_json": canonical_json(normalized_execution),
             "evaluation_engine_version": str(engine_version),
-            "decision_session": ledger.data_as_of,
+            "decision_session": ledger.outcome_label_anchor,
             "entry_session": evaluation.get("entry_session"),
             "exit_session": evaluation.get("exit_session"),
             "execution_state": evaluation.get("execution_state") or "EXECUTION_UNKNOWN",

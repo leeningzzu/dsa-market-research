@@ -111,6 +111,10 @@ def _fixed_execution_calendar(monkeypatch):
         "src.services.prediction_outcome_service.resolve_latest_completed_session_fail_closed",
         lambda market: date(2026, 9, 22),
     )
+    monkeypatch.setattr(
+        "src.services.prediction_outcome_service.resolve_historical_daily_bar_date",
+        lambda market, target_date, phase: target_date,
+    )
     original = PredictionOutcomeService.evaluate_prediction
 
     def _with_execution_identity(self, *args, **kwargs):
@@ -158,6 +162,10 @@ def _seed_prediction(
             instrument_type="stock",
             decision_time=datetime(2026, 9, 17, 10, 5, 0),
             decision_timezone="Asia/Shanghai",
+            decision_phase="postmarket",
+            session_date=date(2026, 9, 17),
+            effective_daily_bar_date=date(2026, 9, 17),
+            outcome_label_anchor=date(2026, 9, 17),
             data_as_of=date(2026, 9, 17),
             strategy_id="stock_trend_quality_pullback_v1",
             strategy_version="stock_trend_quality_pullback_v1",
@@ -215,6 +223,43 @@ def _seed_bars(
                 )
             )
 
+
+
+def test_legacy_v3_pit_true_cannot_generate_v1_outcome(isolated_db) -> None:
+    _, prediction_hash = _seed_prediction(isolated_db)
+    with isolated_db.session_scope() as session:
+        row = session.query(PredictionLedgerRecord).filter_by(
+            prediction_hash=prediction_hash
+        ).one()
+        row.schema_version = "prediction-ledger-v3"
+        row.pit_eligible = True
+        row.pit_ineligibility_json = "[]"
+
+    result = PredictionOutcomeService(db_manager=isolated_db).evaluate_prediction(
+        prediction_hash=prediction_hash,
+        cost_identity=_cost_identity(),
+    )
+    assert result == {
+        "status": "UNLABELABLE",
+        "reason": "LEDGER_CLOCK_SCHEMA_NOT_ADMITTED",
+        "prediction_hash": prediction_hash,
+    }
+    assert PredictionOutcomeRepository(isolated_db).list_for_prediction(prediction_hash) == []
+
+
+def test_postmarket_anchor_must_be_calendar_proven(isolated_db, monkeypatch) -> None:
+    _, prediction_hash = _seed_prediction(isolated_db)
+    monkeypatch.setattr(
+        "src.services.prediction_outcome_service.resolve_historical_daily_bar_date",
+        lambda market, target_date, phase: None,
+    )
+    result = PredictionOutcomeService(db_manager=isolated_db).evaluate_prediction(
+        prediction_hash=prediction_hash,
+        cost_identity=_cost_identity(),
+    )
+    assert result["status"] == "UNLABELABLE"
+    assert result["reason"] == "POSTMARKET_SESSION_NOT_CALENDAR_PROVEN"
+    assert PredictionOutcomeRepository(isolated_db).list_for_prediction(prediction_hash) == []
 
 def test_durable_projection_is_eligible_without_raw_evidence_json(isolated_db) -> None:
     _, prediction_hash = _seed_prediction(

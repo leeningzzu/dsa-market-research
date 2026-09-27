@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 import hashlib
 import json
 import os
@@ -101,6 +101,40 @@ def _require_string_list(value: Any, *, field: str) -> list[str]:
     return list(value)
 
 
+def _require_optional_text(value: Any, *, field: str) -> Optional[str]:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise EvidenceFlywheelRuntimeError(f"{field} must be null or a non-empty string")
+    return value.strip()
+
+
+def _require_optional_iso_date(value: Any, *, field: str) -> Optional[str]:
+    text = _require_optional_text(value, field=field)
+    if text is None:
+        return None
+    try:
+        parsed = date.fromisoformat(text)
+    except ValueError as exc:
+        raise EvidenceFlywheelRuntimeError(f"{field} must be an ISO date") from exc
+    return parsed.isoformat()
+
+
+def _require_optional_utc_datetime(value: Any, *, field: str) -> Optional[str]:
+    text = _require_optional_text(value, field=field)
+    if text is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise EvidenceFlywheelRuntimeError(f"{field} must be an ISO datetime") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise EvidenceFlywheelRuntimeError(f"{field} must explicitly identify UTC")
+    if parsed.utcoffset().total_seconds() != 0:
+        raise EvidenceFlywheelRuntimeError(f"{field} must use UTC")
+    return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 def _validated_ledger_receipt(
     raw_receipt: Mapping[str, Any],
     *,
@@ -123,6 +157,10 @@ def _validated_ledger_receipt(
             length=64,
             field="prediction_hash",
         ),
+        "schema_version": _require_optional_text(
+            raw_receipt.get("schema_version"),
+            field="ledger receipt schema_version",
+        ),
         "evidence_hash": _require_sha(
             raw_receipt.get("evidence_hash"),
             length=64,
@@ -132,6 +170,38 @@ def _validated_ledger_receipt(
             raw_receipt.get("feature_schema_hash"),
             length=64,
             field="feature_schema_hash",
+        ),
+        "decision_time_utc": _require_optional_utc_datetime(
+            raw_receipt.get("decision_time_utc"),
+            field="ledger receipt decision_time_utc",
+        ),
+        "decision_timezone": _require_optional_text(
+            raw_receipt.get("decision_timezone"),
+            field="ledger receipt decision_timezone",
+        ),
+        "decision_phase": _require_optional_text(
+            raw_receipt.get("decision_phase"),
+            field="ledger receipt decision_phase",
+        ),
+        "session_date": _require_optional_iso_date(
+            raw_receipt.get("session_date"),
+            field="ledger receipt session_date",
+        ),
+        "effective_daily_bar_date": _require_optional_iso_date(
+            raw_receipt.get("effective_daily_bar_date"),
+            field="ledger receipt effective_daily_bar_date",
+        ),
+        "outcome_label_anchor": _require_optional_iso_date(
+            raw_receipt.get("outcome_label_anchor"),
+            field="ledger receipt outcome_label_anchor",
+        ),
+        "data_as_of": _require_optional_iso_date(
+            raw_receipt.get("data_as_of"),
+            field="ledger receipt data_as_of",
+        ),
+        "available_at_max_utc": _require_optional_utc_datetime(
+            raw_receipt.get("available_at_max_utc"),
+            field="ledger receipt available_at_max_utc",
         ),
         "pit_eligible": _require_bool(
             raw_receipt.get("pit_eligible"),
@@ -275,6 +345,18 @@ def _iso_text(value: Any) -> Optional[str]:
     return None if value is None else str(value)
 
 
+def _utc_iso_text(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if not isinstance(value, datetime):
+        return str(value)
+    if value.tzinfo is None or value.utcoffset() is None:
+        value = value.replace(tzinfo=timezone.utc)
+    else:
+        value = value.astimezone(timezone.utc)
+    return value.isoformat().replace("+00:00", "Z")
+
+
 def _ledger_identity_snapshot(db_manager: Any, prediction_hash: str) -> Dict[str, Any]:
     from sqlalchemy import select
 
@@ -307,10 +389,14 @@ def _ledger_identity_snapshot(db_manager: Any, prediction_hash: str) -> Dict[str
             "market": row.market,
             "stock_code": row.stock_code,
             "instrument_type": row.instrument_type,
-            "decision_time": _iso_text(row.decision_time),
+            "decision_time": _utc_iso_text(row.decision_time),
             "decision_timezone": row.decision_timezone,
+            "decision_phase": row.decision_phase,
+            "session_date": _iso_text(row.session_date),
+            "effective_daily_bar_date": _iso_text(row.effective_daily_bar_date),
+            "outcome_label_anchor": _iso_text(row.outcome_label_anchor),
             "data_as_of": _iso_text(row.data_as_of),
-            "available_at_max": _iso_text(row.available_at_max),
+            "available_at_max": _utc_iso_text(row.available_at_max),
             "strategy_id": row.strategy_id,
             "strategy_version": row.strategy_version,
             "factor_contract_version": row.factor_contract_version,

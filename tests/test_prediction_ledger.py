@@ -5,11 +5,12 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import date
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
-from sqlalchemy import inspect
+from sqlalchemy import create_engine, inspect
 
 from src.config import Config
 from src.core.pipeline import StockAnalysisPipeline
@@ -98,7 +99,13 @@ def _signal() -> dict:
         "entry_high": 1650.0,
         "stop_loss": 1550.0,
         "target_price": 1750.0,
-        "metadata": {"market_phase_summary": {"session_date": "2026-09-17"}},
+        "metadata": {
+            "market_phase_summary": {
+                "phase": "premarket",
+                "session_date": "2026-09-17",
+                "effective_daily_bar_date": "2026-09-16",
+            }
+        },
     }
 
 
@@ -153,7 +160,11 @@ def test_service_freezes_factor_payload_idempotently_and_excludes_human_brief(is
     assert row.canonical_evidence_state == "PROVEN"
     assert row.canonical_hard_veto is False
     assert row.decision_signal_id == 17
-    assert row.data_as_of.isoformat() == "2026-09-17"
+    assert row.decision_phase == "premarket"
+    assert row.session_date.isoformat() == "2026-09-17"
+    assert row.effective_daily_bar_date.isoformat() == "2026-09-16"
+    assert row.data_as_of.isoformat() == "2026-09-16"
+    assert row.outcome_label_anchor is None
 
 
 def test_changed_evidence_creates_new_snapshot_without_mutating_old_row(isolated_db) -> None:
@@ -215,35 +226,195 @@ def test_bound_first_slice_identities_can_be_semantically_pit_eligible(isolated_
     )
     result.diagnostic_context_snapshot = {
         "market_phase_summary": {
+            "phase": "postmarket",
             "session_date": "2026-09-17",
+            "effective_daily_bar_date": "2026-09-17",
             "market_local_time": "2026-09-17T18:00:00+08:00",
         },
         "research_decision_time_utc": "2026-09-17T10:05:00+00:00",
     }
 
-    outcome = PredictionLedgerService(db_manager=isolated_db).persist(
-        analysis_history_id=history_id,
-        result=result,
-        decision_signal=_signal(),
-        code_sha="5" * 40,
-        selection_context=build_specified_codes_selection_context(
-            raw_selection_source="manual",
-            query_source="api",
-        ),
-    )
+    with patch(
+        "src.services.prediction_ledger_service.resolve_historical_daily_bar_date",
+        return_value=date(2026, 9, 17),
+    ):
+        outcome = PredictionLedgerService(db_manager=isolated_db).persist(
+            analysis_history_id=history_id,
+            result=result,
+            decision_signal=_signal(),
+            code_sha="5" * 40,
+            selection_context=build_specified_codes_selection_context(
+                raw_selection_source="manual",
+                query_source="api",
+            ),
+        )
 
     assert outcome is not None
     assert outcome["pit_eligible"] is True
     assert outcome["pit_ineligibility_reasons"] == []
     row = PredictionLedgerRepository(isolated_db).list_for_history(history_id)[0]
-    assert row.schema_version == PREDICTION_LEDGER_SCHEMA_VERSION
+    assert row.schema_version == "prediction-ledger-v4" == PREDICTION_LEDGER_SCHEMA_VERSION
     assert row.decision_timezone == "Asia/Shanghai"
+    assert row.decision_phase == "postmarket"
+    assert row.session_date == date(2026, 9, 17)
+    assert row.effective_daily_bar_date == date(2026, 9, 17)
+    assert row.outcome_label_anchor == date(2026, 9, 17)
+    assert row.data_as_of == date(2026, 9, 17)
+    assert outcome["decision_time_utc"] == "2026-09-17T10:05:00Z"
+    assert outcome["outcome_label_anchor"] == "2026-09-17"
     assert row.asset_identity_hash
     assert row.data_snapshot_identity == "a" * 64
     assert row.selection_source == "SPECIFIED_CODES"
     assert row.selection_context_hash
     assert row.universe_snapshot_id is None
 
+
+
+@pytest.mark.parametrize(
+    ("phase", "session_date", "effective_date"),
+    (
+        ("premarket", "2026-09-18", "2026-09-17"),
+        ("intraday", "2026-09-18", "2026-09-17"),
+        ("non_trading", "2026-09-20", "2026-09-18"),
+        ("non_trading", "2026-10-01", "2026-09-30"),
+    ),
+    ids=("premarket", "intraday", "weekend", "holiday"),
+)
+def test_v1_non_postmarket_clock_is_retained_but_pit_ineligible(
+    isolated_db,
+    phase,
+    session_date,
+    effective_date,
+) -> None:
+    history_id = _add_history(isolated_db)
+    result = _result()
+    result.dashboard["factor_decision"]["multi_timeframe_structure_context"].update(
+        {
+            "data_snapshot_identity": "a" * 64,
+            "provider_identity": "AkshareFetcher",
+            "adjustment_basis": "qfq",
+            "available_at_max": "2026-09-17T10:00:00+00:00",
+        }
+    )
+    result.diagnostic_context_snapshot = {
+        "market_phase_summary": {
+            "phase": phase,
+            "session_date": session_date,
+            "effective_daily_bar_date": effective_date,
+            "market_local_time": f"{session_date}T10:00:00+08:00",
+        },
+        "research_decision_time_utc": "2026-09-17T10:05:00+00:00",
+    }
+    receipt = PredictionLedgerService(db_manager=isolated_db).persist(
+        analysis_history_id=history_id,
+        result=result,
+        decision_signal=_signal(),
+        code_sha="6" * 40,
+        selection_context=build_specified_codes_selection_context(
+            raw_selection_source="manual",
+            query_source="api",
+        ),
+    )
+    assert receipt is not None
+    assert receipt["pit_eligible"] is False
+    assert "PRIMARY_HORIZON_ROUTE_NOT_POSTMARKET" in receipt["pit_ineligibility_reasons"]
+    assert "OUTCOME_LABEL_ANCHOR_NOT_BOUND" in receipt["pit_ineligibility_reasons"]
+    row = PredictionLedgerRepository(isolated_db).list_for_history(history_id)[0]
+    assert row.decision_phase == phase
+    assert row.session_date.isoformat() == session_date
+    assert row.effective_daily_bar_date.isoformat() == effective_date
+    assert row.data_as_of.isoformat() == effective_date
+    assert row.outcome_label_anchor is None
+
+
+def test_same_snapshot_with_distinct_clock_identity_cannot_collapse(isolated_db) -> None:
+    history_id = _add_history(isolated_db)
+    service = PredictionLedgerService(db_manager=isolated_db)
+    selection = build_specified_codes_selection_context(
+        raw_selection_source="manual",
+        query_source="api",
+    )
+
+    def frozen_result(phase: str, session_date: str, effective_date: str):
+        result = _result()
+        result.dashboard["factor_decision"]["multi_timeframe_structure_context"].update(
+            {
+                "data_snapshot_identity": "d" * 64,
+                "provider_identity": "AkshareFetcher",
+                "adjustment_basis": "qfq",
+                "available_at_max": "2026-09-17T09:00:00+00:00",
+            }
+        )
+        result.diagnostic_context_snapshot = {
+            "market_phase_summary": {
+                "phase": phase,
+                "session_date": session_date,
+                "effective_daily_bar_date": effective_date,
+                "market_local_time": f"{session_date}T09:00:00+08:00",
+            },
+            "research_decision_time_utc": "2026-09-17T09:05:00+00:00",
+        }
+        return result
+
+    first = service.persist(
+        analysis_history_id=history_id,
+        result=frozen_result("premarket", "2026-09-18", "2026-09-17"),
+        decision_signal=_signal(),
+        code_sha="7" * 40,
+        selection_context=selection,
+    )
+    second = service.persist(
+        analysis_history_id=history_id,
+        result=frozen_result("non_trading", "2026-09-20", "2026-09-18"),
+        decision_signal=_signal(),
+        code_sha="7" * 40,
+        selection_context=selection,
+    )
+    assert first is not None and second is not None
+    assert first["prediction_hash"] != second["prediction_hash"]
+    assert len(PredictionLedgerRepository(isolated_db).list_for_history(history_id)) == 2
+
+
+def test_v3_sqlite_clock_migration_is_additive_and_does_not_backfill(tmp_path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'legacy-ledger.db'}")
+    try:
+        with engine.begin() as connection:
+            connection.exec_driver_sql(
+                "CREATE TABLE prediction_ledger ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                "prediction_hash VARCHAR(64),"
+                "schema_version VARCHAR(32),"
+                "decision_timezone VARCHAR(64),"
+                "data_as_of DATE,"
+                "pit_eligible BOOLEAN NOT NULL DEFAULT 0,"
+                "pit_ineligibility_json TEXT NOT NULL,"
+                "durability_state VARCHAR(32) NOT NULL DEFAULT 'LOCAL_DB_ONLY'"
+                ")"
+            )
+            connection.exec_driver_sql(
+                "INSERT INTO prediction_ledger "
+                "(prediction_hash,schema_version,decision_timezone,data_as_of,pit_eligible,pit_ineligibility_json,durability_state) "
+                "VALUES ('legacy','prediction-ledger-v3','Asia/Shanghai','2026-09-17',1,'[]','LOCAL_DB_ONLY')"
+            )
+        manager = object.__new__(DatabaseManager)
+        manager._engine = engine
+        manager._is_sqlite_engine = True
+        manager._ensure_prediction_ledger_pit_schema()
+        columns = {item["name"] for item in inspect(engine).get_columns("prediction_ledger")}
+        assert {
+            "decision_phase",
+            "session_date",
+            "effective_daily_bar_date",
+            "outcome_label_anchor",
+        } <= columns
+        with engine.connect() as connection:
+            migrated = connection.exec_driver_sql(
+                "SELECT schema_version,decision_phase,session_date,effective_daily_bar_date,outcome_label_anchor "
+                "FROM prediction_ledger WHERE prediction_hash='legacy'"
+            ).one()
+        assert migrated == ("prediction-ledger-v3", None, None, None, None)
+    finally:
+        engine.dispose()
 
 def test_history_deletion_keeps_prediction_ledger_snapshot(isolated_db) -> None:
     history_id = _add_history(isolated_db)

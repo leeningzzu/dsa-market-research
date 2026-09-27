@@ -10,6 +10,7 @@ import re
 from datetime import date, datetime, timezone
 from typing import Any, Dict, Mapping, Optional
 
+from src.core.trading_calendar import resolve_historical_daily_bar_date
 from src.repositories.prediction_ledger_repo import PredictionLedgerRepository
 from src.services.pit_identity import (
     build_cn_stock_asset_identity,
@@ -22,7 +23,7 @@ from src.services.research_state_projection import (
 from src.storage import DatabaseManager
 
 
-PREDICTION_LEDGER_SCHEMA_VERSION = "prediction-ledger-v3"
+PREDICTION_LEDGER_SCHEMA_VERSION = "prediction-ledger-v4"
 PREDICTION_FEATURE_SCHEMA_VERSION = "stock-factor-evidence-v1"
 
 _FACTOR_EVIDENCE_KEYS = (
@@ -113,7 +114,13 @@ class PredictionLedgerService:
         phase_summary = self._mapping(result_snapshot.get("market_phase_summary"))
         if not phase_summary:
             phase_summary = self._mapping(metadata.get("market_phase_summary"))
-        data_as_of = self._parse_date(phase_summary.get("session_date"))
+        raw_decision_phase = self._text(phase_summary.get("phase"))
+        decision_phase = raw_decision_phase.lower() if raw_decision_phase else None
+        session_date = self._parse_date(phase_summary.get("session_date"))
+        effective_daily_bar_date = self._parse_date(
+            phase_summary.get("effective_daily_bar_date")
+        )
+        data_as_of = effective_daily_bar_date
         available_at_max = self._parse_datetime(multi_timeframe.get("available_at_max"))
         adjustment_basis = self._text(multi_timeframe.get("adjustment_basis"))
         provider_identity = self._text(
@@ -158,7 +165,34 @@ class PredictionLedgerService:
             else None
         )
 
-        pit_reasons = []
+        outcome_label_anchor = None
+        clock_reasons = []
+        if not decision_phase:
+            clock_reasons.append("DECISION_PHASE_NOT_BOUND")
+        if session_date is None:
+            clock_reasons.append("SESSION_DATE_NOT_BOUND")
+        if effective_daily_bar_date is None:
+            clock_reasons.append("EFFECTIVE_DAILY_BAR_DATE_NOT_BOUND")
+        if signal_market != "cn":
+            clock_reasons.append("PRIMARY_HORIZON_MARKET_NOT_CN")
+        elif decision_phase != "postmarket":
+            clock_reasons.append("PRIMARY_HORIZON_ROUTE_NOT_POSTMARKET")
+        elif session_date is not None and effective_daily_bar_date is not None:
+            proven_completed_date = resolve_historical_daily_bar_date(
+                signal_market,
+                session_date,
+                decision_phase,
+            )
+            if proven_completed_date != session_date:
+                clock_reasons.append("POSTMARKET_SESSION_NOT_CALENDAR_PROVEN")
+            elif effective_daily_bar_date != session_date:
+                clock_reasons.append("EFFECTIVE_DAILY_BAR_DATE_NOT_DECISION_SESSION")
+            else:
+                outcome_label_anchor = session_date
+        if outcome_label_anchor is None:
+            clock_reasons.append("OUTCOME_LABEL_ANCHOR_NOT_BOUND")
+
+        pit_reasons = list(clock_reasons)
         if available_at_max is None:
             pit_reasons.append("AVAILABLE_AT_NOT_BOUND")
         if not adjustment_basis:
@@ -200,6 +234,14 @@ class PredictionLedgerService:
             "stock_code": stock_code,
             "decision_time": decision_time.isoformat(),
             "decision_timezone": decision_timezone,
+            "decision_phase": decision_phase,
+            "session_date": session_date.isoformat() if session_date else None,
+            "effective_daily_bar_date": (
+                effective_daily_bar_date.isoformat() if effective_daily_bar_date else None
+            ),
+            "outcome_label_anchor": (
+                outcome_label_anchor.isoformat() if outcome_label_anchor else None
+            ),
             "strategy_id": strategy_id,
             "strategy_version": strategy_version,
             "canonical_action": action,
@@ -234,6 +276,10 @@ class PredictionLedgerService:
             "instrument_type": "stock",
             "decision_time": decision_time,
             "decision_timezone": decision_timezone,
+            "decision_phase": decision_phase,
+            "session_date": session_date,
+            "effective_daily_bar_date": effective_daily_bar_date,
+            "outcome_label_anchor": outcome_label_anchor,
             "data_as_of": data_as_of,
             "available_at_max": available_at_max,
             "strategy_id": strategy_id,
@@ -283,8 +329,21 @@ class PredictionLedgerService:
             "id": row_id,
             "created": created,
             "prediction_hash": prediction_hash,
+            "schema_version": PREDICTION_LEDGER_SCHEMA_VERSION,
             "evidence_hash": evidence_hash,
             "feature_schema_hash": PREDICTION_FEATURE_SCHEMA_HASH,
+            "decision_time_utc": self._utc_iso_text(decision_time),
+            "decision_timezone": decision_timezone,
+            "decision_phase": decision_phase,
+            "session_date": session_date.isoformat() if session_date else None,
+            "effective_daily_bar_date": (
+                effective_daily_bar_date.isoformat() if effective_daily_bar_date else None
+            ),
+            "outcome_label_anchor": (
+                outcome_label_anchor.isoformat() if outcome_label_anchor else None
+            ),
+            "data_as_of": data_as_of.isoformat() if data_as_of else None,
+            "available_at_max_utc": self._utc_iso_text(available_at_max),
             "pit_eligible": not pit_reasons,
             "pit_ineligibility_reasons": pit_reasons,
             "durability_state": "LOCAL_DB_ONLY",
@@ -390,6 +449,16 @@ class PredictionLedgerService:
         if parsed.tzinfo is None or parsed.utcoffset() is None:
             return None
         return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+
+    @staticmethod
+    def _utc_iso_text(value: Optional[datetime]) -> Optional[str]:
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() is None:
+            value = value.replace(tzinfo=timezone.utc)
+        else:
+            value = value.astimezone(timezone.utc)
+        return value.isoformat().replace("+00:00", "Z")
 
     @staticmethod
     def _market_from_result(result: Any) -> Optional[str]:

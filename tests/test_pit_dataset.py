@@ -31,6 +31,14 @@ COST_HASH = "d" * 64
 CODE_SHA = "a" * 40
 
 
+@pytest.fixture(autouse=True)
+def _calendar_contract(monkeypatch):
+    monkeypatch.setattr(
+        "src.services.pit_dataset_service.resolve_historical_daily_bar_date",
+        lambda market, target_date, phase: target_date,
+    )
+
+
 @pytest.fixture()
 def isolated_db(tmp_path):
     old_database_path = os.environ.get("DATABASE_PATH")
@@ -74,6 +82,10 @@ def _seed_prediction(
                 instrument_type="stock",
                 decision_time=datetime.combine(session_date, datetime.min.time()).replace(hour=10),
                 decision_timezone="Asia/Shanghai",
+                decision_phase="postmarket",
+                session_date=session_date,
+                effective_daily_bar_date=session_date,
+                outcome_label_anchor=session_date,
                 data_as_of=session_date,
                 available_at_max=datetime.combine(session_date, datetime.min.time()).replace(hour=9),
                 strategy_id="stock_trend_quality_pullback_v1",
@@ -292,3 +304,50 @@ def test_pit_ineligible_prediction_is_retained_as_gap_and_blocks_admission(isola
     )
     assert gap_assignment["status"] == "EXCLUDED"
     assert "LEDGER_PIT_INELIGIBLE" in gap_assignment["purge_or_exclusion_reason"]
+
+
+def test_legacy_v3_runtime_pit_true_is_excluded_by_clock_schema_gate(isolated_db) -> None:
+    _seed_twenty_sessions(isolated_db)
+    legacy_hash = _seed_prediction(
+        isolated_db,
+        index=998,
+        session_date=date(2026, 2, 2),
+        pit_eligible=True,
+    )
+    with isolated_db.session_scope() as session:
+        row = session.query(PredictionLedgerRecord).filter_by(
+            prediction_hash=legacy_hash
+        ).one()
+        row.schema_version = "prediction-ledger-v3"
+        row.pit_eligible = True
+        row.pit_ineligibility_json = "[]"
+
+    result = PITDatasetService(db_manager=isolated_db).build_manifest(
+        cost_identity_hash=COST_HASH
+    )
+    assert result["training_admission"] == "BLOCKED"
+    assert "PIT_GAPS_PRESENT" in result["training_admission_reasons"]
+    assignment = next(
+        item for item in result["manifest"]["assignments"]
+        if item["prediction_hash"] == legacy_hash
+    )
+    assert assignment["status"] == "EXCLUDED"
+    assert "LEDGER_CLOCK_SCHEMA_NOT_ADMITTED" in assignment["purge_or_exclusion_reason"]
+
+
+def test_calendar_unproven_clock_is_a_pit_gap(isolated_db, monkeypatch) -> None:
+    prediction_hash = _seed_prediction(
+        isolated_db,
+        index=997,
+        session_date=date(2026, 2, 3),
+    )
+    monkeypatch.setattr(
+        "src.services.pit_dataset_service.resolve_historical_daily_bar_date",
+        lambda market, target_date, phase: None,
+    )
+    with isolated_db.get_session() as session:
+        row = session.query(PredictionLedgerRecord).filter_by(
+            prediction_hash=prediction_hash
+        ).one()
+        reasons = PITDatasetService._pit_gap_reasons(row)
+    assert "POSTMARKET_SESSION_NOT_CALENDAR_PROVEN" in reasons

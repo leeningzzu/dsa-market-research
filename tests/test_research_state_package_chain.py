@@ -393,6 +393,15 @@ def test_nonempty_safe_package_excludes_conditional_fields_and_keeps_opportunity
     assert ledger["canonical_action"] == "WAIT"
     assert ledger["canonical_evidence_state"] == "PROVEN"
     assert ledger["canonical_hard_veto"] == 0
+    assert ledger["schema_version"] == "prediction-ledger-v3"
+    for clock_field in (
+        "decision_phase",
+        "session_date",
+        "effective_daily_bar_date",
+        "outcome_label_anchor",
+    ):
+        assert clock_field in ledger
+        assert ledger[clock_field] is None
     assert "evidence_json" not in ledger
     assert "selection_context_json" not in ledger
     assert "synthetic_feature" not in package.payload.decode("utf-8")
@@ -545,6 +554,56 @@ def test_roundtrip_is_deterministic_and_duplicate_restore_is_idempotent(
         conn.close()
 
 
+
+def test_v4_clock_identity_survives_package_restore(seeded_db: Path, tmp_path: Path) -> None:
+    conn = sqlite3.connect(seeded_db)
+    try:
+        conn.execute(
+            "UPDATE prediction_ledger SET "
+            "schema_version='prediction-ledger-v4',"
+            "decision_phase='postmarket',"
+            "session_date='2026-09-18',"
+            "effective_daily_bar_date='2026-09-18',"
+            "outcome_label_anchor='2026-09-18',"
+            "data_as_of='2026-09-18' "
+            "WHERE prediction_hash=?",
+            ("1" * 64,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    store = FilesystemObjectStore(tmp_path / "clock-objects")
+    publish_checkpoint(
+        store,
+        seeded_db,
+        source_code_sha=CODE_SHA,
+        created_at=NOW,
+        rights_admitted=True,
+        rights_classification="SYNTHETIC_TEST_ONLY",
+    )
+    target = tmp_path / "clock-target.db"
+    _create_db(target)
+    restore_checkpoint(store, target)
+
+    conn = sqlite3.connect(target)
+    try:
+        restored = conn.execute(
+            "SELECT schema_version,decision_phase,session_date,effective_daily_bar_date,"
+            "outcome_label_anchor,data_as_of FROM prediction_ledger WHERE prediction_hash=?",
+            ("1" * 64,),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert restored == (
+        "prediction-ledger-v4",
+        "postmarket",
+        "2026-09-18",
+        "2026-09-18",
+        "2026-09-18",
+        "2026-09-18",
+    )
+
 def test_legacy_full_package_without_projection_mode_remains_readable(
     seeded_db: Path,
 ) -> None:
@@ -556,6 +615,10 @@ def test_legacy_full_package_without_projection_mode_remains_readable(
         "opportunity_projection_version",
         "canonical_evidence_state",
         "canonical_hard_veto",
+        "decision_phase",
+        "session_date",
+        "effective_daily_bar_date",
+        "outcome_label_anchor",
     }
     ledger["columns"] = [
         column for column in ledger["columns"]

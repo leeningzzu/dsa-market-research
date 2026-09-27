@@ -10,12 +10,14 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from sqlalchemy import select
 
+from src.core.trading_calendar import resolve_historical_daily_bar_date
 from src.repositories.pit_dataset_repo import PITDatasetRepository
 from src.repositories.prediction_ledger_repo import PredictionLedgerRepository
 from src.services.pit_identity import canonical_json, sha256_payload
 from src.services.prediction_ledger_service import (
     PREDICTION_FEATURE_SCHEMA_HASH,
     PREDICTION_FEATURE_SCHEMA_VERSION,
+    PREDICTION_LEDGER_SCHEMA_VERSION,
 )
 from src.services.research_state_projection import is_white_box_opportunity_record
 from src.services.prediction_outcome_service import (
@@ -288,8 +290,30 @@ class PITDatasetService:
         reasons: List[str] = []
         if row.pit_eligible is not True:
             reasons.append("LEDGER_PIT_INELIGIBLE")
+        if row.schema_version != PREDICTION_LEDGER_SCHEMA_VERSION:
+            reasons.append("LEDGER_CLOCK_SCHEMA_NOT_ADMITTED")
         if row.data_as_of is None or row.decision_time is None or not row.decision_timezone:
             reasons.append("DECISION_IDENTITY_GAP")
+        if (
+            row.decision_phase != "postmarket"
+            or row.session_date is None
+            or row.effective_daily_bar_date is None
+            or row.outcome_label_anchor is None
+        ):
+            reasons.append("CLOCK_IDENTITY_GAP")
+        elif not (
+            row.session_date
+            == row.effective_daily_bar_date
+            == row.outcome_label_anchor
+            == row.data_as_of
+        ):
+            reasons.append("POSTMARKET_CLOCK_CONTRACT_MISMATCH")
+        elif resolve_historical_daily_bar_date(
+            row.market,
+            row.session_date,
+            row.decision_phase,
+        ) != row.outcome_label_anchor:
+            reasons.append("POSTMARKET_SESSION_NOT_CALENDAR_PROVEN")
         if not row.asset_identity_hash or not row.data_snapshot_identity:
             reasons.append("DATA_IDENTITY_GAP")
         if str(row.selection_source or "").upper() not in _ROUTES:
@@ -344,7 +368,7 @@ class PITDatasetService:
     ) -> Dict[str, Any]:
         item: Dict[str, Any] = {
             "prediction_hash": row.prediction_hash,
-            "decision_session": PITDatasetService._date_text(row.data_as_of),
+            "decision_session": PITDatasetService._date_text(row.outcome_label_anchor),
             "selection_source": str(row.selection_source or "").upper() or None,
             "data_snapshot_identity": row.data_snapshot_identity,
             "evidence_hash": row.evidence_hash,

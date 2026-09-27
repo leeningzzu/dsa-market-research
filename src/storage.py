@@ -1177,6 +1177,10 @@ class PredictionLedgerRecord(Base):
     instrument_type = Column(String(16), nullable=False, default='stock', index=True)
     decision_time = Column(DateTime, nullable=False, index=True)
     decision_timezone = Column(String(64))
+    decision_phase = Column(String(32), index=True)
+    session_date = Column(Date, index=True)
+    effective_daily_bar_date = Column(Date, index=True)
+    outcome_label_anchor = Column(Date, index=True)
     data_as_of = Column(Date, index=True)
     available_at_max = Column(DateTime, index=True)
 
@@ -1606,6 +1610,10 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         }
         expected = {
             "decision_timezone": "VARCHAR(64)",
+            "decision_phase": "VARCHAR(32)",
+            "session_date": "DATE",
+            "effective_daily_bar_date": "DATE",
+            "outcome_label_anchor": "DATE",
             "asset_identity_hash": "VARCHAR(64)",
             "asset_identity_json": "TEXT",
             "data_snapshot_identity": "VARCHAR(64)",

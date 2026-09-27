@@ -76,8 +76,17 @@ def _ledger_receipt(*, created: bool = True) -> dict:
         "id": 7,
         "created": created,
         "prediction_hash": "a" * 64,
+        "schema_version": "prediction-ledger-v4",
         "evidence_hash": "b" * 64,
         "feature_schema_hash": "c" * 64,
+        "decision_time_utc": "2026-09-17T10:05:00Z",
+        "decision_timezone": "Asia/Shanghai",
+        "decision_phase": "postmarket",
+        "session_date": "2026-09-17",
+        "effective_daily_bar_date": "2026-09-17",
+        "outcome_label_anchor": "2026-09-17",
+        "data_as_of": "2026-09-17",
+        "available_at_max_utc": "2026-09-17T10:00:00Z",
         "pit_eligible": True,
         "pit_ineligibility_reasons": [],
         "durability_state": "LOCAL_DB_ONLY",
@@ -507,8 +516,17 @@ def test_record_receipt_projects_only_the_strict_allowlist() -> None:
         "id",
         "created",
         "prediction_hash",
+        "schema_version",
         "evidence_hash",
         "feature_schema_hash",
+        "decision_time_utc",
+        "decision_timezone",
+        "decision_phase",
+        "session_date",
+        "effective_daily_bar_date",
+        "outcome_label_anchor",
+        "data_as_of",
+        "available_at_max_utc",
         "pit_eligible",
         "pit_ineligibility_reasons",
         "durability_state",
@@ -527,6 +545,8 @@ def test_record_receipt_projects_only_the_strict_allowlist() -> None:
         ("prediction_hash", "x" * 64, "prediction_hash must be exact 64-hex"),
         ("evidence_hash", "x" * 64, "evidence_hash must be exact 64-hex"),
         ("feature_schema_hash", "x" * 64, "feature_schema_hash must be exact 64-hex"),
+        ("decision_time_utc", "2026-09-17T10:05:00", "must explicitly identify UTC"),
+        ("session_date", "not-a-date", "must be an ISO date"),
         ("pit_eligible", "false", "pit_eligible must be a boolean"),
         (
             "pit_ineligibility_reasons",
@@ -553,7 +573,10 @@ def test_native_zero_model_record_writes_only_the_admitted_temp_db_surfaces(
     isolated_db,
     tmp_path,
 ) -> None:
-    target_date = date(2026, 9, 25)
+    # 2026-09-25 is a non-trading holiday in the XSHG calendar; use the
+    # prior proven session so this native fixture exercises the positive
+    # postmarket V4 clock path rather than a holiday fail-closed branch.
+    target_date = date(2026, 9, 24)
     frame = _synthetic_daily_history(end_date=target_date)
     fetcher = _SyntheticFetcherManager(frame)
     config = Config.get_instance()
@@ -612,7 +635,7 @@ def test_native_zero_model_record_writes_only_the_admitted_temp_db_surfaces(
             stock_codes=["600519"],
             code_sha="8" * 40,
             config=config,
-            current_time=datetime(2026, 9, 25, 10, 0, tzinfo=timezone.utc),
+            current_time=datetime(2026, 9, 24, 10, 0, tzinfo=timezone.utc),
             require_single_stock=True,
             closed_world_database_receipt=True,
         )
@@ -635,6 +658,14 @@ def test_native_zero_model_record_writes_only_the_admitted_temp_db_surfaces(
     assert receipt["model_request_budget"] == 0
     assert receipt["model_request_count"] == 0
     assert receipt["ledger_receipts"][0]["pit_eligible"] is False
+    assert receipt["ledger_receipts"][0]["schema_version"] == "prediction-ledger-v4"
+    assert receipt["ledger_receipts"][0]["decision_time_utc"].endswith("Z")
+    assert receipt["ledger_receipts"][0]["decision_phase"] == "postmarket"
+    assert receipt["ledger_receipts"][0]["session_date"] == "2026-09-24"
+    assert receipt["ledger_receipts"][0]["effective_daily_bar_date"] == "2026-09-24"
+    assert receipt["ledger_receipts"][0]["outcome_label_anchor"] == "2026-09-24"
+    if receipt["ledger_receipts"][0]["available_at_max_utc"] is not None:
+        assert receipt["ledger_receipts"][0]["available_at_max_utc"].endswith("Z")
     assert "ADJUSTMENT_BASIS_NOT_PERSISTED" in receipt["ledger_receipts"][0][
         "pit_ineligibility_reasons"
     ]
@@ -671,6 +702,14 @@ def test_native_zero_model_record_writes_only_the_admitted_temp_db_surfaces(
     assert ledger_identity["data_snapshot_identity"]
     assert ledger_identity["strategy_id"]
     assert ledger_identity["canonical_action"] in {"WAIT", "PASS"}
+    assert ledger_identity["schema_version"] == "prediction-ledger-v4"
+    assert ledger_identity["decision_time"].endswith("Z")
+    assert ledger_identity["decision_phase"] == "postmarket"
+    assert ledger_identity["session_date"] == "2026-09-24"
+    assert ledger_identity["effective_daily_bar_date"] == "2026-09-24"
+    assert ledger_identity["outcome_label_anchor"] == "2026-09-24"
+    if ledger_identity["available_at_max"] is not None:
+        assert ledger_identity["available_at_max"].endswith("Z")
     assert receipt["artifact_policy"] == {
         "receipt_only": True,
         "database_uploaded": False,

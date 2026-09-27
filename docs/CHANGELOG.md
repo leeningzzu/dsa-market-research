@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] 将 Prediction Ledger 时钟契约升级为 additive/no-backfill V4：显式冻结 decision phase、市场本地 session date、已完成日线日期与 Outcome label anchor，`data_as_of` 仅保留为 completed-bar 兼容投影；既有 `XSHG_POSTMARKET_NEXT_OPEN_3_FORWARD_SESSIONS_FIXED_CLOSE_V1` 继续只接受日线收盘后A股决策，盘前/盘中/周末/节假日及旧 V3 `pit_eligible=true` 均由 Ledger、Outcome 与 PIT Dataset 独立 fail-closed，不改写历史行。Evidence Flywheel 收据显式标识 UTC，research-state package 保留 V4 clock identity 且兼容旧包缺失字段；不改变 V2.5、模型、训练、通知或工作流运行边界。
+
 - [修复] 为本地 Evidence Flywheel `record` 增加显式零外部模型请求边界和可核收据，在模型 dispatch 前拒绝任何请求，并保留普通 P0 入口既有的两次直接请求上限。
 
 - [新功能] 在既有 `00-daily-analysis.yml` 增加仅人工 `evidence-flywheel-record` 候选：复用 `p0_stock_codes` 但只接受一只普通A股，使用隔离 SQLite 与零模型/搜索/通知/R2边界，关闭实时、筹码、基本面和市场扩展路径；在 Pipeline/provider effect 前拒绝非空业务表及遗留 WAL/SHM，native 初始化后、运行前和运行后继续 closed-world 校验；工作流以 `EXIT` trap 在成功/失败路径清理DB、报告和日志，失败删除 partial receipt，成功只上传保留一天、严格校验且固定白名单的 Ledger/PIT/表计数/关闭后DB哈希收据。普通P0、V2.5运输、research-state smoke与19:00计划不变；真实dispatch仍需独立授权。

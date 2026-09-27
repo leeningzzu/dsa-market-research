@@ -112,6 +112,10 @@ COLUMN_CLASSIFICATION: Dict[str, Dict[str, str]] = {
         "instrument_type": SAFE_LOW_SENSITIVITY,
         "decision_time": SAFE_LOW_SENSITIVITY,
         "decision_timezone": SAFE_LOW_SENSITIVITY,
+        "decision_phase": SAFE_LOW_SENSITIVITY,
+        "session_date": SAFE_LOW_SENSITIVITY,
+        "effective_daily_bar_date": SAFE_LOW_SENSITIVITY,
+        "outcome_label_anchor": SAFE_LOW_SENSITIVITY,
         "data_as_of": SAFE_LOW_SENSITIVITY,
         "available_at_max": SAFE_LOW_SENSITIVITY,
         "strategy_id": SAFE_LOW_SENSITIVITY,
@@ -381,6 +385,10 @@ def package_columns(table: str, *, projection_mode: str) -> Tuple[str, ...]:
             "opportunity_projection_version",
             "canonical_evidence_state",
             "canonical_hard_veto",
+            "decision_phase",
+            "session_date",
+            "effective_daily_bar_date",
+            "outcome_label_anchor",
         }
         return tuple(column for column in columns if column not in new_projection_columns)
     return columns
