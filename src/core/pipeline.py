@@ -259,6 +259,7 @@ class StockAnalysisPipeline:
         p0_suppress_notification: bool = False,
         p0_acceptance_context: Optional[Dict[str, Any]] = None,
         research_selection_context: Optional[Dict[str, Any]] = None,
+        research_code_sha: Optional[str] = None,
     ):
         """
         初始化调度器
@@ -277,6 +278,7 @@ class StockAnalysisPipeline:
         self.research_selection_context = normalize_research_selection_context(
             research_selection_context
         )
+        self.research_code_sha = str(research_code_sha or "").strip() or None
         if self.p0_acceptance_context and not (
             self.p0_bounded_trial and self.p0_suppress_notification
         ):
@@ -3319,17 +3321,22 @@ class StockAnalysisPipeline:
         result: AnalysisResult,
         analysis_history_id: int,
         decision_signal: Optional[Dict[str, Any]],
-    ) -> None:
+    ) -> Optional[Dict[str, Any]]:
         """Best-effort append-only snapshot for later PIT/outcome research."""
         try:
             from src.services.prediction_ledger_service import PredictionLedgerService
 
-            PredictionLedgerService(db_manager=self.db).persist(
+            receipt = PredictionLedgerService(db_manager=self.db).persist(
                 analysis_history_id=analysis_history_id,
                 result=result,
                 decision_signal=decision_signal,
+                code_sha=getattr(self, "research_code_sha", None),
                 selection_context=getattr(self, "research_selection_context", None),
             )
+            if isinstance(receipt, dict):
+                setattr(result, "prediction_ledger_receipt", dict(receipt))
+                return dict(receipt)
+            return None
         except Exception as exc:
             logger.warning(
                 "Prediction ledger snapshot skipped after history save: "
@@ -3338,6 +3345,7 @@ class StockAnalysisPipeline:
                 getattr(result, "code", None),
                 type(exc).__name__,
             )
+            return None
 
     @staticmethod
     def _build_notification_run_snapshot(

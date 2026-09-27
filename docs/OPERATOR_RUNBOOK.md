@@ -190,6 +190,22 @@ R2 是保存研究状态包的存储服务，不是 SMTP，也不是模型服务
 
 **以后模型研究**：不可变预测记录 → 到期结果 → 当时可知的数据集 → 明确标签 → 样本外测试与概率校准 → 前瞻观察 → 批准晋升。当前不能把邮件评分说成历史胜率或校准概率。
 
+### 8.1 本地 Evidence Flywheel 研究入口（开发候选，尚未上线）
+
+该入口只补齐现有 DSA 的研究状态编排，不新建数据库、scheduler 或模型。三步仍严格分时发生：先记录 canonical 决策到 Prediction Ledger；至少三个后续交易时段成熟后，使用冻结的成本/执行身份生成 Outcome；随后冻结一个 `TRAINING_ADMISSION=BLOCKED` 的 PIT manifest receipt。它不会训练 Logistic/LightGBM，也不会把评分改成概率。
+
+```text
+python -m src.services.evidence_flywheel_runtime record --stocks 600519 --code-sha <exact-40-hex-SHA>
+python -m src.services.evidence_flywheel_runtime evaluate-outcome --prediction-hash <64-hex> --cost-identity-file <cost.json> --execution-identity-file <execution.json>
+python -m src.services.evidence_flywheel_runtime build-manifest --cost-identity-file <cost.json>
+```
+
+`record` 复用既有 P0 有界分析边界，固定 1–2 只沪深普通 A 股、单 worker、保存完整上下文并强制关闭通知；它仍会消费当前已配置的数据/模型路径，因此真实运行必须另行批准，不能把本地 prewrite 或单测当成已完成真实采样。三个命令都使用当前 `DATABASE_PATH` 指向的 DSA SQLite；测试或实验应使用隔离数据库，不能直接拿生产库试跑。
+
+成本与执行身份文件只接受有界 UTF-8 JSON object，内容必须满足既有 `cost-identity-v2` / `execution-identity-v1` 合同。Outcome 未成熟、交易日历无法证明、缺 bar 或执行证据未知时保持 `UNMATURED / EVALUATION_BLOCKED / UNLABELABLE`，不补标签。`build-manifest` 在本入口中不能打开训练准入。
+
+该入口不会读取或修改 R2 开关/凭证，不会 restore/publish research-state，不会发 Email/Telegram，不会 commit/push/merge，也不代表 private `main` 已晋升。R2、真实有界运行、自然 CI 与 main Promotion分别走各自授权和证据关口。
+
 <a id="task-markets"></a>
 ## 9. 以后添加港股、美股
 

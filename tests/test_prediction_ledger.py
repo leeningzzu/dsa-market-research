@@ -306,12 +306,43 @@ def test_pipeline_helper_uses_same_database_and_fails_open() -> None:
         "src.services.prediction_ledger_service.PredictionLedgerService",
         return_value=service,
     ) as service_class:
-        pipeline._persist_prediction_ledger_after_history_save(
+        outcome = pipeline._persist_prediction_ledger_after_history_save(
             result=_result(),
             analysis_history_id=42,
             decision_signal={"item": _signal()},
         )
 
+    assert outcome is None
     service_class.assert_called_once_with(db_manager=pipeline.db)
     service.persist.assert_called_once()
     assert service.persist.call_args.kwargs["analysis_history_id"] == 42
+
+
+def test_pipeline_helper_returns_and_attaches_machine_readable_receipt() -> None:
+    pipeline = object.__new__(StockAnalysisPipeline)
+    pipeline.db = MagicMock()
+    pipeline.research_selection_context = {"selection_source": "SPECIFIED_CODES"}
+    pipeline.research_code_sha = "a" * 40
+    result = _result()
+    receipt = {
+        "id": 9,
+        "created": True,
+        "prediction_hash": "b" * 64,
+        "pit_eligible": True,
+    }
+    service = MagicMock()
+    service.persist.return_value = receipt
+
+    with patch(
+        "src.services.prediction_ledger_service.PredictionLedgerService",
+        return_value=service,
+    ):
+        outcome = pipeline._persist_prediction_ledger_after_history_save(
+            result=result,
+            analysis_history_id=43,
+            decision_signal={"item": _signal()},
+        )
+
+    assert outcome == receipt
+    assert result.prediction_ledger_receipt == receipt
+    assert service.persist.call_args.kwargs["code_sha"] == "a" * 40
