@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
+import json
 import os
+from pathlib import Path
+import sqlite3
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -14,9 +17,13 @@ from sqlalchemy import inspect, text
 
 from src.analyzer import GeminiAnalyzer
 from src.config import Config
+from src.notification import NotificationService
 from src.services.evidence_flywheel_runtime import (
     EvidenceFlywheelBoundaryError,
     EvidenceFlywheelRuntimeError,
+    _build_parser,
+    _database_file_identity,
+    _write_receipt_file,
     build_pit_manifest_receipt,
     evaluate_prediction_outcome,
     record_canonical_run,
@@ -53,6 +60,14 @@ def _config() -> SimpleNamespace:
         agent_skills=["sentiment"],
         analysis_delay=7,
         market_review_enabled=True,
+        daily_market_context_enabled=True,
+        enable_realtime_quote=True,
+        enable_realtime_technical_indicators=True,
+        prefetch_realtime_quotes=True,
+        enable_chip_distribution=True,
+        enable_fundamental_pipeline=True,
+        report_integrity_enabled=True,
+        searxng_public_instances_enabled=True,
     )
 
 
@@ -73,6 +88,19 @@ def _pipeline_factory(observed: dict, receipt: dict | None):
     class FakePipeline:
         def __init__(self, **kwargs):
             observed["init"] = kwargs
+            observed["config_at_init"] = {
+                name: getattr(kwargs["config"], name)
+                for name in (
+                    "daily_market_context_enabled",
+                    "enable_realtime_quote",
+                    "enable_realtime_technical_indicators",
+                    "prefetch_realtime_quotes",
+                    "enable_chip_distribution",
+                    "enable_fundamental_pipeline",
+                    "report_integrity_enabled",
+                    "searxng_public_instances_enabled",
+                )
+            }
             self.analyzer = SimpleNamespace(
                 p0_model_request_budget=kwargs.get("p0_model_request_budget"),
                 p0_model_request_count=0,
@@ -218,12 +246,183 @@ def test_record_phase_reuses_bounded_pipeline_and_restores_config(monkeypatch) -
     assert observed["init"]["research_code_sha"] == "1" * 40
     assert observed["run"]["send_notification"] is False
     assert observed["run"]["merge_notification"] is False
+    assert set(observed["config_at_init"].values()) == {False}
     assert os.getenv("RESEARCH_STATE_DURABILITY_ENABLED") is None
     assert config.single_stock_notify is True
     assert config.merge_email_notification is True
     assert config.report_type == "full"
     assert config.agent_mode is True
     assert config.market_review_enabled is True
+    assert config.daily_market_context_enabled is True
+    assert config.enable_realtime_quote is True
+    assert config.enable_realtime_technical_indicators is True
+    assert config.prefetch_realtime_quotes is True
+    assert config.enable_chip_distribution is True
+    assert config.enable_fundamental_pipeline is True
+    assert config.report_integrity_enabled is True
+    assert config.searxng_public_instances_enabled is True
+
+
+@pytest.mark.parametrize(
+    "codes",
+    (
+        [],
+        ["600519", "000001"],
+    ),
+)
+def test_actions_record_requires_exactly_one_stock_before_pipeline_factory(codes) -> None:
+    observed = {"factory_calls": 0}
+
+    def factory(**kwargs):
+        observed["factory_calls"] += 1
+        raise AssertionError("factory must not run")
+
+    with pytest.raises(
+        EvidenceFlywheelBoundaryError,
+        match="exactly one CN stock",
+    ):
+        record_canonical_run(
+            stock_codes=codes,
+            code_sha="6" * 40,
+            config=_config(),
+            pipeline_factory=factory,
+            require_single_stock=True,
+        )
+
+    assert observed["factory_calls"] == 0
+
+
+def test_closed_world_record_rejects_nonempty_sqlite_before_pipeline_factory(
+    tmp_path,
+) -> None:
+    database = tmp_path / "preexisting.db"
+    with sqlite3.connect(database) as connection:
+        connection.execute("CREATE TABLE preexisting_probe (id INTEGER PRIMARY KEY)")
+        connection.execute("INSERT INTO preexisting_probe DEFAULT VALUES")
+
+    config = _config()
+    config.database_path = str(database)
+    observed = {"factory_calls": 0}
+
+    def factory(**kwargs):
+        observed["factory_calls"] += 1
+        raise AssertionError("factory must not run")
+
+    with pytest.raises(
+        EvidenceFlywheelRuntimeError,
+        match="fresh isolated database before Pipeline construction",
+    ):
+        record_canonical_run(
+            stock_codes=["600519"],
+            code_sha="6" * 40,
+            config=config,
+            pipeline_factory=factory,
+            require_single_stock=True,
+            closed_world_database_receipt=True,
+        )
+
+    assert observed["factory_calls"] == 0
+
+
+@pytest.mark.parametrize("suffix", ("-wal", "-shm"))
+def test_closed_world_record_rejects_sqlite_sidecars_before_pipeline_factory(
+    tmp_path,
+    suffix,
+) -> None:
+    database = tmp_path / "fresh.db"
+    Path(f"{database}{suffix}").write_bytes(b"stale-sidecar")
+    config = _config()
+    config.database_path = str(database)
+    observed = {"factory_calls": 0}
+
+    def factory(**kwargs):
+        observed["factory_calls"] += 1
+        raise AssertionError("factory must not run")
+
+    with pytest.raises(
+        EvidenceFlywheelRuntimeError,
+        match="WAL/SHM sidecars",
+    ):
+        record_canonical_run(
+            stock_codes=["600519"],
+            code_sha="6" * 40,
+            config=config,
+            pipeline_factory=factory,
+            require_single_stock=True,
+            closed_world_database_receipt=True,
+        )
+
+    assert observed["factory_calls"] == 0
+
+
+def test_closed_world_record_rechecks_initialized_database_before_pipeline_run(
+    tmp_path,
+) -> None:
+    Config.reset_instance()
+    DatabaseManager.reset_instance()
+    config = Config(
+        database_path=str(tmp_path / "initialized.db"),
+        sqlite_wal_enabled=False,
+    )
+    Config._instance = config
+    observed = {"run_count": 0}
+
+    class PrepopulatedPipeline:
+        def __init__(self, **kwargs):
+            self.db = DatabaseManager(db_url=config.get_db_url())
+            with self.db._engine.begin() as connection:
+                connection.exec_driver_sql(
+                    "CREATE TABLE preexisting_probe (id INTEGER PRIMARY KEY)"
+                )
+                connection.exec_driver_sql(
+                    "INSERT INTO preexisting_probe DEFAULT VALUES"
+                )
+            self.analyzer = SimpleNamespace(
+                p0_model_request_budget=kwargs.get("p0_model_request_budget"),
+                p0_model_request_count=0,
+            )
+
+        def run(self, **kwargs):
+            observed["run_count"] += 1
+            return []
+
+    try:
+        with pytest.raises(
+            EvidenceFlywheelRuntimeError,
+            match="fresh isolated database before Pipeline run",
+        ):
+            record_canonical_run(
+                stock_codes=["600519"],
+                code_sha="6" * 40,
+                config=config,
+                pipeline_factory=PrepopulatedPipeline,
+                require_single_stock=True,
+                closed_world_database_receipt=True,
+            )
+    finally:
+        DatabaseManager.reset_instance()
+        Config.reset_instance()
+
+    assert observed["run_count"] == 0
+
+
+def test_record_parser_binds_actions_receipt_flags() -> None:
+    args = _build_parser().parse_args(
+        [
+            "record",
+            "--stocks",
+            "600519",
+            "--code-sha",
+            "1" * 40,
+            "--single-stock-only",
+            "--closed-world-receipt",
+            "--receipt-file",
+            "receipt.json",
+        ]
+    )
+    assert args.single_stock_only is True
+    assert args.closed_world_receipt is True
+    assert args.receipt_file == "receipt.json"
 
 
 def test_record_phase_fails_closed_when_model_request_count_is_nonzero() -> None:
@@ -284,6 +483,72 @@ def test_record_phase_fails_before_run_when_zero_budget_is_not_bound() -> None:
     assert observed["run_count"] == 0
 
 
+def test_record_receipt_projects_only_the_strict_allowlist() -> None:
+    observed = {}
+    raw_receipt = _ledger_receipt()
+    raw_receipt.update(
+        {
+            "raw_evidence_json": {"private": "payload"},
+            "database_bytes": "do-not-project",
+            "api_key": "do-not-project",
+        }
+    )
+
+    receipt = record_canonical_run(
+        stock_codes=["600519"],
+        code_sha="9" * 40,
+        config=_config(),
+        pipeline_factory=_pipeline_factory(observed, raw_receipt),
+    )
+
+    ledger_receipt = receipt["ledger_receipts"][0]
+    assert set(ledger_receipt) == {
+        "stock_code",
+        "id",
+        "created",
+        "prediction_hash",
+        "evidence_hash",
+        "feature_schema_hash",
+        "pit_eligible",
+        "pit_ineligibility_reasons",
+        "durability_state",
+    }
+    serialized = json.dumps(receipt, ensure_ascii=False, sort_keys=True)
+    assert "private" not in serialized
+    assert "do-not-project" not in serialized
+    assert "api_key" not in serialized
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    (
+        ("id", True, "positive integer"),
+        ("created", 1, "created must be a boolean"),
+        ("prediction_hash", "x" * 64, "prediction_hash must be exact 64-hex"),
+        ("evidence_hash", "x" * 64, "evidence_hash must be exact 64-hex"),
+        ("feature_schema_hash", "x" * 64, "feature_schema_hash must be exact 64-hex"),
+        ("pit_eligible", "false", "pit_eligible must be a boolean"),
+        (
+            "pit_ineligibility_reasons",
+            ["VALID", 7],
+            "pit_ineligibility_reasons must be a list",
+        ),
+        ("durability_state", "REMOTE", "durability_state must be LOCAL_DB_ONLY"),
+    ),
+)
+def test_record_receipt_rejects_malformed_values(field, value, message) -> None:
+    raw_receipt = _ledger_receipt()
+    raw_receipt[field] = value
+
+    with pytest.raises(EvidenceFlywheelRuntimeError, match=message):
+        record_canonical_run(
+            stock_codes=["600519"],
+            code_sha="9" * 40,
+            config=_config(),
+            pipeline_factory=_pipeline_factory({}, raw_receipt),
+        )
+
+
 def test_native_zero_model_record_writes_only_the_admitted_temp_db_surfaces(
     isolated_db,
     tmp_path,
@@ -312,20 +577,34 @@ def test_native_zero_model_record_writes_only_the_admitted_temp_db_surfaces(
     config.report_language = "zh"
     config.max_workers = 1
 
-    notifier = MagicMock()
-    notifier.generate_aggregate_report.return_value = "native zero-model audit"
-    audit_path = tmp_path / "audit-not-written.md"
-    notifier.save_report_to_file.return_value = str(audit_path)
     market_structure = MagicMock()
     market_structure.build_context.return_value = None
     relative_strength = MagicMock()
     relative_strength.build_context.return_value = None
     before = _table_counts(isolated_db)
+    repository_reports = Path(__file__).resolve().parents[1] / "reports"
+    assert not repository_reports.exists()
+    notification_module_file = tmp_path / "src" / "notification.py"
 
     with patch("src.core.pipeline.DataFetcherManager", return_value=fetcher), \
-         patch("src.core.pipeline.NotificationService", return_value=notifier), \
          patch("src.core.pipeline.MarketStructureService", return_value=market_structure), \
          patch("src.core.pipeline.RelativeStrengthService", return_value=relative_strength), \
+         patch("src.notification.__file__", str(notification_module_file)), \
+         patch.object(
+             NotificationService,
+             "send_to_email",
+             side_effect=AssertionError("email egress must stay disabled"),
+         ) as send_email, \
+         patch.object(
+             NotificationService,
+             "send",
+             side_effect=AssertionError("notification egress must stay disabled"),
+         ) as send_all, \
+         patch.object(
+             NotificationService,
+             "send_with_results",
+             side_effect=AssertionError("notification routing must stay disabled"),
+         ) as send_with_results, \
          patch.object(GeminiAnalyzer, "_get_skill_prompt_sections", return_value=("", "", True)), \
          patch("src.analyzer.get_api_keys_for_model") as get_keys, \
          patch("src.analyzer.litellm.completion") as completion:
@@ -334,6 +613,8 @@ def test_native_zero_model_record_writes_only_the_admitted_temp_db_surfaces(
             code_sha="8" * 40,
             config=config,
             current_time=datetime(2026, 9, 25, 10, 0, tzinfo=timezone.utc),
+            require_single_stock=True,
+            closed_world_database_receipt=True,
         )
 
     after = _table_counts(isolated_db)
@@ -359,11 +640,58 @@ def test_native_zero_model_record_writes_only_the_admitted_temp_db_surfaces(
     ]
     completion.assert_not_called()
     get_keys.assert_not_called()
-    notifier.send_to_email.assert_not_called()
-    notifier.send.assert_not_called()
-    notifier.save_report_to_file.assert_called_once_with("native zero-model audit")
-    assert not audit_path.exists()
+    send_email.assert_not_called()
+    send_all.assert_not_called()
+    send_with_results.assert_not_called()
+    report_files = sorted((tmp_path / "reports").glob("report_*.md"))
+    assert len(report_files) == 1
+    assert "600519" in report_files[0].read_text(encoding="utf-8")
+    assert not repository_reports.exists()
     assert len(fetcher.daily_calls) == 1
+    database_receipt = receipt["database_receipt"]
+    assert database_receipt["core_table_counts_after"] == {
+        "analysis_history": 1,
+        "decision_signals": 1,
+        "fundamental_snapshot": 1,
+        "prediction_ledger": 1,
+        "prediction_outcomes": 0,
+        "pit_dataset_manifests": 0,
+        "stock_daily": len(frame),
+        "llm_usage": 0,
+        "news_intel": 0,
+        "intelligence_items": 0,
+        "alert_notifications": 0,
+    }
+    assert database_receipt["unexpected_nonzero_table_deltas"] == {}
+    assert database_receipt["nonzero_table_count_deltas"] == deltas
+    ledger_identity = database_receipt["ledger_identities"][0]
+    assert ledger_identity["stock_code"] == "600519"
+    assert ledger_identity["code_sha"] == "8" * 40
+    assert ledger_identity["selection_source"] == "SPECIFIED_CODES"
+    assert ledger_identity["data_snapshot_identity"]
+    assert ledger_identity["strategy_id"]
+    assert ledger_identity["canonical_action"] in {"WAIT", "PASS"}
+    assert receipt["artifact_policy"] == {
+        "receipt_only": True,
+        "database_uploaded": False,
+        "reports_uploaded": False,
+        "logs_uploaded": False,
+    }
+
+
+def test_closed_database_identity_and_receipt_file_are_deterministic(tmp_path) -> None:
+    database = tmp_path / "closed.db"
+    database.write_bytes(b"closed-world-db")
+    identity = _database_file_identity(database)
+    assert identity["database_file_name"] == "closed.db"
+    assert identity["database_bytes_after_close"] == len(b"closed-world-db")
+    assert len(identity["database_sha256_after_close"]) == 64
+    assert identity["sessions_closed_before_hash"] is True
+
+    receipt_file = tmp_path / "receipt.json"
+    _write_receipt_file(receipt_file.as_posix(), {"identity": identity})
+    assert receipt_file.read_text(encoding="utf-8").endswith("\n")
+    assert "closed-world-db" not in receipt_file.read_text(encoding="utf-8")
 
 
 def test_record_phase_accepts_idempotent_existing_ledger_receipt() -> None:

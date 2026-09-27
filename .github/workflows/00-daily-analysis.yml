@@ -20,6 +20,7 @@ on:
           - auto-screen   # 手动 AUTO_SCREEN → 同一深析/决策/报告链
           - research-state-smoke  # 仅人工：空 research-state durability smoke，不执行股票分析
           - baseline-transport  # 仅人工：V2.5已接受原件的真实SMTP运输验收，不执行分析
+          - evidence-flywheel-record  # 仅人工：1只A股、零模型/通知、隔离SQLite的Ledger工程验收
       force_run:
         description: '强制运行（跳过交易日检查）'
         required: false
@@ -77,7 +78,7 @@ on:
           - publish-empty
           - restore-empty
       p0_stock_codes:
-        description: 'P0 有界验收代码（仅 stocks-only；1-2 只沪深普通 A 股）'
+        description: 'P0/证据飞轮代码（stocks-only为1-2只；evidence-flywheel-record为正好1只沪深普通A股）'
         required: false
         default: ''
         type: string
@@ -98,7 +99,7 @@ jobs:
     
     steps:
       - name: 随机延迟（避免固定时间访问）
-        if: ${{ github.event_name != 'workflow_dispatch' || (github.event.inputs.mode != 'research-state-smoke' && github.event.inputs.mode != 'baseline-transport') }}
+        if: ${{ github.event_name != 'workflow_dispatch' || (github.event.inputs.mode != 'research-state-smoke' && github.event.inputs.mode != 'baseline-transport' && github.event.inputs.mode != 'evidence-flywheel-record') }}
         run: sleep $((RANDOM % 60))  # 随机延迟0-60秒启动
       
       - name: 检出代码
@@ -184,6 +185,92 @@ jobs:
           EMAIL_SENDER_NAME: ${{ vars.EMAIL_SENDER_NAME || secrets.EMAIL_SENDER_NAME || 'daily_stock_analysis股票分析助手' }}
         run: python -m src.services.v2_5_baseline_transport
 
+      - name: 记录 Evidence Flywheel 有界真实账本（仅人工）
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'evidence-flywheel-record' }}
+        env:
+          EVIDENCE_FLYWHEEL_STOCK: ${{ github.event.inputs.p0_stock_codes || '' }}
+          DATABASE_PATH: ./data/evidence_flywheel_record.db
+          SQLITE_WAL_ENABLED: 'false'
+          ENABLE_REALTIME_QUOTE: 'false'
+          ENABLE_REALTIME_TECHNICAL_INDICATORS: 'false'
+          PREFETCH_REALTIME_QUOTES: 'false'
+          ENABLE_CHIP_DISTRIBUTION: 'false'
+          ENABLE_FUNDAMENTAL_PIPELINE: 'false'
+          MARKET_REVIEW_ENABLED: 'false'
+          DAILY_MARKET_CONTEXT_ENABLED: 'false'
+          REPORT_INTEGRITY_ENABLED: 'false'
+          REPORT_INTEGRITY_RETRY: '0'
+          SEARXNG_PUBLIC_INSTANCES_ENABLED: 'false'
+          RESEARCH_STATE_DURABILITY_ENABLED: 'false'
+        shell: bash
+        run: |
+          set -euo pipefail
+          RECORD_DB="data/evidence_flywheel_record.db"
+          RECORD_RECEIPT="data/evidence_flywheel_record_receipt.json"
+          RECORD_RECEIPT_READY=false
+          export RECORD_RECEIPT
+          cleanup_evidence_flywheel_record() {
+            status=$?
+            trap - EXIT
+            rm -f "$RECORD_DB" "$RECORD_DB-wal" "$RECORD_DB-shm"
+            rm -rf reports logs
+            if [ "$status" -ne 0 ] || [ "$RECORD_RECEIPT_READY" != "true" ]; then
+              rm -f "$RECORD_RECEIPT"
+            fi
+            exit "$status"
+          }
+          trap cleanup_evidence_flywheel_record EXIT
+          rm -f "$RECORD_DB" "$RECORD_DB-wal" "$RECORD_DB-shm" "$RECORD_RECEIPT"
+          rm -rf reports logs
+          python -m src.services.evidence_flywheel_runtime record \
+            --stocks "$EVIDENCE_FLYWHEEL_STOCK" \
+            --code-sha "$GITHUB_SHA" \
+            --single-stock-only \
+            --closed-world-receipt \
+            --receipt-file "$RECORD_RECEIPT"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path(os.environ["RECORD_RECEIPT"])
+          receipt = json.loads(path.read_text(encoding="utf-8"))
+          assert receipt["status"] == "RECORDED"
+          assert receipt["record_count"] == 1
+          assert receipt["model_request_budget"] == 0
+          assert receipt["model_request_count"] == 0
+          assert receipt["notification_suppressed"] is True
+          assert receipt["external_durability"] == "NOT_REQUESTED"
+          assert receipt["training_requested"] is False
+          assert receipt["artifact_policy"] == {
+              "database_uploaded": False,
+              "logs_uploaded": False,
+              "receipt_only": True,
+              "reports_uploaded": False,
+          }
+          database = receipt["database_receipt"]
+          assert database["fresh_isolated_database"] is True
+          assert database["unexpected_nonzero_table_deltas"] == {}
+          assert len(database["ledger_identities"]) == 1
+          assert len(database["database_sha256_after_close"]) == 64
+          PY
+          {
+            echo "### Evidence Flywheel bounded record receipt"
+            echo '```json'
+            cat "$RECORD_RECEIPT"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          RECORD_RECEIPT_READY=true
+
+      - name: 上传 Evidence Flywheel Record Receipt
+        if: ${{ success() && github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'evidence-flywheel-record' }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: evidence-flywheel-record-receipt-${{ github.run_id }}
+          path: data/evidence_flywheel_record_receipt.json
+          if-no-files-found: error
+          retention-days: 1
+
       - name: 研究状态空检查点 Smoke（仅人工）
         if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'research-state-smoke' }}
         env:
@@ -222,7 +309,7 @@ jobs:
           retention-days: 1
       
       - name: 恢复研究状态（默认关闭）
-        if: ${{ (github.event_name != 'schedule' || steps.strict_cn_schedule_gate.outputs.allow_analysis == 'true') && vars.RESEARCH_STATE_DURABILITY_ENABLED == 'true' && (github.event_name != 'workflow_dispatch' || (github.event.inputs.mode != 'market-only' && github.event.inputs.mode != 'research-state-smoke' && github.event.inputs.mode != 'baseline-transport')) }}
+        if: ${{ (github.event_name != 'schedule' || steps.strict_cn_schedule_gate.outputs.allow_analysis == 'true') && vars.RESEARCH_STATE_DURABILITY_ENABLED == 'true' && (github.event_name != 'workflow_dispatch' || (github.event.inputs.mode != 'market-only' && github.event.inputs.mode != 'research-state-smoke' && github.event.inputs.mode != 'baseline-transport' && github.event.inputs.mode != 'evidence-flywheel-record')) }}
         env:
           RESEARCH_STATE_DURABILITY_ENABLED: 'true'
           R2_ENDPOINT_URL: ${{ vars.R2_ENDPOINT_URL || secrets.R2_ENDPOINT_URL }}
@@ -232,7 +319,7 @@ jobs:
         run: python -m src.services.research_state_runtime restore
 
       - name: 执行股票分析
-        if: ${{ (github.event_name != 'schedule' || steps.strict_cn_schedule_gate.outputs.allow_analysis == 'true') && (github.event_name != 'workflow_dispatch' || (github.event.inputs.mode != 'research-state-smoke' && github.event.inputs.mode != 'baseline-transport')) }}
+        if: ${{ (github.event_name != 'schedule' || steps.strict_cn_schedule_gate.outputs.allow_analysis == 'true') && (github.event_name != 'workflow_dispatch' || (github.event.inputs.mode != 'research-state-smoke' && github.event.inputs.mode != 'baseline-transport' && github.event.inputs.mode != 'evidence-flywheel-record')) }}
         env:
           # ==========================================
           # AI 配置
@@ -756,7 +843,7 @@ jobs:
           fi
       
       - name: 发布研究状态（默认关闭）
-        if: ${{ success() && (github.event_name != 'schedule' || steps.strict_cn_schedule_gate.outputs.allow_analysis == 'true') && vars.RESEARCH_STATE_DURABILITY_ENABLED == 'true' && (github.event_name != 'workflow_dispatch' || (github.event.inputs.mode != 'market-only' && github.event.inputs.mode != 'research-state-smoke' && github.event.inputs.mode != 'baseline-transport')) }}
+        if: ${{ success() && (github.event_name != 'schedule' || steps.strict_cn_schedule_gate.outputs.allow_analysis == 'true') && vars.RESEARCH_STATE_DURABILITY_ENABLED == 'true' && (github.event_name != 'workflow_dispatch' || (github.event.inputs.mode != 'market-only' && github.event.inputs.mode != 'research-state-smoke' && github.event.inputs.mode != 'baseline-transport' && github.event.inputs.mode != 'evidence-flywheel-record')) }}
         env:
           RESEARCH_STATE_DURABILITY_ENABLED: 'true'
           R2_ENDPOINT_URL: ${{ vars.R2_ENDPOINT_URL || secrets.R2_ENDPOINT_URL }}
@@ -767,7 +854,7 @@ jobs:
 
       - name: 上传分析报告
         uses: actions/upload-artifact@v6
-        if: ${{ always() && (github.event_name != 'workflow_dispatch' || (github.event.inputs.mode != 'research-state-smoke' && github.event.inputs.mode != 'baseline-transport')) }}
+        if: ${{ always() && (github.event_name != 'workflow_dispatch' || (github.event.inputs.mode != 'research-state-smoke' && github.event.inputs.mode != 'baseline-transport' && github.event.inputs.mode != 'evidence-flywheel-record')) }}
         with:
           name: analysis-reports-${{ github.run_number }}
           path: |
@@ -776,7 +863,7 @@ jobs:
           retention-days: 30
       
       - name: 显示运行结果
-        if: ${{ always() && (github.event_name != 'workflow_dispatch' || (github.event.inputs.mode != 'research-state-smoke' && github.event.inputs.mode != 'baseline-transport')) }}
+        if: ${{ always() && (github.event_name != 'workflow_dispatch' || (github.event.inputs.mode != 'research-state-smoke' && github.event.inputs.mode != 'baseline-transport' && github.event.inputs.mode != 'evidence-flywheel-record')) }}
         run: |
           echo ""
           echo "=========================================="

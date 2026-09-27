@@ -2,7 +2,7 @@
 
 本手册服务于 GitHub Actions 上的个人私有部署，不要求另装 Web 服务、Docker 或交易框架。需要其他部署方式时，再从[文档中心](INDEX.md)进入。
 
-核对日期：2026-09-21。**这是一份文档候选，不会替你启用任务、修改密钥或上线未实现功能。** “待实现”章节不能当成已生效的配置说明。
+核对日期：2026-09-27。**这是一份文档候选，不会替你启用任务、修改密钥或上线未实现功能。** “待实现”章节不能当成已生效的配置说明。
 
 <a id="task-start"></a>
 ## 1. 第一次部署：先看对地方
@@ -205,6 +205,14 @@ python -m src.services.evidence_flywheel_runtime build-manifest --cost-identity-
 成本与执行身份文件只接受有界 UTF-8 JSON object，内容必须满足既有 `cost-identity-v2` / `execution-identity-v1` 合同。Outcome 未成熟、交易日历无法证明、缺 bar 或执行证据未知时保持 `UNMATURED / EVALUATION_BLOCKED / UNLABELABLE`，不补标签。`build-manifest` 在本入口中不能打开训练准入。
 
 该入口不会读取或修改 R2 开关/凭证，不会 restore/publish research-state，不会发 Email/Telegram，不会 commit/push/merge，也不代表 private `main` 已晋升。R2、真实有界运行、自然 CI 与 main Promotion分别走各自授权和证据关口。
+
+### 8.2 GitHub Actions 单股真实记录候选（仍需提交、CI与单独dispatch授权）
+
+既有 `00-daily-analysis.yml` 的开发候选增加手动 `mode=evidence-flywheel-record`，复用 `p0_stock_codes`，但该模式只接受**正好一只**已登记的沪深普通 A 股。它使用 `./data/evidence_flywheel_record.db` 隔离 SQLite，固定零模型请求、单 worker、通知抑制，并关闭实时行情、盘中技术指标、筹码、基本面、市场复盘、公共 SearXNG 与 research-state durability；不会读取模型、搜索、SMTP、Tushare、TickFlow、Longbridge或R2 Secret。运行入口在构造 Pipeline 和访问 provider 前只读检查 SQLite 文件：任何非空业务表或遗留 `-wal/-shm` 都立即拒绝；native 数据库初始化后、`pipeline.run` 前再次检查，运行后仍保留 closed-world 表增量验证。目标股票与既有 `510300` 相对强弱代理仍可通过无 Key 的 DSA 日线 fallback 获取真实完成 bar，因此实际 provider 请求仍属于后续单独授权的真实数据 effect。
+
+成功运行只上传 `data/evidence_flywheel_record_receipt.json`，保留一天，并把同一脱敏 JSON 写入 GitHub Step Summary。收据对 Ledger id、布尔状态、三个 64-hex hash、PIT 理由数组和 `LOCAL_DB_ONLY` 状态逐项校验，只投影固定白名单；不上传 SQLite、原始行情、raw evidence、`reports/`、`logs/` 或额外字段。工作流在运行前注册失败安全的 `EXIT` 清理：成功和失败都删除数据库/WAL/SHM及报告/日志，失败或收据未完整验收时同时删除 partial receipt，只有完整成功才保留收据供 Artifact 使用。该结果只是一次工程 Ledger 记录证据，不证明跨运行持久化、Outcome成熟、策略收益、PIT训练集、概率校准或 Production main。
+
+普通 `stocks-only` P0 仍保持1–2只股票和既有最多两次直接模型请求语义；19:00 schedule、V2.5 `baseline-transport` 与 `research-state-smoke` 不消费本模式。工作流当前若为 disabled，不因代码候选存在而自动启用；真实 Run workflow 仍须绑定 exact branch/SHA、输入、数据effect与证据surface后另行批准。
 
 <a id="task-markets"></a>
 ## 9. 以后添加港股、美股

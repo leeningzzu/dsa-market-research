@@ -1,5 +1,7 @@
 from pathlib import Path
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import types
@@ -34,6 +36,57 @@ class TestDailyAnalysisStrictSchedule(unittest.TestCase):
                 lines.append(line)
 
         return "\n".join(lines)
+
+
+    def _evidence_flywheel_step_script(self):
+        step_start = self.text.index(
+            "- name: 记录 Evidence Flywheel 有界真实账本（仅人工）"
+        )
+        marker = "        run: |\n"
+        start = self.text.index(marker, step_start) + len(marker)
+        end = self.text.index(
+            "\n\n      - name: 上传 Evidence Flywheel Record Receipt",
+            start,
+        )
+        body = self.text[start:end]
+        lines = []
+        for line in body.splitlines():
+            if line.startswith("          "):
+                lines.append(line[10:])
+            else:
+                lines.append(line)
+        return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _working_bash():
+        candidates = []
+        discovered = shutil.which("bash")
+        if discovered:
+            candidates.append(Path(discovered))
+        git_path = shutil.which("git")
+        if git_path:
+            git_root = Path(git_path).resolve().parent.parent
+            candidates.extend(
+                (
+                    git_root / "bin" / "bash.exe",
+                    git_root / "usr" / "bin" / "bash.exe",
+                )
+            )
+        seen = set()
+        for candidate in candidates:
+            resolved = str(candidate)
+            if resolved in seen or not candidate.is_file():
+                continue
+            seen.add(resolved)
+            probe = subprocess.run(
+                [resolved, "--version"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if probe.returncode == 0:
+                return resolved
+        return None
 
     def _run_gate(self, trading_day=None, raises=False):
         src_pkg = types.ModuleType("src")
@@ -291,7 +344,7 @@ class TestDailyAnalysisStrictSchedule(unittest.TestCase):
         self.assertIn("python -m src.services.v2_5_baseline_transport", self.text)
 
         start = self.text.index("- name: 发送V2.5原件运输验收（仅人工）")
-        end = self.text.index("- name: 研究状态空检查点 Smoke（仅人工）", start)
+        end = self.text.index("- name: 记录 Evidence Flywheel 有界真实账本（仅人工）", start)
         block = self.text[start:end]
         for key in ("EMAIL_SENDER:", "EMAIL_PASSWORD:", "EMAIL_RECEIVERS:", "EMAIL_SENDER_NAME:"):
             self.assertIn(key, block)
@@ -320,6 +373,199 @@ class TestDailyAnalysisStrictSchedule(unittest.TestCase):
         schedule_gate = self._gate_source()
         self.assertNotIn("baseline-transport", schedule_gate)
 
+    def test_evidence_flywheel_record_is_manual_single_stock_receipt_only(self):
+        self.assertIn("- evidence-flywheel-record", self.text)
+        step_start = self.text.index(
+            "- name: 记录 Evidence Flywheel 有界真实账本（仅人工）"
+        )
+        artifact_start = self.text.index(
+            "- name: 上传 Evidence Flywheel Record Receipt",
+            step_start,
+        )
+        smoke_start = self.text.index(
+            "- name: 研究状态空检查点 Smoke（仅人工）",
+            artifact_start,
+        )
+        step_block = self.text[step_start:artifact_start]
+        artifact_block = self.text[artifact_start:smoke_start]
+
+        self.assertIn(
+            "github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'evidence-flywheel-record'",
+            step_block,
+        )
+        self.assertIn(
+            "EVIDENCE_FLYWHEEL_STOCK: ${{ github.event.inputs.p0_stock_codes || '' }}",
+            step_block,
+        )
+        for binding in (
+            "DATABASE_PATH: ./data/evidence_flywheel_record.db",
+            "SQLITE_WAL_ENABLED: 'false'",
+            "ENABLE_REALTIME_QUOTE: 'false'",
+            "ENABLE_REALTIME_TECHNICAL_INDICATORS: 'false'",
+            "PREFETCH_REALTIME_QUOTES: 'false'",
+            "ENABLE_CHIP_DISTRIBUTION: 'false'",
+            "ENABLE_FUNDAMENTAL_PIPELINE: 'false'",
+            "MARKET_REVIEW_ENABLED: 'false'",
+            "DAILY_MARKET_CONTEXT_ENABLED: 'false'",
+            "REPORT_INTEGRITY_ENABLED: 'false'",
+            "SEARXNG_PUBLIC_INSTANCES_ENABLED: 'false'",
+            "RESEARCH_STATE_DURABILITY_ENABLED: 'false'",
+        ):
+            self.assertIn(binding, step_block)
+        for forbidden in (
+            "${{ secrets.",
+            "${{ vars.",
+            "GEMINI_API_KEY",
+            "OPENAI_API_KEY",
+            "TUSHARE_TOKEN",
+            "TICKFLOW_API_KEY",
+            "LONGBRIDGE_",
+            "EMAIL_PASSWORD",
+            "R2_ACCESS_KEY_ID",
+        ):
+            self.assertNotIn(forbidden, step_block)
+        self.assertIn("--single-stock-only", step_block)
+        self.assertIn("--closed-world-receipt", step_block)
+        self.assertIn('--receipt-file "$RECORD_RECEIPT"', step_block)
+        self.assertIn("GITHUB_STEP_SUMMARY", step_block)
+        self.assertIn('RECORD_DB="data/evidence_flywheel_record.db"', step_block)
+        self.assertIn(
+            "trap cleanup_evidence_flywheel_record EXIT",
+            step_block,
+        )
+        self.assertIn("rm -rf reports logs", step_block)
+
+        self.assertIn("retention-days: 1", artifact_block)
+        self.assertIn(
+            "path: data/evidence_flywheel_record_receipt.json",
+            artifact_block,
+        )
+        self.assertNotIn("reports/", artifact_block)
+        self.assertNotIn("logs/", artifact_block)
+        self.assertNotIn("evidence_flywheel_record.db", artifact_block)
+
+        random_delay_end = self.text.index("- name: 检出代码")
+        self.assertIn(
+            "github.event.inputs.mode != 'evidence-flywheel-record'",
+            self.text[:random_delay_end],
+        )
+        for marker, end_marker in (
+            ("- name: 恢复研究状态（默认关闭）", "        env:"),
+            ("- name: 执行股票分析", "        env:"),
+            ("- name: 发布研究状态（默认关闭）", "        env:"),
+            ("- name: 上传分析报告", "        with:"),
+            ("- name: 显示运行结果", "        run:"),
+        ):
+            start = self.text.index(marker)
+            end = self.text.index(end_marker, start)
+            self.assertIn(
+                "github.event.inputs.mode != 'evidence-flywheel-record'",
+                self.text[start:end],
+            )
+
+        schedule_gate = self._gate_source()
+        self.assertNotIn("evidence-flywheel-record", schedule_gate)
+
+
+    def test_evidence_flywheel_record_cleanup_is_failure_safe(self):
+        script = self._evidence_flywheel_step_script()
+        self.assertLess(
+            script.index("trap cleanup_evidence_flywheel_record EXIT"),
+            script.index("python -m src.services.evidence_flywheel_runtime"),
+        )
+        bash = self._working_bash()
+        if bash is None:
+            self.skipTest("a working bash executable is required for the cleanup test")
+
+        fake_receipt = (
+            '{"status":"RECORDED","record_count":1,'
+            '"model_request_budget":0,"model_request_count":0,'
+            '"notification_suppressed":true,'
+            '"external_durability":"NOT_REQUESTED",'
+            '"training_requested":false,'
+            '"artifact_policy":{"database_uploaded":false,'
+            '"logs_uploaded":false,"receipt_only":true,'
+            '"reports_uploaded":false},'
+            '"database_receipt":{"fresh_isolated_database":true,'
+            '"unexpected_nonzero_table_deltas":{},'
+            '"ledger_identities":[{}],'
+            '"database_sha256_after_close":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+            'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'
+        )
+
+        cases = (
+            ("runtime-failure", 19, 0, 19),
+            ("validation-failure", 0, 23, 23),
+            ("success", 0, 0, 0),
+        )
+        for name, runtime_exit, validation_exit, expected_exit in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                bin_dir = root / "bin"
+                bin_dir.mkdir()
+                fake_python = bin_dir / "python"
+                fake_python.write_text(
+                    "#!/usr/bin/env bash\n"
+                    "if [ \"${1:-}\" = \"-m\" ]; then\n"
+                    "  mkdir -p data reports logs\n"
+                    "  : > data/evidence_flywheel_record.db\n"
+                    "  : > data/evidence_flywheel_record.db-wal\n"
+                    "  : > data/evidence_flywheel_record.db-shm\n"
+                    f"  printf '%s\\n' '{fake_receipt}' > "
+                    "data/evidence_flywheel_record_receipt.json\n"
+                    "  : > reports/private.md\n"
+                    "  : > logs/private.log\n"
+                    "  exit \"${FAKE_RUNTIME_EXIT:-0}\"\n"
+                    "fi\n"
+                    "if [ \"${1:-}\" = \"-\" ]; then\n"
+                    "  exit \"${FAKE_VALIDATION_EXIT:-0}\"\n"
+                    "fi\n"
+                    "exit 0\n",
+                    encoding="utf-8",
+                    newline="\n",
+                )
+                fake_python.chmod(0o755)
+                environment = os.environ.copy()
+                environment.update(
+                    {
+                        "PATH": str(bin_dir)
+                        + os.pathsep
+                        + environment.get("PATH", ""),
+                        "FAKE_RUNTIME_EXIT": str(runtime_exit),
+                        "FAKE_VALIDATION_EXIT": str(validation_exit),
+                        "EVIDENCE_FLYWHEEL_STOCK": "600519",
+                        "GITHUB_SHA": "1" * 40,
+                        "GITHUB_STEP_SUMMARY": str(root / "summary.md"),
+                    }
+                )
+                completed = subprocess.run(
+                    [bash, "--noprofile", "--norc", "-c", script],
+                    cwd=root,
+                    env=environment,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+
+                self.assertEqual(completed.returncode, expected_exit)
+                self.assertFalse((root / "data/evidence_flywheel_record.db").exists())
+                self.assertFalse((root / "data/evidence_flywheel_record.db-wal").exists())
+                self.assertFalse((root / "data/evidence_flywheel_record.db-shm").exists())
+                self.assertFalse((root / "reports").exists())
+                self.assertFalse((root / "logs").exists())
+                receipt = root / "data/evidence_flywheel_record_receipt.json"
+                if expected_exit == 0:
+                    self.assertTrue(receipt.is_file())
+                    self.assertIn(
+                        '"status":"RECORDED"',
+                        receipt.read_text(encoding="utf-8"),
+                    )
+                    self.assertIn(
+                        '"status":"RECORDED"',
+                        (root / "summary.md").read_text(encoding="utf-8"),
+                    )
+                else:
+                    self.assertFalse(receipt.exists())
 
     def test_p0_input_is_manual_only_and_does_not_change_the_schedule_gate(self):
         self.assertIn("p0_stock_codes:", self.text)
