@@ -63,7 +63,7 @@ def _canonical_result(code):
     return apply_canonical_decision_to_result(result, summary)
 
 
-def _bounded_analyzer():
+def _bounded_analyzer(*, model_request_budget=None):
     analyzer = GeminiAnalyzer.__new__(GeminiAnalyzer)
     analyzer._config_override = SimpleNamespace(
         generation_backend="litellm",
@@ -74,6 +74,11 @@ def _bounded_analyzer():
         openai_base_url="",
     )
     analyzer._p0_bounded_trial = True
+    analyzer._p0_model_request_budget = (
+        analyzer.P0_MAX_MODEL_REQUESTS
+        if model_request_budget is None
+        else int(model_request_budget)
+    )
     analyzer._p0_request_lock = threading.Lock()
     analyzer._p0_model_request_count = 0
     analyzer._router = None
@@ -202,6 +207,7 @@ def test_p0_direct_litellm_dispatch_has_two_request_budget_and_no_recovery():
             analyzer._call_litellm_p0_bounded("第三次", {"temperature": 0.2})
 
     assert completion.call_count == 2
+    assert analyzer.p0_model_request_budget == analyzer.P0_MAX_MODEL_REQUESTS
     for call in completion.call_args_list:
         kwargs = call.kwargs
         assert kwargs["model"] == "openai/test-model"
@@ -210,6 +216,24 @@ def test_p0_direct_litellm_dispatch_has_two_request_budget_and_no_recovery():
         assert kwargs["max_tokens"] == 4096
     param_recovery.assert_not_called()
     transport_recovery.assert_not_called()
+
+
+def test_p0_zero_model_request_budget_blocks_before_dispatch_setup():
+    analyzer = _bounded_analyzer(model_request_budget=0)
+
+    with patch("src.analyzer.resolve_generation_backend_id") as resolve_backend, \
+         patch("src.analyzer.extra_litellm_params") as extra_params, \
+         patch("src.analyzer.get_api_keys_for_model") as get_keys, \
+         patch("src.analyzer.litellm.completion") as completion:
+        with pytest.raises(P0ModelBoundaryError, match="budget exceeded: 0"):
+            analyzer._call_litellm_p0_bounded("分析", {"temperature": 0.2})
+
+    resolve_backend.assert_not_called()
+    extra_params.assert_not_called()
+    get_keys.assert_not_called()
+    completion.assert_not_called()
+    assert analyzer.p0_model_request_budget == 0
+    assert analyzer.p0_model_request_count == 0
 
 
 def test_p0_transport_failure_is_not_retried_or_fallback_dispatched():

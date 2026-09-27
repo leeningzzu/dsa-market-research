@@ -2311,6 +2311,7 @@ class GeminiAnalyzer:
         default_skill_policy: Optional[str] = None,
         use_legacy_default_prompt: Optional[bool] = None,
         p0_bounded_trial: bool = False,
+        p0_model_request_budget: Optional[int] = None,
     ):
         """Initialize LLM Analyzer via LiteLLM.
 
@@ -2324,6 +2325,23 @@ class GeminiAnalyzer:
         self._use_legacy_default_prompt_override = use_legacy_default_prompt
         self._resolved_prompt_state: Optional[Dict[str, Any]] = None
         self._p0_bounded_trial = bool(p0_bounded_trial)
+        if p0_model_request_budget is None:
+            resolved_p0_model_request_budget = self.P0_MAX_MODEL_REQUESTS
+        else:
+            if isinstance(p0_model_request_budget, bool):
+                raise P0ModelBoundaryError("P0 model request budget must be an integer")
+            try:
+                resolved_p0_model_request_budget = int(p0_model_request_budget)
+            except (TypeError, ValueError) as exc:
+                raise P0ModelBoundaryError(
+                    "P0 model request budget must be an integer"
+                ) from exc
+            if not 0 <= resolved_p0_model_request_budget <= self.P0_MAX_MODEL_REQUESTS:
+                raise P0ModelBoundaryError(
+                    "P0 model request budget must be between 0 and "
+                    f"{self.P0_MAX_MODEL_REQUESTS}"
+                )
+        self._p0_model_request_budget = resolved_p0_model_request_budget
         self._p0_request_lock = threading.Lock()
         self._p0_model_request_count = 0
         self._router = None
@@ -2844,12 +2862,25 @@ class GeminiAnalyzer:
         with self._p0_request_lock:
             return self._p0_model_request_count
 
-    def _consume_p0_model_request(self) -> None:
-        """Atomically reserve one of the run's two permitted model requests."""
+    @property
+    def p0_model_request_budget(self) -> int:
+        """Expose the effective bounded-run request ceiling."""
+        return int(self._p0_model_request_budget)
+
+    def _assert_p0_model_request_available(self) -> None:
+        """Fail before backend/key resolution when this run has no request budget."""
         with self._p0_request_lock:
-            if self._p0_model_request_count >= self.P0_MAX_MODEL_REQUESTS:
+            if self._p0_model_request_count >= self._p0_model_request_budget:
                 raise P0ModelBoundaryError(
-                    f"P0 model request budget exceeded: {self.P0_MAX_MODEL_REQUESTS}"
+                    f"P0 model request budget exceeded: {self._p0_model_request_budget}"
+                )
+
+    def _consume_p0_model_request(self) -> None:
+        """Atomically reserve one permitted request immediately before dispatch."""
+        with self._p0_request_lock:
+            if self._p0_model_request_count >= self._p0_model_request_budget:
+                raise P0ModelBoundaryError(
+                    f"P0 model request budget exceeded: {self._p0_model_request_budget}"
                 )
             self._p0_model_request_count += 1
 
@@ -2863,6 +2894,7 @@ class GeminiAnalyzer:
         audit_context: Optional[Dict[str, Any]] = None,
     ) -> Tuple[str, str, Dict[str, Any]]:
         """Perform one direct, non-streaming LiteLLM request with no recovery."""
+        self._assert_p0_model_request_available()
         config = self._get_runtime_config()
         backend_id = resolve_generation_backend_id(config)
         if backend_id != LITELLM_BACKEND_ID:

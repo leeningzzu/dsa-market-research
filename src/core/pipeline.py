@@ -258,6 +258,7 @@ class StockAnalysisPipeline:
         p0_stock_codes: Optional[List[str]] = None,
         p0_suppress_notification: bool = False,
         p0_acceptance_context: Optional[Dict[str, Any]] = None,
+        p0_model_request_budget: Optional[int] = None,
         research_selection_context: Optional[Dict[str, Any]] = None,
         research_code_sha: Optional[str] = None,
     ):
@@ -275,6 +276,7 @@ class StockAnalysisPipeline:
         self.p0_acceptance_context = (
             dict(p0_acceptance_context) if isinstance(p0_acceptance_context, dict) else {}
         )
+        self.p0_model_request_budget = p0_model_request_budget
         self.research_selection_context = normalize_research_selection_context(
             research_selection_context
         )
@@ -313,11 +315,14 @@ class StockAnalysisPipeline:
         self.fetcher_manager = DataFetcherManager()
         # 不再单独创建 akshare_fetcher，统一使用 fetcher_manager 获取增强数据
         self.trend_analyzer = StockTrendAnalyzer()  # 技术分析器
-        self.analyzer = GeminiAnalyzer(
-            config=self.config,
-            skills=self.analysis_skills,
-            p0_bounded_trial=self.p0_bounded_trial,
-        )
+        analyzer_kwargs: Dict[str, Any] = {
+            "config": self.config,
+            "skills": self.analysis_skills,
+            "p0_bounded_trial": self.p0_bounded_trial,
+        }
+        if self.p0_model_request_budget is not None:
+            analyzer_kwargs["p0_model_request_budget"] = self.p0_model_request_budget
+        self.analyzer = GeminiAnalyzer(**analyzer_kwargs)
         self.notifier = NotificationService(source_message=source_message)
         self.market_structure_service = MarketStructureService(fetcher_manager=self.fetcher_manager)
         self.relative_strength_service = RelativeStrengthService(fetcher_manager=self.fetcher_manager)

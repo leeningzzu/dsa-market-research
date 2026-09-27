@@ -200,7 +200,7 @@ python -m src.services.evidence_flywheel_runtime evaluate-outcome --prediction-h
 python -m src.services.evidence_flywheel_runtime build-manifest --cost-identity-file <cost.json>
 ```
 
-`record` 复用既有 P0 有界分析边界，固定 1–2 只沪深普通 A 股、单 worker、保存完整上下文并强制关闭通知；它仍会消费当前已配置的数据/模型路径，因此真实运行必须另行批准，不能把本地 prewrite 或单测当成已完成真实采样。三个命令都使用当前 `DATABASE_PATH` 指向的 DSA SQLite；测试或实验应使用隔离数据库，不能直接拿生产库试跑。
+`record` 复用既有 P0 有界分析边界，固定 1–2 只沪深普通 A 股、单 worker、保存完整上下文并强制关闭通知。该阶段显式绑定 `p0_model_request_budget=0`，在任何模型 dispatch 前硬阻断，并要求收据同时报告 `model_request_budget=0` 与 `model_request_count=0`；普通 P0 入口仍保留既有最多两次直接请求语义。它继续消费当前 DSA 数据与确定性证据路径，因此真实运行仍须另行批准，不能把本地 prewrite 或单测当成已完成真实采样。三个命令都使用当前 `DATABASE_PATH` 指向的 DSA SQLite；测试或实验应使用隔离数据库，不能直接拿生产库试跑。
 
 成本与执行身份文件只接受有界 UTF-8 JSON object，内容必须满足既有 `cost-identity-v2` / `execution-identity-v1` 合同。Outcome 未成熟、交易日历无法证明、缺 bar 或执行证据未知时保持 `UNMATURED / EVALUATION_BLOCKED / UNLABELABLE`，不补标签。`build-manifest` 在本入口中不能打开训练准入。
 

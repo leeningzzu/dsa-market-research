@@ -28,6 +28,7 @@ from src.services.pit_identity import (
 
 RECEIPT_SCHEMA_VERSION = "evidence-flywheel-runtime-receipt-v1"
 MAX_IDENTITY_FILE_BYTES = 64 * 1024
+ZERO_EXTERNAL_MODEL_REQUEST_BUDGET = 0
 _SHA40_RE = re.compile(r"^[0-9a-f]{40}$")
 _SHA64_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -128,9 +129,18 @@ def record_canonical_run(
             p0_bounded_trial=True,
             p0_stock_codes=codes,
             p0_suppress_notification=True,
+            p0_model_request_budget=ZERO_EXTERNAL_MODEL_REQUEST_BUDGET,
             research_selection_context=selection_context,
             research_code_sha=bound_code_sha,
         )
+        analyzer = getattr(pipeline, "analyzer", None)
+        observed_model_request_budget = int(
+            getattr(analyzer, "p0_model_request_budget", -1)
+        )
+        if observed_model_request_budget != ZERO_EXTERNAL_MODEL_REQUEST_BUDGET:
+            raise EvidenceFlywheelRuntimeError(
+                "Evidence Flywheel record did not bind the zero external-model request budget"
+            )
         results = pipeline.run(
             stock_codes=codes,
             dry_run=False,
@@ -138,6 +148,13 @@ def record_canonical_run(
             merge_notification=False,
             current_time=current_time,
         )
+        observed_model_request_count = int(
+            getattr(analyzer, "p0_model_request_count", -1)
+        )
+        if observed_model_request_count != 0:
+            raise EvidenceFlywheelRuntimeError(
+                "Evidence Flywheel record observed an external model request"
+            )
 
     if len(results) != len(codes):
         raise EvidenceFlywheelRuntimeError(
@@ -189,6 +206,8 @@ def record_canonical_run(
         "notification_suppressed": True,
         "external_durability": "NOT_REQUESTED",
         "training_requested": False,
+        "model_request_budget": observed_model_request_budget,
+        "model_request_count": observed_model_request_count,
         "ledger_receipts": receipts,
     }
 
