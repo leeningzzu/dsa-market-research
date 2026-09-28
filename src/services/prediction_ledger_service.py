@@ -18,12 +18,13 @@ from src.services.pit_identity import (
     normalize_research_selection_context,
 )
 from src.services.research_state_projection import (
+    STRATEGY_ELIGIBILITY_LEDGER_SCHEMA_VERSION,
     build_canonical_opportunity_projection,
 )
 from src.storage import DatabaseManager
 
 
-PREDICTION_LEDGER_SCHEMA_VERSION = "prediction-ledger-v4"
+PREDICTION_LEDGER_SCHEMA_VERSION = STRATEGY_ELIGIBILITY_LEDGER_SCHEMA_VERSION
 PREDICTION_FEATURE_SCHEMA_VERSION = "stock-factor-evidence-v1"
 
 _FACTOR_EVIDENCE_KEYS = (
@@ -98,7 +99,12 @@ class PredictionLedgerService:
         signal = self._signal_item(decision_signal)
         metadata = self._mapping(signal.get("metadata"))
         canonical_decision = self._mapping(factor_decision.get("canonical_decision"))
-        opportunity_projection = build_canonical_opportunity_projection(canonical_decision)
+        strategy_eligibility = self._mapping(factor_decision.get("strategy_eligibility"))
+        opportunity_projection = build_canonical_opportunity_projection(
+            canonical_decision,
+            strategy_eligibility=strategy_eligibility or None,
+            strategy_id=strategy_id,
+        )
         canonical_action = self._text(opportunity_projection.get("canonical_action"))
         signal_id = self._optional_positive_int(signal.get("id"))
         signal_horizon = self._text(signal.get("horizon"))
@@ -252,6 +258,15 @@ class PredictionLedgerService:
                 "canonical_evidence_state"
             ],
             "canonical_hard_veto": opportunity_projection["canonical_hard_veto"],
+            "strategy_eligibility_version": opportunity_projection[
+                "strategy_eligibility_version"
+            ],
+            "strategy_eligibility_state": opportunity_projection[
+                "strategy_eligibility_state"
+            ],
+            "strategy_eligibility_hash": opportunity_projection[
+                "strategy_eligibility_hash"
+            ],
             "horizon": signal_horizon,
             "decision_profile": self._text(signal.get("decision_profile")),
             "trigger_source": self._text(signal.get("trigger_source")),
@@ -305,6 +320,18 @@ class PredictionLedgerService:
                 "canonical_evidence_state"
             ],
             "canonical_hard_veto": opportunity_projection["canonical_hard_veto"],
+            "strategy_eligibility_version": opportunity_projection[
+                "strategy_eligibility_version"
+            ],
+            "strategy_eligibility_state": opportunity_projection[
+                "strategy_eligibility_state"
+            ],
+            "strategy_eligibility_hash": opportunity_projection[
+                "strategy_eligibility_hash"
+            ],
+            "strategy_eligibility_json": opportunity_projection[
+                "strategy_eligibility_json"
+            ],
             "code_sha": bound_code_sha,
             "provider_identity": provider_identity,
             "adjustment_basis": adjustment_basis,
@@ -332,6 +359,18 @@ class PredictionLedgerService:
             "schema_version": PREDICTION_LEDGER_SCHEMA_VERSION,
             "evidence_hash": evidence_hash,
             "feature_schema_hash": PREDICTION_FEATURE_SCHEMA_HASH,
+            "strategy_eligibility_version": opportunity_projection[
+                "strategy_eligibility_version"
+            ],
+            "strategy_eligibility_state": opportunity_projection[
+                "strategy_eligibility_state"
+            ],
+            "strategy_eligibility_hash": opportunity_projection[
+                "strategy_eligibility_hash"
+            ],
+            "strategy_eligibility_reason_codes": json.loads(
+                opportunity_projection["strategy_eligibility_json"]
+            )["reason_codes"],
             "decision_time_utc": self._utc_iso_text(decision_time),
             "decision_timezone": decision_timezone,
             "decision_phase": decision_phase,

@@ -23,12 +23,31 @@ from src.services.prediction_outcome_service import (
 )
 from src.services.research_state_projection import (
     CANONICAL_OPPORTUNITY_PROJECTION_VERSION,
+    STRATEGY_ELIGIBILITY_REQUIRED_EVIDENCE,
+    STRATEGY_ELIGIBILITY_SCHEMA_VERSION,
+    build_strategy_eligibility_identity,
 )
 from src.storage import DatabaseManager, PredictionLedgerRecord, PredictionOutcomeRecord
 
 
 COST_HASH = "d" * 64
 CODE_SHA = "a" * 40
+
+
+def _strategy_eligibility_identity() -> dict:
+    return build_strategy_eligibility_identity(
+        {
+            "schema_version": STRATEGY_ELIGIBILITY_SCHEMA_VERSION,
+            "strategy_id": "stock_trend_quality_pullback_v1",
+            "state": "ELIGIBLE",
+            "required_evidence": {
+                key: "SATISFIED"
+                for key in STRATEGY_ELIGIBILITY_REQUIRED_EVIDENCE
+            },
+            "reason_codes": [],
+        },
+        strategy_id="stock_trend_quality_pullback_v1",
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -65,11 +84,17 @@ def _seed_prediction(
     route: str = "SPECIFIED_CODES",
     pit_eligible: bool = True,
     universe_snapshot_id: str | None = None,
+    include_strategy_eligibility: bool = True,
 ) -> str:
     prediction_hash = f"{index:064x}"
     evidence_json = json.dumps(
         {"canonical_decision": {"action": "WAIT", "evidence_state": "PROVEN", "hard_veto": False}},
         sort_keys=True,
+    )
+    eligibility = (
+        _strategy_eligibility_identity()
+        if include_strategy_eligibility
+        else {}
     )
     with db.session_scope() as session:
         session.add(
@@ -99,6 +124,18 @@ def _seed_prediction(
                 opportunity_projection_version=CANONICAL_OPPORTUNITY_PROJECTION_VERSION,
                 canonical_evidence_state="PROVEN",
                 canonical_hard_veto=False,
+                strategy_eligibility_version=eligibility.get(
+                    "strategy_eligibility_version"
+                ),
+                strategy_eligibility_state=eligibility.get(
+                    "strategy_eligibility_state"
+                ),
+                strategy_eligibility_hash=eligibility.get(
+                    "strategy_eligibility_hash"
+                ),
+                strategy_eligibility_json=eligibility.get(
+                    "strategy_eligibility_json"
+                ),
                 code_sha=CODE_SHA,
                 provider_identity="AkshareFetcher",
                 adjustment_basis="qfq",
@@ -204,6 +241,28 @@ def test_white_box_opportunity_survives_without_raw_evidence_json(isolated_db) -
         assert PITDatasetService._is_white_box_opportunity(restored) is True
 
 
+def test_pre_correction_strategy_identity_is_outside_current_denominator(
+    isolated_db,
+) -> None:
+    hashes = _seed_twenty_sessions(isolated_db)
+    rejected_hash = hashes[0]
+    with isolated_db.session_scope() as session:
+        row = session.query(PredictionLedgerRecord).filter_by(
+            prediction_hash=rejected_hash
+        ).one()
+        row.opportunity_projection_version = "canonical-opportunity-v2"
+        row.strategy_eligibility_version = "strategy-eligibility-v1"
+
+    result = PITDatasetService(db_manager=isolated_db).build_manifest(
+        cost_identity_hash=COST_HASH
+    )
+    assert result["manifest"]["counts"]["denominator"] == 19
+    assert rejected_hash not in {
+        item["prediction_hash"]
+        for item in result["manifest"]["assignments"]
+    }
+
+
 def test_manifest_is_chronological_grouped_sealed_and_idempotent(isolated_db) -> None:
     _seed_twenty_sessions(isolated_db)
     service = PITDatasetService(db_manager=isolated_db)
@@ -224,6 +283,10 @@ def test_manifest_is_chronological_grouped_sealed_and_idempotent(isolated_db) ->
         "final_test_last": "2026-01-20",
     }
     assert manifest["final_test_state"] == "SEALED"
+    assert manifest["schema_version"] == "pit-dataset-manifest-v2"
+    assert manifest["dataset_purpose"] == "ASSET_LEVEL_META_FILTER_ON_STRATEGY_ELIGIBLE_OPPORTUNITIES_V2"
+    assert manifest["opportunity_projection_version"] == CANONICAL_OPPORTUNITY_PROJECTION_VERSION
+    assert manifest["strategy_eligibility_version"] == STRATEGY_ELIGIBILITY_SCHEMA_VERSION
     assert manifest["counts"]["raw_by_fold"] == {"TRAIN": 12, "VALIDATION": 4, "FINAL_TEST": 4}
     assert manifest["counts"]["included_by_fold"]["TRAIN"] > 0
     assert manifest["counts"]["included_by_fold"]["VALIDATION"] > 0
@@ -306,7 +369,7 @@ def test_pit_ineligible_prediction_is_retained_as_gap_and_blocks_admission(isola
     assert "LEDGER_PIT_INELIGIBLE" in gap_assignment["purge_or_exclusion_reason"]
 
 
-def test_legacy_v3_runtime_pit_true_is_excluded_by_clock_schema_gate(isolated_db) -> None:
+def test_legacy_v4_runtime_pit_true_is_outside_v2_denominator(isolated_db) -> None:
     _seed_twenty_sessions(isolated_db)
     legacy_hash = _seed_prediction(
         isolated_db,
@@ -318,7 +381,12 @@ def test_legacy_v3_runtime_pit_true_is_excluded_by_clock_schema_gate(isolated_db
         row = session.query(PredictionLedgerRecord).filter_by(
             prediction_hash=legacy_hash
         ).one()
-        row.schema_version = "prediction-ledger-v3"
+        row.schema_version = "prediction-ledger-v4"
+        row.opportunity_projection_version = "canonical-opportunity-v1"
+        row.strategy_eligibility_version = None
+        row.strategy_eligibility_state = None
+        row.strategy_eligibility_hash = None
+        row.strategy_eligibility_json = None
         row.pit_eligible = True
         row.pit_ineligibility_json = "[]"
 
@@ -326,13 +394,31 @@ def test_legacy_v3_runtime_pit_true_is_excluded_by_clock_schema_gate(isolated_db
         cost_identity_hash=COST_HASH
     )
     assert result["training_admission"] == "BLOCKED"
-    assert "PIT_GAPS_PRESENT" in result["training_admission_reasons"]
-    assignment = next(
-        item for item in result["manifest"]["assignments"]
-        if item["prediction_hash"] == legacy_hash
+    assert result["manifest"]["counts"]["denominator"] == 20
+    assert legacy_hash not in {
+        item["prediction_hash"]
+        for item in result["manifest"]["assignments"]
+    }
+
+
+def test_missing_strategy_eligibility_is_outside_v2_denominator(isolated_db) -> None:
+    _seed_twenty_sessions(isolated_db)
+    missing_hash = _seed_prediction(
+        isolated_db,
+        index=996,
+        session_date=date(2026, 2, 4),
+        include_strategy_eligibility=False,
     )
-    assert assignment["status"] == "EXCLUDED"
-    assert "LEDGER_CLOCK_SCHEMA_NOT_ADMITTED" in assignment["purge_or_exclusion_reason"]
+
+    result = PITDatasetService(db_manager=isolated_db).build_manifest(
+        cost_identity_hash=COST_HASH
+    )
+
+    assert result["manifest"]["counts"]["denominator"] == 20
+    assert missing_hash not in {
+        item["prediction_hash"]
+        for item in result["manifest"]["assignments"]
+    }
 
 
 def test_calendar_unproven_clock_is_a_pit_gap(isolated_db, monkeypatch) -> None:

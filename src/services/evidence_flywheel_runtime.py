@@ -26,6 +26,10 @@ from src.services.pit_identity import (
     build_specified_codes_selection_context,
     sha256_payload,
 )
+from src.services.research_state_projection import (
+    STRATEGY_ELIGIBILITY_SCHEMA_VERSION,
+    build_strategy_eligibility_identity,
+)
 
 
 RECEIPT_SCHEMA_VERSION = "evidence-flywheel-runtime-receipt-v1"
@@ -109,6 +113,15 @@ def _require_optional_text(value: Any, *, field: str) -> Optional[str]:
     return value.strip()
 
 
+def _require_choice(value: Any, *, field: str, allowed: set[str]) -> str:
+    text = _require_optional_text(value, field=field)
+    if text not in allowed:
+        raise EvidenceFlywheelRuntimeError(
+            f"{field} must be one of {sorted(allowed)}"
+        )
+    return text
+
+
 def _require_optional_iso_date(value: Any, *, field: str) -> Optional[str]:
     text = _require_optional_text(value, field=field)
     if text is None:
@@ -170,6 +183,25 @@ def _validated_ledger_receipt(
             raw_receipt.get("feature_schema_hash"),
             length=64,
             field="feature_schema_hash",
+        ),
+        "strategy_eligibility_version": _require_choice(
+            raw_receipt.get("strategy_eligibility_version"),
+            field="ledger receipt strategy_eligibility_version",
+            allowed={STRATEGY_ELIGIBILITY_SCHEMA_VERSION},
+        ),
+        "strategy_eligibility_state": _require_choice(
+            raw_receipt.get("strategy_eligibility_state"),
+            field="ledger receipt strategy_eligibility_state",
+            allowed={"ELIGIBLE", "INELIGIBLE", "UNKNOWN", "NOT_APPLICABLE"},
+        ),
+        "strategy_eligibility_hash": _require_sha(
+            raw_receipt.get("strategy_eligibility_hash"),
+            length=64,
+            field="strategy_eligibility_hash",
+        ),
+        "strategy_eligibility_reason_codes": _require_string_list(
+            raw_receipt.get("strategy_eligibility_reason_codes"),
+            field="ledger receipt strategy_eligibility_reason_codes",
         ),
         "decision_time_utc": _require_optional_utc_datetime(
             raw_receipt.get("decision_time_utc"),
@@ -382,6 +414,30 @@ def _ledger_identity_snapshot(db_manager: Any, prediction_hash: str) -> Dict[str
             raise EvidenceFlywheelRuntimeError(
                 "closed-world receipt requires PIT ineligibility reasons to be a list"
             )
+        try:
+            eligibility_document = json.loads(row.strategy_eligibility_json or "{}")
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise EvidenceFlywheelRuntimeError(
+                "closed-world receipt found invalid strategy eligibility JSON"
+            ) from exc
+        if not isinstance(eligibility_document, dict):
+            raise EvidenceFlywheelRuntimeError(
+                "closed-world receipt requires strategy eligibility to be an object"
+            )
+        eligibility = build_strategy_eligibility_identity(
+            eligibility_document,
+            strategy_id=row.strategy_id,
+        )
+        for field in (
+            "strategy_eligibility_version",
+            "strategy_eligibility_state",
+            "strategy_eligibility_hash",
+            "strategy_eligibility_json",
+        ):
+            if getattr(row, field) != eligibility[field]:
+                raise EvidenceFlywheelRuntimeError(
+                    f"closed-world receipt found inconsistent {field}"
+                )
         return {
             "id": row.id,
             "prediction_hash": row.prediction_hash,
@@ -408,6 +464,18 @@ def _ledger_identity_snapshot(db_manager: Any, prediction_hash: str) -> Dict[str
             "trigger_source": row.trigger_source,
             "feature_schema_version": row.feature_schema_version,
             "feature_schema_hash": row.feature_schema_hash,
+            "strategy_eligibility_version": eligibility[
+                "strategy_eligibility_version"
+            ],
+            "strategy_eligibility_state": eligibility[
+                "strategy_eligibility_state"
+            ],
+            "strategy_eligibility_hash": eligibility[
+                "strategy_eligibility_hash"
+            ],
+            "strategy_eligibility_reason_codes": eligibility[
+                "strategy_eligibility_reason_codes"
+            ],
             "evidence_hash": row.evidence_hash,
             "code_sha": row.code_sha,
             "provider_identity": row.provider_identity,

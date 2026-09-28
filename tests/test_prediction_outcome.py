@@ -19,6 +19,9 @@ from src.services.prediction_outcome_service import (
 from src.services.prediction_ledger_service import PREDICTION_LEDGER_SCHEMA_VERSION
 from src.services.research_state_projection import (
     CANONICAL_OPPORTUNITY_PROJECTION_VERSION,
+    STRATEGY_ELIGIBILITY_REQUIRED_EVIDENCE,
+    STRATEGY_ELIGIBILITY_SCHEMA_VERSION,
+    build_strategy_eligibility_identity,
 )
 from src.storage import (
     AnalysisHistory,
@@ -97,6 +100,22 @@ def _execution_identity(
     }
 
 
+def _strategy_eligibility_identity() -> dict:
+    return build_strategy_eligibility_identity(
+        {
+            "schema_version": STRATEGY_ELIGIBILITY_SCHEMA_VERSION,
+            "strategy_id": "stock_trend_quality_pullback_v1",
+            "state": "ELIGIBLE",
+            "required_evidence": {
+                key: "SATISFIED"
+                for key in STRATEGY_ELIGIBILITY_REQUIRED_EVIDENCE
+            },
+            "reason_codes": [],
+        },
+        strategy_id="stock_trend_quality_pullback_v1",
+    )
+
+
 @pytest.fixture(autouse=True)
 def _fixed_execution_calendar(monkeypatch):
     monkeypatch.setattr(
@@ -129,6 +148,7 @@ def _seed_prediction(
     prediction_hash: str = "a" * 64,
     *,
     include_raw_evidence: bool = True,
+    include_strategy_eligibility: bool = True,
 ) -> tuple[int, str]:
     with db.session_scope() as session:
         history = AnalysisHistory(
@@ -152,6 +172,11 @@ def _seed_prediction(
             )
             if include_raw_evidence
             else None
+        )
+        eligibility = (
+            _strategy_eligibility_identity()
+            if include_strategy_eligibility
+            else {}
         )
         ledger = PredictionLedgerRecord(
             prediction_hash=prediction_hash,
@@ -178,6 +203,18 @@ def _seed_prediction(
             opportunity_projection_version=CANONICAL_OPPORTUNITY_PROJECTION_VERSION,
             canonical_evidence_state="PROVEN",
             canonical_hard_veto=False,
+            strategy_eligibility_version=eligibility.get(
+                "strategy_eligibility_version"
+            ),
+            strategy_eligibility_state=eligibility.get(
+                "strategy_eligibility_state"
+            ),
+            strategy_eligibility_hash=eligibility.get(
+                "strategy_eligibility_hash"
+            ),
+            strategy_eligibility_json=eligibility.get(
+                "strategy_eligibility_json"
+            ),
             asset_identity_hash="d" * 64,
             asset_identity_json=json.dumps(
                 {
@@ -225,13 +262,18 @@ def _seed_bars(
 
 
 
-def test_legacy_v3_pit_true_cannot_generate_v1_outcome(isolated_db) -> None:
+def test_legacy_v4_pit_true_cannot_generate_v5_strategy_outcome(isolated_db) -> None:
     _, prediction_hash = _seed_prediction(isolated_db)
     with isolated_db.session_scope() as session:
         row = session.query(PredictionLedgerRecord).filter_by(
             prediction_hash=prediction_hash
         ).one()
-        row.schema_version = "prediction-ledger-v3"
+        row.schema_version = "prediction-ledger-v4"
+        row.opportunity_projection_version = "canonical-opportunity-v1"
+        row.strategy_eligibility_version = None
+        row.strategy_eligibility_state = None
+        row.strategy_eligibility_hash = None
+        row.strategy_eligibility_json = None
         row.pit_eligible = True
         row.pit_ineligibility_json = "[]"
 
@@ -240,8 +282,26 @@ def test_legacy_v3_pit_true_cannot_generate_v1_outcome(isolated_db) -> None:
         cost_identity=_cost_identity(),
     )
     assert result == {
-        "status": "UNLABELABLE",
-        "reason": "LEDGER_CLOCK_SCHEMA_NOT_ADMITTED",
+        "status": "NOT_ELIGIBLE",
+        "prediction_hash": prediction_hash,
+    }
+    assert PredictionOutcomeRepository(isolated_db).list_for_prediction(prediction_hash) == []
+
+
+def test_missing_strategy_eligibility_cannot_generate_outcome(isolated_db) -> None:
+    _, prediction_hash = _seed_prediction(
+        isolated_db,
+        include_strategy_eligibility=False,
+    )
+    _seed_bars(isolated_db)
+
+    result = PredictionOutcomeService(db_manager=isolated_db).evaluate_prediction(
+        prediction_hash=prediction_hash,
+        cost_identity=_cost_identity(),
+    )
+
+    assert result == {
+        "status": "NOT_ELIGIBLE",
         "prediction_hash": prediction_hash,
     }
     assert PredictionOutcomeRepository(isolated_db).list_for_prediction(prediction_hash) == []

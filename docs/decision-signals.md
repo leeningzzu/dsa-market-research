@@ -79,9 +79,9 @@ MUE V1 的 `multi-timeframe-structure-v1` 只在既有 completed daily history �
 - 新的相反 active 信号只会把同 profile 的旧 active 信号标记为 `invalidated`，并把失效来源写入 metadata。不同非 `NULL` profile 可并存，即使 action 相反。
 - Expired duplicate refresh 不会改写 `decision_profile`，只能刷新同 profile 记录。
 
-## Prediction Ledger V1（研究基础）
+## Prediction Ledger V1（历史研究基础，legacy-readable）
 
-`Prediction Ledger V1` 复用现有 `AnalysisHistory → DecisionSignal` 写入链，在分析历史成功保存后追加一条低敏、append-only 的确定性预测快照；它不是第二数据库、第二决策引擎或新的用户可见信号 API。
+本节保留最初 `Prediction Ledger V1` 基础的历史语义，不是当前 Ledger schema 或机会分母合同；当前合同见下文 `Prediction Ledger V5 / StrategyEligibility`。V1 复用现有 `AnalysisHistory → DecisionSignal` 写入链，在分析历史成功保存后追加一条低敏、append-only 的确定性预测快照；它不是第二数据库、第二决策引擎或新的用户可见信号 API。
 
 - 只消费当前 `dashboard.factor_decision` 的结构化证据族、已存在的 `canonical_decision.action`、DecisionSignal 身份/计划字段和来源时间；canonical decision、signal id、market 或 horizon 任一缺失都不落账，不允许把普通 signal action 冒充 canonical decision；也不把 `investor_brief`、LLM reasoning 或整份 `raw_result/context_snapshot` 当训练特征复制入账本。
 - `prediction_hash`、`evidence_hash`、`feature_schema_hash` 使用稳定 canonical JSON + SHA-256；同内容重放 `ON CONFLICT DO NOTHING`，证据变化产生新行，既有行不 refresh。
@@ -90,7 +90,7 @@ MUE V1 的 `multi-timeframe-structure-v1` 只在既有 completed daily history �
 - 当前持久化状态固定为 `LOCAL_DB_ONLY`；GitHub-hosted runner 本地 SQLite 仍不能冒充跨运行 Prediction Ledger。R2/Parquet/Secret、PIT Dataset 和模型训练必须经过独立 admission。
 - 现有 `DecisionSignalOutcomeService` / `SkillOpinionOutcomeService` 继续作为 outcome evaluator owner；V1 不复制 evaluator。后续要进入正式 PIT Dataset 时，terminal outcome correction 必须使用追加式版本记录，而不是 `force` 覆盖训练证据。
 
-### Prediction Ledger V2 / PredictionOutcome PIT foundation
+### Prediction Ledger V2 / PredictionOutcome PIT foundation（历史增量）
 
 PIT foundation 继续复用同一个 DSA SQLite / `DatabaseManager`，不新增第二数据库、第二 scheduler 或用户可见交易 API。`prediction_ledger` 仍是唯一 prediction snapshot owner；V2 只追加 nullable、向后兼容的研究身份列，legacy 行不会被猜测回填：`decision_timezone`、版本化 asset identity hash/json、实际 consumed completed-history `data_snapshot_identity`，以及独立于 UI request origin 的 research `selection_source / selection_context`。
 
@@ -105,9 +105,25 @@ PIT foundation 继续复用同一个 DSA SQLite / `DatabaseManager`，不新增�
 - cost identity 与 execution mechanics 合并通过仍不足以打开训练。历史 ST/风险警示、上市阶段、每日涨跌停价/停复牌等实际 evidence 的 provider rights、PIT 时点与 durable referenced bytes 继续独立 admission；核心 evaluator 只消费已冻结 execution identity，不自行重算历史交易所规则，也不把当前名称/代码前缀回填历史。
 - 这些身份列/sidecar 仍不等于“历史 PIT 数据已经具备”。`LOCAL_DB_ONLY`、历史 provider vintage、durable referenced bytes、正式 numeric cost identity、execution realism 与 PIT gap 等 gate 继续独立阻止 unattended training。
 
-### PIT Dataset manifest foundation
+### Prediction Ledger V5 / StrategyEligibility current denominator
 
-首个 PIT Dataset 不复制 Prediction Ledger feature rows 或 PredictionOutcome label rows，而是在同一 DSA SQLite 中追加 immutable `PITDatasetManifestRecord`，只绑定它们的不可变身份、split assignment、purge/exclusion reason 与训练准入状态。首个 purpose 固定为 `ASSET_LEVEL_META_FILTER_ON_SELECTED_OPPORTUNITIES_V1`，只消费 `stock_trend_quality_pullback_v1` 的 `WAIT + PROVEN + hard_veto=false` 白盒机会。
+当前新写入使用 `prediction-ledger-v5`，canonical opportunity projection 使用 `canonical-opportunity-v3`，并以独立的 `strategy-eligibility-v2` 身份定义 exact 白盒策略机会池。Canonical Decision、Strategy Eligibility 与 PIT Eligibility 是三个不可互相替代的身份：前者描述当前判断与 hard veto，第二个描述某一 exact strategy 是否完整满足，第三个描述数据/时钟/来源是否允许进入历史研究。
+
+- `stock_trend_quality_pullback_v1` 只有同时满足以下条件才进入新的白盒机会分母：Ledger schema 为 `prediction-ledger-v5`；opportunity projection 为 `canonical-opportunity-v3`；canonical action 为 `WAIT`；canonical evidence state 为 `PROVEN`；`hard_veto=false`；并且 exact `strategy-eligibility-v2` identity 经过 hash/json 重算一致且状态为 `ELIGIBLE`。
+- StrategyEligibility 不再维护一份脱离策略合同的手写“九项清单”。`stock-trend-quality-pullback-contract-coverage-v1` 先把 accepted strategy clause 分类，再由其中全部 `HARD_ELIGIBILITY` 行派生 required-evidence closed world。当前 hard keys 为：`market_regime_permission`、`sector_industry_strength`、`quality`、`valuation`、`weekly_trend_structure`、`daily_trend_structure`、`daily_pullback_or_supply_contraction`、`volume_price_confirmation`、`distribution_risk_clear`、`thirty_minute_trigger`、`risk_reward`。
+- `Leader Preference` 明确分类为 `SELECTION_PRIOR`：它影响 AUTO_SCREEN 的候选优先级/注意力，不是独立 action authority，也不因缺少 leader 标签把 SPECIFIED_CODES 或其他合法候选机械判为策略不合格。行业/题材强度本身由独立 hard key `sector_industry_strength` 负责，二者不得再用一个含糊的 `sector_leadership` 字段合并。
+- 月线趋势/结构按 accepted “where READY” 语义分类为 `CONTEXT_WHEN_READY`；缺失月线不被伪造成 SATISFIED，也不能替代周线/日线。周线与日线职责分别由 `weekly_trend_structure`、`daily_trend_structure` 两个 hard keys 约束，避免一个 `higher_timeframe_trend_structure` aggregate 掩盖单周期缺口。60m bridge、15m确认、5m择时继续按既有 MTF readiness 合同独立演进，本修复不实现这些 producer。
+- `volume_price_confirmation` 是独立 hard requirement，不能被 `daily_pullback_or_supply_contraction` 或 `thirty_minute_trigger` 静默代替；后两者分别负责日线 setup/供给收缩与 30m 短线触发。30m producer 仍未实现时，该 hard key 必须保持 UNKNOWN，而不是把日线量价或其他低周期信号回填成 30m。
+- coverage version/hash/完整 mapping 被写入 canonical eligibility JSON；对象缺失、hard matrix 缺项、非法状态/reason code、strategy id 不匹配、任一 hard key `UNKNOWN/MISSING`、或声明状态与重算状态不一致都 fail-closed 为 `UNKNOWN`。任一 hard key `FAILED` 得到 `INELIGIBLE`；所有 hard keys `SATISFIED` 才能得到 `ELIGIBLE`。顶层声称 `ELIGIBLE` 本身不构成证明。
+- StrategyEligibility 是 denominator identity，不是模型 feature，也不是正向 eligibility producer。当前 pipeline 没有完整 positive producer 时，新 V5 行合法保持 `UNKNOWN`；不得因 30m、volume-price、周/日结构或其他 required evidence 尚未就绪而伪造正样本。
+- V5 migration 仍只追加 nullable `strategy_eligibility_version/state/hash/json`，不回填或重写历史记录。`prediction-ledger-v4`、`canonical-opportunity-v1` 及更早行保持 legacy-readable、原 identity/hash 不变，但不能进入新的 StrategyEligibility-aware 机会池。此前未提交的 `strategy-eligibility-v1 + canonical-opportunity-v2` 因覆盖不完整为 `REJECTED_BEFORE_COMMIT`，不得复活或作为当前 denominator。
+- Feature schema/version/hash、PredictionOutcome engine、label 与 horizon 保持不变；prediction identity 额外绑定 eligibility version/state/hash，使相同市场特征下的 `UNKNOWN` 与 `ELIGIBLE` 不会坍缩为同一个 prediction。
+
+### PIT Dataset manifest V2（current strategy-eligible denominator）
+
+当前 PIT Dataset 仍不复制 Prediction Ledger feature rows 或 PredictionOutcome label rows，而是在同一 DSA SQLite 中追加 immutable `PITDatasetManifestRecord`，只绑定它们的不可变身份、split assignment、purge/exclusion reason 与训练准入状态。当前 schema 为 `pit-dataset-manifest-v2`，purpose 固定为 `ASSET_LEVEL_META_FILTER_ON_STRATEGY_ELIGIBLE_OPPORTUNITIES_V2`；只消费 exact `stock_trend_quality_pullback_v1` 中同时满足 `prediction-ledger-v5 + canonical-opportunity-v3 + strategy-eligibility-v2=ELIGIBLE + WAIT + PROVEN + hard_veto=false` 的记录。
+
+- `pit-dataset-manifest-v1` 与 `ASSET_LEVEL_META_FILTER_ON_SELECTED_OPPORTUNITIES_V1` 保持 legacy-readable 的历史 artifact 身份，不回填、不改 hash，也不得与 V2 denominator 合并后冒充当前训练机会池。
 
 - split 固定为 `XSHG_SESSION_GROUPED_CHRONO_60_20_20_PURGED_V1`：按 `data_as_of` 的 XSHG decision session 分组，最早 60% 为 TRAIN、随后 20% 为 VALIDATION、最新 20% 为 FINAL_TEST；同 session 不跨 fold，禁止 random shuffle。
 - TRAIN/VALIDATION 只绑定各自下一个 block cutoff 之前已经 `available_at` 可知的 effective Outcome correction，并要求 label exit session 严格早于下一个 block 的首个 session；越界或晚到 correction 记录 purge reason，不移动边界来改善结果。

@@ -76,9 +76,13 @@ def _ledger_receipt(*, created: bool = True) -> dict:
         "id": 7,
         "created": created,
         "prediction_hash": "a" * 64,
-        "schema_version": "prediction-ledger-v4",
+        "schema_version": "prediction-ledger-v5",
         "evidence_hash": "b" * 64,
         "feature_schema_hash": "c" * 64,
+        "strategy_eligibility_version": "strategy-eligibility-v2",
+        "strategy_eligibility_state": "UNKNOWN",
+        "strategy_eligibility_hash": "d" * 64,
+        "strategy_eligibility_reason_codes": ["STRATEGY_ELIGIBILITY_NOT_BOUND"],
         "decision_time_utc": "2026-09-17T10:05:00Z",
         "decision_timezone": "Asia/Shanghai",
         "decision_phase": "postmarket",
@@ -519,6 +523,10 @@ def test_record_receipt_projects_only_the_strict_allowlist() -> None:
         "schema_version",
         "evidence_hash",
         "feature_schema_hash",
+        "strategy_eligibility_version",
+        "strategy_eligibility_state",
+        "strategy_eligibility_hash",
+        "strategy_eligibility_reason_codes",
         "decision_time_utc",
         "decision_timezone",
         "decision_phase",
@@ -545,6 +553,16 @@ def test_record_receipt_projects_only_the_strict_allowlist() -> None:
         ("prediction_hash", "x" * 64, "prediction_hash must be exact 64-hex"),
         ("evidence_hash", "x" * 64, "evidence_hash must be exact 64-hex"),
         ("feature_schema_hash", "x" * 64, "feature_schema_hash must be exact 64-hex"),
+        (
+            "strategy_eligibility_state",
+            "READY",
+            "ledger receipt strategy_eligibility_state must be one of",
+        ),
+        (
+            "strategy_eligibility_hash",
+            "x" * 64,
+            "strategy_eligibility_hash must be exact 64-hex",
+        ),
         ("decision_time_utc", "2026-09-17T10:05:00", "must explicitly identify UTC"),
         ("session_date", "not-a-date", "must be an ISO date"),
         ("pit_eligible", "false", "pit_eligible must be a boolean"),
@@ -658,7 +676,12 @@ def test_native_zero_model_record_writes_only_the_admitted_temp_db_surfaces(
     assert receipt["model_request_budget"] == 0
     assert receipt["model_request_count"] == 0
     assert receipt["ledger_receipts"][0]["pit_eligible"] is False
-    assert receipt["ledger_receipts"][0]["schema_version"] == "prediction-ledger-v4"
+    assert receipt["ledger_receipts"][0]["schema_version"] == "prediction-ledger-v5"
+    assert receipt["ledger_receipts"][0]["strategy_eligibility_version"] == "strategy-eligibility-v2"
+    assert receipt["ledger_receipts"][0]["strategy_eligibility_state"] == "UNKNOWN"
+    assert "STRATEGY_ELIGIBILITY_NOT_BOUND" in receipt["ledger_receipts"][0][
+        "strategy_eligibility_reason_codes"
+    ]
     assert receipt["ledger_receipts"][0]["decision_time_utc"].endswith("Z")
     assert receipt["ledger_receipts"][0]["decision_phase"] == "postmarket"
     assert receipt["ledger_receipts"][0]["session_date"] == "2026-09-24"
@@ -702,7 +725,13 @@ def test_native_zero_model_record_writes_only_the_admitted_temp_db_surfaces(
     assert ledger_identity["data_snapshot_identity"]
     assert ledger_identity["strategy_id"]
     assert ledger_identity["canonical_action"] in {"WAIT", "PASS"}
-    assert ledger_identity["schema_version"] == "prediction-ledger-v4"
+    assert ledger_identity["schema_version"] == "prediction-ledger-v5"
+    assert ledger_identity["strategy_eligibility_version"] == "strategy-eligibility-v2"
+    assert ledger_identity["strategy_eligibility_state"] == "UNKNOWN"
+    assert len(ledger_identity["strategy_eligibility_hash"]) == 64
+    assert "STRATEGY_ELIGIBILITY_NOT_BOUND" in ledger_identity[
+        "strategy_eligibility_reason_codes"
+    ]
     assert ledger_identity["decision_time"].endswith("Z")
     assert ledger_identity["decision_phase"] == "postmarket"
     assert ledger_identity["session_date"] == "2026-09-24"

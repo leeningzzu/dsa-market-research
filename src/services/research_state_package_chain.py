@@ -26,7 +26,10 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Protocol, Seque
 
 from src.services.research_state_projection import (
     CANONICAL_OPPORTUNITY_PROJECTION_VERSION,
+    STRATEGY_ELIGIBILITY_SCHEMA_VERSION,
+    STRATEGY_ELIGIBILITY_LEDGER_SCHEMA_VERSION,
     build_canonical_opportunity_projection,
+    build_strategy_eligibility_identity,
 )
 
 
@@ -60,10 +63,15 @@ RIGHTS_CONDITIONAL = "RIGHTS_CONDITIONAL"
 FORBIDDEN = "FORBIDDEN"
 
 LEGACY_FULL_PROJECTION_MODE = "LEGACY_FULL_V1"
-FULL_PROJECTION_MODE = "FULL_WITH_ADMITTED_CONDITIONAL_VALUES"
-SAFE_PROJECTION_MODE = "SAFE_LOW_SENSITIVITY_ONLY"
+FULL_PROJECTION_MODE_V1 = "FULL_WITH_ADMITTED_CONDITIONAL_VALUES"
+SAFE_PROJECTION_MODE_V1 = "SAFE_LOW_SENSITIVITY_ONLY"
+FULL_PROJECTION_MODE = "FULL_WITH_ADMITTED_CONDITIONAL_VALUES_V2"
+SAFE_PROJECTION_MODE = "SAFE_LOW_SENSITIVITY_ONLY_V2"
+_LEGACY_CANONICAL_OPPORTUNITY_PROJECTION_VERSION = "canonical-opportunity-v1"
 _PROJECTION_MODES = {
     LEGACY_FULL_PROJECTION_MODE,
+    FULL_PROJECTION_MODE_V1,
+    SAFE_PROJECTION_MODE_V1,
     FULL_PROJECTION_MODE,
     SAFE_PROJECTION_MODE,
 }
@@ -86,6 +94,7 @@ _JSON_COLUMNS = {
         "asset_identity_json",
         "selection_context_json",
         "pit_ineligibility_json",
+        "strategy_eligibility_json",
     },
     "prediction_outcomes": {
         "cost_identity_json",
@@ -137,6 +146,10 @@ COLUMN_CLASSIFICATION: Dict[str, Dict[str, str]] = {
         "opportunity_projection_version": SAFE_LOW_SENSITIVITY,
         "canonical_evidence_state": SAFE_LOW_SENSITIVITY,
         "canonical_hard_veto": SAFE_LOW_SENSITIVITY,
+        "strategy_eligibility_version": SAFE_LOW_SENSITIVITY,
+        "strategy_eligibility_state": SAFE_LOW_SENSITIVITY,
+        "strategy_eligibility_hash": SAFE_LOW_SENSITIVITY,
+        "strategy_eligibility_json": SAFE_LOW_SENSITIVITY,
         "code_sha": SAFE_LOW_SENSITIVITY,
         "provider_identity": SAFE_LOW_SENSITIVITY,
         "adjustment_basis": SAFE_LOW_SENSITIVITY,
@@ -367,12 +380,20 @@ def exported_columns(table: str) -> Tuple[str, ...]:
     )
 
 
+def _is_safe_projection_mode(projection_mode: str) -> bool:
+    return projection_mode in {SAFE_PROJECTION_MODE_V1, SAFE_PROJECTION_MODE}
+
+
+def _is_eligibility_projection_mode(projection_mode: str) -> bool:
+    return projection_mode in {FULL_PROJECTION_MODE, SAFE_PROJECTION_MODE}
+
+
 def package_columns(table: str, *, projection_mode: str) -> Tuple[str, ...]:
     if projection_mode not in _PROJECTION_MODES:
         raise ManifestChainError(f"unsupported package projection mode: {projection_mode}")
     allowed = (
         {SAFE_LOW_SENSITIVITY}
-        if projection_mode == SAFE_PROJECTION_MODE
+        if _is_safe_projection_mode(projection_mode)
         else {SAFE_LOW_SENSITIVITY, RIGHTS_CONDITIONAL}
     )
     columns = tuple(
@@ -380,7 +401,18 @@ def package_columns(table: str, *, projection_mode: str) -> Tuple[str, ...]:
         for column, disposition in COLUMN_CLASSIFICATION[table].items()
         if disposition in allowed
     )
-    if projection_mode == LEGACY_FULL_PROJECTION_MODE and table == "prediction_ledger":
+    if table != "prediction_ledger":
+        return columns
+
+    eligibility_columns = {
+        "strategy_eligibility_version",
+        "strategy_eligibility_state",
+        "strategy_eligibility_hash",
+        "strategy_eligibility_json",
+    }
+    if not _is_eligibility_projection_mode(projection_mode):
+        columns = tuple(column for column in columns if column not in eligibility_columns)
+    if projection_mode == LEGACY_FULL_PROJECTION_MODE:
         new_projection_columns = {
             "opportunity_projection_version",
             "canonical_evidence_state",
@@ -390,7 +422,7 @@ def package_columns(table: str, *, projection_mode: str) -> Tuple[str, ...]:
             "effective_daily_bar_date",
             "outcome_label_anchor",
         }
-        return tuple(column for column in columns if column not in new_projection_columns)
+        columns = tuple(column for column in columns if column not in new_projection_columns)
     return columns
 
 
@@ -448,7 +480,7 @@ def build_checkpoint_package(
             query_columns = list(columns)
             if (
                 table == "prediction_ledger"
-                and projection_mode == SAFE_PROJECTION_MODE
+                and _is_safe_projection_mode(projection_mode)
                 and "evidence_json" not in query_columns
             ):
                 query_columns.append("evidence_json")
@@ -465,11 +497,16 @@ def build_checkpoint_package(
                     column: _canonicalize_db_value(table, column, source.get(column))
                     for column in columns
                 }
-                if table == "prediction_ledger" and projection_mode == SAFE_PROJECTION_MODE:
+                if table == "prediction_ledger" and _is_safe_projection_mode(projection_mode):
                     item = _materialize_safe_ledger_projection(
                         item,
                         source.get("evidence_json"),
+                        projection_mode=projection_mode,
                     )
+                elif table == "prediction_ledger" and _is_eligibility_projection_mode(
+                    projection_mode
+                ):
+                    item = _validate_strategy_eligibility_projection(item)
                 rows.append(item)
 
             row_hashes = [sha256_bytes(canonical_json_bytes(row)) for row in rows]
@@ -720,8 +757,11 @@ def restore_checkpoint(
 
     conn = sqlite3.connect(str(Path(db_path)))
     try:
-        if projection_mode == SAFE_PROJECTION_MODE:
-            _require_safe_projection_target_schema(conn)
+        if _is_safe_projection_mode(projection_mode):
+            _require_safe_projection_target_schema(
+                conn,
+                projection_mode=projection_mode,
+            )
         conn.execute("BEGIN IMMEDIATE")
         for table in _TABLE_ORDER:
             table_doc = package_doc["tables"][table]
@@ -998,9 +1038,52 @@ def _projection_mode_from_document(document: Mapping[str, Any]) -> str:
     return mode
 
 
+def _validate_strategy_eligibility_projection(item: Dict[str, Any]) -> Dict[str, Any]:
+    projected = dict(item)
+    eligibility_fields = (
+        "strategy_eligibility_version",
+        "strategy_eligibility_state",
+        "strategy_eligibility_hash",
+        "strategy_eligibility_json",
+    )
+    if projected.get("schema_version") != STRATEGY_ELIGIBILITY_LEDGER_SCHEMA_VERSION:
+        if any(projected.get(field) is not None for field in eligibility_fields):
+            raise ResearchStateError(
+                "legacy prediction_ledger row cannot claim StrategyEligibility V1"
+            )
+        return projected
+    raw_json = projected.get("strategy_eligibility_json")
+    if not isinstance(raw_json, str) or not raw_json:
+        raise ResearchStateError(
+            "prediction_ledger strategy eligibility identity is missing"
+        )
+    try:
+        document = json.loads(raw_json)
+    except json.JSONDecodeError as exc:
+        raise ResearchStateError(
+            "prediction_ledger strategy_eligibility_json is invalid"
+        ) from exc
+    if not isinstance(document, dict):
+        raise ResearchStateError(
+            "prediction_ledger strategy eligibility identity must be an object"
+        )
+    expected = build_strategy_eligibility_identity(
+        document,
+        strategy_id=str(projected.get("strategy_id") or "").strip() or None,
+    )
+    for field in eligibility_fields:
+        if projected.get(field) != expected[field]:
+            raise ResearchStateError(
+                f"prediction_ledger strategy eligibility projection mismatch: {field}"
+            )
+    return projected
+
+
 def _materialize_safe_ledger_projection(
     item: Dict[str, Any],
     raw_evidence_json: Any,
+    *,
+    projection_mode: str,
 ) -> Dict[str, Any]:
     projected = dict(item)
     if raw_evidence_json is not None:
@@ -1011,16 +1094,23 @@ def _materialize_safe_ledger_projection(
                 "prediction_ledger raw evidence_json is invalid"
             ) from exc
         decision = evidence.get("canonical_decision") if isinstance(evidence, dict) else None
-        expected = build_canonical_opportunity_projection(decision)
+        expected = build_canonical_opportunity_projection(
+            decision,
+            strategy_id=str(projected.get("strategy_id") or "").strip() or None,
+        )
         expected_hard_veto = (
             None
             if expected["canonical_hard_veto"] is None
             else int(expected["canonical_hard_veto"])
         )
+        expected_projection_version = (
+            CANONICAL_OPPORTUNITY_PROJECTION_VERSION
+            if projected.get("schema_version")
+            == STRATEGY_ELIGIBILITY_LEDGER_SCHEMA_VERSION
+            else _LEGACY_CANONICAL_OPPORTUNITY_PROJECTION_VERSION
+        )
         expected_values = {
-            "opportunity_projection_version": expected[
-                "opportunity_projection_version"
-            ],
+            "opportunity_projection_version": expected_projection_version,
             "canonical_action": expected["canonical_action"],
             "canonical_evidence_state": expected["canonical_evidence_state"],
             "canonical_hard_veto": expected_hard_veto,
@@ -1033,9 +1123,15 @@ def _materialize_safe_ledger_projection(
                 )
             projected[field] = expected_value
 
+    expected_projection_version = (
+        CANONICAL_OPPORTUNITY_PROJECTION_VERSION
+        if projected.get("schema_version")
+        == STRATEGY_ELIGIBILITY_LEDGER_SCHEMA_VERSION
+        else _LEGACY_CANONICAL_OPPORTUNITY_PROJECTION_VERSION
+    )
     if (
         projected.get("opportunity_projection_version")
-        != CANONICAL_OPPORTUNITY_PROJECTION_VERSION
+        != expected_projection_version
         or not projected.get("canonical_action")
         or not projected.get("canonical_evidence_state")
         or projected.get("canonical_hard_veto") not in (0, 1, False, True)
@@ -1046,10 +1142,16 @@ def _materialize_safe_ledger_projection(
     projected["canonical_hard_veto"] = int(
         bool(projected["canonical_hard_veto"])
     )
+    if _is_eligibility_projection_mode(projection_mode):
+        projected = _validate_strategy_eligibility_projection(projected)
     return projected
 
 
-def _require_safe_projection_target_schema(conn: sqlite3.Connection) -> None:
+def _require_safe_projection_target_schema(
+    conn: sqlite3.Connection,
+    *,
+    projection_mode: str,
+) -> None:
     columns = {
         str(row[1]): row
         for row in conn.execute("PRAGMA table_info(prediction_ledger)")
@@ -1059,6 +1161,21 @@ def _require_safe_projection_target_schema(conn: sqlite3.Connection) -> None:
         raise SchemaClassificationError(
             "safe projection restore requires nullable prediction_ledger.evidence_json"
         )
+    if _is_eligibility_projection_mode(projection_mode):
+        required = {
+            "strategy_eligibility_version",
+            "strategy_eligibility_state",
+            "strategy_eligibility_hash",
+            "strategy_eligibility_json",
+        }
+        if not required <= set(columns):
+            raise SchemaClassificationError(
+                "safe projection restore requires StrategyEligibility V1 columns"
+            )
+        if int(columns["strategy_eligibility_json"][3]) != 0:
+            raise SchemaClassificationError(
+                "strategy_eligibility_json must remain nullable for legacy rows"
+            )
 
 
 def _read_projection_by_identity(

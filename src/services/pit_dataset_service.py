@@ -19,7 +19,11 @@ from src.services.prediction_ledger_service import (
     PREDICTION_FEATURE_SCHEMA_VERSION,
     PREDICTION_LEDGER_SCHEMA_VERSION,
 )
-from src.services.research_state_projection import is_white_box_opportunity_record
+from src.services.research_state_projection import (
+    CANONICAL_OPPORTUNITY_PROJECTION_VERSION,
+    STRATEGY_ELIGIBILITY_SCHEMA_VERSION,
+    is_white_box_opportunity_record,
+)
 from src.services.prediction_outcome_service import (
     PREDICTION_OUTCOME_ENGINE_VERSION,
     PRIMARY_HORIZON_IDENTITY,
@@ -28,8 +32,8 @@ from src.services.prediction_outcome_service import (
 from src.storage import DatabaseManager, PredictionLedgerRecord, PredictionOutcomeRecord
 
 
-PIT_DATASET_SCHEMA_VERSION = "pit-dataset-manifest-v1"
-DATASET_PURPOSE_V1 = "ASSET_LEVEL_META_FILTER_ON_SELECTED_OPPORTUNITIES_V1"
+PIT_DATASET_SCHEMA_VERSION = "pit-dataset-manifest-v2"
+DATASET_PURPOSE_V2 = "ASSET_LEVEL_META_FILTER_ON_STRATEGY_ELIGIBLE_OPPORTUNITIES_V2"
 SPLIT_POLICY_ID = "XSHG_SESSION_GROUPED_CHRONO_60_20_20_PURGED_V1"
 PURGE_POLICY_ID = "EXACT_LABEL_INTERVAL_AND_AVAILABLE_AT"
 EMBARGO_POLICY_ID = "FORWARD_ONLY_ZERO_POST_BLOCK_V1"
@@ -207,9 +211,11 @@ class PITDatasetService:
 
         payload = {
             "schema_version": PIT_DATASET_SCHEMA_VERSION,
-            "dataset_purpose": DATASET_PURPOSE_V1,
+            "dataset_purpose": DATASET_PURPOSE_V2,
             "strategy_id": STRATEGY_ID_V1,
             "strategy_version": STRATEGY_ID_V1,
+            "opportunity_projection_version": CANONICAL_OPPORTUNITY_PROJECTION_VERSION,
+            "strategy_eligibility_version": STRATEGY_ELIGIBILITY_SCHEMA_VERSION,
             "feature_schema_version": PREDICTION_FEATURE_SCHEMA_VERSION,
             "feature_schema_hash": PREDICTION_FEATURE_SCHEMA_HASH,
             "label_identity": PRIMARY_LABEL_IDENTITY,
@@ -251,7 +257,7 @@ class PITDatasetService:
             {
                 "dataset_hash": dataset_hash,
                 "schema_version": PIT_DATASET_SCHEMA_VERSION,
-                "dataset_purpose": DATASET_PURPOSE_V1,
+                "dataset_purpose": DATASET_PURPOSE_V2,
                 "strategy_id": STRATEGY_ID_V1,
                 "strategy_version": STRATEGY_ID_V1,
                 "feature_schema_version": PREDICTION_FEATURE_SCHEMA_VERSION,

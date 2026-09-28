@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] 将白盒机会准入与 canonical decision、PIT 时钟身份分离：Prediction Ledger 保持 additive/no-backfill V5，以 `stock-trend-quality-pullback-contract-coverage-v1` 将 accepted strategy clause 显式分类并从 `HARD_ELIGIBILITY` 行派生 `strategy-eligibility-v2` closed-world matrix；Leader Preference 保持 selection prior，月线保持 where-READY context，周/日结构与 volume-price 独立 hard-bound，30m 仍是独立必需 trigger。缺失、不完整或伪造顶层 `ELIGIBLE` 均 fail-closed 为 `UNKNOWN`；未提交且覆盖不完整的 `strategy-eligibility-v1 + canonical-opportunity-v2` 拒绝复活，当前投影升级为 `canonical-opportunity-v3`。旧 V4 行保持可读、不回填且不得进入新机会池；PIT manifest 继续 eligibility-aware V2，同时保持 feature schema/hash、Outcome label/horizon、research-state package v1 后向读取以及 V2.5/Email 不变。
+
 - [修复] 将 Prediction Ledger 时钟契约升级为 additive/no-backfill V4：显式冻结 decision phase、市场本地 session date、已完成日线日期与 Outcome label anchor，`data_as_of` 仅保留为 completed-bar 兼容投影；既有 `XSHG_POSTMARKET_NEXT_OPEN_3_FORWARD_SESSIONS_FIXED_CLOSE_V1` 继续只接受日线收盘后A股决策，盘前/盘中/周末/节假日及旧 V3 `pit_eligible=true` 均由 Ledger、Outcome 与 PIT Dataset 独立 fail-closed，不改写历史行。Evidence Flywheel 收据显式标识 UTC，research-state package 保留 V4 clock identity 且兼容旧包缺失字段；不改变 V2.5、模型、训练、通知或工作流运行边界。
 
 - [修复] 为本地 Evidence Flywheel `record` 增加显式零外部模型请求边界和可核收据，在模型 dispatch 前拒绝任何请求，并保留普通 P0 入口既有的两次直接请求上限。

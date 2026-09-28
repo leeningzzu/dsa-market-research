@@ -1205,6 +1205,10 @@ class PredictionLedgerRecord(Base):
     opportunity_projection_version = Column(String(64), index=True)
     canonical_evidence_state = Column(String(16), index=True)
     canonical_hard_veto = Column(Boolean, index=True)
+    strategy_eligibility_version = Column(String(64), index=True)
+    strategy_eligibility_state = Column(String(32), index=True)
+    strategy_eligibility_hash = Column(String(64), index=True)
+    strategy_eligibility_json = Column(Text)
 
     code_sha = Column(String(40), index=True)
     provider_identity = Column(String(128))
@@ -1513,6 +1517,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             self._ensure_llm_usage_telemetry_columns()
             self._ensure_decision_signal_profile_schema()
             self._ensure_prediction_ledger_pit_schema()
+            self._ensure_prediction_ledger_strategy_eligibility_schema()
             self._ensure_prediction_outcome_execution_schema()
             self._ensure_intelligence_item_scope_values()
             self._ensure_schema_migration_record()
@@ -1637,6 +1642,49 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 if not self._is_sqlite_duplicate_column_error(exc, column):
                     raise
             existing.add(column)
+
+    def _ensure_prediction_ledger_strategy_eligibility_schema(self) -> None:
+        """Add nullable strategy-eligibility identity without backfilling old rows."""
+        if not self._is_sqlite_engine:
+            return
+        inspector = inspect(self._engine)
+        if not inspector.has_table(PredictionLedgerRecord.__tablename__):
+            return
+        existing = {
+            column["name"]
+            for column in inspector.get_columns(PredictionLedgerRecord.__tablename__)
+        }
+        expected = {
+            "strategy_eligibility_version": "VARCHAR(64)",
+            "strategy_eligibility_state": "VARCHAR(32)",
+            "strategy_eligibility_hash": "VARCHAR(64)",
+            "strategy_eligibility_json": "TEXT",
+        }
+        for column, sql_type in expected.items():
+            if column in existing:
+                continue
+            try:
+                with self._engine.begin() as connection:
+                    connection.exec_driver_sql(
+                        f"ALTER TABLE {PredictionLedgerRecord.__tablename__} "
+                        f"ADD COLUMN {column} {sql_type}"
+                    )
+            except OperationalError as exc:
+                if not self._is_sqlite_duplicate_column_error(exc, column):
+                    raise
+            existing.add(column)
+
+        indexes = {
+            "ix_prediction_ledger_strategy_eligibility_version": "strategy_eligibility_version",
+            "ix_prediction_ledger_strategy_eligibility_state": "strategy_eligibility_state",
+            "ix_prediction_ledger_strategy_eligibility_hash": "strategy_eligibility_hash",
+        }
+        with self._engine.begin() as connection:
+            for index_name, column in indexes.items():
+                connection.exec_driver_sql(
+                    f"CREATE INDEX IF NOT EXISTS {index_name} "
+                    f"ON {PredictionLedgerRecord.__tablename__} ({column})"
+                )
 
     def _ensure_prediction_outcome_execution_schema(self) -> None:
         """Add nullable execution-evidence identity columns without backfilling legacy rows."""

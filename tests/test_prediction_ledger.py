@@ -24,8 +24,15 @@ from src.services.prediction_ledger_service import (
 from src.services.pit_identity import build_specified_codes_selection_context
 from src.services.research_state_projection import (
     CANONICAL_OPPORTUNITY_PROJECTION_VERSION,
+    STOCK_TREND_QUALITY_PULLBACK_CONTRACT_COVERAGE,
+    STRATEGY_CONTRACT_COVERAGE_HASH,
+    STRATEGY_CONTRACT_COVERAGE_VERSION,
+    STRATEGY_ELIGIBILITY_REQUIRED_EVIDENCE,
+    STRATEGY_ELIGIBILITY_SCHEMA_VERSION,
+    build_strategy_eligibility_identity,
+    is_white_box_opportunity_record,
 )
-from src.storage import AnalysisHistory, DatabaseManager, PredictionLedgerRecord
+from src.storage import AnalysisHistory, Base, DatabaseManager, PredictionLedgerRecord
 
 
 @pytest.fixture()
@@ -54,7 +61,26 @@ def _add_history(db: DatabaseManager, code: str = "600519") -> int:
         return int(row.id)
 
 
-def _result(*, score: int = 67):
+def _strategy_eligibility(
+    *,
+    state: str = "ELIGIBLE",
+    overrides: dict[str, str] | None = None,
+) -> dict:
+    required = {
+        key: "SATISFIED"
+        for key in STRATEGY_ELIGIBILITY_REQUIRED_EVIDENCE
+    }
+    required.update(overrides or {})
+    return {
+        "schema_version": STRATEGY_ELIGIBILITY_SCHEMA_VERSION,
+        "strategy_id": "stock_trend_quality_pullback_v1",
+        "state": state,
+        "required_evidence": required,
+        "reason_codes": [],
+    }
+
+
+def _result(*, score: int = 67, strategy_eligibility: dict | None = None):
     factor_decision = {
         "strategy_id": "stock_trend_quality_pullback_v1",
         "contract_version": "1.0",
@@ -78,6 +104,8 @@ def _result(*, score: int = 67):
         },
         "investor_brief": {"human_only": "must not enter feature payload"},
     }
+    if strategy_eligibility is not None:
+        factor_decision["strategy_eligibility"] = strategy_eligibility
     return SimpleNamespace(
         code="600519",
         dashboard={"factor_decision": factor_decision},
@@ -122,6 +150,9 @@ def test_schema_is_append_only_identity_surface(isolated_db) -> None:
     assert "ix_prediction_ledger_stock_time" in indexes
     assert "ix_prediction_ledger_strategy_time" in indexes
     assert "ix_prediction_ledger_pit_time" in indexes
+    assert "ix_prediction_ledger_strategy_eligibility_version" in indexes
+    assert "ix_prediction_ledger_strategy_eligibility_state" in indexes
+    assert "ix_prediction_ledger_strategy_eligibility_hash" in indexes
 
 
 def test_service_freezes_factor_payload_idempotently_and_excludes_human_brief(isolated_db) -> None:
@@ -154,6 +185,16 @@ def test_service_freezes_factor_payload_idempotently_and_excludes_human_brief(is
     assert row.schema_version == PREDICTION_LEDGER_SCHEMA_VERSION
     assert row.feature_schema_version == PREDICTION_FEATURE_SCHEMA_VERSION
     assert row.feature_schema_hash == PREDICTION_FEATURE_SCHEMA_HASH
+    assert PREDICTION_FEATURE_SCHEMA_HASH == "426d7f21de79ad26e12ea39b4c686b489b90dc24d88f0750bcb5aec421265647"
+    assert "strategy_eligibility" not in payload
+    assert row.strategy_eligibility_version == STRATEGY_ELIGIBILITY_SCHEMA_VERSION
+    assert row.strategy_eligibility_state == "UNKNOWN"
+    eligibility = json.loads(row.strategy_eligibility_json)
+    assert "STRATEGY_ELIGIBILITY_NOT_BOUND" in eligibility["reason_codes"]
+    assert row.strategy_eligibility_hash == build_strategy_eligibility_identity(
+        eligibility,
+        strategy_id=row.strategy_id,
+    )["strategy_eligibility_hash"]
     assert row.code_sha == code_sha
     assert row.canonical_action == "WAIT"
     assert row.opportunity_projection_version == CANONICAL_OPPORTUNITY_PROJECTION_VERSION
@@ -165,6 +206,155 @@ def test_service_freezes_factor_payload_idempotently_and_excludes_human_brief(is
     assert row.effective_daily_bar_date.isoformat() == "2026-09-16"
     assert row.data_as_of.isoformat() == "2026-09-16"
     assert row.outcome_label_anchor is None
+
+
+def test_strategy_eligibility_fail_closed_and_binds_prediction_identity(isolated_db) -> None:
+    history_id = _add_history(isolated_db)
+    service = PredictionLedgerService(db_manager=isolated_db)
+    signal = _signal()
+    code_sha = "8" * 40
+
+    missing = service.persist(
+        analysis_history_id=history_id,
+        result=_result(),
+        decision_signal=signal,
+        code_sha=code_sha,
+    )
+    incomplete_identity = _strategy_eligibility()
+    incomplete_identity["required_evidence"].pop("valuation")
+    incomplete = service.persist(
+        analysis_history_id=history_id,
+        result=_result(strategy_eligibility=incomplete_identity),
+        decision_signal=signal,
+        code_sha=code_sha,
+    )
+    invalid_reason_identity = _strategy_eligibility()
+    invalid_reason_identity["reason_codes"] = ["not a canonical reason"]
+    invalid_reason = service.persist(
+        analysis_history_id=history_id,
+        result=_result(strategy_eligibility=invalid_reason_identity),
+        decision_signal=signal,
+        code_sha=code_sha,
+    )
+    eligible = service.persist(
+        analysis_history_id=history_id,
+        result=_result(strategy_eligibility=_strategy_eligibility()),
+        decision_signal=signal,
+        code_sha=code_sha,
+    )
+
+    assert all(
+        item is not None
+        for item in (missing, incomplete, invalid_reason, eligible)
+    )
+    assert len({
+        missing["prediction_hash"],
+        incomplete["prediction_hash"],
+        invalid_reason["prediction_hash"],
+        eligible["prediction_hash"],
+    }) == 4
+    assert len({
+        missing["evidence_hash"],
+        incomplete["evidence_hash"],
+        invalid_reason["evidence_hash"],
+        eligible["evidence_hash"],
+    }) == 1
+
+    rows = {
+        row.prediction_hash: row
+        for row in PredictionLedgerRepository(isolated_db).list_for_history(history_id)
+    }
+    missing_row = rows[missing["prediction_hash"]]
+    incomplete_row = rows[incomplete["prediction_hash"]]
+    invalid_reason_row = rows[invalid_reason["prediction_hash"]]
+    eligible_row = rows[eligible["prediction_hash"]]
+    assert missing_row.strategy_eligibility_state == "UNKNOWN"
+    assert incomplete_row.strategy_eligibility_state == "UNKNOWN"
+    assert invalid_reason_row.strategy_eligibility_state == "UNKNOWN"
+    assert eligible_row.strategy_eligibility_state == "ELIGIBLE"
+    assert "REQUIRED_EVIDENCE_MATRIX_INCOMPLETE" in json.loads(
+        incomplete_row.strategy_eligibility_json
+    )["reason_codes"]
+    assert "STRATEGY_ELIGIBILITY_REASON_CODES_INVALID" in json.loads(
+        invalid_reason_row.strategy_eligibility_json
+    )["reason_codes"]
+    assert is_white_box_opportunity_record(missing_row) is False
+    assert is_white_box_opportunity_record(incomplete_row) is False
+    assert is_white_box_opportunity_record(invalid_reason_row) is False
+    assert is_white_box_opportunity_record(eligible_row) is True
+
+
+def test_exact_strategy_coverage_map_is_closed_world_and_role_aware() -> None:
+    coverage = {
+        clause: (classification, evidence_key)
+        for clause, classification, evidence_key
+        in STOCK_TREND_QUALITY_PULLBACK_CONTRACT_COVERAGE
+    }
+    assert coverage["leader_preference"] == ("SELECTION_PRIOR", None)
+    assert coverage["monthly_trend_structure_when_ready"] == (
+        "CONTEXT_WHEN_READY",
+        None,
+    )
+    assert coverage["sector_industry_strength"] == (
+        "HARD_ELIGIBILITY",
+        "sector_industry_strength",
+    )
+    assert coverage["volume_price_confirmation"] == (
+        "HARD_ELIGIBILITY",
+        "volume_price_confirmation",
+    )
+    assert set(STRATEGY_ELIGIBILITY_REQUIRED_EVIDENCE) == {
+        "market_regime_permission",
+        "sector_industry_strength",
+        "quality",
+        "valuation",
+        "weekly_trend_structure",
+        "daily_trend_structure",
+        "daily_pullback_or_supply_contraction",
+        "volume_price_confirmation",
+        "distribution_risk_clear",
+        "thirty_minute_trigger",
+        "risk_reward",
+    }
+    assert "leader_preference" not in STRATEGY_ELIGIBILITY_REQUIRED_EVIDENCE
+    assert (
+        "monthly_trend_structure_when_ready"
+        not in STRATEGY_ELIGIBILITY_REQUIRED_EVIDENCE
+    )
+
+    eligible = build_strategy_eligibility_identity(
+        _strategy_eligibility(),
+        strategy_id="stock_trend_quality_pullback_v1",
+    )
+    document = json.loads(eligible["strategy_eligibility_json"])
+    assert eligible["strategy_eligibility_state"] == "ELIGIBLE"
+    assert document["contract_coverage_version"] == STRATEGY_CONTRACT_COVERAGE_VERSION
+    assert document["contract_coverage_hash"] == STRATEGY_CONTRACT_COVERAGE_HASH
+    assert document["contract_coverage"] == [
+        {
+            "clause": clause,
+            "classification": classification,
+            "evidence_key": evidence_key,
+        }
+        for clause, classification, evidence_key
+        in STOCK_TREND_QUALITY_PULLBACK_CONTRACT_COVERAGE
+    ]
+
+    for missing_key in (
+        "volume_price_confirmation",
+        "weekly_trend_structure",
+        "daily_trend_structure",
+    ):
+        incomplete = _strategy_eligibility()
+        incomplete["required_evidence"].pop(missing_key)
+        identity = build_strategy_eligibility_identity(
+            incomplete,
+            strategy_id="stock_trend_quality_pullback_v1",
+        )
+        assert identity["strategy_eligibility_state"] == "UNKNOWN"
+        assert "REQUIRED_EVIDENCE_MATRIX_INCOMPLETE" in json.loads(
+            identity["strategy_eligibility_json"]
+        )["reason_codes"]
 
 
 def test_changed_evidence_creates_new_snapshot_without_mutating_old_row(isolated_db) -> None:
@@ -253,7 +443,8 @@ def test_bound_first_slice_identities_can_be_semantically_pit_eligible(isolated_
     assert outcome["pit_eligible"] is True
     assert outcome["pit_ineligibility_reasons"] == []
     row = PredictionLedgerRepository(isolated_db).list_for_history(history_id)[0]
-    assert row.schema_version == "prediction-ledger-v4" == PREDICTION_LEDGER_SCHEMA_VERSION
+    assert row.schema_version == "prediction-ledger-v5" == PREDICTION_LEDGER_SCHEMA_VERSION
+    assert row.strategy_eligibility_state == "UNKNOWN"
     assert row.decision_timezone == "Asia/Shanghai"
     assert row.decision_phase == "postmarket"
     assert row.session_date == date(2026, 9, 17)
@@ -400,19 +591,65 @@ def test_v3_sqlite_clock_migration_is_additive_and_does_not_backfill(tmp_path) -
         manager._engine = engine
         manager._is_sqlite_engine = True
         manager._ensure_prediction_ledger_pit_schema()
-        columns = {item["name"] for item in inspect(engine).get_columns("prediction_ledger")}
+        manager._ensure_prediction_ledger_strategy_eligibility_schema()
+        migrated_inspector = inspect(engine)
+        columns = {item["name"] for item in migrated_inspector.get_columns("prediction_ledger")}
         assert {
             "decision_phase",
             "session_date",
             "effective_daily_bar_date",
             "outcome_label_anchor",
+            "strategy_eligibility_version",
+            "strategy_eligibility_state",
+            "strategy_eligibility_hash",
+            "strategy_eligibility_json",
         } <= columns
+        expected_indexes = {
+            "ix_prediction_ledger_strategy_eligibility_version",
+            "ix_prediction_ledger_strategy_eligibility_state",
+            "ix_prediction_ledger_strategy_eligibility_hash",
+        }
+        assert expected_indexes <= {
+            item["name"] for item in migrated_inspector.get_indexes("prediction_ledger")
+        }
         with engine.connect() as connection:
             migrated = connection.exec_driver_sql(
-                "SELECT schema_version,decision_phase,session_date,effective_daily_bar_date,outcome_label_anchor "
+                "SELECT schema_version,decision_phase,session_date,effective_daily_bar_date,"
+                "outcome_label_anchor,strategy_eligibility_version,strategy_eligibility_state,"
+                "strategy_eligibility_hash,strategy_eligibility_json "
                 "FROM prediction_ledger WHERE prediction_hash='legacy'"
             ).one()
-        assert migrated == ("prediction-ledger-v3", None, None, None, None)
+        assert migrated == (
+            "prediction-ledger-v3",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+
+        fresh_engine = create_engine(f"sqlite:///{tmp_path / 'fresh-ledger.db'}")
+        try:
+            Base.metadata.create_all(fresh_engine)
+            fresh_inspector = inspect(fresh_engine)
+            assert expected_indexes <= {
+                item["name"]
+                for item in fresh_inspector.get_indexes("prediction_ledger")
+            }
+            assert {
+                "strategy_eligibility_version",
+                "strategy_eligibility_state",
+                "strategy_eligibility_hash",
+                "strategy_eligibility_json",
+            } <= {
+                item["name"]
+                for item in fresh_inspector.get_columns("prediction_ledger")
+            }
+        finally:
+            fresh_engine.dispose()
     finally:
         engine.dispose()
 

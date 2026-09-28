@@ -23,6 +23,7 @@ from src.services.research_state_package_chain import (
     PUBLICATION_BARRIER,
     REQUIRED_WRITER_CONCURRENCY_GROUP,
     SAFE_PROJECTION_MODE,
+    SAFE_PROJECTION_MODE_V1,
     FilesystemObjectStore,
     ImportConflictError,
     ManifestChainError,
@@ -42,6 +43,9 @@ from src.services.research_state_package_chain import (
 from src.storage import Base
 from src.services.research_state_projection import (
     CANONICAL_OPPORTUNITY_PROJECTION_VERSION,
+    STRATEGY_ELIGIBILITY_REQUIRED_EVIDENCE,
+    STRATEGY_ELIGIBILITY_SCHEMA_VERSION,
+    build_strategy_eligibility_identity,
     is_white_box_opportunity_record,
 )
 
@@ -58,13 +62,30 @@ def _create_db(path: Path) -> None:
         engine.dispose()
 
 
+def _strategy_eligibility_identity() -> dict:
+    return build_strategy_eligibility_identity(
+        {
+            "schema_version": STRATEGY_ELIGIBILITY_SCHEMA_VERSION,
+            "strategy_id": "stock_trend_quality_pullback_v1",
+            "state": "ELIGIBLE",
+            "required_evidence": {
+                key: "SATISFIED"
+                for key in STRATEGY_ELIGIBILITY_REQUIRED_EVIDENCE
+            },
+            "reason_codes": [],
+        },
+        strategy_id="stock_trend_quality_pullback_v1",
+    )
+
+
 def _seed_state(path: Path, *, extra_ledger: bool = False) -> None:
     conn = sqlite3.connect(path)
     try:
+        eligibility = _strategy_eligibility_identity()
         ledger_rows = [
             (
                 "1" * 64,
-                "prediction-ledger-v3",
+                "prediction-ledger-v5",
                 101,
                 201,
                 "trace-local-only",
@@ -102,9 +123,13 @@ def _seed_state(path: Path, *, extra_ledger: bool = False) -> None:
                     sort_keys=True,
                     separators=(",", ":"),
                 ),
-                "canonical-opportunity-v1",
+                CANONICAL_OPPORTUNITY_PROJECTION_VERSION,
                 "PROVEN",
                 0,
+                eligibility["strategy_eligibility_version"],
+                eligibility["strategy_eligibility_state"],
+                eligibility["strategy_eligibility_hash"],
+                eligibility["strategy_eligibility_json"],
                 CODE_SHA,
                 "SyntheticProvider",
                 "qfq",
@@ -151,8 +176,8 @@ def _seed_state(path: Path, *, extra_ledger: bool = False) -> None:
             second[3] = 202
             second[6] = "000001"
             second[26] = "6" * 64
-            second[35] = "7" * 64
-            second[36] = json.dumps(
+            second[39] = "7" * 64
+            second[40] = json.dumps(
                 {
                     "version": "cn-stock-asset-v1",
                     "market": "cn",
@@ -167,9 +192,9 @@ def _seed_state(path: Path, *, extra_ledger: bool = False) -> None:
                 sort_keys=True,
                 separators=(",", ":"),
             )
-            second[37] = "8" * 64
-            second[39] = "9" * 64
-            second[44] = "2026-09-19 10:01:00"
+            second[41] = "8" * 64
+            second[43] = "9" * 64
+            second[48] = "2026-09-19 10:01:00"
             ledger_rows.append(tuple(second))
 
         ledger_columns = (
@@ -204,6 +229,10 @@ def _seed_state(path: Path, *, extra_ledger: bool = False) -> None:
             "opportunity_projection_version",
             "canonical_evidence_state",
             "canonical_hard_veto",
+            "strategy_eligibility_version",
+            "strategy_eligibility_state",
+            "strategy_eligibility_hash",
+            "strategy_eligibility_json",
             "code_sha",
             "provider_identity",
             "adjustment_basis",
@@ -393,7 +422,11 @@ def test_nonempty_safe_package_excludes_conditional_fields_and_keeps_opportunity
     assert ledger["canonical_action"] == "WAIT"
     assert ledger["canonical_evidence_state"] == "PROVEN"
     assert ledger["canonical_hard_veto"] == 0
-    assert ledger["schema_version"] == "prediction-ledger-v3"
+    assert ledger["schema_version"] == "prediction-ledger-v5"
+    assert ledger["strategy_eligibility_version"] == STRATEGY_ELIGIBILITY_SCHEMA_VERSION
+    assert ledger["strategy_eligibility_state"] == "ELIGIBLE"
+    assert len(ledger["strategy_eligibility_hash"]) == 64
+    assert json.loads(ledger["strategy_eligibility_json"])["state"] == "ELIGIBLE"
     for clock_field in (
         "decision_phase",
         "session_date",
@@ -422,6 +455,24 @@ def test_safe_package_fails_closed_on_projection_raw_evidence_mismatch(
         conn.close()
 
     with pytest.raises(ResearchStateError, match="safe projection mismatch"):
+        build_checkpoint_package(seeded_db)
+
+
+def test_safe_package_fails_closed_on_strategy_eligibility_mismatch(
+    seeded_db: Path,
+) -> None:
+    conn = sqlite3.connect(seeded_db)
+    try:
+        conn.execute(
+            "UPDATE prediction_ledger SET strategy_eligibility_hash=? "
+            "WHERE prediction_hash=?",
+            ("0" * 64, "1" * 64),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    with pytest.raises(ResearchStateError, match="strategy eligibility projection mismatch"):
         build_checkpoint_package(seeded_db)
 
 
@@ -462,30 +513,43 @@ def test_safe_nonempty_roundtrip_restores_pit_identity_without_raw_evidence(
     conn = sqlite3.connect(target)
     try:
         row = conn.execute(
-            "SELECT evidence_json,selection_context_json,opportunity_projection_version,"
-            "canonical_action,canonical_evidence_state,canonical_hard_veto,durability_state "
+            "SELECT schema_version,strategy_id,evidence_json,selection_context_json,"
+            "opportunity_projection_version,canonical_action,canonical_evidence_state,"
+            "canonical_hard_veto,strategy_eligibility_version,strategy_eligibility_state,"
+            "strategy_eligibility_hash,strategy_eligibility_json,durability_state "
             "FROM prediction_ledger WHERE prediction_hash=?",
             ("1" * 64,),
         ).fetchone()
     finally:
         conn.close()
 
-    assert row == (
-        None,
-        None,
+    assert row[0] == "prediction-ledger-v5"
+    assert row[1] == "stock_trend_quality_pullback_v1"
+    assert row[2] is None
+    assert row[3] is None
+    assert row[4:10] == (
         CANONICAL_OPPORTUNITY_PROJECTION_VERSION,
         "WAIT",
         "PROVEN",
         0,
-        DURABILITY_STATE,
+        STRATEGY_ELIGIBILITY_SCHEMA_VERSION,
+        "ELIGIBLE",
     )
+    assert len(row[10]) == 64
+    assert json.loads(row[11])["state"] == "ELIGIBLE"
+    assert row[12] == DURABILITY_STATE
     assert is_white_box_opportunity_record(
         SimpleNamespace(
-            opportunity_projection_version=row[2],
-            canonical_action=row[3],
-            canonical_evidence_state=row[4],
-            canonical_hard_veto=bool(row[5]),
-            evidence_json=row[0],
+            schema_version=row[0],
+            strategy_id=row[1],
+            opportunity_projection_version=row[4],
+            canonical_action=row[5],
+            canonical_evidence_state=row[6],
+            canonical_hard_veto=bool(row[7]),
+            strategy_eligibility_version=row[8],
+            strategy_eligibility_state=row[9],
+            strategy_eligibility_hash=row[10],
+            strategy_eligibility_json=row[11],
         )
     ) is True
 
@@ -561,6 +625,11 @@ def test_v4_clock_identity_survives_package_restore(seeded_db: Path, tmp_path: P
         conn.execute(
             "UPDATE prediction_ledger SET "
             "schema_version='prediction-ledger-v4',"
+            "opportunity_projection_version='canonical-opportunity-v1',"
+            "strategy_eligibility_version=NULL,"
+            "strategy_eligibility_state=NULL,"
+            "strategy_eligibility_hash=NULL,"
+            "strategy_eligibility_json=NULL,"
             "decision_phase='postmarket',"
             "session_date='2026-09-18',"
             "effective_daily_bar_date='2026-09-18',"
@@ -579,8 +648,8 @@ def test_v4_clock_identity_survives_package_restore(seeded_db: Path, tmp_path: P
         seeded_db,
         source_code_sha=CODE_SHA,
         created_at=NOW,
-        rights_admitted=True,
-        rights_classification="SYNTHETIC_TEST_ONLY",
+        rights_admitted=False,
+        rights_classification="NO_CONDITIONAL_VALUES",
     )
     target = tmp_path / "clock-target.db"
     _create_db(target)
@@ -590,7 +659,9 @@ def test_v4_clock_identity_survives_package_restore(seeded_db: Path, tmp_path: P
     try:
         restored = conn.execute(
             "SELECT schema_version,decision_phase,session_date,effective_daily_bar_date,"
-            "outcome_label_anchor,data_as_of FROM prediction_ledger WHERE prediction_hash=?",
+            "outcome_label_anchor,data_as_of,strategy_eligibility_version,"
+            "strategy_eligibility_state,strategy_eligibility_hash,strategy_eligibility_json "
+            "FROM prediction_ledger WHERE prediction_hash=?",
             ("1" * 64,),
         ).fetchone()
     finally:
@@ -602,7 +673,24 @@ def test_v4_clock_identity_survives_package_restore(seeded_db: Path, tmp_path: P
         "2026-09-18",
         "2026-09-18",
         "2026-09-18",
+        None,
+        None,
+        None,
+        None,
     )
+    assert is_white_box_opportunity_record(
+        SimpleNamespace(
+            schema_version=restored[0],
+            opportunity_projection_version="canonical-opportunity-v1",
+            canonical_action="WAIT",
+            canonical_evidence_state="PROVEN",
+            canonical_hard_veto=False,
+            strategy_eligibility_version=restored[6],
+            strategy_eligibility_state=restored[7],
+            strategy_eligibility_hash=restored[8],
+            strategy_eligibility_json=restored[9],
+        )
+    ) is False
 
 def test_legacy_full_package_without_projection_mode_remains_readable(
     seeded_db: Path,
@@ -619,6 +707,10 @@ def test_legacy_full_package_without_projection_mode_remains_readable(
         "session_date",
         "effective_daily_bar_date",
         "outcome_label_anchor",
+        "strategy_eligibility_version",
+        "strategy_eligibility_state",
+        "strategy_eligibility_hash",
+        "strategy_eligibility_json",
     }
     ledger["columns"] = [
         column for column in ledger["columns"]
@@ -639,6 +731,45 @@ def test_legacy_full_package_without_projection_mode_remains_readable(
 
     validated = _validate_package_document(payload)
     assert validated["tables"]["prediction_ledger"]["row_count"] == 1
+
+
+def test_safe_v1_package_without_strategy_eligibility_remains_readable(
+    seeded_db: Path,
+) -> None:
+    package = build_checkpoint_package(seeded_db)
+    document = json.loads(package.payload.decode("utf-8"))
+    document["projection_mode"] = SAFE_PROJECTION_MODE_V1
+    ledger = document["tables"]["prediction_ledger"]
+    eligibility_columns = {
+        "strategy_eligibility_version",
+        "strategy_eligibility_state",
+        "strategy_eligibility_hash",
+        "strategy_eligibility_json",
+    }
+    ledger["columns"] = [
+        column for column in ledger["columns"]
+        if column not in eligibility_columns
+    ]
+    for row in ledger["rows"]:
+        row["schema_version"] = "prediction-ledger-v4"
+        row["opportunity_projection_version"] = "canonical-opportunity-v1"
+        for column in eligibility_columns:
+            row.pop(column, None)
+    _rehash_table(document, "prediction_ledger")
+    payload = json.dumps(
+        document,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+    from src.services.research_state_package_chain import _validate_package_document
+
+    validated = _validate_package_document(payload)
+    assert validated["projection_mode"] == SAFE_PROJECTION_MODE_V1
+    assert eligibility_columns.isdisjoint(
+        validated["tables"]["prediction_ledger"]["columns"]
+    )
 
 
 def test_forbidden_columns_never_enter_package(seeded_db: Path) -> None:
