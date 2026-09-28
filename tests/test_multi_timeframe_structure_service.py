@@ -11,6 +11,10 @@ from src.services.multi_timeframe_structure_service import (
     _human_summary,
     build_multi_timeframe_structure_context,
 )
+from src.services.pit_identity import (
+    build_completed_history_identity,
+    proven_adjustment_basis,
+)
 
 
 def _history(periods: int = 150, *, future: int = 0) -> pd.DataFrame:
@@ -233,6 +237,46 @@ def test_completed_history_identity_is_prefix_safe_and_changes_with_consumed_byt
     assert prefix_context["provider_identity"] == "AkshareFetcher"
     assert prefix_context["adjustment_basis"] == "qfq"
     assert prefix_context["available_at_max"] == "2026-09-17T10:00:00"
+
+
+def test_completed_history_identity_binds_price_basis_into_snapshot_hash(monkeypatch):
+    frame = _history(periods=40)
+    frame["data_source"] = "AkshareFetcher"
+    target = frame.iloc[-1]["date"].date()
+
+    qfq = build_completed_history_identity(
+        frame,
+        stock_code="600519",
+        market="cn",
+        target_date=target,
+    )
+    assert qfq["adjustment_basis"] == "qfq"
+    assert qfq["data_snapshot_schema_version"] == "completed-daily-history-v2"
+
+    monkeypatch.setattr(
+        "src.services.pit_identity.proven_adjustment_basis",
+        lambda _provider: "hfq",
+    )
+    hfq = build_completed_history_identity(
+        frame,
+        stock_code="600519",
+        market="cn",
+        target_date=target,
+    )
+    assert hfq["adjustment_basis"] == "hfq"
+    assert hfq["data_snapshot_identity"] != qfq["data_snapshot_identity"]
+
+
+def test_only_code_proven_static_provider_routes_claim_qfq():
+    for provider in (
+        "AkshareFetcher",
+        "TencentFetcher",
+        "EfinanceFetcher",
+        "BaostockFetcher",
+    ):
+        assert proven_adjustment_basis(provider) == "qfq"
+    assert proven_adjustment_basis("PytdxFetcher") is None
+    assert proven_adjustment_basis("TickFlowFetcher") is None
 
 
 def test_higher_timeframe_summary_preserves_material_structure_event_after_three_descriptors():

@@ -24,7 +24,7 @@ from src.services.prediction_ledger_service import PREDICTION_LEDGER_SCHEMA_VERS
 from src.storage import DatabaseManager, utc_naive_now
 
 
-PREDICTION_OUTCOME_ENGINE_VERSION = "prediction-outcome-fixed-horizon-v3"
+PREDICTION_OUTCOME_ENGINE_VERSION = "prediction-outcome-fixed-horizon-v4"
 PRIMARY_LABEL_IDENTITY = "META_TAKE_NET_POSITIVE_NEXT_OPEN_3S_FIXED_CLOSE_V1"
 PRIMARY_HORIZON_IDENTITY = "XSHG_POSTMARKET_NEXT_OPEN_3_FORWARD_SESSIONS_FIXED_CLOSE_V1"
 
@@ -197,12 +197,30 @@ class PredictionOutcomeService:
         ]
         entry_state = normalized_execution["entry_hard_nonfill_state"]
         exit_state = normalized_execution["exit_hard_nonfill_state"]
+        data_identity = build_bar_sequence_identity(
+            bars[:3],
+            stock_code=ledger.stock_code,
+            market=ledger.market,
+            purpose=PREDICTION_OUTCOME_ENGINE_VERSION,
+        )
+        price_identity_reason = self._price_identity_ineligibility_reason(
+            ledger,
+            data_identity,
+        )
 
         if missing_sessions:
             evaluation = {
                 "eval_status": "unlabelable",
                 "execution_state": "EXECUTION_UNKNOWN",
                 "unable_reason": "EXPECTED_SESSION_BAR_MISSING",
+                "entry_session": expected_sessions[0],
+                "exit_session": expected_sessions[-1],
+            }
+        elif price_identity_reason is not None:
+            evaluation = {
+                "eval_status": "unlabelable",
+                "execution_state": "PRICE_IDENTITY_UNPROVEN",
+                "unable_reason": price_identity_reason,
                 "entry_session": expected_sessions[0],
                 "exit_session": expected_sessions[-1],
             }
@@ -248,12 +266,6 @@ class PredictionOutcomeService:
                 cost_identity=normalized_cost,
                 eval_window_days=3,
             )
-        data_identity = build_bar_sequence_identity(
-            bars[:3],
-            stock_code=ledger.stock_code,
-            market=ledger.market,
-            purpose="prediction-outcome-fixed-horizon-v3",
-        )
         available_at = utc_naive_now()
         if evaluation.get("eval_status") == "completed":
             net_return = float(evaluation["net_return_pct"])
@@ -326,6 +338,30 @@ class PredictionOutcomeService:
             "disposition": disposition,
             "supersedes_outcome_hash": stored["supersedes_outcome_hash"],
         }
+
+    @staticmethod
+    def _price_identity_ineligibility_reason(
+        ledger: Any,
+        forward_identity: Mapping[str, Any],
+    ) -> Optional[str]:
+        """Fail closed before labeling when feature/outcome price semantics diverge."""
+        prediction_provider = str(getattr(ledger, "provider_identity", None) or "").strip()
+        prediction_adjustment = str(getattr(ledger, "adjustment_basis", None) or "").strip().lower()
+        prediction_snapshot = str(getattr(ledger, "data_snapshot_identity", None) or "").strip()
+        if not prediction_provider or not prediction_adjustment or not prediction_snapshot:
+            return "PREDICTION_PRICE_IDENTITY_UNPROVEN"
+
+        outcome_provider = str(forward_identity.get("provider_identity") or "").strip()
+        outcome_adjustment = str(forward_identity.get("adjustment_basis") or "").strip().lower()
+        if not outcome_provider or not outcome_adjustment:
+            return "OUTCOME_PRICE_IDENTITY_UNPROVEN"
+
+        if (
+            outcome_provider.lower() != prediction_provider.lower()
+            or outcome_adjustment != prediction_adjustment
+        ):
+            return "OUTCOME_PRICE_IDENTITY_MISMATCH"
+        return None
 
     @classmethod
     def normalize_execution_identity(cls, value: Mapping[str, Any]) -> Dict[str, Any]:

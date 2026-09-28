@@ -66,6 +66,8 @@ MUE V1 的 `pattern-trigger-v1` 不再实现第二套 Pivot 或 breakout owner�
 
 MUE V1 的 `multi-timeframe-structure-v1` 只在既有 completed daily history 上做确定性周/月 OHLCV 聚合，不新增行情源、数据库、第二 bar engine 或第二决策 owner。选定资产首次深析按需请求约 1100 个日历日的日线，以给 26 根 completed monthly bars 留出日历缓冲；这只是当前决策窗口，不是持久化行情库。交易日历必须先证明最新完成周/月边界；当前未完成的周/月 bar 不进入证据，calendar/source/period-end/warm-up 不可证明时保持 MISSING/PARTIAL。周/月首版只复用 `StockTrendAnalyzer` 的描述性趋势/量能/MACD/RSI 投影与 `price-structure-v1` 的 confirmed Pivot/Swing，明确不消费其 buy_signal/signal_score 作为跨周期独立投票；月线历史不足可以继续缺失，周线可先 READY。当前 `StockDaily` 仅保存 provider 名称、尚未持久化 `adjustment_basis`，因此输出必须标记 `cross_run_persistence_eligible=false / ADJUSTMENT_BASIS_NOT_PERSISTED`；这不会阻止同一运行内的 completed-prefix 证据，但禁止把该 SQLite 历史冒充已具备复权身份的跨运行 canonical store。日线继续由现有八族 owner 负责，60m/30m/15m/5m 在 completed-bar/session 合同未建立前保持 MISSING。Investor Brief 只填充同一个 `timeframe_thesis` seam，不新建报告模板；跨周期一致/冲突用于 context/confirmation，不能机械计成多票。
 
+MUE V1 的 historical replay 现把 Price Evidence identity 作为八证据族共同依赖的横向准入轴，而不是第九个独立投票族：historical provider fallback 必须绑定目标日期范围，completed-daily-history-v2 与 forward-bar-sequence-v2 的 hash 同时包含 exact consumed OHLCV、provider 与已证明的 adjustment basis；当前代码只对 AkShare/Tencent/EFinance/BaoStock 的固定 A 股前复权路径承认 qfq，PyTDX、TickFlow 等未证明/动态口径保持 UNKNOWN/PIT-ineligible。PredictionOutcome v4 在计算固定 3-session label 前先核 Prediction Ledger 与 forward bars 的 provider/adjustment 兼容性；缺失、混源或不兼容时只写 UNLABELABLE，不得产生 entry/exit/return/MAE/MFE 训练标签。该底座不把 StockDaily 的可覆盖缓存升级成历史版本库，也不证明 AUTO_SCREEN 历史 universe、行业估值合理价或 60m/30m/15m/5m 已 READY。行业估值仍按业务经济学选择 normalised/forward earnings、EV multiples、FCFF/DCF、PB–ROE/剩余收益、P/EV、FFO/AFFO/NAV、ETF NAV/底层估值等适用方法；技术侧均线/K线/支撑压力/形态/相对强弱/成本与多周期结构只消费这条可追溯价格身份，不能反过来补齐价格事实或重复计票。
+
 ## 生命周期、去重与状态
 
 `src/services/decision_signal_service.py` 是信号生命周期的主入口：

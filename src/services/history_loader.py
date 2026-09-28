@@ -163,11 +163,46 @@ def load_history_df(
         logger.debug("load_history_df(%s): DB read failed: %s", stock_code, e)
 
     # --- 2. Network fallback via singleton DataFetcherManager -------------
+    # Historical replay must bind the provider request to the same completed
+    # date window as the DB lookup. Passing only days would let a provider
+    # default its end date to today and make a past target_date depend on
+    # later bars.
     try:
         manager = _get_fetcher_manager()
-        df, source = manager.get_daily_data(stock_code, days=days)
+        df, source = manager.get_daily_data(
+            stock_code,
+            start_date=start.isoformat(),
+            end_date=end.isoformat(),
+            days=days,
+        )
         if df is not None and not df.empty:
-            return df, source
+            if "date" not in df.columns:
+                logger.warning(
+                    "load_history_df(%s): provider %s returned history without date identity",
+                    stock_code,
+                    source,
+                )
+                return None, "none"
+
+            frame = df.copy()
+            bar_dates = pd.to_datetime(frame["date"], errors="coerce").dt.date
+            in_window = bar_dates.notna() & (bar_dates >= start) & (bar_dates <= end)
+            frame = frame.loc[in_window].copy()
+            if frame.empty:
+                logger.warning(
+                    "load_history_df(%s): provider %s returned no bars inside %s..%s",
+                    stock_code,
+                    source,
+                    start,
+                    end,
+                )
+                return None, "none"
+
+            # DataFetcherManager chose exactly one provider for this frame.
+            # Persist that route on every consumed row so downstream PIT/price
+            # identity never has to guess from a side-channel.
+            frame["data_source"] = str(source or "").strip() or None
+            return frame, source
     except Exception as e:
         logger.warning("load_history_df(%s): DataFetcherManager failed: %s", stock_code, e)
 

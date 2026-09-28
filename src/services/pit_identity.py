@@ -17,8 +17,19 @@ from src.utils.analysis_metadata import RESEARCH_SELECTION_SOURCES
 
 PIT_IDENTITY_VERSION = "pit-identity-v1"
 ASSET_IDENTITY_VERSION = "cn-stock-asset-v1"
-DATA_SNAPSHOT_IDENTITY_VERSION = "completed-daily-history-v1"
+DATA_SNAPSHOT_IDENTITY_VERSION = "completed-daily-history-v2"
+FORWARD_BAR_SEQUENCE_IDENTITY_VERSION = "forward-bar-sequence-v2"
 RESEARCH_SELECTION_CONTEXT_VERSION = "research-selection-context-v1"
+
+_PROVEN_QFQ_PROVIDER_IDENTITIES = frozenset(
+    {
+        "akshare",
+        "aksharefetcher",
+        "tencentfetcher",
+        "efinancefetcher",
+        "baostockfetcher",
+    }
+)
 
 
 def canonical_json(value: Any) -> str:
@@ -62,9 +73,7 @@ def build_cn_stock_asset_identity(stock_code: Any, market: Any) -> Optional[Dict
 def proven_adjustment_basis(provider_identity: Any) -> Optional[str]:
     """Return an adjustment basis only for exact code-proven provider routes."""
     text = str(provider_identity or "").strip().lower()
-    if not text:
-        return None
-    if "akshare" in text or "tencentfetcher" in text:
+    if text in _PROVEN_QFQ_PROVIDER_IDENTITIES:
         return "qfq"
     return None
 
@@ -101,11 +110,14 @@ def build_completed_history_identity(
         if len(unique_sources) == 1 and len(sources) == len(rows)
         else None
     )
+    adjustment_basis = proven_adjustment_basis(provider_identity)
     payload = {
         "version": DATA_SNAPSHOT_IDENTITY_VERSION,
         "market": str(market or "").strip().lower() or None,
         "stock_code": normalize_stock_code(str(stock_code or "").strip()),
         "target_date": target_date.isoformat(),
+        "provider_identity": provider_identity,
+        "adjustment_basis": adjustment_basis,
         "rows": rows,
     }
     observed_utc = _aware_utc_naive(observed_at)
@@ -113,7 +125,7 @@ def build_completed_history_identity(
         "data_snapshot_identity": sha256_payload(payload),
         "data_snapshot_schema_version": DATA_SNAPSHOT_IDENTITY_VERSION,
         "provider_identity": provider_identity,
-        "adjustment_basis": proven_adjustment_basis(provider_identity),
+        "adjustment_basis": adjustment_basis,
     }
     if observed_utc is not None:
         result["snapshot_observed_at"] = observed_utc.isoformat()
@@ -151,17 +163,21 @@ def build_bar_sequence_identity(
         if len(unique_sources) == 1 and len(sources) == len(rows)
         else None
     )
+    adjustment_basis = proven_adjustment_basis(provider_identity)
     payload = {
-        "version": "forward-bar-sequence-v1",
+        "version": FORWARD_BAR_SEQUENCE_IDENTITY_VERSION,
         "purpose": purpose,
         "market": str(market or "").strip().lower() or None,
         "stock_code": normalize_stock_code(str(stock_code or "").strip()),
+        "provider_identity": provider_identity,
+        "adjustment_basis": adjustment_basis,
         "rows": rows,
     }
     return {
         "data_snapshot_identity": sha256_payload(payload),
+        "data_snapshot_schema_version": FORWARD_BAR_SEQUENCE_IDENTITY_VERSION,
         "provider_identity": provider_identity,
-        "adjustment_basis": proven_adjustment_basis(provider_identity),
+        "adjustment_basis": adjustment_basis,
     }
 
 

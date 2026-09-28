@@ -215,6 +215,9 @@ def _seed_prediction(
             strategy_eligibility_json=eligibility.get(
                 "strategy_eligibility_json"
             ),
+            provider_identity="AkshareFetcher",
+            adjustment_basis="qfq",
+            data_snapshot_identity="f" * 64,
             asset_identity_hash="d" * 64,
             asset_identity_json=json.dumps(
                 {
@@ -242,6 +245,8 @@ def _seed_bars(
     db: DatabaseManager,
     closes=(102.0, 104.0, 106.0),
     first_open=100.0,
+    *,
+    data_source="AkshareFetcher",
 ) -> None:
     days = (date(2026, 9, 18), date(2026, 9, 21), date(2026, 9, 22))
     with db.session_scope() as session:
@@ -256,7 +261,7 @@ def _seed_bars(
                     low=min(open_price, float(close)) - 1.0,
                     close=float(close),
                     volume=1_000_000 + index,
-                    data_source="AkshareFetcher",
+                    data_source=data_source,
                 )
             )
 
@@ -361,6 +366,66 @@ def test_wait_proven_opportunity_uses_next_open_and_third_close(isolated_db) -> 
     assert json.loads(row.execution_identity_json)["schema_version"] == "execution-identity-v1"
 
 
+def test_outcome_price_identity_must_match_prediction_provider_and_basis(isolated_db) -> None:
+    _, prediction_hash = _seed_prediction(isolated_db)
+    _seed_bars(isolated_db, data_source="BaostockFetcher")
+
+    result = PredictionOutcomeService(db_manager=isolated_db).evaluate_prediction(
+        prediction_hash=prediction_hash,
+        cost_identity=_cost_identity(),
+    )
+
+    row = PredictionOutcomeRepository(isolated_db).list_for_prediction(prediction_hash)[0]
+    assert result["status"] == "UNLABELABLE"
+    assert result["label_value"] is None
+    assert row.label_reason == "OUTCOME_PRICE_IDENTITY_MISMATCH"
+    assert row.entry_price is None
+    assert row.exit_price is None
+    assert row.net_return_pct is None
+    assert row.provider_identity == "BaostockFetcher"
+    assert row.adjustment_basis == "qfq"
+
+
+def test_unproven_outcome_adjustment_basis_cannot_create_price_label(isolated_db) -> None:
+    _, prediction_hash = _seed_prediction(isolated_db)
+    _seed_bars(isolated_db, data_source="PytdxFetcher")
+
+    result = PredictionOutcomeService(db_manager=isolated_db).evaluate_prediction(
+        prediction_hash=prediction_hash,
+        cost_identity=_cost_identity(),
+    )
+
+    row = PredictionOutcomeRepository(isolated_db).list_for_prediction(prediction_hash)[0]
+    assert result["status"] == "UNLABELABLE"
+    assert result["label_value"] is None
+    assert row.label_reason == "OUTCOME_PRICE_IDENTITY_UNPROVEN"
+    assert row.entry_price is None
+    assert row.exit_price is None
+    assert row.adjustment_basis is None
+
+
+def test_prediction_price_identity_gap_blocks_label_before_return_calculation(isolated_db) -> None:
+    _, prediction_hash = _seed_prediction(isolated_db)
+    _seed_bars(isolated_db)
+    with isolated_db.session_scope() as session:
+        ledger = session.query(PredictionLedgerRecord).filter_by(
+            prediction_hash=prediction_hash
+        ).one()
+        ledger.adjustment_basis = None
+
+    result = PredictionOutcomeService(db_manager=isolated_db).evaluate_prediction(
+        prediction_hash=prediction_hash,
+        cost_identity=_cost_identity(),
+    )
+
+    row = PredictionOutcomeRepository(isolated_db).list_for_prediction(prediction_hash)[0]
+    assert result["status"] == "UNLABELABLE"
+    assert row.label_reason == "PREDICTION_PRICE_IDENTITY_UNPROVEN"
+    assert row.entry_price is None
+    assert row.exit_price is None
+    assert row.net_return_pct is None
+
+
 def test_calendar_unproven_blocks_without_terminal_outcome(isolated_db, monkeypatch) -> None:
     _, prediction_hash = _seed_prediction(isolated_db)
     _seed_bars(isolated_db)
@@ -447,7 +512,7 @@ def test_engine_version_creates_independent_root(isolated_db) -> None:
         prediction_hash=prediction_hash,
         cost_identity=_cost_identity(),
     )
-    assert PREDICTION_OUTCOME_ENGINE_VERSION == "prediction-outcome-fixed-horizon-v3"
+    assert PREDICTION_OUTCOME_ENGINE_VERSION == "prediction-outcome-fixed-horizon-v4"
     assert second["disposition"] == "created"
     assert second["outcome_hash"] != first["outcome_hash"]
     assert second["supersedes_outcome_hash"] is None

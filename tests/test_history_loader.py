@@ -68,7 +68,12 @@ class HistoryLoaderTestCase(unittest.TestCase):
         mock_db.get_data_range.return_value = []
         mock_get_db.return_value = mock_db
 
-        fake_df = pd.DataFrame({"close": [1, 2, 3]})
+        fake_df = pd.DataFrame(
+            {
+                "date": ["2026-04-16", "2026-04-17", "2026-04-18"],
+                "close": [1, 2, 3],
+            }
+        )
         mock_fm = MagicMock()
         mock_fm.get_daily_data.return_value = (fake_df, "eastmoney")
         mock_get_fm.return_value = mock_fm
@@ -77,7 +82,47 @@ class HistoryLoaderTestCase(unittest.TestCase):
 
         self.assertIsNotNone(df)
         self.assertEqual(source, "eastmoney")
-        mock_fm.get_daily_data.assert_called_once_with("600519", days=60)
+        call = mock_fm.get_daily_data.call_args
+        self.assertEqual(call.args, ("600519",))
+        self.assertEqual(call.kwargs["end_date"], "2026-04-18")
+        self.assertEqual(call.kwargs["days"], 60)
+        self.assertLess(call.kwargs["start_date"], call.kwargs["end_date"])
+        self.assertTrue((df["date"] <= "2026-04-18").all())
+        self.assertTrue((df["data_source"] == "eastmoney").all())
+
+    @patch("src.services.history_loader._get_fetcher_manager")
+    @patch("src.storage.get_db")
+    def test_network_fallback_trims_future_rows_from_historical_prefix(
+        self,
+        mock_get_db,
+        mock_get_fm,
+    ):
+        from src.services.history_loader import load_history_df
+
+        mock_db = MagicMock()
+        mock_db.get_data_range.return_value = []
+        mock_get_db.return_value = mock_db
+
+        fake_df = pd.DataFrame(
+            {
+                "date": ["2026-04-17", "2026-04-18", "2026-04-21"],
+                "open": [1.0, 2.0, 99.0],
+                "high": [1.5, 2.5, 100.0],
+                "low": [0.5, 1.5, 98.0],
+                "close": [1.2, 2.2, 99.5],
+                "volume": [100, 200, 999],
+            }
+        )
+        mock_fm = MagicMock()
+        mock_fm.get_daily_data.return_value = (fake_df, "AkshareFetcher")
+        mock_get_fm.return_value = mock_fm
+
+        df, source = load_history_df("600519", days=60, target_date=date(2026, 4, 18))
+
+        self.assertEqual(source, "AkshareFetcher")
+        self.assertEqual(df["date"].tolist(), ["2026-04-17", "2026-04-18"])
+        self.assertEqual(df["close"].tolist(), [1.2, 2.2])
+        self.assertTrue((df["data_source"] == "AkshareFetcher").all())
 
     # ------------------------------------------------------------------
     # ContextVar integration

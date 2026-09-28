@@ -153,8 +153,15 @@ class DailyHistoryCacheToolTest(unittest.TestCase):
              patch("src.services.history_loader._get_fetcher_manager", return_value=manager):
             result = self._run_with_frozen_date(target, "600519", days=60)
 
-        manager.get_daily_data.assert_called_once_with("600519", days=60)
-        db.save_daily_data.assert_called_once_with(df, "600519", "Fetcher")
+        call = manager.get_daily_data.call_args
+        self.assertEqual(call.args, ("600519",))
+        self.assertEqual(call.kwargs["end_date"], target.isoformat())
+        self.assertEqual(call.kwargs["days"], 60)
+        saved_df, saved_code, saved_source = db.save_daily_data.call_args.args
+        self.assertEqual(saved_code, "600519")
+        self.assertEqual(saved_source, "Fetcher")
+        self.assertTrue((saved_df["data_source"] == "Fetcher").all())
+        self.assertEqual(saved_df["date"].tolist(), [target])
         self.assertFalse(result["cache_hit"])
         self.assertEqual(result["source"], "Fetcher")
 
@@ -191,7 +198,10 @@ class DailyHistoryCacheToolTest(unittest.TestCase):
              patch("src.services.history_loader._get_fetcher_manager", return_value=manager):
             result = self._run_with_frozen_date(target, "600519", days=60)
 
-        manager.get_daily_data.assert_called_once_with("600519", days=60)
+        call = manager.get_daily_data.call_args
+        self.assertEqual(call.args, ("600519",))
+        self.assertEqual(call.kwargs["end_date"], target.isoformat())
+        self.assertEqual(call.kwargs["days"], 60)
         self.assertFalse(result["cache_hit"])
         self.assertEqual(result["source"], "Fetcher")
 
@@ -220,7 +230,10 @@ class DailyHistoryCacheToolTest(unittest.TestCase):
              patch("src.services.history_loader._get_fetcher_manager", return_value=manager):
             result = self._run_with_frozen_date(target, "600519", days=999)
 
-        manager.get_daily_data.assert_called_once_with("600519", days=365)
+        call = manager.get_daily_data.call_args
+        self.assertEqual(call.args, ("600519",))
+        self.assertEqual(call.kwargs["end_date"], target.isoformat())
+        self.assertEqual(call.kwargs["days"], 365)
         self.assertEqual(result["requested_days"], 999)
         self.assertEqual(result["effective_days"], 365)
         self.assertIn("warning", result)
