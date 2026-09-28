@@ -23,10 +23,12 @@ from src.services.evidence_flywheel_runtime import (
     EvidenceFlywheelRuntimeError,
     _build_parser,
     _database_file_identity,
+    _require_fresh_sqlite_file,
     _write_receipt_file,
     build_pit_manifest_receipt,
     evaluate_prediction_outcome,
     record_canonical_run,
+    replay_specified_codes_daily_sessions,
 )
 from src.services.pit_dataset_service import PITDatasetService
 from src.storage import DatabaseManager
@@ -274,6 +276,202 @@ def test_record_phase_reuses_bounded_pipeline_and_restores_config(monkeypatch) -
     assert config.enable_fundamental_pipeline is True
     assert config.report_integrity_enabled is True
     assert config.searxng_public_instances_enabled is True
+
+
+def _fake_replay_record_runner(expected_sessions: list[date], code_sha: str, calls: list[dict]):
+    def runner(**kwargs):
+        index = len(calls)
+        session_date = expected_sessions[index]
+        session_text = session_date.isoformat()
+        calls.append(kwargs)
+        receipt = _ledger_receipt()
+        receipt["prediction_hash"] = f"{index + 1:064x}"
+        receipt["session_date"] = session_text
+        receipt["effective_daily_bar_date"] = session_text
+        receipt["outcome_label_anchor"] = session_text
+        receipt["data_as_of"] = session_text
+        return {
+            "schema_version": "evidence-flywheel-runtime-receipt-v1",
+            "phase": "record",
+            "status": "RECORDED",
+            "record_count": 1,
+            "notification_suppressed": True,
+            "training_requested": False,
+            "model_request_budget": 0,
+            "model_request_count": 0,
+            "ledger_receipts": [receipt],
+            "ledger_identities": [
+                {
+                    "stock_code": "600519",
+                    "code_sha": code_sha,
+                    "selection_source": "SPECIFIED_CODES",
+                    "strategy_id": "stock_trend_quality_pullback_v1",
+                    "strategy_eligibility_state": "UNKNOWN",
+                    "decision_phase": "postmarket",
+                    "session_date": session_text,
+                    "effective_daily_bar_date": session_text,
+                }
+            ],
+            "artifact_policy": {
+                "receipt_only": True,
+                "report_files_created": False,
+            },
+        }
+
+    return runner
+
+
+def test_replay_specified_codes_sessions_are_ordered_receipt_only(tmp_path) -> None:
+    sessions = [date(2026, 9, 17), date(2026, 9, 18)]
+    code_sha = "7" * 40
+    calls: list[dict] = []
+    config = SimpleNamespace(database_path=str(tmp_path / "replay.db"))
+
+    receipt = replay_specified_codes_daily_sessions(
+        stock_code="600519",
+        session_dates=sessions,
+        code_sha=code_sha,
+        config=config,
+        reference_time=datetime(2026, 9, 21, 10, 0, tzinfo=timezone.utc),
+        record_runner=_fake_replay_record_runner(sessions, code_sha, calls),
+    )
+
+    assert receipt["status"] == "REPLAY_RECORDED"
+    assert receipt["selection_source"] == "SPECIFIED_CODES"
+    assert receipt["session_dates"] == ["2026-09-17", "2026-09-18"]
+    assert receipt["session_count"] == 2
+    assert receipt["artifact_policy"] == {
+        "receipt_only": True,
+        "report_files_created": False,
+    }
+    assert receipt["outcome_requested"] is False
+    assert receipt["pit_manifest_requested"] is False
+    assert receipt["training_requested"] is False
+    assert len(calls) == 2
+    assert [call["current_time"].isoformat() for call in calls] == [
+        "2026-09-17T10:00:00+00:00",
+        "2026-09-18T10:00:00+00:00",
+    ]
+    assert all(call["receipt_only"] is True for call in calls)
+    assert all(call["closed_world_database_receipt"] is False for call in calls)
+    assert all(call["require_single_stock"] is True for call in calls)
+
+
+@pytest.mark.parametrize(
+    ("sessions", "message"),
+    (
+        ([], "explicit session dates"),
+        ([date(2026, 9, 17), date(2026, 9, 17)], "duplicate sessions"),
+        ([date(2026, 9, 18), date(2026, 9, 17)], "strictly ascending"),
+        ([date(2026, 9, 19)], "XSHG trading session"),
+        ([date(2026, 9, 22)], "future sessions"),
+        ([date(2026, 9, 17)] * 21, "at most 20 sessions"),
+    ),
+)
+def test_replay_rejects_invalid_session_sequences_before_record_runner(
+    tmp_path,
+    sessions,
+    message,
+) -> None:
+    calls = {"count": 0}
+
+    def runner(**kwargs):
+        calls["count"] += 1
+        raise AssertionError("record runner must not execute")
+
+    with pytest.raises(EvidenceFlywheelBoundaryError, match=message):
+        replay_specified_codes_daily_sessions(
+            stock_code="600519",
+            session_dates=sessions,
+            code_sha="7" * 40,
+            config=SimpleNamespace(database_path=str(tmp_path / "replay.db")),
+            reference_time=datetime(2026, 9, 21, 10, 0, tzinfo=timezone.utc),
+            record_runner=runner,
+        )
+    assert calls["count"] == 0
+
+
+def test_fresh_database_probe_releases_sqlite_file_handle(tmp_path) -> None:
+    database = tmp_path / "occupied.db"
+    connection = sqlite3.connect(database)
+    connection.execute("CREATE TABLE occupied (id INTEGER PRIMARY KEY)")
+    connection.execute("INSERT INTO occupied DEFAULT VALUES")
+    connection.commit()
+    connection.close()
+
+    with pytest.raises(EvidenceFlywheelRuntimeError, match="fresh isolated database"):
+        _require_fresh_sqlite_file(database)
+
+    moved = tmp_path / "moved.db"
+    database.replace(moved)
+    moved.replace(database)
+
+
+def test_replay_rejects_nonfresh_database_before_record_runner(tmp_path) -> None:
+    database = tmp_path / "replay.db"
+    with sqlite3.connect(database) as connection:
+        connection.execute("CREATE TABLE occupied (id INTEGER PRIMARY KEY)")
+        connection.execute("INSERT INTO occupied DEFAULT VALUES")
+    calls = {"count": 0}
+
+    def runner(**kwargs):
+        calls["count"] += 1
+        raise AssertionError("record runner must not execute")
+
+    with pytest.raises(EvidenceFlywheelRuntimeError, match="fresh isolated database"):
+        replay_specified_codes_daily_sessions(
+            stock_code="600519",
+            session_dates=[date(2026, 9, 17)],
+            code_sha="7" * 40,
+            config=SimpleNamespace(database_path=str(database)),
+            reference_time=datetime(2026, 9, 21, 10, 0, tzinfo=timezone.utc),
+            record_runner=runner,
+        )
+    assert calls["count"] == 0
+
+
+def test_replay_rejects_daily_only_exact_strategy_eligibility_claim(tmp_path) -> None:
+    session_date = date(2026, 9, 17)
+    code_sha = "7" * 40
+    calls: list[dict] = []
+    runner = _fake_replay_record_runner([session_date], code_sha, calls)
+
+    def fraudulent_runner(**kwargs):
+        receipt = runner(**kwargs)
+        receipt["ledger_identities"][0]["strategy_eligibility_state"] = "ELIGIBLE"
+        return receipt
+
+    with pytest.raises(EvidenceFlywheelRuntimeError, match="30m hard trigger"):
+        replay_specified_codes_daily_sessions(
+            stock_code="600519",
+            session_dates=[session_date],
+            code_sha=code_sha,
+            config=SimpleNamespace(database_path=str(tmp_path / "replay.db")),
+            reference_time=datetime(2026, 9, 21, 10, 0, tzinfo=timezone.utc),
+            record_runner=fraudulent_runner,
+        )
+
+
+def test_replay_rejects_persisted_ledger_session_mismatch(tmp_path) -> None:
+    session_date = date(2026, 9, 17)
+    code_sha = "7" * 40
+    calls: list[dict] = []
+    runner = _fake_replay_record_runner([session_date], code_sha, calls)
+
+    def mismatched_runner(**kwargs):
+        receipt = runner(**kwargs)
+        receipt["ledger_identities"][0]["session_date"] = "2026-09-16"
+        return receipt
+
+    with pytest.raises(EvidenceFlywheelRuntimeError, match="Ledger session mismatch"):
+        replay_specified_codes_daily_sessions(
+            stock_code="600519",
+            session_dates=[session_date],
+            code_sha=code_sha,
+            config=SimpleNamespace(database_path=str(tmp_path / "replay.db")),
+            reference_time=datetime(2026, 9, 21, 10, 0, tzinfo=timezone.utc),
+            record_runner=mismatched_runner,
+        )
 
 
 @pytest.mark.parametrize(
@@ -656,6 +854,7 @@ def test_native_zero_model_record_writes_only_the_admitted_temp_db_surfaces(
             current_time=datetime(2026, 9, 24, 10, 0, tzinfo=timezone.utc),
             require_single_stock=True,
             closed_world_database_receipt=True,
+            receipt_only=True,
         )
 
     after = _table_counts(isolated_db)
@@ -698,8 +897,7 @@ def test_native_zero_model_record_writes_only_the_admitted_temp_db_surfaces(
     send_all.assert_not_called()
     send_with_results.assert_not_called()
     report_files = sorted((tmp_path / "reports").glob("report_*.md"))
-    assert len(report_files) == 1
-    assert "600519" in report_files[0].read_text(encoding="utf-8")
+    assert report_files == []
     assert not repository_reports.exists()
     assert len(fetcher.daily_calls) == 1
     database_receipt = receipt["database_receipt"]
@@ -741,10 +939,14 @@ def test_native_zero_model_record_writes_only_the_admitted_temp_db_surfaces(
         assert ledger_identity["available_at_max"].endswith("Z")
     assert receipt["artifact_policy"] == {
         "receipt_only": True,
+        "report_files_created": False,
         "database_uploaded": False,
         "reports_uploaded": False,
         "logs_uploaded": False,
     }
+    assert receipt["route_boundaries"]["report_projection"] == "SUPPRESSED"
+    assert receipt["ledger_identities"][0]["code_sha"] == "8" * 40
+    assert receipt["ledger_identities"][0]["selection_source"] == "SPECIFIED_CODES"
 
 
 def test_closed_database_identity_and_receipt_file_are_deterministic(tmp_path) -> None:

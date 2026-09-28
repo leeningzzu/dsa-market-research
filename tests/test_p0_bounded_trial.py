@@ -1,8 +1,11 @@
 import argparse
 import os
 import threading
+from datetime import date
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+
+import pandas as pd
 
 import pytest
 
@@ -398,6 +401,59 @@ def test_bounded_audit_only_mode_saves_full_report_without_notification_projecti
     pipeline.notifier.generate_brief_report.assert_not_called()
     pipeline.notifier.send_to_email.assert_not_called()
     pipeline.notifier.send.assert_not_called()
+
+
+
+def test_bounded_receipt_only_mode_skips_report_projection_and_files():
+    pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+    pipeline.p0_receipt_only = True
+    pipeline.notifier = MagicMock()
+    results = [_canonical_result("600519")]
+
+    report = pipeline._finalize_p0_bounded_run(
+        results,
+        ["600519"],
+        ReportType.SIMPLE,
+        send_notification=False,
+    )
+
+    assert report == "P0_RECEIPT_ONLY"
+    pipeline.notifier.generate_aggregate_report.assert_not_called()
+    pipeline.notifier.save_report_to_file.assert_not_called()
+    pipeline.notifier.generate_brief_report.assert_not_called()
+    pipeline.notifier.send_to_email.assert_not_called()
+    pipeline.notifier.send.assert_not_called()
+
+
+def test_receipt_only_fetch_trims_future_provider_bars_before_save():
+    pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+    pipeline.p0_receipt_only = True
+    pipeline.fetcher_manager = MagicMock()
+    pipeline.db = MagicMock()
+    pipeline._resolve_resume_target_date = MagicMock(return_value=date(2026, 9, 17))
+    pipeline.fetcher_manager.get_stock_name.return_value = "fixture"
+    pipeline.db.has_today_data.return_value = False
+    frame = pd.DataFrame(
+        {
+            "date": [date(2026, 9, 16), date(2026, 9, 17), date(2026, 9, 18)],
+            "close": [100.0, 101.0, 999.0],
+        }
+    )
+    pipeline.fetcher_manager.get_daily_data.return_value = (frame, "FixtureSource")
+    pipeline.db.save_daily_data.return_value = 2
+
+    success, error = pipeline.fetch_and_save_stock_data(
+        "600519",
+        current_time=None,
+    )
+
+    assert success is True
+    assert error is None
+    fetch_call = pipeline.fetcher_manager.get_daily_data.call_args
+    assert fetch_call.kwargs["end_date"] == "2026-09-17"
+    saved_frame = pipeline.db.save_daily_data.call_args.args[0]
+    assert saved_frame["date"].tolist() == [date(2026, 9, 16), date(2026, 9, 17)]
+    assert saved_frame["close"].tolist() == [100.0, 101.0]
 
 
 @pytest.mark.parametrize(

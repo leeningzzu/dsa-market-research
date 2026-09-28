@@ -237,6 +237,7 @@ class StockAnalysisPipeline:
     p0_bounded_trial = False
     p0_stock_codes: Tuple[str, ...] = ()
     p0_suppress_notification = False
+    p0_receipt_only = False
     p0_acceptance_context: Optional[Dict[str, Any]] = None
     
     def __init__(
@@ -257,6 +258,7 @@ class StockAnalysisPipeline:
         p0_bounded_trial: bool = False,
         p0_stock_codes: Optional[List[str]] = None,
         p0_suppress_notification: bool = False,
+        p0_receipt_only: bool = False,
         p0_acceptance_context: Optional[Dict[str, Any]] = None,
         p0_model_request_budget: Optional[int] = None,
         research_selection_context: Optional[Dict[str, Any]] = None,
@@ -273,6 +275,7 @@ class StockAnalysisPipeline:
         self.p0_bounded_trial = bool(p0_bounded_trial)
         self.p0_stock_codes = list(p0_stock_codes or [])
         self.p0_suppress_notification = bool(p0_suppress_notification)
+        self.p0_receipt_only = bool(p0_receipt_only)
         self.p0_acceptance_context = (
             dict(p0_acceptance_context) if isinstance(p0_acceptance_context, dict) else {}
         )
@@ -289,6 +292,12 @@ class StockAnalysisPipeline:
             )
         if self.p0_suppress_notification and not self.p0_bounded_trial:
             raise P0BoundedTrialError("P0 notification suppression requires bounded mode")
+        if self.p0_receipt_only and not (
+            self.p0_bounded_trial and self.p0_suppress_notification
+        ):
+            raise P0BoundedTrialError(
+                "P0 receipt-only mode requires bounded notification-suppressed mode"
+            )
         if self.p0_bounded_trial and not 1 <= len(self.p0_stock_codes) <= 2:
             raise P0BoundedTrialError("P0 requires exactly one or two target stocks")
         self.max_workers = 1 if self.p0_bounded_trial else (max_workers or self.config.max_workers)
@@ -464,6 +473,21 @@ class StockAnalysisPipeline:
 
             if df is None or df.empty:
                 return False, "获取数据为空"
+
+            if bool(getattr(self, "p0_receipt_only", False)):
+                if "date" not in df.columns:
+                    return False, "receipt-only historical replay requires dated bars"
+                bounded = df.copy()
+                bounded_dates = pd.to_datetime(bounded["date"], errors="coerce").dt.date
+                mask = (
+                    bounded_dates.notna()
+                    & (bounded_dates >= history_start)
+                    & (bounded_dates <= target_date)
+                )
+                bounded = bounded.loc[mask].copy()
+                if bounded.empty:
+                    return False, "receipt-only historical replay returned no in-window bars"
+                df = bounded
 
             # 保存到数据库
             saved_count = self.db.save_daily_data(df, code, source_name)
@@ -4097,6 +4121,12 @@ class StockAnalysisPipeline:
             raise P0BoundedTrialError("P0 requires the aggregate simple report")
         for result in results:
             assert_canonical_consumer_consistency(result)
+
+        if bool(getattr(self, "p0_receipt_only", False)):
+            logger.info(
+                "P0 bounded receipt-only run; report rendering, local report files, and outbound notifications are suppressed"
+            )
+            return "P0_RECEIPT_ONLY"
 
         audit_report = self._generate_aggregate_report(results, report_type)
         if not isinstance(audit_report, str) or not audit_report.strip():

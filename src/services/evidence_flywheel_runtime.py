@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timezone
 import hashlib
 import json
 import os
@@ -19,7 +19,13 @@ import re
 import sqlite3
 import sys
 from typing import Any, Callable, Dict, Iterator, Mapping, Optional, Sequence
+
+from src.core.trading_calendar import (
+    resolve_historical_daily_bar_date,
+    resolve_latest_completed_session_fail_closed,
+)
 import uuid
+from zoneinfo import ZoneInfo
 
 from src.services.pit_identity import (
     build_cn_stock_asset_identity,
@@ -35,6 +41,9 @@ from src.services.research_state_projection import (
 RECEIPT_SCHEMA_VERSION = "evidence-flywheel-runtime-receipt-v1"
 MAX_IDENTITY_FILE_BYTES = 64 * 1024
 ZERO_EXTERNAL_MODEL_REQUEST_BUDGET = 0
+MAX_HISTORICAL_REPLAY_SESSIONS = 20
+_CN_REPLAY_TIMEZONE = ZoneInfo("Asia/Shanghai")
+_CN_REPLAY_POSTMARKET_TIME = time(hour=18, minute=0)
 _SHA40_RE = re.compile(r"^[0-9a-f]{40}$")
 _SHA64_RE = re.compile(r"^[0-9a-f]{64}$")
 _CLOSED_WORLD_ALLOWED_NONZERO_DELTAS = frozenset(
@@ -268,6 +277,69 @@ def _validated_codes(
     return normalized
 
 
+def _validated_replay_sessions(
+    values: Sequence[Any],
+    *,
+    reference_time: Optional[datetime] = None,
+) -> list[date]:
+    if isinstance(values, (str, bytes)) or not values:
+        raise EvidenceFlywheelBoundaryError("historical replay requires explicit session dates")
+    if len(values) > MAX_HISTORICAL_REPLAY_SESSIONS:
+        raise EvidenceFlywheelBoundaryError(
+            f"historical replay allows at most {MAX_HISTORICAL_REPLAY_SESSIONS} sessions"
+        )
+
+    sessions: list[date] = []
+    for raw in values:
+        if isinstance(raw, datetime):
+            raise EvidenceFlywheelBoundaryError("historical replay sessions must be dates, not datetimes")
+        if isinstance(raw, date):
+            session_date = raw
+        elif isinstance(raw, str):
+            try:
+                session_date = date.fromisoformat(raw.strip())
+            except ValueError as exc:
+                raise EvidenceFlywheelBoundaryError(
+                    "historical replay sessions must be ISO dates"
+                ) from exc
+        else:
+            raise EvidenceFlywheelBoundaryError(
+                "historical replay sessions must be ISO dates"
+            )
+        sessions.append(session_date)
+
+    if len(set(sessions)) != len(sessions):
+        raise EvidenceFlywheelBoundaryError("historical replay rejects duplicate sessions")
+    if sessions != sorted(sessions):
+        raise EvidenceFlywheelBoundaryError("historical replay sessions must be strictly ascending")
+
+    latest_completed = resolve_latest_completed_session_fail_closed(
+        "cn",
+        current_time=reference_time,
+    )
+    if latest_completed is None:
+        raise EvidenceFlywheelBoundaryError(
+            "historical replay cannot prove the latest completed XSHG session"
+        )
+    for session_date in sessions:
+        if session_date > latest_completed:
+            raise EvidenceFlywheelBoundaryError("historical replay rejects future sessions")
+        if resolve_historical_daily_bar_date("cn", session_date, "postmarket") != session_date:
+            raise EvidenceFlywheelBoundaryError(
+                f"historical replay requires an XSHG trading session: {session_date.isoformat()}"
+            )
+    return sessions
+
+
+def _replay_postmarket_current_time(session_date: date) -> datetime:
+    local = datetime.combine(
+        session_date,
+        _CN_REPLAY_POSTMARKET_TIME,
+        tzinfo=_CN_REPLAY_TIMEZONE,
+    )
+    return local.astimezone(timezone.utc)
+
+
 def _preexisting_nonzero_table_counts(
     counts: Mapping[str, int],
 ) -> Dict[str, int]:
@@ -320,30 +392,34 @@ def _require_fresh_sqlite_file(path: Path) -> Dict[str, Any]:
             "table_counts_before_factory": {},
         }
 
+    connection = None
     try:
-        with sqlite3.connect(
+        connection = sqlite3.connect(
             f"{database_path.as_uri()}?mode=ro",
             uri=True,
-        ) as connection:
-            table_names = sorted(
-                str(row[0])
-                for row in connection.execute(
-                    "SELECT name FROM sqlite_master "
-                    "WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
-                ).fetchall()
+        )
+        table_names = sorted(
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+            ).fetchall()
+        )
+        counts = {}
+        for table_name in table_names:
+            quoted_name = table_name.replace('"', '""')
+            counts[table_name] = int(
+                connection.execute(
+                    f'SELECT COUNT(*) FROM "{quoted_name}"'
+                ).fetchone()[0]
             )
-            counts = {}
-            for table_name in table_names:
-                quoted_name = table_name.replace('"', '""')
-                counts[table_name] = int(
-                    connection.execute(
-                        f'SELECT COUNT(*) FROM "{quoted_name}"'
-                    ).fetchone()[0]
-                )
     except sqlite3.Error as exc:
         raise EvidenceFlywheelRuntimeError(
             "closed-world receipt cannot inspect the SQLite database before Pipeline construction"
         ) from exc
+    finally:
+        if connection is not None:
+            connection.close()
 
     _require_fresh_table_counts(counts, stage="Pipeline construction")
     return {
@@ -653,6 +729,7 @@ def record_canonical_run(
     current_time: Optional[datetime] = None,
     require_single_stock: bool = False,
     closed_world_database_receipt: bool = False,
+    receipt_only: bool = False,
 ) -> Dict[str, Any]:
     """Run one bounded, notification-suppressed canonical analysis into Ledger."""
     codes = _validated_codes(
@@ -687,6 +764,7 @@ def record_canonical_run(
             p0_bounded_trial=True,
             p0_stock_codes=codes,
             p0_suppress_notification=True,
+            p0_receipt_only=bool(receipt_only),
             p0_model_request_budget=ZERO_EXTERNAL_MODEL_REQUEST_BUDGET,
             research_selection_context=selection_context,
             research_code_sha=bound_code_sha,
@@ -748,6 +826,25 @@ def record_canonical_run(
         seen_hashes.add(prediction_hash)
         receipts.append(validated_receipt)
 
+    ledger_identities = []
+    if receipt_only:
+        receipt_db = getattr(pipeline, "db", None)
+        if receipt_db is None:
+            raise EvidenceFlywheelRuntimeError(
+                "receipt-only record requires the native Pipeline database owner"
+            )
+        for item in receipts:
+            identity = _ledger_identity_snapshot(receipt_db, item["prediction_hash"])
+            if identity.get("code_sha") != bound_code_sha:
+                raise EvidenceFlywheelRuntimeError(
+                    "receipt-only record found Ledger code_sha drift"
+                )
+            if identity.get("selection_source") != "SPECIFIED_CODES":
+                raise EvidenceFlywheelRuntimeError(
+                    "receipt-only record requires SPECIFIED_CODES Ledger identity"
+                )
+            ledger_identities.append(identity)
+
     response = {
         "schema_version": RECEIPT_SCHEMA_VERSION,
         "phase": "record",
@@ -762,6 +859,24 @@ def record_canonical_run(
         "model_request_count": observed_model_request_count,
         "ledger_receipts": receipts,
     }
+    if receipt_only:
+        response["ledger_identities"] = ledger_identities
+        response["artifact_policy"] = {
+            "receipt_only": True,
+            "report_files_created": False,
+            "database_uploaded": False,
+            "reports_uploaded": False,
+            "logs_uploaded": False,
+        }
+        response["route_boundaries"] = {
+            "search_news": "DISABLED_BY_P0_BOUNDED_TRIAL",
+            "agent": "DISABLED",
+            "notification": "SUPPRESSED",
+            "report_projection": "SUPPRESSED",
+            "outcome": "NOT_REQUESTED",
+            "pit_manifest": "NOT_REQUESTED",
+            "training": "NOT_REQUESTED",
+        }
     if closed_world_database_receipt:
         if db_manager is None or database_before is None:
             raise EvidenceFlywheelRuntimeError(
@@ -774,7 +889,8 @@ def record_canonical_run(
             expected_record_count=len(codes),
         )
         response["artifact_policy"] = {
-            "receipt_only": True,
+            "receipt_only": bool(receipt_only),
+            "report_files_created": not bool(receipt_only),
             "database_uploaded": False,
             "reports_uploaded": False,
             "logs_uploaded": False,
@@ -783,10 +899,141 @@ def record_canonical_run(
             "search_news": "DISABLED_BY_P0_BOUNDED_TRIAL",
             "agent": "DISABLED",
             "notification": "SUPPRESSED",
+            "report_projection": (
+                "SUPPRESSED" if receipt_only else "LOCAL_AUDIT_FILE"
+            ),
             "external_durability": "NOT_REQUESTED",
             "training": "NOT_REQUESTED",
         }
     return response
+
+
+def replay_specified_codes_daily_sessions(
+    *,
+    stock_code: str,
+    session_dates: Sequence[Any],
+    code_sha: str,
+    config: Optional[Any] = None,
+    pipeline_factory: Optional[Callable[..., Any]] = None,
+    reference_time: Optional[datetime] = None,
+    record_runner: Optional[Callable[..., Mapping[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """Replay explicit XSHG postmarket sessions through the existing bounded Pipeline."""
+    code = _validated_codes([stock_code], require_single_stock=True)[0]
+    bound_code_sha = _require_sha(code_sha, length=40, field="code_sha")
+    sessions = _validated_replay_sessions(
+        session_dates,
+        reference_time=reference_time,
+    )
+    if config is None:
+        from src.config import get_config
+
+        config = get_config()
+    _require_fresh_sqlite_file(_resolve_database_file(config))
+    runner = record_runner or record_canonical_run
+
+    session_receipts = []
+    for session_date in sessions:
+        current_time = _replay_postmarket_current_time(session_date)
+        receipt = runner(
+            stock_codes=[code],
+            code_sha=bound_code_sha,
+            config=config,
+            pipeline_factory=pipeline_factory,
+            current_time=current_time,
+            require_single_stock=True,
+            closed_world_database_receipt=False,
+            receipt_only=True,
+        )
+        if not isinstance(receipt, Mapping):
+            raise EvidenceFlywheelRuntimeError("historical replay record returned no receipt")
+        if receipt.get("phase") != "record" or receipt.get("status") != "RECORDED":
+            raise EvidenceFlywheelRuntimeError("historical replay record phase did not complete")
+        if receipt.get("record_count") != 1:
+            raise EvidenceFlywheelRuntimeError("historical replay requires exactly one Ledger row per session")
+        if receipt.get("notification_suppressed") is not True:
+            raise EvidenceFlywheelRuntimeError("historical replay must suppress notification")
+        if receipt.get("model_request_count") != 0 or receipt.get("training_requested") is not False:
+            raise EvidenceFlywheelRuntimeError("historical replay forbids model or training effects")
+        artifact_policy = receipt.get("artifact_policy")
+        if not isinstance(artifact_policy, Mapping) or artifact_policy.get("receipt_only") is not True:
+            raise EvidenceFlywheelRuntimeError("historical replay requires receipt-only artifact policy")
+        if artifact_policy.get("report_files_created") is not False:
+            raise EvidenceFlywheelRuntimeError("historical replay forbids local report artifacts")
+
+        ledger_receipts = receipt.get("ledger_receipts")
+        ledger_identities = receipt.get("ledger_identities")
+        if not isinstance(ledger_receipts, list) or len(ledger_receipts) != 1:
+            raise EvidenceFlywheelRuntimeError("historical replay requires one Ledger receipt")
+        if not isinstance(ledger_identities, list) or len(ledger_identities) != 1:
+            raise EvidenceFlywheelRuntimeError("historical replay requires one persisted Ledger identity")
+        ledger_receipt = dict(ledger_receipts[0])
+        ledger_identity = dict(ledger_identities[0])
+        session_text = session_date.isoformat()
+        if ledger_identity.get("stock_code") != code:
+            raise EvidenceFlywheelRuntimeError("historical replay Ledger stock identity mismatch")
+        if ledger_identity.get("code_sha") != bound_code_sha:
+            raise EvidenceFlywheelRuntimeError("historical replay Ledger code_sha mismatch")
+        if ledger_identity.get("selection_source") != "SPECIFIED_CODES":
+            raise EvidenceFlywheelRuntimeError("historical replay selection source drift")
+        if (
+            ledger_identity.get("strategy_id") == "stock_trend_quality_pullback_v1"
+            and ledger_identity.get("strategy_eligibility_state") == "ELIGIBLE"
+        ):
+            raise EvidenceFlywheelRuntimeError(
+                "daily-only historical replay cannot claim the exact stock strategy is ELIGIBLE without its 30m hard trigger"
+            )
+        if ledger_identity.get("decision_phase") != "postmarket":
+            raise EvidenceFlywheelRuntimeError("historical replay Ledger phase mismatch")
+        if ledger_identity.get("session_date") != session_text:
+            raise EvidenceFlywheelRuntimeError("historical replay Ledger session mismatch")
+        if ledger_identity.get("effective_daily_bar_date") != session_text:
+            raise EvidenceFlywheelRuntimeError("historical replay effective daily bar mismatch")
+        if ledger_receipt.get("session_date") != session_text:
+            raise EvidenceFlywheelRuntimeError("historical replay receipt session mismatch")
+        if ledger_receipt.get("effective_daily_bar_date") != session_text:
+            raise EvidenceFlywheelRuntimeError("historical replay receipt daily bar mismatch")
+
+        session_receipts.append(
+            {
+                "requested_session_date": session_text,
+                "current_time_utc": current_time.isoformat().replace("+00:00", "Z"),
+                "prediction_hash": ledger_receipt.get("prediction_hash"),
+                "pit_eligible": ledger_receipt.get("pit_eligible"),
+                "pit_ineligibility_reasons": list(
+                    ledger_receipt.get("pit_ineligibility_reasons") or []
+                ),
+                "strategy_eligibility_state": ledger_receipt.get(
+                    "strategy_eligibility_state"
+                ),
+                "strategy_eligibility_reason_codes": list(
+                    ledger_receipt.get("strategy_eligibility_reason_codes") or []
+                ),
+                "ledger_identity": ledger_identity,
+            }
+        )
+
+    return {
+        "schema_version": RECEIPT_SCHEMA_VERSION,
+        "phase": "historical-replay-record",
+        "status": "REPLAY_RECORDED",
+        "stock_code": code,
+        "code_sha": bound_code_sha,
+        "selection_source": "SPECIFIED_CODES",
+        "session_count": len(session_receipts),
+        "session_dates": [item["requested_session_date"] for item in session_receipts],
+        "notification_suppressed": True,
+        "model_request_budget": ZERO_EXTERNAL_MODEL_REQUEST_BUDGET,
+        "model_request_count": 0,
+        "training_requested": False,
+        "outcome_requested": False,
+        "pit_manifest_requested": False,
+        "artifact_policy": {
+            "receipt_only": True,
+            "report_files_created": False,
+        },
+        "session_receipts": session_receipts,
+    }
 
 
 def evaluate_prediction_outcome(
@@ -896,6 +1143,15 @@ def _build_parser() -> argparse.ArgumentParser:
     record.add_argument("--closed-world-receipt", action="store_true")
     record.add_argument("--receipt-file")
 
+    replay = subparsers.add_parser(
+        "replay-record",
+        help="record explicit historical SPECIFIED_CODES sessions without report artifacts",
+    )
+    replay.add_argument("--stock", required=True, help="one ordinary CN stock code")
+    replay.add_argument("--sessions", required=True, help="comma-separated ISO XSHG sessions")
+    replay.add_argument("--code-sha", default=os.getenv("GITHUB_SHA", ""))
+    replay.add_argument("--receipt-file")
+
     evaluate = subparsers.add_parser("evaluate-outcome", help="evaluate one matured prediction")
     evaluate.add_argument("--prediction-hash", required=True)
     evaluate.add_argument("--cost-identity-file", required=True)
@@ -944,6 +1200,17 @@ def main(argv: Optional[list[str]] = None) -> int:
                 receipt["database_receipt"].update(
                     _database_file_identity(database_file)
                 )
+            if args.receipt_file:
+                _write_receipt_file(args.receipt_file, receipt)
+        elif args.phase == "replay-record":
+            from src.config import get_config
+
+            receipt = replay_specified_codes_daily_sessions(
+                stock_code=args.stock,
+                session_dates=[item.strip() for item in args.sessions.split(",") if item.strip()],
+                code_sha=args.code_sha,
+                config=get_config(),
+            )
             if args.receipt_file:
                 _write_receipt_file(args.receipt_file, receipt)
         elif args.phase == "evaluate-outcome":
