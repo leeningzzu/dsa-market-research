@@ -36,6 +36,7 @@ from src.services.research_state_projection import (
     STRATEGY_ELIGIBILITY_SCHEMA_VERSION,
     build_strategy_eligibility_identity,
 )
+from src.services.evidence_traceability_registry import MANIFEST_HASH, digest
 
 
 RECEIPT_SCHEMA_VERSION = "evidence-flywheel-runtime-receipt-v1"
@@ -514,6 +515,14 @@ def _ledger_identity_snapshot(db_manager: Any, prediction_hash: str) -> Dict[str
                 raise EvidenceFlywheelRuntimeError(
                     f"closed-world receipt found inconsistent {field}"
                 )
+        trace_identity = None
+        if row.feature_schema_version == "stock-factor-numeric-evidence-v2":
+            payload = json.loads(row.evidence_json)
+            trace_identity = payload.get("trace_identity") if isinstance(payload, dict) else None
+            if (digest(payload) != row.evidence_hash or not isinstance(trace_identity, dict)
+                    or trace_identity.get("manifest_hash") != MANIFEST_HASH
+                    or not _SHA64_RE.fullmatch(str(trace_identity.get("runtime_trace_hash") or ""))):
+                raise EvidenceFlywheelRuntimeError("persisted trace/evidence identity mismatch")
         return {
             "id": row.id,
             "prediction_hash": row.prediction_hash,
@@ -553,6 +562,7 @@ def _ledger_identity_snapshot(db_manager: Any, prediction_hash: str) -> Dict[str
                 "strategy_eligibility_reason_codes"
             ],
             "evidence_hash": row.evidence_hash,
+            "evidence_traceability_identity": trace_identity,
             "code_sha": row.code_sha,
             "provider_identity": row.provider_identity,
             "adjustment_basis": row.adjustment_basis,

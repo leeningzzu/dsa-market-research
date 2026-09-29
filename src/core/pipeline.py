@@ -2411,8 +2411,12 @@ class StockAnalysisPipeline:
                 raise P0BoundedTrialError(
                     f"P0 canonical decision finalization failed for {code}: {exc}"
                 ) from exc
-            logger.warning("[%s] 构建确定性综合评估失败，保留原报告: %s", code, exc)
-            return
+            logger.error(
+                "[%s] 构建确定性综合评估失败，终止本次结果以避免保留旧报告: %s",
+                code,
+                exc,
+            )
+            raise
         if not isinstance(result.dashboard, dict):
             result.dashboard = {}
         result.dashboard["factor_decision"] = summary

@@ -558,12 +558,13 @@ def test_volatility_momentum_is_first_class_observational_evidence_without_actio
     assert evidence["automatic_strategy_switching"] is False
 
 
-def test_missing_structured_volatility_momentum_context_preserves_legacy_momentum_projection():
+def test_missing_structured_volatility_momentum_context_rejects_unbound_legacy_macd_free_text():
     summary = build_stock_factor_decision_summary(_trend(signal_score=68), include_canonical=True)
     evidence = summary["volatility_momentum_evidence"]
     assert evidence["evidence_state"] == "PARTIAL"
     assert evidence["context"]["reason"] == "LEGACY_MACD_RSI_ONLY"
-    assert "MACD多头结构" in summary["sections"]["momentum"]
+    assert "MACD多头结构" not in summary["sections"]["momentum"]
+    assert "RSI中性偏强" in summary["sections"]["momentum"]
     assert summary["canonical_decision"]["action"] == "WAIT"
 
 

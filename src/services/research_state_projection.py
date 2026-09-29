@@ -9,6 +9,8 @@ import json
 import re
 from typing import Any, Dict, Optional
 
+from src.services.evidence_traceability_registry import strategy_contract_coverage
+
 
 CANONICAL_OPPORTUNITY_PROJECTION_VERSION = "canonical-opportunity-v3"
 STRATEGY_ELIGIBILITY_SCHEMA_VERSION = "strategy-eligibility-v2"
@@ -16,25 +18,8 @@ STRATEGY_ELIGIBILITY_LEDGER_SCHEMA_VERSION = "prediction-ledger-v5"
 STOCK_TREND_QUALITY_PULLBACK_STRATEGY_ID = "stock_trend_quality_pullback_v1"
 
 STRATEGY_CONTRACT_COVERAGE_VERSION = "stock-trend-quality-pullback-contract-coverage-v1"
-STOCK_TREND_QUALITY_PULLBACK_CONTRACT_COVERAGE = (
-    ("market_regime_permission", "HARD_ELIGIBILITY", "market_regime_permission"),
-    ("sector_industry_strength", "HARD_ELIGIBILITY", "sector_industry_strength"),
-    ("leader_preference", "SELECTION_PRIOR", None),
-    ("quality", "HARD_ELIGIBILITY", "quality"),
-    ("valuation", "HARD_ELIGIBILITY", "valuation"),
-    ("monthly_trend_structure_when_ready", "CONTEXT_WHEN_READY", None),
-    ("weekly_trend_structure", "HARD_ELIGIBILITY", "weekly_trend_structure"),
-    ("daily_trend_structure", "HARD_ELIGIBILITY", "daily_trend_structure"),
-    (
-        "daily_pullback_or_supply_contraction",
-        "HARD_ELIGIBILITY",
-        "daily_pullback_or_supply_contraction",
-    ),
-    ("volume_price_confirmation", "HARD_ELIGIBILITY", "volume_price_confirmation"),
-    ("distribution_risk_clear", "HARD_ELIGIBILITY", "distribution_risk_clear"),
-    ("thirty_minute_trigger", "HARD_ELIGIBILITY", "thirty_minute_trigger"),
-    ("risk_reward", "HARD_ELIGIBILITY", "risk_reward"),
-)
+# Preserve the accepted v1 clause document/hash; derive its membership from one registry.
+STOCK_TREND_QUALITY_PULLBACK_CONTRACT_COVERAGE = strategy_contract_coverage()
 
 STRATEGY_ELIGIBILITY_REQUIRED_EVIDENCE = tuple(
     evidence_key

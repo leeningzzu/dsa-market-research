@@ -20,6 +20,7 @@ import pandas as pd
 from src.core.trading_calendar import resolve_completed_timeframe_bar_date
 from src.services.price_structure_service import build_price_structure_context
 from src.services.pit_identity import build_completed_history_identity
+from src.services.evidence_traceability_registry import describe_macd_state
 
 
 SCHEMA_VERSION = "multi-timeframe-structure-v1"
@@ -159,7 +160,7 @@ def _trend_projection(result: Any) -> Dict[str, Any]:
         "volume_status": str(getattr(getattr(result, "volume_status", None), "value", "")) or None,
         "volume_ratio_5bar": getattr(result, "volume_ratio_5d", None),
         "macd_status": str(getattr(getattr(result, "macd_status", None), "value", "")) or None,
-        "macd_signal": str(getattr(result, "macd_signal", "") or "") or None,
+        "macd_signal": describe_macd_state(result) or None,
         "rsi_status": str(getattr(getattr(result, "rsi_status", None), "value", "")) or None,
         "rsi_signal": str(getattr(result, "rsi_signal", "") or "") or None,
         "independent_action_authority": False,

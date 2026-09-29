@@ -1,0 +1,519 @@
+# -*- coding: utf-8 -*-
+"""Closed-world bindings over DSA owners; never an indicator or trading engine.
+
+The registry describes capability. A trace observes outputs, not invocation or
+provider entitlement. Deferred methods cannot be enabled by a payload flag.
+"""
+from __future__ import annotations
+
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass
+from functools import lru_cache
+from hashlib import sha256
+import ast
+import json
+import math
+from numbers import Real
+from pathlib import Path
+from typing import Any
+
+MANIFEST_VERSION = "evidence-product-traceability-v1"
+TRACE_VERSION = "canonical-evidence-trace-v1"
+STOCK_STRATEGY = "stock_trend_quality_pullback_v1"
+BASELINE_SHA256 = "039ca6394baf9cf39494cc29f512802b114c8227f8c965723197a8df4b9de823"
+BASELINE_BYTES = 125919
+TIMEFRAMES = ("monthly", "weekly", "daily", "60m", "30m", "15m", "5m")
+STATES = frozenset({"READY", "PARTIAL", "MISSING", "UNKNOWN", "NOT_APPLICABLE"})
+
+
+class TraceabilityError(ValueError):
+    """A binding or claimed observation exceeds its actual proof."""
+
+
+def canonical_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def digest(value: Any) -> str:
+    return sha256(canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def at(value: Any, path: str) -> Any:
+    for key in path.split("."):
+        if not isinstance(value, Mapping) or key not in value:
+            return None
+        value = value[key]
+    return value
+
+
+@dataclass(frozen=True)
+class EvidenceBinding:
+    requirement_id: str
+    path: str
+    owner: str
+    callable_name: str
+    fields: tuple[str, ...]
+    version_ref: str
+    warmup_ref: str
+    correlation_group: str
+    timeframe: str = "daily"
+    asset_routes: tuple[str, ...] = ("STOCK", "ETF", "MARKET")
+    implementation_state: str = "EXISTING_REUSED"
+    reentry: str = "CURRENT_OWNER_VERSION_AND_OUTPUT_VALIDATION"
+    ledger: bool = True
+
+
+# References name existing formula/config owners; no copied thresholds or formulas.
+EVIDENCE_BINDINGS = (
+    EvidenceBinding("REGIME", "market_sector_regime", "src/services/factor_decision_summary.py", "_build_market_sector_regime_evidence", ("market_light", "stock_market_position"), "_MARKET_SECTOR_REGIME_VERSION", "UPSTREAM_REGIME_READINESS", "market_sector", "asset"),
+    EvidenceBinding("TREND_RS", "trend_relative_strength", "src/services/factor_decision_summary.py", "_build_trend_relative_strength_evidence", ("date", "close", "data_source", "benchmark_close"), "_TREND_RELATIVE_STRENGTH_VERSION", "RELATIVE_STRENGTH_AND_TREND_OWNERS", "trend_price"),
+    EvidenceBinding("SUPPLY", "supply_demand_volume_price", "src/services/supply_demand_service.py", "build_supply_demand_context", ("date", "high", "low", "close", "volume", "data_source"), "SUPPLY_DEMAND_SCHEMA_VERSION", "REQUIRED_OBSERVATIONS", "volume_pressure"),
+    EvidenceBinding("COST", "cost_structure_evidence", "src/services/cost_structure_service.py", "build_cost_structure_context", ("date", "high", "low", "close", "volume", "data_source"), "COST_STRUCTURE_SCHEMA_VERSION", "REFERENCE_WINDOWS", "price_volume_cost"),
+    EvidenceBinding("STRUCTURE", "price_structure_evidence", "src/services/price_structure_service.py", "build_price_structure_context", ("date", "open", "high", "low", "close", "data_source"), "PIVOT_ALGORITHM_VERSION", "MIN_OBSERVATIONS", "confirmed_price_swing"),
+    EvidenceBinding("MOMENTUM", "volatility_momentum_evidence", "src/services/volatility_momentum_service.py", "build_volatility_momentum_context", ("date", "open", "high", "low", "close", "data_source"), "ALGORITHM_VERSION", "READY_OBSERVATIONS", "same_swing_momentum"),
+    EvidenceBinding("PATTERN", "pattern_trigger_evidence", "src/services/pattern_trigger_service.py", "build_pattern_trigger_context", ("date", "open", "high", "low", "close", "volume", "data_source"), "ALGORITHM_VERSION", "MIN_OBSERVATIONS", "price_contraction"),
+    EvidenceBinding("MTF", "multi_timeframe_structure_context", "src/services/multi_timeframe_structure_service.py", "build_multi_timeframe_structure_context", ("date", "open", "high", "low", "close", "volume", "data_source"), "ALGORITHM_VERSION", "TREND_MIN_BARS", "nested_price_structure", "multi"),
+)
+
+DECISION_BINDING = EvidenceBinding(
+    "DECISION", "canonical_decision", "src/services/factor_decision_summary.py", "_canonical_decision",
+    ("canonical_evidence",), "_CANONICAL_AUTHORITY", "STRATEGY_REQUIRED_EVIDENCE", "decision", "asset", ledger=False)
+
+# A producer gap is an executable UNKNOWN, not a fake READY stub.
+DEFERRED_BINDINGS = tuple(
+    EvidenceBinding(rid, path, owner, "NOT_ADMITTED", fields, "NOT_ADMITTED", "NOT_ADMITTED", group,
+                    timeframe=tf, implementation_state="DEFERRED_WITH_OWNER_AND_REENTRY", reentry=reentry, ledger=False)
+    for rid, path, owner, fields, group, tf, reentry in (
+        ("QUALITY", "quality_evidence", "FACTOR:fundamental_quality", ("published_at", "financial_version", "cash_flow"), "fundamentals", "asset", "PIT_QUALITY_DATA_AND_METHOD_ADMISSION"),
+        ("VALUATION", "valuation_evidence", "FACTOR:valuation", ("published_at", "financial_version", "share_count", "valuation_assumptions"), "valuation", "asset", "BUSINESS_ROUTED_VALUATION_METHOD_ADMISSION"),
+        ("DISTRIBUTION", "distribution_risk_evidence", "FACTOR:distribution_risk", ("date", "open", "high", "low", "close", "volume"), "volume_pressure", "daily", "DETERMINISTIC_DISTRIBUTION_CLEAR_RESOLVER"),
+        ("RISK_REWARD", "risk_reward_evidence", "FACTOR:execution", ("entry", "stop", "cost", "execution_identity"), "execution", "asset", "ACCEPTED_RISK_REWARD_RESOLVER"),
+        ("CANDLESTICK", "candlestick_evidence", "FACTOR:PatternTrigger", ("date", "open", "high", "low", "close", "volume"), "confirmed_price_swing", "daily", "CANONICAL_GEOMETRY_LOCATION_LIFECYCLE"),
+        ("EXTRA_INDICATORS", "extended_indicator_evidence", "FACTOR:VolatilityMomentum", ("date", "open", "high", "low", "close", "volume"), "same_swing_momentum", "daily", "ADX_DMI_BOLLINGER_OBV_ADL_MFI_KDJ_INDEPENDENT_ADMISSION"),
+        ("AVWAP_PROFILE", "anchored_cost_evidence", "FACTOR:CostStructure", ("anchor", "price_volume_distribution"), "price_volume_cost", "asset", "ANCHOR_AND_PRICE_VOLUME_METHOD_NOT_DAILY_PROXY"),
+        ("CHAN", "chan_evidence", "FACTOR:ChanFeatureAdapter", ("date", "open", "high", "low", "close"), "confirmed_price_swing", "multi", "NARROW_ADAPTER_BAR_REPLAY_NO_BACKFILL"),
+        ("WAVE", "wave_evidence", "FACTOR:WaveShadow", ("date", "open", "high", "low", "close"), "confirmed_price_swing", "multi", "RESEARCH_SHADOW_ONLY"),
+        ("ETF_SPECIFIC", "etf_specific_evidence", "FACTOR:ETF", ("nav", "nav_at", "shares", "bid", "ask", "tracking_error"), "etf_execution", "asset", "ETF_DATA_IDENTITY_AND_METHOD_ADMISSION"),
+        ("GLOBAL", "global_evidence", "FACTOR:MarketGlobal", ("published_at", "currency", "macro_series_version"), "market_global", "asset", "GLOBAL_SOURCE_AND_DATE_ADMISSION"),
+        ("BREADTH", "market_breadth_evidence", "FACTOR:MarketBreadth", ("universe_as_of", "constituents", "close"), "market_breadth", "asset", "HISTORICAL_UNIVERSE_AND_COVERAGE"),
+        ("PROBABILITY", "calibrated_probability_evidence", "FACTOR:Calibration", ("dataset_hash", "model_hash", "calibrator_hash", "promotion_id"), "model", "asset", "OUTCOME_PIT_OOT_CALIBRATION_SHADOW_PROMOTION"),
+    )
+) + tuple(
+    EvidenceBinding("INTRADAY_" + tf, "multi_timeframe_structure_context.timeframes." + tf,
+                    "src/services/multi_timeframe_structure_service.py", "NOT_ADMITTED",
+                    ("bar_end", "open", "high", "low", "close", "volume", "session", "available_at"),
+                    "NOT_ADMITTED", "NOT_ADMITTED", "nested_price_structure", timeframe=tf,
+                    implementation_state="DEFERRED_WITH_OWNER_AND_REENTRY",
+                    reentry="ONE_COMPLETED_5M_SOURCE_AND_SESSION_AGGREGATION", ledger=False)
+    for tf in ("60m", "30m", "15m", "5m")
+)
+
+
+@dataclass(frozen=True)
+class StrategyBinding:
+    clause: str
+    classification: str
+    requirement_id: str
+    resolver: str
+
+
+STRATEGY_BINDINGS = (
+    StrategyBinding("market_regime_permission", "HARD_ELIGIBILITY", "REGIME", "market"),
+    StrategyBinding("sector_industry_strength", "HARD_ELIGIBILITY", "REGIME", "sector"),
+    StrategyBinding("leader_preference", "SELECTION_PRIOR", "REGIME", "not_used"),
+    StrategyBinding("quality", "HARD_ELIGIBILITY", "QUALITY", "deferred"),
+    StrategyBinding("valuation", "HARD_ELIGIBILITY", "VALUATION", "deferred"),
+    StrategyBinding("monthly_trend_structure_when_ready", "CONTEXT_WHEN_READY", "MTF", "not_used"),
+    StrategyBinding("weekly_trend_structure", "HARD_ELIGIBILITY", "MTF", "weekly"),
+    StrategyBinding("daily_trend_structure", "HARD_ELIGIBILITY", "MTF", "daily"),
+    StrategyBinding("daily_pullback_or_supply_contraction", "HARD_ELIGIBILITY", "SUPPLY", "pullback"),
+    StrategyBinding("volume_price_confirmation", "HARD_ELIGIBILITY", "SUPPLY", "volume"),
+    StrategyBinding("distribution_risk_clear", "HARD_ELIGIBILITY", "DISTRIBUTION", "deferred"),
+    StrategyBinding("thirty_minute_trigger", "HARD_ELIGIBILITY", "INTRADAY_30m", "deferred"),
+    StrategyBinding("risk_reward", "HARD_ELIGIBILITY", "RISK_REWARD", "deferred"),
+)
+
+
+def strategy_contract_coverage() -> tuple:
+    return tuple((b.clause, b.classification, b.clause if b.classification == "HARD_ELIGIBILITY" else None)
+                 for b in STRATEGY_BINDINGS)
+
+
+def ledger_evidence_keys() -> tuple[str, ...]:
+    # Existing v1 audit schema preserved; the registry owns this set from now on.
+    return ("strategy_id", "contract_version", "composite_score", "canonical_decision") + tuple(
+        b.path for b in EVIDENCE_BINDINGS if b.ledger)
+
+
+# Leaf identities are also the numeric/state learning allowlist. No paragraph is a feature.
+# Every weekly/monthly path names that actual timeframe; daily values never fill it.
+METRIC_BINDINGS = tuple(
+    {"id": name, "requirement_id": rid, "path": path, "kind": "number", "unit": unit, "timeframe": tf}
+    for name, rid, path, unit, tf in (
+        ("daily.price", "STRUCTURE", "price_structure_evidence.context.current_close", "PRICE_BASIS_CURRENCY", "daily"),
+        ("daily.volume_ratio20", "SUPPLY", "supply_demand_volume_price.completed_bar_context.relative_volume.volume_ratio_20d", "ratio", "daily"),
+        ("daily.directional_volume", "SUPPLY", "supply_demand_volume_price.completed_bar_context.directional_volume.signed_volume_balance", "ratio", "daily"),
+        ("daily.cmf20", "SUPPLY", "supply_demand_volume_price.completed_bar_context.close_location_flow.cmf_20", "ratio", "daily"),
+        ("daily.cost20_proxy", "COST", "cost_structure_evidence.context.bar_reference_cost.window_20.rolling_reference_price", "PRICE_BASIS_CURRENCY_PROXY", "daily"),
+        ("daily.cost60_proxy", "COST", "cost_structure_evidence.context.bar_reference_cost.window_60.rolling_reference_price", "PRICE_BASIS_CURRENCY_PROXY", "daily"),
+        ("daily.macd_dif", "MOMENTUM", "volatility_momentum_evidence.context.momentum.macd.dif", "PRICE_BASIS_CURRENCY", "daily"),
+        ("daily.macd_dea", "MOMENTUM", "volatility_momentum_evidence.context.momentum.macd.dea", "PRICE_BASIS_CURRENCY", "daily"),
+        ("daily.macd_bar", "MOMENTUM", "volatility_momentum_evidence.context.momentum.macd.bar", "PRICE_BASIS_CURRENCY", "daily"),
+        ("daily.rsi6", "MOMENTUM", "volatility_momentum_evidence.context.momentum.rsi.rsi_6", "index_0_100", "daily"),
+        ("daily.rsi12", "MOMENTUM", "volatility_momentum_evidence.context.momentum.rsi.rsi_12", "index_0_100", "daily"),
+        ("daily.rsi24", "MOMENTUM", "volatility_momentum_evidence.context.momentum.rsi.rsi_24", "index_0_100", "daily"),
+        ("daily.roc20", "MOMENTUM", "volatility_momentum_evidence.context.momentum.roc_20_pct", "pct", "daily"),
+        ("daily.roc60", "MOMENTUM", "volatility_momentum_evidence.context.momentum.roc_60_pct", "pct", "daily"),
+        ("daily.realized_volatility20", "MOMENTUM", "volatility_momentum_evidence.context.volatility.realized_volatility_20d_annualized_pct", "annualized_pct", "daily"),
+        ("daily.tr_sma20_not_wilder_atr", "MOMENTUM", "volatility_momentum_evidence.context.volatility.true_range_sma_20_pct", "pct", "daily"),
+    )
+) + tuple(
+    {"id": tf + "." + ma, "requirement_id": "MTF", "path": "multi_timeframe_structure_context.timeframes." + tf + ".trend." + ma,
+     "kind": "number", "unit": "PRICE_BASIS_CURRENCY", "timeframe": tf}
+    for tf in ("monthly", "weekly") for ma in ("ma5", "ma10", "ma20")
+) + tuple(
+    {"id": "daily." + name, "requirement_id": "EXTRA_INDICATORS", "path": "extended_indicator_evidence." + name,
+     "kind": "number", "unit": "METHOD_NOT_ADMITTED", "timeframe": "daily"}
+    for name in ("adx", "plus_di", "minus_di", "bollinger_upper", "bollinger_lower", "kdj_k", "kdj_d", "kdj_j", "obv", "adl", "mfi")
+)
+
+
+def load_slot_map(document=None) -> dict:
+    if document is None:
+        path = Path(__file__).resolve().parents[2] / "templates/v2_5/STOCK_DSA_V2_5_EVIDENCE_SLOT_MAP_V1.json"
+        document = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(document, dict) or document.get("schema_version") != "v25-evidence-slot-map-v1":
+        raise TraceabilityError("SLOT_SCHEMA_MISMATCH")
+    if (document.get("baseline_sha256") != BASELINE_SHA256 or document.get("baseline_bytes") != BASELINE_BYTES
+            or document.get("rendering_authorized") is not False or document.get("authority") != "SEMANTIC_SIDECAR_ONLY"):
+        raise TraceabilityError("SLOT_AUTHORITY_MISMATCH")
+    if tuple(document.get("timeframes", ())) != TIMEFRAMES or set(document.get("envelopes", {})) != {"MARKET", "AUTO", "WATCHLIST"}:
+        raise TraceabilityError("SLOT_ROUTE_MISMATCH")
+    bindings = {b.requirement_id: b for b in EVIDENCE_BINDINGS + DEFERRED_BINDINGS + (DECISION_BINDING,)}
+    slots = document.get("slots")
+    if not isinstance(slots, list) or not slots:
+        raise TraceabilityError("SLOT_LIST_EMPTY")
+    ids = []
+    for slot in slots:
+        if not isinstance(slot, dict) or not slot.get("id") or not slot.get("requirements") or not slot.get("paths") or not slot.get("location_class"):
+            raise TraceabilityError("SLOT_BINDING_INCOMPLETE")
+        ids.append(slot["id"])
+        if any(rid not in bindings for rid in slot["requirements"]):
+            raise TraceabilityError("ORPHAN_PRODUCT_REQUIREMENT")
+        owners = [bindings[rid].path for rid in slot["requirements"]]
+        if any(not any(p == owner or p.startswith(owner + ".") for owner in owners) for p in slot["paths"]):
+            raise TraceabilityError("ORPHAN_PRODUCT_PATH")
+    if len(set(ids)) != len(ids):
+        raise TraceabilityError("DUPLICATE_PRODUCT_SLOT")
+    return document
+
+
+@lru_cache(maxsize=16)
+def _owner_literals(owner: str) -> dict:
+    """Read named constants without importing provider-dependent modules.
+
+    Source/config versions are process-frozen, like imported Python code. An
+    edited candidate must be validated in a new process, not hot reloaded.
+    Only literal values and an already-bound constant plus a literal are read;
+    calls, attributes and arbitrary expressions are never executed.
+    """
+    source = (Path(__file__).resolve().parents[2] / owner).read_text(encoding="utf-8-sig")
+    values = {}
+
+    class BoundLiterals(ast.NodeTransformer):
+        def visit_Name(self, node):
+            return ast.parse(repr(values[node.id]), mode="eval").body if node.id in values else node
+
+    for node in ast.parse(source).body:
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
+            continue
+        expression = BoundLiterals().visit(node.value)
+        try:
+            if isinstance(expression, ast.BinOp) and isinstance(expression.op, ast.Add):
+                left, right = ast.literal_eval(expression.left), ast.literal_eval(expression.right)
+                if type(left) is not int or type(right) is not int:
+                    continue
+                value = left + right
+            else:
+                value = ast.literal_eval(expression)
+            values[node.targets[0].id] = value
+        except (ValueError, TypeError, SyntaxError):
+            continue
+    return values
+
+
+def method_contract(binding: EvidenceBinding) -> dict:
+    values = _owner_literals(binding.owner)
+    config = values.get("_CONFIG")
+    return {"version": values.get(binding.version_ref), "warmup": values.get(binding.warmup_ref),
+            "config_hash": digest(config) if isinstance(config, dict) else None}
+
+
+def manifest_document() -> dict:
+    return {"schema_version": MANIFEST_VERSION, "baseline_sha256": BASELINE_SHA256,
+            "evidence": [asdict(b) for b in EVIDENCE_BINDINGS + DEFERRED_BINDINGS + (DECISION_BINDING,)],
+            "metrics": METRIC_BINDINGS, "product_slots": load_slot_map(),
+            "method_contracts": {b.requirement_id: method_contract(b) for b in EVIDENCE_BINDINGS},
+            "strategy": {"strategy_id": STOCK_STRATEGY, "bindings": [asdict(b) for b in STRATEGY_BINDINGS]},
+            "ledger_keys": ledger_evidence_keys(), "timeframes": TIMEFRAMES,
+            "data_policy": {"completed_only": True, "source_mixing": False, "units": "EXPLICIT_SOURCE_UNITS",
+                            "price_basis": "EXPLICIT_RAW_QFQ_HFQ", "availability": "KNOWN_AT_DECISION"},
+            "product_policy": "SEMANTIC_SIDECAR_ONLY_NOT_RENDERED", "learning_policy": "NO_PROSE_FEATURES"}
+
+
+MANIFEST_HASH = digest(manifest_document())
+
+
+def validate_registry(bindings=None, strategy=None) -> None:
+    bindings = tuple(bindings if bindings is not None else EVIDENCE_BINDINGS + DEFERRED_BINDINGS)
+    strategy = tuple(strategy if strategy is not None else STRATEGY_BINDINGS)
+    ids = [b.requirement_id for b in bindings]
+    paths = [b.path for b in bindings]
+    if len(ids) != len(set(ids)) or len(paths) != len(set(paths)):
+        raise TraceabilityError("DUPLICATE_BINDING")
+    for binding in bindings:
+        if not binding.owner or not binding.fields or not binding.reentry or not binding.correlation_group:
+            raise TraceabilityError("INCOMPLETE_BINDING")
+        if binding.implementation_state == "EXISTING_REUSED" and binding.callable_name == "NOT_ADMITTED":
+            raise TraceabilityError("MISSING_METHOD_OWNER")
+    for binding in strategy:
+        if binding.requirement_id not in ids:
+            raise TraceabilityError("ORPHAN_STRATEGY_KEY:" + binding.clause)
+    if len({b.clause for b in strategy}) != len(strategy):
+        raise TraceabilityError("DUPLICATE_STRATEGY_KEY")
+    lookup = {b.requirement_id: b for b in bindings}
+    metric_ids = [m["id"] for m in METRIC_BINDINGS]
+    if len(metric_ids) != len(set(metric_ids)):
+        raise TraceabilityError("DUPLICATE_METRIC")
+    for metric in METRIC_BINDINGS:
+        owner = lookup.get(metric["requirement_id"])
+        if owner is None or not metric["path"].startswith(owner.path + "."):
+            raise TraceabilityError("ORPHAN_LEARNING_METRIC")
+
+
+def validate_source_bindings(root: Path) -> dict:
+    """Read-only adoption test; source existence is not runtime success."""
+    identities = {}
+    for binding in EVIDENCE_BINDINGS + (DECISION_BINDING,):
+        path = root / binding.owner
+        payload = path.read_bytes()
+        tree = ast.parse(payload.decode("utf-8-sig"))
+        symbols = {n.name for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+        if binding.callable_name not in symbols:
+            raise TraceabilityError("CALLABLE_NOT_FOUND:" + binding.requirement_id)
+        identities[binding.requirement_id] = {"path": binding.owner, "sha256": sha256(payload).hexdigest(),
+                                              "callable": binding.callable_name}
+    return identities
+
+
+def _state(value: Any) -> str:
+    if not isinstance(value, Mapping):
+        return "MISSING"
+    state = str(value.get("evidence_state", value.get("status", "UNKNOWN"))).upper()
+    return state if state in STATES else "UNKNOWN"
+
+
+def method_observation(binding: EvidenceBinding, value: Any) -> tuple[str, str]:
+    """Validate observed metadata, not merely the producer's READY word."""
+    state = _state(value)
+    if binding.implementation_state != "EXISTING_REUSED":
+        return "UNKNOWN", "METHOD_NOT_ADMITTED"
+    if not isinstance(value, Mapping):
+        return "MISSING", "OUTPUT_NOT_OBSERVED"
+    if binding.requirement_id == "DECISION":
+        return ("READY" if value.get("evidence_state") == "PROVEN" else state), "CANONICAL_DECISION_OBSERVED"
+    if state not in {"READY", "PARTIAL"}:
+        return state, "OUTPUT_NOT_READY"
+    context = value.get("completed_bar_context") if binding.requirement_id == "SUPPLY" else value.get("context", value)
+    if not isinstance(context, Mapping):
+        return "UNKNOWN", "METHOD_CONTEXT_MISSING"
+    contract = method_contract(binding)
+    version_key = ("schema_version" if "SCHEMA_VERSION" in binding.version_ref else
+                   "algorithm_version" if "ALGORITHM_VERSION" in binding.version_ref else "version")
+    if contract["version"] is None or context.get(version_key) != contract["version"]:
+        return "UNKNOWN", "METHOD_VERSION_MISMATCH"
+    if contract["config_hash"] and context.get("config_hash") != contract["config_hash"]:
+        return "UNKNOWN", "METHOD_CONFIG_MISMATCH"
+    if binding.requirement_id in {"COST", "STRUCTURE", "MOMENTUM", "PATTERN", "MTF"} and context.get("completed_bar_only") is not True:
+        return "UNKNOWN", "COMPLETED_BAR_NOT_PROVEN"
+    if state == "READY" and binding.timeframe == "daily" and isinstance(contract["warmup"], (int, tuple)):
+        minimum = contract["warmup"]
+        count = context.get("observations")
+        alignment = at(context, "source_alignment.status")
+        if binding.requirement_id == "SUPPLY":
+            count = at(context, "data_quality.observations")
+            alignment = at(context, "data_quality.source_alignment")
+        elif binding.requirement_id == "COST":
+            minimum = max(minimum)
+            window = at(context, "bar_reference_cost.window_" + str(minimum)) or {}
+            count, alignment = window.get("observations"), window.get("source_alignment")
+        if type(count) is not int or count < minimum:
+            return "UNKNOWN", "WARMUP_NOT_PROVEN"
+        if alignment != "SINGLE_SOURCE":
+            return "UNKNOWN", "SOURCE_ALIGNMENT_NOT_PROVEN"
+    return state, "METHOD_METADATA_VERIFIED_NOT_INVOCATION_PROOF"
+
+
+def timeframe_ready(factor: Mapping, timeframe: str) -> bool:
+    binding = next(b for b in EVIDENCE_BINDINGS if b.requirement_id == "MTF")
+    parent = at(factor, binding.path)
+    state, _ = method_observation(binding, parent)
+    frame = at(parent, "timeframes." + timeframe)
+    minimum = method_contract(binding)["warmup"]
+    return bool(
+        timeframe in {"monthly", "weekly", "daily"} and state in {"READY", "PARTIAL"}
+        and isinstance(frame, Mapping) and frame.get("completed_bar_only") is True
+        and _state(frame) == "READY" and at(frame, "trend.status") == "READY"
+        and at(frame, "source_alignment.status") == "SINGLE_SOURCE"
+        and type(frame.get("observations")) is int and isinstance(minimum, int)
+        and frame["observations"] >= minimum
+    )
+
+
+def _resolve(binding: StrategyBinding, factor: Mapping) -> str:
+    kind = binding.resolver
+    if kind in {"deferred", "not_used"}:
+        return "UNKNOWN"
+    owner = next(b for b in EVIDENCE_BINDINGS if b.requirement_id == binding.requirement_id)
+    checked, _ = method_observation(owner, at(factor, owner.path))
+    if checked not in {"READY", "PARTIAL"}:
+        return "UNKNOWN"
+    regime = at(factor, "market_sector_regime") or {}
+    if kind == "market":
+        if at(regime, "market.data_quality") != "ok":
+            return "UNKNOWN"
+        return {"PERMISSIVE": "SATISFIED", "RISK_OFF": "FAILED"}.get(at(regime, "market.state"), "UNKNOWN")
+    if kind == "sector":
+        if at(regime, "sector.status") != "ok":
+            return "UNKNOWN"
+        return {"SUPPORTIVE": "SATISFIED", "COOLING": "FAILED"}.get(at(regime, "sector.state"), "UNKNOWN")
+    if kind in {"weekly", "daily"}:
+        frame = at(factor, "multi_timeframe_structure_context.timeframes." + kind)
+        if not timeframe_ready(factor, kind):
+            return "UNKNOWN"
+        if at(frame, "source_alignment.status") != "SINGLE_SOURCE" or _state(frame) != "READY":
+            return "UNKNOWN"
+        if _state(frame.get("price_structure")) != "READY" or _state(frame.get("trend")) != "READY":
+            return "UNKNOWN"
+        return {"BULLISH": "SATISFIED", "BEARISH": "FAILED"}.get(at(frame, "trend.direction"), "UNKNOWN")
+    supply = at(factor, "supply_demand_volume_price")
+    if _state(supply) != "READY" or _state(at(supply, "completed_bar_context")) != "READY":
+        return "UNKNOWN"
+    volume = at(supply, "legacy_volume.status")
+    if volume == "放量下跌":
+        return "FAILED"
+    if kind == "pullback":
+        return "SATISFIED" if volume == "缩量回调" else "UNKNOWN"
+    # Only the existing completed-bar state is reused, never a new numeric threshold.
+    return {"DEMAND_PRESSURE": "SATISFIED", "SUPPLY_PRESSURE": "FAILED"}.get(
+        at(supply, "completed_bar_context.state"), "UNKNOWN")
+
+
+def build_strategy_eligibility(factor: Mapping, *, schema_version: str) -> dict:
+    validate_registry()
+    required = {b.clause: _resolve(b, factor) for b in STRATEGY_BINDINGS if b.classification == "HARD_ELIGIBILITY"}
+    if factor.get("strategy_id") != STOCK_STRATEGY:
+        required = dict.fromkeys(required, "UNKNOWN")
+    state = "INELIGIBLE" if "FAILED" in required.values() else "UNKNOWN"
+    # No positive full-strategy admission: multiple methods, including 30m, are deferred.
+    reasons = ["REQUIRED_EVIDENCE_FAILED"] if state == "INELIGIBLE" else ["REQUIRED_EVIDENCE_INCOMPLETE"]
+    return {"schema_version": schema_version, "strategy_id": factor.get("strategy_id"),
+            "state": state, "required_evidence": required, "reason_codes": reasons}
+
+
+def build_runtime_trace(factor: Mapping) -> dict:
+    validate_registry()
+    known_paths = {b.path for b in EVIDENCE_BINDINGS + DEFERRED_BINDINGS + (DECISION_BINDING,)}
+    if digest(manifest_document()) != MANIFEST_HASH:
+        raise TraceabilityError("MANIFEST_CHANGED_DURING_PROCESS")
+    for key, value in factor.items():
+        if (key.endswith("_evidence") or (isinstance(value, Mapping) and "family" in value)) and key not in known_paths:
+            raise TraceabilityError("ORPHAN_CANONICAL_EVIDENCE:" + key)
+    observations = []
+    for binding in EVIDENCE_BINDINGS + DEFERRED_BINDINGS + (DECISION_BINDING,):
+        value = at(factor, binding.path)
+        declared = _state(value)
+        deferred = binding.implementation_state != "EXISTING_REUSED"
+        admitted_state, admission_reason = method_observation(binding, value)
+        observations.append({"requirement_id": binding.requirement_id, "path": binding.path,
+                             "state": admitted_state, "declared_state": declared,
+                             "method_state": "NOT_ADMITTED" if deferred else ("OUTPUT_OBSERVED" if value is not None else "NOT_OBSERVED"),
+                             "output_hash": digest(value) if value is not None else None,
+                             "correlation_group": binding.correlation_group,
+                             "reason": binding.reentry if deferred else admission_reason})
+    mtf = at(factor, "multi_timeframe_structure_context") or {}
+    document = {"schema_version": TRACE_VERSION, "manifest_version": MANIFEST_VERSION,
+                "manifest_hash": MANIFEST_HASH, "strategy_id": factor.get("strategy_id"),
+                "data_snapshot_identity": mtf.get("data_snapshot_identity"),
+                "data_identity": {key: mtf.get(key) for key in ("provider_identity", "adjustment_basis", "available_at_max", "target_date", "algorithm_version", "config_hash")},
+                "observations": observations,
+                "strategy_eligibility": factor.get("strategy_eligibility"),
+                "canonical_decision": factor.get("canonical_decision"),
+                "product_state": "NOT_RENDERED_NOT_AUTHORIZED",
+                "ledger_state": "NOT_YET_PERSISTED",
+                "independent_vote_count": None}
+    document["runtime_trace_hash"] = digest(document)
+    return document
+
+
+def validate_runtime_trace(factor: Mapping) -> dict:
+    actual = factor.get("evidence_traceability")
+    expected = build_runtime_trace(factor)
+    if actual != expected:
+        raise TraceabilityError("RUNTIME_TRACE_MISSING_OR_STALE")
+    return expected
+
+
+def learning_projection(factor: Mapping) -> dict:
+    """Versioned allowlisted values only; old audit snapshots remain untouched."""
+    trace = validate_runtime_trace(factor)
+    states = {o["requirement_id"]: o["state"] for o in trace["observations"]}
+    values = {}
+    for metric in METRIC_BINDINGS:
+        value = at(factor, metric["path"])
+        ready = states[metric["requirement_id"]] == "READY"
+        if metric["timeframe"] in {"monthly", "weekly"}:
+            ready = timeframe_ready(factor, metric["timeframe"]) and states["MTF"] in {"READY", "PARTIAL"}
+        numeric = isinstance(value, Real) and not isinstance(value, bool) and math.isfinite(float(value))
+        values[metric["id"]] = {"value": float(value) if ready and numeric else None,
+                               "state": "READY" if ready and numeric else "MISSING_OR_UNADMITTED"}
+    return {"schema_version": "stock-factor-numeric-evidence-v2", "manifest_hash": MANIFEST_HASH,
+            "trace_identity": trace_identity(trace), "values": values,
+            "training_admitted": False}
+
+
+def describe_macd_state(result: Any) -> str:
+    """Project an existing enum, never trust an action-like free-text signal."""
+    if getattr(result, "macd_signal", None) == "数据不足":
+        return ""
+    raw = getattr(result, "macd_status", None)
+    status = str(getattr(raw, "value", raw) or "")
+    dif, dea = getattr(result, "macd_dif", None), getattr(result, "macd_dea", None)
+    numeric = all(isinstance(v, Real) and not isinstance(v, bool) and math.isfinite(float(v)) for v in (dif, dea))
+    if status in {"多头", "空头"}:
+        if not numeric:
+            return ""
+        if dif > 0 and dea > 0:
+            return "MACD DIF/DEA位于零轴上方，动量偏强"
+        if dif < 0 and dea < 0:
+            return "MACD DIF/DEA位于零轴下方，动量偏弱"
+        return "MACD处于零轴附近或两线异侧，方向需结构确认"
+    if status == "金叉" and numeric and dif < 0:
+        return "MACD零轴下金叉，局部动量修复；不是趋势反转证明"
+    descriptions = {
+        "零轴上金叉": "MACD零轴上金叉，动量交叉确认；不是独立买点",
+        "金叉": "MACD金叉，仅为动量修复；需核零轴位置与高周期结构",
+        "死叉": "MACD死叉，动量转弱；结合高周期结构与风险条件",
+        "上穿零轴": "MACD DIF上穿零轴，动量改善",
+        "下穿零轴": "MACD DIF下穿零轴，动量走弱",
+        "多头": "MACD零轴上方动量状态，仍需结构确认",
+        "空头": "MACD零轴下方动量状态，仍需结构确认",
+    }
+    return descriptions.get(status, "")
+
+
+def trace_identity(trace: Mapping) -> dict:
+    return {key: trace.get(key) for key in ("manifest_version", "manifest_hash", "runtime_trace_hash", "data_snapshot_identity")}
+
+
+validate_registry()

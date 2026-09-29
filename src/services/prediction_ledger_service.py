@@ -22,25 +22,23 @@ from src.services.research_state_projection import (
     build_canonical_opportunity_projection,
 )
 from src.storage import DatabaseManager
+from src.services.evidence_traceability_registry import (
+    MANIFEST_HASH, METRIC_BINDINGS, digest, ledger_evidence_keys, learning_projection,
+)
 
 
 PREDICTION_LEDGER_SCHEMA_VERSION = STRATEGY_ELIGIBILITY_LEDGER_SCHEMA_VERSION
 PREDICTION_FEATURE_SCHEMA_VERSION = "stock-factor-evidence-v1"
 
-_FACTOR_EVIDENCE_KEYS = (
-    "strategy_id",
-    "contract_version",
-    "composite_score",
-    "canonical_decision",
-    "market_sector_regime",
-    "trend_relative_strength",
-    "supply_demand_volume_price",
-    "cost_structure_evidence",
-    "price_structure_evidence",
-    "volatility_momentum_evidence",
-    "pattern_trigger_evidence",
-    "multi_timeframe_structure_context",
-)
+_FACTOR_EVIDENCE_KEYS = ledger_evidence_keys()
+
+# New traced snapshots use a separate numeric schema, never silently redefine v1.
+TRACE_FEATURE_SCHEMA_VERSION = "stock-factor-numeric-evidence-v2"
+TRACE_FEATURE_SCHEMA_HASH = digest({
+    "schema_version": TRACE_FEATURE_SCHEMA_VERSION,
+    "manifest_hash": MANIFEST_HASH,
+    "metrics": METRIC_BINDINGS,
+})
 
 PREDICTION_FEATURE_SCHEMA_HASH = hashlib.sha256(
     json.dumps(
@@ -89,10 +87,16 @@ class PredictionLedgerService:
         if not strategy_id:
             return None
 
-        evidence_payload = {
-            key: factor_decision.get(key)
-            for key in _FACTOR_EVIDENCE_KEYS
-        }
+        traced = "evidence_traceability" in factor_decision
+        if traced:
+            evidence_payload = learning_projection(factor_decision)
+            feature_schema_version = TRACE_FEATURE_SCHEMA_VERSION
+            feature_schema_hash = TRACE_FEATURE_SCHEMA_HASH
+        else:
+            # Legacy audit snapshots remain readable and retain their original schema.
+            evidence_payload = {key: factor_decision.get(key) for key in _FACTOR_EVIDENCE_KEYS}
+            feature_schema_version = PREDICTION_FEATURE_SCHEMA_VERSION
+            feature_schema_hash = PREDICTION_FEATURE_SCHEMA_HASH
         evidence_json = self._canonical_json(evidence_payload)
         evidence_hash = self._sha256_text(evidence_json)
 
@@ -199,6 +203,10 @@ class PredictionLedgerService:
             clock_reasons.append("OUTCOME_LABEL_ANCHOR_NOT_BOUND")
 
         pit_reasons = list(clock_reasons)
+        if traced:
+            # A new feature schema requires its own downstream PIT admission.
+            # Do not retrofit old rows or broaden the model consumer in this change.
+            pit_reasons.append("TRACEABILITY_FEATURE_V2_NOT_ADMITTED_TO_PIT")
         if available_at_max is None:
             pit_reasons.append("AVAILABLE_AT_NOT_BOUND")
         if not adjustment_basis:
@@ -271,7 +279,7 @@ class PredictionLedgerService:
             "decision_profile": self._text(signal.get("decision_profile")),
             "trigger_source": self._text(signal.get("trigger_source")),
             "evidence_hash": evidence_hash,
-            "feature_schema_hash": PREDICTION_FEATURE_SCHEMA_HASH,
+            "feature_schema_hash": feature_schema_hash,
             "code_sha": bound_code_sha,
             "asset_identity_hash": asset_identity_hash,
             "data_snapshot_identity": data_snapshot_identity,
@@ -309,8 +317,8 @@ class PredictionLedgerService:
             "entry_high": self._finite_float(signal.get("entry_high")),
             "stop_loss": self._finite_float(signal.get("stop_loss")),
             "target_price": self._finite_float(signal.get("target_price")),
-            "feature_schema_version": PREDICTION_FEATURE_SCHEMA_VERSION,
-            "feature_schema_hash": PREDICTION_FEATURE_SCHEMA_HASH,
+            "feature_schema_version": feature_schema_version,
+            "feature_schema_hash": feature_schema_hash,
             "evidence_hash": evidence_hash,
             "evidence_json": evidence_json,
             "opportunity_projection_version": opportunity_projection[
@@ -358,7 +366,7 @@ class PredictionLedgerService:
             "prediction_hash": prediction_hash,
             "schema_version": PREDICTION_LEDGER_SCHEMA_VERSION,
             "evidence_hash": evidence_hash,
-            "feature_schema_hash": PREDICTION_FEATURE_SCHEMA_HASH,
+            "feature_schema_hash": feature_schema_hash,
             "strategy_eligibility_version": opportunity_projection[
                 "strategy_eligibility_version"
             ],

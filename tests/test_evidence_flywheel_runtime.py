@@ -17,6 +17,7 @@ from sqlalchemy import inspect, text
 
 from src.analyzer import GeminiAnalyzer
 from src.config import Config
+from src.core.pipeline import StockAnalysisPipeline
 from src.notification import NotificationService
 from src.services.evidence_flywheel_runtime import (
     EvidenceFlywheelBoundaryError,
@@ -878,7 +879,10 @@ def test_native_zero_model_record_writes_only_the_admitted_temp_db_surfaces(
     assert receipt["ledger_receipts"][0]["schema_version"] == "prediction-ledger-v5"
     assert receipt["ledger_receipts"][0]["strategy_eligibility_version"] == "strategy-eligibility-v2"
     assert receipt["ledger_receipts"][0]["strategy_eligibility_state"] == "UNKNOWN"
-    assert "STRATEGY_ELIGIBILITY_NOT_BOUND" in receipt["ledger_receipts"][0][
+    assert "REQUIRED_EVIDENCE_INCOMPLETE" in receipt["ledger_receipts"][0][
+        "strategy_eligibility_reason_codes"
+    ]
+    assert "STRATEGY_ELIGIBILITY_NOT_BOUND" not in receipt["ledger_receipts"][0][
         "strategy_eligibility_reason_codes"
     ]
     assert receipt["ledger_receipts"][0]["decision_time_utc"].endswith("Z")
@@ -927,7 +931,10 @@ def test_native_zero_model_record_writes_only_the_admitted_temp_db_surfaces(
     assert ledger_identity["strategy_eligibility_version"] == "strategy-eligibility-v2"
     assert ledger_identity["strategy_eligibility_state"] == "UNKNOWN"
     assert len(ledger_identity["strategy_eligibility_hash"]) == 64
-    assert "STRATEGY_ELIGIBILITY_NOT_BOUND" in ledger_identity[
+    assert "REQUIRED_EVIDENCE_INCOMPLETE" in ledger_identity[
+        "strategy_eligibility_reason_codes"
+    ]
+    assert "STRATEGY_ELIGIBILITY_NOT_BOUND" not in ledger_identity[
         "strategy_eligibility_reason_codes"
     ]
     assert ledger_identity["decision_time"].endswith("Z")
@@ -996,6 +1003,35 @@ def test_record_phase_rejects_unbound_code_sha() -> None:
             config=_config(),
             pipeline_factory=_pipeline_factory({}, _ledger_receipt()),
         )
+
+
+def test_non_bounded_pipeline_canonical_failure_propagates_instead_of_preserving_stale_product():
+    pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+    pipeline.p0_bounded_trial = False
+    pipeline.config = SimpleNamespace(report_language="zh")
+    result = SimpleNamespace(
+        name="合成样本",
+        report_language="zh",
+        dashboard={"legacy_product": "must_not_survive_as_success"},
+    )
+
+    with (
+        patch("src.core.pipeline.SearchService.is_index_or_etf", return_value=False),
+        patch(
+            "src.core.pipeline.build_stock_factor_decision_summary",
+            side_effect=RuntimeError("canonical build failed"),
+        ),
+    ):
+        with pytest.raises(RuntimeError, match="canonical build failed"):
+            pipeline._attach_factor_decision_summary(
+                result,
+                code="600519",
+                trend_result=SimpleNamespace(),
+                fundamental_context=None,
+                chip_data=None,
+            )
+
+    assert result.dashboard == {"legacy_product": "must_not_survive_as_success"}
 
 
 def test_outcome_phase_preserves_unmatured_state_and_frozen_identities() -> None:

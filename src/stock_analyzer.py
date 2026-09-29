@@ -26,6 +26,7 @@ import numpy as np
 
 from src.config import get_config
 from src.schemas.decision_scale import signal_key_for_score
+from src.services.evidence_traceability_registry import describe_macd_state
 
 logger = logging.getLogger(__name__)
 
@@ -484,7 +485,7 @@ class StockTrendAnalyzer:
         分析 MACD 指标
 
         核心信号：
-        - 零轴上金叉：最强买入信号
+        - 零轴上金叉：动量交叉确认，不是独立买点
         - 金叉：DIF 上穿 DEA
         - 死叉：DIF 下穿 DEA
         """
@@ -516,31 +517,24 @@ class StockTrendAnalyzer:
         is_crossing_up = prev_zero <= 0 and curr_zero > 0
         is_crossing_down = prev_zero >= 0 and curr_zero < 0
 
-        # 判断 MACD 状态
+        # Enum/formula/score behavior is unchanged; prose has one descriptive owner.
         if is_golden_cross and curr_zero > 0:
             result.macd_status = MACDStatus.GOLDEN_CROSS_ZERO
-            result.macd_signal = "⭐ 零轴上金叉，强烈买入信号！"
         elif is_crossing_up:
             result.macd_status = MACDStatus.CROSSING_UP
-            result.macd_signal = "⚡ DIF上穿零轴，趋势转强"
         elif is_golden_cross:
             result.macd_status = MACDStatus.GOLDEN_CROSS
-            result.macd_signal = "✅ 金叉，趋势向上"
         elif is_death_cross:
             result.macd_status = MACDStatus.DEATH_CROSS
-            result.macd_signal = "❌ 死叉，趋势向下"
         elif is_crossing_down:
             result.macd_status = MACDStatus.CROSSING_DOWN
-            result.macd_signal = "⚠️ DIF下穿零轴，趋势转弱"
         elif result.macd_dif > 0 and result.macd_dea > 0:
             result.macd_status = MACDStatus.BULLISH
-            result.macd_signal = "✓ MACD DIF/DEA 均位于零轴上方，动量偏强"
         elif result.macd_dif < 0 and result.macd_dea < 0:
             result.macd_status = MACDStatus.BEARISH
-            result.macd_signal = "⚠ MACD DIF/DEA 均位于零轴下方，动量偏弱"
         else:
             result.macd_status = MACDStatus.BULLISH
-            result.macd_signal = " MACD 中性区域"
+        result.macd_signal = describe_macd_state(result)
 
     def _analyze_rsi(self, df: pd.DataFrame, result: TrendAnalysisResult) -> None:
         """

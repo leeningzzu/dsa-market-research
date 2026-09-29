@@ -11,6 +11,12 @@ from __future__ import annotations
 import math
 from typing import Any, Dict, List, Optional, Tuple
 
+from src.services.evidence_traceability_registry import (
+    build_runtime_trace, build_strategy_eligibility, describe_macd_state,
+)
+from src.services.research_state_projection import STRATEGY_ELIGIBILITY_SCHEMA_VERSION
+from src.services.v2_5_evidence_coverage import compile_product_coverage
+
 
 _STRONG_TRENDS = {"强势多头", "多头排列"}
 _WEAK_TRENDS = {"空头排列", "强势空头"}
@@ -327,7 +333,7 @@ def _price_structure_summary(evidence: Dict[str, Any], trend_result: Any) -> str
 
 
 def _momentum_summary(trend_result: Any) -> str:
-    macd = str(getattr(trend_result, "macd_signal", None) or "").strip()
+    macd = describe_macd_state(trend_result)
     rsi = str(getattr(trend_result, "rsi_signal", None) or "").strip()
     pieces = [p for p in (macd, rsi) if p and p != "数据不足"]
     if not pieces:
@@ -1737,6 +1743,14 @@ def build_stock_factor_decision_summary(
         summary["multi_timeframe_structure_context"] = dict(multi_timeframe_structure_context)
     if canonical_decision is not None:
         summary["canonical_decision"] = canonical_decision
+    if include_canonical:
+        # Actual producer: the same evidence objects feed the unchanged strict validator.
+        # Deferred 30m/quality/valuation/execution never become satisfied from prose.
+        summary["strategy_eligibility"] = build_strategy_eligibility(
+            summary, schema_version=STRATEGY_ELIGIBILITY_SCHEMA_VERSION,
+        )
+        summary["evidence_traceability"] = build_runtime_trace(summary)
+        summary["evidence_product_coverage"] = compile_product_coverage(summary)
     summary["investor_brief"] = _build_asset_research_brief_v1(
         trend_result,
         summary,
