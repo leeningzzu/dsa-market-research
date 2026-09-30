@@ -31,6 +31,13 @@ from src.services.run_diagnostics import record_provider_run, record_provider_ru
 from .fundamental_adapter import AkshareFundamentalAdapter
 from .yfinance_fundamental_adapter import YfinanceFundamentalAdapter
 from .realtime_types import CircuitBreaker
+from .daily_data_identity import (
+    DailyDataIdentityError,
+    attach_daily_data_identity,
+    ensure_daily_data_identity,
+    extract_daily_data_identity,
+    rebind_daily_data_identity,
+)
 
 # 配置日志
 logger = logging.getLogger(__name__)
@@ -501,6 +508,11 @@ class BaseFetcher(ABC):
                 if self.allow_empty_daily_data:
                     return pd.DataFrame(columns=STANDARD_COLUMNS)
                 raise DataFetchError(f"[{self.name}] 未获取到 {stock_code} 的数据")
+
+            try:
+                daily_identity = extract_daily_data_identity(raw_df, strict=True)
+            except DailyDataIdentityError as exc:
+                raise DataFetchError(f"[{self.name}] 日线数据身份非法: {exc}") from exc
             
             # Step 2: 标准化列名
             df = self._normalize_data(raw_df, stock_code)
@@ -510,6 +522,20 @@ class BaseFetcher(ABC):
             
             # Step 4: 计算技术指标
             df = self._calculate_indicators(df)
+
+            if daily_identity is not None:
+                attach_daily_data_identity(
+                    df,
+                    rebind_daily_data_identity(daily_identity, df),
+                )
+            else:
+                ensure_daily_data_identity(
+                    df,
+                    provider_identity=self.name,
+                    provider_route=f"{type(self).__module__}.{type(self).__name__}.get_daily_data",
+                    requested_start=start_date,
+                    requested_end=end_date,
+                )
 
             elapsed = time.time() - request_start
             logger.info(
@@ -1350,6 +1376,18 @@ class DataFetcherManager:
                             days=days,
                         )
                         if df is not None and not df.empty:
+                            try:
+                                ensure_daily_data_identity(
+                                    df,
+                                    provider_identity=fetcher.name,
+                                    provider_route=f"{type(fetcher).__module__}.{type(fetcher).__name__}.get_daily_data",
+                                    requested_start=start_date,
+                                    requested_end=end_date,
+                                )
+                            except DailyDataIdentityError as exc:
+                                raise DataFetchError(
+                                    f"[{fetcher.name}] 日线数据身份与选定数据源不一致: {exc}"
+                                ) from exc
                             duration_ms = int((time.time() - attempt_start) * 1000)
                             record_provider_run(
                                 data_type="daily_data",
@@ -1430,6 +1468,18 @@ class DataFetcherManager:
                 )
                 
                 if df is not None and not df.empty:
+                    try:
+                        ensure_daily_data_identity(
+                            df,
+                            provider_identity=fetcher.name,
+                            provider_route=f"{type(fetcher).__module__}.{type(fetcher).__name__}.get_daily_data",
+                            requested_start=start_date,
+                            requested_end=end_date,
+                        )
+                    except DailyDataIdentityError as exc:
+                        raise DataFetchError(
+                            f"[{fetcher.name}] 日线数据身份与选定数据源不一致: {exc}"
+                        ) from exc
                     duration_ms = int((time.time() - attempt_start) * 1000)
                     record_provider_run(
                         data_type="daily_data",

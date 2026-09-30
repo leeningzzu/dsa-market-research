@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] 日线价格身份不再由 provider 名称或请求参数推断：新增 `DailyDataIdentityV1`，显式记录 Tencent 实际 `qfqday/day` 分支与 BaoStock 成功 `adjustflag=2` 查询证据，并在标准化、HistoryLoader、StockDaily nullable JSON/hash、completed-history snapshot 与 MTF/PIT reason 间贯通。仅 `day` 返回及旧缓存行保持未分类；无身份覆盖会清除旧 provenance，不回填历史 qfq，也不改变 V2.5、策略阈值、模型或通知。
 - [改进] 增加证据溯源注册表与仅语义 V2.5 侧边映射：现有确定性证据生成策略资格、覆盖收据和不含解释文字的 v2 数值快照；保留旧 Ledger v1 身份，新特征未获 PIT/模型准入，缺失 30m 等必需证据仍不形成合法策略机会。原 V2.5 HTML、渲染器、策略阈值与外部调用不变；MACD 文案仅描述已计算状态，不再把金叉称为独立强买信号。
 - [新功能] 增加首个 bounded historical daily replay orchestrator：仅接受 `SPECIFIED_CODES` 单只普通A股与最多20个显式、唯一、严格升序的 XSHG 交易日；每个 session 以 Asia/Shanghai 18:00 的 postmarket `current_time` 驱动既有 Pipeline/Evidence owners，并要求 fresh local SQLite、actual Ledger readback 的 code SHA / session / effective bar / selection identity 一致。Replay 专用 `receipt_only` 模式在 canonical consistency 后直接停止报告投影，禁止本地 report 文件、Email/Telegram、搜索/Agent/外部模型，同时对 provider 错返的 target-date 之后 bar 再次裁剪。Daily-only replay 若对 `stock_trend_quality_pullback_v1` 声称 `ELIGIBLE` 会因缺少独立30m hard trigger 直接 fail-closed；本阶段不生成 Outcome、PIT manifest、训练或概率，也不声明 AUTO_SCREEN 历史选择有效性。另修复 SQLite fresh-file 探针在 Windows 上只结束事务但未关闭 connection 的文件句柄泄漏。
 

@@ -17,6 +17,12 @@ from typing import Any, Dict, Optional
 
 import pandas as pd
 
+from data_provider.daily_data_identity import (
+    attach_daily_data_identity,
+    extract_daily_data_identity,
+    rebind_daily_data_identity,
+)
+
 from src.core.trading_calendar import resolve_completed_timeframe_bar_date
 from src.services.price_structure_service import build_price_structure_context
 from src.services.pit_identity import build_completed_history_identity
@@ -55,6 +61,7 @@ def _normalize_daily_history(history: Any, *, target_date: date) -> pd.DataFrame
     required = ["date", "open", "high", "low", "close", "volume"]
     if not isinstance(history, pd.DataFrame) or history.empty:
         return pd.DataFrame(columns=required)
+    identity = extract_daily_data_identity(history, strict=False)
     frame = history.copy()
     frame.columns = [str(column).lower() for column in frame.columns]
     if any(column not in frame.columns for column in required):
@@ -65,8 +72,15 @@ def _normalize_daily_history(history: Any, *, target_date: date) -> pd.DataFrame
     frame = frame.dropna(subset=required)
     frame = frame[frame["date"] <= target_date]
     frame = frame.sort_values("date").drop_duplicates(subset=["date"], keep="last")
-    columns = required + (["data_source"] if "data_source" in frame.columns else [])
-    return frame[columns].reset_index(drop=True)
+    optional = [
+        column
+        for column in ("amount", "data_source", "data_identity_json", "data_identity_hash")
+        if column in frame.columns
+    ]
+    result = frame[required + optional].reset_index(drop=True)
+    if identity is not None:
+        attach_daily_data_identity(result, rebind_daily_data_identity(identity, result))
+    return result
 
 
 def _invalid_ohlcv(frame: pd.DataFrame) -> bool:
@@ -313,9 +327,8 @@ def build_multi_timeframe_structure_context(
         "config_hash": CONFIG_HASH,
         "independent_action_authority": False,
         "cross_timeframe_vote_counting": False,
-        # StockDaily V1 stores provider name but not the exact adjustment basis.
-        # Per-run evidence can still be replay-safe, but cross-run persistent
-        # history must remain ineligible until adjustment_basis is explicit.
+        # Cross-run history is eligible only after the typed daily identity
+        # proves the consumed provider route, adjustment basis and units.
         "cross_run_persistence_policy": CROSS_RUN_PERSISTENCE_POLICY,
         "cross_run_persistence_eligible": False,
         "cross_run_persistence_reason": "ADJUSTMENT_BASIS_NOT_PERSISTED",
@@ -354,6 +367,17 @@ def build_multi_timeframe_structure_context(
                 observed_at=snapshot_observed_at,
             )
         )
+        identity_reasons = list(base.get("price_identity_reasons") or [])
+        if base.get("adjustment_basis") and not identity_reasons:
+            base["cross_run_persistence_eligible"] = True
+            base["cross_run_persistence_reason"] = "DAILY_DATA_IDENTITY_READY"
+        else:
+            base["cross_run_persistence_eligible"] = False
+            base["cross_run_persistence_reason"] = (
+                "ADJUSTMENT_BASIS_NOT_PERSISTED"
+                if "ADJUSTMENT_BASIS_NOT_PERSISTED" in identity_reasons
+                else (identity_reasons[0] if identity_reasons else "DAILY_DATA_IDENTITY_MISSING")
+            )
     if frame.empty or frame.iloc[-1]["date"] != target_date:
         reason = "COMPLETED_DAILY_HISTORY_MISSING" if frame.empty else "TARGET_DATE_BAR_MISSING"
         return {

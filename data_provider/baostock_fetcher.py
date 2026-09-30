@@ -37,6 +37,7 @@ from .base import (
     normalize_stock_code,
     _is_hk_market,
 )
+from .daily_data_identity import attach_daily_data_identity, build_daily_data_identity
 import os
 
 logger = logging.getLogger(__name__)
@@ -244,6 +245,22 @@ class BaostockFetcher(BaseFetcher):
                     raise DataFetchError(f"Baostock 未查询到 {stock_code} 的数据")
                 
                 df = pd.DataFrame(data_list, columns=rs.fields)
+                identity = build_daily_data_identity(
+                    df,
+                    provider_identity=self.name,
+                    provider_route="baostock.query_history_k_data_plus",
+                    actual_response_branch="frequency=d;adjustflag=2",
+                    requested_adjustment_basis="qfq",
+                    observed_adjustment_basis="qfq",
+                    basis_evidence="successful_nonempty_query:adjustflag=2",
+                    requested_start=start_date,
+                    requested_end=end_date,
+                    currency="CNY",
+                    volume_unit="share",
+                    amount_unit="CNY",
+                    identity_state="OBSERVED",
+                )
+                attach_daily_data_identity(df, identity)
                 
                 return df
                 

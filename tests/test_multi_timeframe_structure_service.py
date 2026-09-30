@@ -6,6 +6,11 @@ from unittest.mock import patch
 
 import pandas as pd
 
+from data_provider.daily_data_identity import (
+    attach_daily_data_identity,
+    build_daily_data_identity,
+)
+
 from src.services.multi_timeframe_structure_service import (
     CROSS_RUN_PERSISTENCE_POLICY,
     _human_summary,
@@ -34,6 +39,35 @@ def _history(periods: int = 150, *, future: int = 0) -> pd.DataFrame:
             }
         )
     return pd.DataFrame(rows)
+
+
+def _with_observed_identity(
+    frame: pd.DataFrame,
+    *,
+    provider: str = "FixtureFetcher",
+    basis: str = "qfq",
+    requested_end: str | None = None,
+) -> pd.DataFrame:
+    result = frame.copy()
+    result["data_source"] = provider
+    identity = build_daily_data_identity(
+        result,
+        provider_identity=provider,
+        provider_route="unit.multi-timeframe",
+        actual_response_branch=f"fixture:{basis}",
+        requested_adjustment_basis=basis,
+        observed_adjustment_basis=basis,
+        basis_evidence="unit-test",
+        requested_start="2025-01-01",
+        requested_end=requested_end or str(pd.to_datetime(result["date"]).max().date()),
+        currency="CNY",
+        volume_unit="share",
+        amount_unit="CNY",
+        identity_state="OBSERVED",
+        observed_at=datetime(2026, 9, 17, 10, 0, tzinfo=timezone.utc),
+    )
+    attach_daily_data_identity(result, identity)
+    return result
 
 
 def _trend_result(label: str = "多头排列"):
@@ -206,11 +240,19 @@ def test_missing_source_and_unproven_period_fail_closed():
 
 
 def test_completed_history_identity_is_prefix_safe_and_changes_with_consumed_bytes():
-    prefix = _history(periods=150)
-    prefix["data_source"] = "AkshareFetcher"
-    full = _history(periods=150, future=8)
-    full["data_source"] = "AkshareFetcher"
-    target = prefix.iloc[-1]["date"].date()
+    raw_prefix = _history(periods=150)
+    target = raw_prefix.iloc[-1]["date"].date()
+    requested_end = target.isoformat()
+    prefix = _with_observed_identity(
+        raw_prefix,
+        provider="AkshareFetcher",
+        requested_end=requested_end,
+    )
+    full = _with_observed_identity(
+        _history(periods=150, future=8),
+        provider="AkshareFetcher",
+        requested_end=requested_end,
+    )
     observed_at = datetime(2026, 9, 17, 10, 0, tzinfo=timezone.utc)
 
     kwargs = dict(
@@ -237,46 +279,41 @@ def test_completed_history_identity_is_prefix_safe_and_changes_with_consumed_byt
     assert prefix_context["provider_identity"] == "AkshareFetcher"
     assert prefix_context["adjustment_basis"] == "qfq"
     assert prefix_context["available_at_max"] == "2026-09-17T10:00:00"
+    assert prefix_context["cross_run_persistence_eligible"] is True
+    assert prefix_context["cross_run_persistence_reason"] == "DAILY_DATA_IDENTITY_READY"
 
 
-def test_completed_history_identity_binds_price_basis_into_snapshot_hash(monkeypatch):
-    frame = _history(periods=40)
-    frame["data_source"] = "AkshareFetcher"
-    target = frame.iloc[-1]["date"].date()
+def test_completed_history_identity_binds_observed_price_basis_into_snapshot_hash():
+    raw = _history(periods=40)
+    target = raw.iloc[-1]["date"].date()
+    qfq_frame = _with_observed_identity(raw, provider="AkshareFetcher", basis="qfq")
+    hfq_frame = _with_observed_identity(raw, provider="AkshareFetcher", basis="hfq")
 
     qfq = build_completed_history_identity(
-        frame,
+        qfq_frame,
         stock_code="600519",
         market="cn",
         target_date=target,
-    )
-    assert qfq["adjustment_basis"] == "qfq"
-    assert qfq["data_snapshot_schema_version"] == "completed-daily-history-v2"
-
-    monkeypatch.setattr(
-        "src.services.pit_identity.proven_adjustment_basis",
-        lambda _provider: "hfq",
     )
     hfq = build_completed_history_identity(
-        frame,
+        hfq_frame,
         stock_code="600519",
         market="cn",
         target_date=target,
     )
+
+    assert qfq["adjustment_basis"] == "qfq"
     assert hfq["adjustment_basis"] == "hfq"
+    assert qfq["data_snapshot_schema_version"] == "completed-daily-history-v3"
     assert hfq["data_snapshot_identity"] != qfq["data_snapshot_identity"]
 
 
-def test_only_code_proven_static_provider_routes_claim_qfq():
-    for provider in (
-        "AkshareFetcher",
-        "TencentFetcher",
-        "EfinanceFetcher",
-        "BaostockFetcher",
-    ):
-        assert proven_adjustment_basis(provider) == "qfq"
-    assert proven_adjustment_basis("PytdxFetcher") is None
-    assert proven_adjustment_basis("TickFlowFetcher") is None
+def test_provider_name_alone_never_proves_qfq():
+    assert proven_adjustment_basis("TencentFetcher") is None
+    frame = _with_observed_identity(_history(periods=5), provider="TencentFetcher")
+    identity = frame.attrs["daily_data_identity"]
+    assert proven_adjustment_basis("TencentFetcher", identity) == "qfq"
+    assert proven_adjustment_basis("DifferentFetcher", identity) is None
 
 
 def test_higher_timeframe_summary_preserves_material_structure_event_after_three_descriptors():

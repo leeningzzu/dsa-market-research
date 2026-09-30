@@ -11,26 +11,22 @@ import math
 from typing import Any, Dict, Optional, Sequence
 
 from data_provider.base import normalize_stock_code
+from data_provider.daily_data_identity import (
+    DailyDataIdentityError,
+    extract_daily_data_identity,
+    extract_daily_data_identity_from_records,
+    identity_is_durable_price_ready,
+    validate_daily_data_identity,
+)
 from src.services.stock_code_utils import _infer_cn_exchange
 from src.utils.analysis_metadata import RESEARCH_SELECTION_SOURCES
 
 
 PIT_IDENTITY_VERSION = "pit-identity-v1"
 ASSET_IDENTITY_VERSION = "cn-stock-asset-v1"
-DATA_SNAPSHOT_IDENTITY_VERSION = "completed-daily-history-v2"
-FORWARD_BAR_SEQUENCE_IDENTITY_VERSION = "forward-bar-sequence-v2"
+DATA_SNAPSHOT_IDENTITY_VERSION = "completed-daily-history-v3"
+FORWARD_BAR_SEQUENCE_IDENTITY_VERSION = "forward-bar-sequence-v3"
 RESEARCH_SELECTION_CONTEXT_VERSION = "research-selection-context-v1"
-
-_PROVEN_QFQ_PROVIDER_IDENTITIES = frozenset(
-    {
-        "akshare",
-        "aksharefetcher",
-        "tencentfetcher",
-        "efinancefetcher",
-        "baostockfetcher",
-    }
-)
-
 
 def canonical_json(value: Any) -> str:
     return json.dumps(
@@ -70,12 +66,27 @@ def build_cn_stock_asset_identity(stock_code: Any, market: Any) -> Optional[Dict
     return {**payload, "identity_hash": sha256_payload(payload)}
 
 
-def proven_adjustment_basis(provider_identity: Any) -> Optional[str]:
-    """Return an adjustment basis only for exact code-proven provider routes."""
-    text = str(provider_identity or "").strip().lower()
-    if text in _PROVEN_QFQ_PROVIDER_IDENTITIES:
-        return "qfq"
-    return None
+def proven_adjustment_basis(
+    provider_identity: Any,
+    daily_data_identity: Any = None,
+) -> Optional[str]:
+    """Return a basis only from observed typed identity, never provider name."""
+    candidate = daily_data_identity
+    if candidate is None and isinstance(provider_identity, Mapping):
+        candidate = provider_identity
+    if candidate is None:
+        return None
+    try:
+        identity = validate_daily_data_identity(candidate)
+    except DailyDataIdentityError:
+        return None
+    expected = str(provider_identity or "").strip().lower()
+    actual = str(identity.get("provider_identity") or "").strip().lower()
+    if expected and expected != actual:
+        return None
+    if not identity_is_durable_price_ready(identity):
+        return None
+    return str(identity.get("observed_adjustment_basis") or "").strip() or None
 
 
 def build_completed_history_identity(
@@ -101,7 +112,9 @@ def build_completed_history_identity(
                 "low": _finite_number(record.get("low")),
                 "close": _finite_number(record.get("close")),
                 "volume": _finite_number(record.get("volume")),
+                "amount": _finite_number(record.get("amount")),
                 "data_source": source or None,
+                "data_identity_hash": str(record.get("data_identity_hash") or "").strip() or None,
             }
         )
     unique_sources = sorted(set(sources))
@@ -110,7 +123,9 @@ def build_completed_history_identity(
         if len(unique_sources) == 1 and len(sources) == len(rows)
         else None
     )
-    adjustment_basis = proven_adjustment_basis(provider_identity)
+    identity = extract_daily_data_identity(frame, strict=False)
+    reasons = _daily_identity_reasons(identity, provider_identity)
+    adjustment_basis = proven_adjustment_basis(provider_identity, identity)
     payload = {
         "version": DATA_SNAPSHOT_IDENTITY_VERSION,
         "market": str(market or "").strip().lower() or None,
@@ -118,14 +133,18 @@ def build_completed_history_identity(
         "target_date": target_date.isoformat(),
         "provider_identity": provider_identity,
         "adjustment_basis": adjustment_basis,
+        "daily_data_identity": _identity_semantics(identity),
         "rows": rows,
     }
-    observed_utc = _aware_utc_naive(observed_at)
+    observed_utc = _aware_utc_naive(observed_at) or _identity_observed_utc(identity)
     result = {
         "data_snapshot_identity": sha256_payload(payload),
         "data_snapshot_schema_version": DATA_SNAPSHOT_IDENTITY_VERSION,
         "provider_identity": provider_identity,
         "adjustment_basis": adjustment_basis,
+        "daily_data_identity_hash": identity.get("identity_hash") if identity else None,
+        "daily_data_identity_state": identity.get("identity_state") if identity else None,
+        "price_identity_reasons": reasons,
     }
     if observed_utc is not None:
         result["snapshot_observed_at"] = observed_utc.isoformat()
@@ -142,6 +161,7 @@ def build_bar_sequence_identity(
 ) -> Dict[str, Any]:
     rows = []
     sources = []
+    identity_records = []
     for bar in bars:
         source = str(getattr(bar, "data_source", None) or "").strip()
         if source:
@@ -154,7 +174,15 @@ def build_bar_sequence_identity(
                 "low": _finite_number(getattr(bar, "low", None)),
                 "close": _finite_number(getattr(bar, "close", None)),
                 "volume": _finite_number(getattr(bar, "volume", None)),
+                "amount": _finite_number(getattr(bar, "amount", None)),
                 "data_source": source or None,
+                "data_identity_hash": str(getattr(bar, "data_identity_hash", None) or "").strip() or None,
+            }
+        )
+        identity_records.append(
+            {
+                "data_identity_json": getattr(bar, "data_identity_json", None),
+                "data_identity_hash": getattr(bar, "data_identity_hash", None),
             }
         )
     unique_sources = sorted(set(sources))
@@ -163,7 +191,9 @@ def build_bar_sequence_identity(
         if len(unique_sources) == 1 and len(sources) == len(rows)
         else None
     )
-    adjustment_basis = proven_adjustment_basis(provider_identity)
+    identity = extract_daily_data_identity_from_records(identity_records, strict=False)
+    reasons = _daily_identity_reasons(identity, provider_identity)
+    adjustment_basis = proven_adjustment_basis(provider_identity, identity)
     payload = {
         "version": FORWARD_BAR_SEQUENCE_IDENTITY_VERSION,
         "purpose": purpose,
@@ -171,6 +201,7 @@ def build_bar_sequence_identity(
         "stock_code": normalize_stock_code(str(stock_code or "").strip()),
         "provider_identity": provider_identity,
         "adjustment_basis": adjustment_basis,
+        "daily_data_identity": _identity_semantics(identity),
         "rows": rows,
     }
     return {
@@ -178,7 +209,64 @@ def build_bar_sequence_identity(
         "data_snapshot_schema_version": FORWARD_BAR_SEQUENCE_IDENTITY_VERSION,
         "provider_identity": provider_identity,
         "adjustment_basis": adjustment_basis,
+        "daily_data_identity_hash": identity.get("identity_hash") if identity else None,
+        "daily_data_identity_state": identity.get("identity_state") if identity else None,
+        "price_identity_reasons": reasons,
     }
+
+
+def _daily_identity_reasons(
+    identity: Optional[Dict[str, Any]],
+    provider_identity: Optional[str],
+) -> list[str]:
+    reasons: list[str] = []
+    if identity is None:
+        return ["DAILY_DATA_IDENTITY_MISSING", "ADJUSTMENT_BASIS_NOT_PERSISTED"]
+    if str(identity.get("provider_identity") or "").strip().lower() != str(provider_identity or "").strip().lower():
+        reasons.append("DAILY_DATA_IDENTITY_PROVIDER_MISMATCH")
+    if identity.get("identity_state") != "OBSERVED":
+        reasons.append("DAILY_DATA_IDENTITY_UNCLASSIFIED")
+    if not identity.get("observed_adjustment_basis"):
+        reasons.append("ADJUSTMENT_BASIS_NOT_PERSISTED")
+    if any(identity.get(key) in (None, "", "UNKNOWN") for key in ("currency", "volume_unit", "amount_unit")):
+        reasons.append("DAILY_DATA_IDENTITY_UNITS_UNPROVEN")
+    return list(dict.fromkeys(reasons))
+
+
+def _identity_semantics(identity: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not identity:
+        return None
+    return {
+        key: identity.get(key)
+        for key in (
+            "schema_version",
+            "identity_state",
+            "identity_hash",
+            "provider_identity",
+            "provider_route",
+            "actual_response_branch",
+            "requested_adjustment_basis",
+            "observed_adjustment_basis",
+            "currency",
+            "volume_unit",
+            "amount_unit",
+            "content_sha256",
+            "row_count",
+        )
+    }
+
+
+def _identity_observed_utc(identity: Optional[Dict[str, Any]]) -> Optional[datetime]:
+    if not identity:
+        return None
+    text = str(identity.get("observed_at") or "").strip()
+    if not text:
+        return None
+    try:
+        value = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return _aware_utc_naive(value)
 
 
 def build_specified_codes_selection_context(

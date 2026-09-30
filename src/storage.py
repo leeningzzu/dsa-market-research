@@ -60,6 +60,10 @@ from src.agent.provider_trace import PROVIDER_TRACE_RETENTION_LIMIT
 from src.config import get_config
 from src.schemas.decision_profile import extract_legacy_decision_profile
 from src.utils.sniper_points import extract_sniper_points, parse_sniper_value
+from data_provider.daily_data_identity import (
+    DailyDataIdentityError,
+    daily_data_identity_storage_values,
+)
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -134,6 +138,8 @@ class StockDaily(Base):
     
     # 数据来源
     data_source = Column(String(50))  # 记录数据来源（如 AkshareFetcher）
+    data_identity_json = Column(Text, nullable=True)
+    data_identity_hash = Column(String(64), nullable=True)
     
     # 更新时间
     created_at = Column(DateTime, default=datetime.now)
@@ -143,6 +149,7 @@ class StockDaily(Base):
     __table_args__ = (
         UniqueConstraint('code', 'date', name='uix_code_date'),
         Index('ix_code_date', 'code', 'date'),
+        Index('ix_stock_daily_data_identity_hash', 'data_identity_hash'),
     )
     
     def __repr__(self):
@@ -165,6 +172,8 @@ class StockDaily(Base):
             'ma20': self.ma20,
             'volume_ratio': self.volume_ratio,
             'data_source': self.data_source,
+            'data_identity_json': self.data_identity_json,
+            'data_identity_hash': self.data_identity_hash,
         }
 
 
@@ -1516,6 +1525,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             Base.metadata.create_all(self._engine)
             self._ensure_llm_usage_telemetry_columns()
             self._ensure_decision_signal_profile_schema()
+            self._ensure_stock_daily_identity_schema()
             self._ensure_prediction_ledger_pit_schema()
             self._ensure_prediction_ledger_strategy_eligibility_schema()
             self._ensure_prediction_outcome_execution_schema()
@@ -1539,6 +1549,33 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             self._SessionLocal = None
             self.__class__._instance = None
             raise
+
+    def _ensure_stock_daily_identity_schema(self) -> None:
+        """Add nullable daily-data provenance columns to existing SQLite caches."""
+        if not self._is_sqlite_engine:
+            return
+        inspector = inspect(self._engine)
+        if not inspector.has_table(StockDaily.__tablename__):
+            return
+        existing = {
+            column["name"]
+            for column in inspector.get_columns(StockDaily.__tablename__)
+        }
+        column_sql = {
+            "data_identity_json": "TEXT",
+            "data_identity_hash": "VARCHAR(64)",
+        }
+        with self._engine.begin() as connection:
+            for column, sql_type in column_sql.items():
+                if column not in existing:
+                    connection.exec_driver_sql(
+                        f"ALTER TABLE {StockDaily.__tablename__} ADD COLUMN {column} {sql_type}"
+                    )
+                    existing.add(column)
+            connection.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_stock_daily_data_identity_hash "
+                "ON stock_daily (data_identity_hash)"
+            )
 
     def _ensure_schema_migration_record(self) -> None:
         session = self._SessionLocal()
@@ -3218,6 +3255,25 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             logger.warning(f"保存数据为空，跳过 {code}")
             return 0
 
+        try:
+            identity_json, identity_hash = daily_data_identity_storage_values(df)
+        except DailyDataIdentityError as exc:
+            logger.warning("日线数据身份非法，按未分类保存并清空旧身份 %s: %s", code, exc)
+            identity_json, identity_hash = None, None
+        if identity_json is not None:
+            try:
+                identity_provider = str(json.loads(identity_json).get("provider_identity") or "").strip()
+            except (TypeError, ValueError, json.JSONDecodeError):
+                identity_provider = ""
+            if identity_provider.lower() != str(data_source or "").strip().lower():
+                logger.warning(
+                    "日线数据身份来源与保存来源不一致，按未分类保存并清空旧身份 %s: identity=%s source=%s",
+                    code,
+                    identity_provider,
+                    data_source,
+                )
+                identity_json, identity_hash = None, None
+
         now = datetime.now()
         records_by_date: Dict[date, Dict[str, Any]] = {}
         for row in df.to_dict(orient='records'):
@@ -3237,6 +3293,8 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 'ma20': self._normalize_sql_value(row.get('ma20')),
                 'volume_ratio': self._normalize_sql_value(row.get('volume_ratio')),
                 'data_source': data_source,
+                'data_identity_json': identity_json,
+                'data_identity_hash': identity_hash,
                 'created_at': now,
                 'updated_at': now,
             }
@@ -3294,6 +3352,8 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                                 'ma20': excluded.ma20,
                                 'volume_ratio': excluded.volume_ratio,
                                 'data_source': excluded.data_source,
+                                'data_identity_json': excluded.data_identity_json,
+                                'data_identity_hash': excluded.data_identity_hash,
                                 'updated_at': excluded.updated_at,
                             },
                         )
@@ -3330,6 +3390,8 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                     existing.ma20 = record['ma20']
                     existing.volume_ratio = record['volume_ratio']
                     existing.data_source = record['data_source']
+                    existing.data_identity_json = record['data_identity_json']
+                    existing.data_identity_hash = record['data_identity_hash']
                     existing.updated_at = record['updated_at']
                 return new_count
 

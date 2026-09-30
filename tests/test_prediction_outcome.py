@@ -5,10 +5,16 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
+import pandas as pd
 import pytest
 
+from data_provider.daily_data_identity import (
+    build_daily_data_identity,
+    build_unclassified_daily_data_identity,
+    canonical_identity_json,
+)
 from src.config import Config
 from src.core.backtest_engine import BacktestEngine
 from src.repositories.prediction_outcome_repo import PredictionOutcomeRepository
@@ -241,12 +247,74 @@ def _seed_prediction(
         return int(history.id), prediction_hash
 
 
+def _bind_seeded_bar_identity(
+    db: DatabaseManager,
+    *,
+    data_source: str,
+    observed_adjustment_basis: str | None,
+) -> None:
+    days = (date(2026, 9, 18), date(2026, 9, 21), date(2026, 9, 22))
+    with db.session_scope() as session:
+        rows = (
+            session.query(StockDaily)
+            .filter(StockDaily.code == "600519", StockDaily.date.in_(days))
+            .order_by(StockDaily.date)
+            .all()
+        )
+        frame = pd.DataFrame(
+            [
+                {
+                    "date": row.date,
+                    "open": row.open,
+                    "high": row.high,
+                    "low": row.low,
+                    "close": row.close,
+                    "volume": row.volume,
+                    "amount": row.amount,
+                    "pct_chg": row.pct_chg,
+                }
+                for row in rows
+            ]
+        )
+        if observed_adjustment_basis is None:
+            identity = build_unclassified_daily_data_identity(
+                frame,
+                provider_identity=data_source,
+                provider_route="unit-test-fixture.prediction-outcome",
+                requested_start=days[0].isoformat(),
+                requested_end=days[-1].isoformat(),
+                actual_response_branch="synthetic-unclassified",
+            )
+        else:
+            identity = build_daily_data_identity(
+                frame,
+                provider_identity=data_source,
+                provider_route="unit-test-fixture.prediction-outcome",
+                actual_response_branch=f"synthetic-{observed_adjustment_basis}",
+                requested_adjustment_basis=observed_adjustment_basis,
+                observed_adjustment_basis=observed_adjustment_basis,
+                basis_evidence="UNIT_TEST_FIXTURE_EXPLICIT_OBSERVED_BASIS",
+                requested_start=days[0].isoformat(),
+                requested_end=days[-1].isoformat(),
+                currency="CNY",
+                volume_unit="share",
+                amount_unit="CNY",
+                identity_state="OBSERVED",
+                observed_at=datetime(2026, 9, 22, 8, 0, tzinfo=timezone.utc),
+            )
+        identity_json = canonical_identity_json(identity)
+        for row in rows:
+            row.data_identity_json = identity_json
+            row.data_identity_hash = identity["identity_hash"]
+
+
 def _seed_bars(
     db: DatabaseManager,
     closes=(102.0, 104.0, 106.0),
     first_open=100.0,
     *,
     data_source="AkshareFetcher",
+    observed_adjustment_basis: str | None = "qfq",
 ) -> None:
     days = (date(2026, 9, 18), date(2026, 9, 21), date(2026, 9, 22))
     with db.session_scope() as session:
@@ -261,9 +329,16 @@ def _seed_bars(
                     low=min(open_price, float(close)) - 1.0,
                     close=float(close),
                     volume=1_000_000 + index,
+                    amount=None,
+                    pct_chg=None,
                     data_source=data_source,
                 )
             )
+    _bind_seeded_bar_identity(
+        db,
+        data_source=data_source,
+        observed_adjustment_basis=observed_adjustment_basis,
+    )
 
 
 
@@ -388,7 +463,11 @@ def test_outcome_price_identity_must_match_prediction_provider_and_basis(isolate
 
 def test_unproven_outcome_adjustment_basis_cannot_create_price_label(isolated_db) -> None:
     _, prediction_hash = _seed_prediction(isolated_db)
-    _seed_bars(isolated_db, data_source="PytdxFetcher")
+    _seed_bars(
+        isolated_db,
+        data_source="PytdxFetcher",
+        observed_adjustment_basis=None,
+    )
 
     result = PredictionOutcomeService(db_manager=isolated_db).evaluate_prediction(
         prediction_hash=prediction_hash,
@@ -479,6 +558,11 @@ def test_exact_retry_is_idempotent_and_correction_appends(isolated_db) -> None:
         row = session.query(StockDaily).filter(StockDaily.date == date(2026, 9, 22)).one()
         row.close = 95.0
         row.low = 94.0
+    _bind_seeded_bar_identity(
+        isolated_db,
+        data_source="AkshareFetcher",
+        observed_adjustment_basis="qfq",
+    )
 
     with pytest.raises(ValueError, match="correction_reason"):
         service.evaluate_prediction(

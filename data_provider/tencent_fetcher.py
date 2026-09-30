@@ -17,6 +17,7 @@ except ImportError:  # pragma: no cover - dependency is present in supported ins
     xcals = None
 
 from .base import BaseFetcher, DataFetchError, STANDARD_COLUMNS, normalize_stock_code, is_bse_code
+from .daily_data_identity import attach_daily_data_identity, build_daily_data_identity
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +62,7 @@ class TencentFetcher(BaseFetcher):
         )
         response.raise_for_status()
         payload = response.json()
-        rows = _extract_kline_rows(payload, symbol=symbol)
+        rows, response_branch = _extract_kline_rows_with_branch(payload, symbol=symbol)
         if not rows:
             logger.info("TencentFetcher empty daily history for %s", stock_code)
             return _empty_daily_frame()
@@ -91,6 +92,23 @@ class TencentFetcher(BaseFetcher):
                 end_date,
             )
             return _empty_daily_frame()
+        identity_state = "OBSERVED" if response_branch == "qfqday" else "UNCLASSIFIED"
+        identity = build_daily_data_identity(
+            df,
+            provider_identity=self.name,
+            provider_route="tencent.fqkline.day",
+            actual_response_branch=response_branch,
+            requested_adjustment_basis="qfq",
+            observed_adjustment_basis="qfq" if response_branch == "qfqday" else None,
+            basis_evidence=f"response_key:{response_branch}",
+            requested_start=start_date,
+            requested_end=end_date,
+            currency="CNY",
+            volume_unit="share",
+            amount_unit="CNY",
+            identity_state=identity_state,
+        )
+        attach_daily_data_identity(df, identity)
         return df
 
     def _normalize_data(self, df: pd.DataFrame, stock_code: str) -> pd.DataFrame:
@@ -198,12 +216,23 @@ def _lots_to_shares(volume: Any) -> Any:
         return volume
 
 
-def _extract_kline_rows(payload: dict[str, Any], *, symbol: str) -> list[dict[str, Any]]:
+def _extract_kline_rows_with_branch(
+    payload: dict[str, Any],
+    *,
+    symbol: str,
+) -> tuple[list[dict[str, Any]], str]:
     data = payload.get("data") if isinstance(payload, dict) else None
     item = data.get(symbol) if isinstance(data, dict) else None
     if not isinstance(item, dict):
-        return []
-    rows = item.get("qfqday") or item.get("day") or []
+        return [], "missing"
+    qfq_rows = item.get("qfqday") or []
+    day_rows = item.get("day") or []
+    if qfq_rows:
+        rows, branch = qfq_rows, "qfqday"
+    elif day_rows:
+        rows, branch = day_rows, "day"
+    else:
+        return [], "missing"
     result: list[dict[str, Any]] = []
     for row in rows:
         if not isinstance(row, list) or len(row) < 6:
@@ -220,4 +249,9 @@ def _extract_kline_rows(payload: dict[str, Any], *, symbol: str) -> list[dict[st
                 "amount": amount,
             }
         )
-    return result
+    return result, branch
+
+
+def _extract_kline_rows(payload: dict[str, Any], *, symbol: str) -> list[dict[str, Any]]:
+    rows, _branch = _extract_kline_rows_with_branch(payload, symbol=symbol)
+    return rows

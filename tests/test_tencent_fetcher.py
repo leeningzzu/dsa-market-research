@@ -12,6 +12,7 @@ from unittest.mock import patch
 import pandas as pd
 
 from data_provider.tencent_fetcher import TencentFetcher, _to_tencent_symbol
+from data_provider.daily_data_identity import extract_daily_data_identity
 
 
 def _read_priority_from_fresh_process(value: str | None) -> int:
@@ -160,6 +161,69 @@ def test_tencent_fetcher_parses_qfq_daily_response() -> None:
     assert float(df.iloc[0]["close"]) == 10.5
     assert float(df.iloc[0]["volume"]) == 1234500.0
     assert float(df.iloc[1]["amount"]) == 77890.0
+    identity = extract_daily_data_identity(df, strict=True)
+    assert identity["identity_state"] == "OBSERVED"
+    assert identity["actual_response_branch"] == "qfqday"
+    assert identity["observed_adjustment_basis"] == "qfq"
+    assert identity["volume_unit"] == "share"
+    assert identity["amount_unit"] == "CNY"
+
+
+def test_tencent_day_only_response_is_explicitly_unclassified() -> None:
+    payload = {
+        "data": {
+            "sz000001": {
+                "day": [
+                    ["2026-05-06", "10.00", "10.50", "10.80", "9.90", "12345", "67890"],
+                ]
+            }
+        }
+    }
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return payload
+
+    with patch("data_provider.tencent_fetcher.requests.get", return_value=FakeResponse()):
+        frame = TencentFetcher().get_daily_data(
+            "000001", start_date="2026-05-01", end_date="2026-05-10"
+        )
+
+    identity = extract_daily_data_identity(frame, strict=True)
+    assert identity["actual_response_branch"] == "day"
+    assert identity["identity_state"] == "UNCLASSIFIED"
+    assert identity["observed_adjustment_basis"] is None
+
+
+def test_tencent_prefers_qfqday_when_both_response_branches_exist() -> None:
+    payload = {
+        "data": {
+            "sz000001": {
+                "qfqday": [["2026-05-06", "10", "10.5", "10.8", "9.9", "100", "1000"]],
+                "day": [["2026-05-06", "20", "20.5", "20.8", "19.9", "100", "2000"]],
+            }
+        }
+    }
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return payload
+
+    with patch("data_provider.tencent_fetcher.requests.get", return_value=FakeResponse()):
+        frame = TencentFetcher().get_daily_data(
+            "000001", start_date="2026-05-01", end_date="2026-05-10"
+        )
+
+    assert float(frame.iloc[0]["close"]) == 10.5
+    identity = extract_daily_data_identity(frame, strict=True)
+    assert identity["actual_response_branch"] == "qfqday"
+    assert identity["observed_adjustment_basis"] == "qfq"
 
 
 def test_tencent_fetcher_requests_explicit_historical_date_window() -> None:

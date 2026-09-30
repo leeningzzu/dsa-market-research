@@ -171,6 +171,51 @@ class TestStorage(unittest.TestCase):
 
         DatabaseManager.reset_instance()
 
+    def test_stock_daily_identity_schema_migration_is_nullable_and_idempotent(self):
+        DatabaseManager.reset_instance()
+        temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        db_path = os.path.join(temp_dir.name, "legacy_stock_daily.db")
+        try:
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    "CREATE TABLE stock_daily ("
+                    "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                    "code VARCHAR(10) NOT NULL, "
+                    "date DATE NOT NULL, "
+                    "close FLOAT, "
+                    "data_source VARCHAR(50), "
+                    "UNIQUE(code, date))"
+                )
+                conn.execute(
+                    "INSERT INTO stock_daily (code, date, close, data_source) VALUES (?, ?, ?, ?)",
+                    ("600519", "2026-01-05", 100.0, "LegacyFetcher"),
+                )
+
+            db = DatabaseManager(db_url=f"sqlite:///{db_path}")
+            db._ensure_stock_daily_identity_schema()
+            db._ensure_stock_daily_identity_schema()
+
+            with sqlite3.connect(db_path) as conn:
+                columns = {
+                    row[1]
+                    for row in conn.execute("PRAGMA table_info(stock_daily)").fetchall()
+                }
+                indexes = {
+                    row[1]
+                    for row in conn.execute("PRAGMA index_list(stock_daily)").fetchall()
+                }
+                values = conn.execute(
+                    "SELECT data_identity_json, data_identity_hash FROM stock_daily"
+                ).fetchone()
+            self.assertIn("data_identity_json", columns)
+            self.assertIn("data_identity_hash", columns)
+            self.assertIn("ix_stock_daily_data_identity_hash", indexes)
+            self.assertEqual(values, (None, None))
+        finally:
+            DatabaseManager.reset_instance()
+            Config.reset_instance()
+            temp_dir.cleanup()
+
     def test_prediction_ledger_pit_schema_migration_is_nullable_and_idempotent(self):
         DatabaseManager.reset_instance()
         temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)

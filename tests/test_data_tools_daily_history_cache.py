@@ -9,6 +9,13 @@ from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
+from data_provider.daily_data_identity import (
+    attach_daily_data_identity,
+    build_daily_data_identity,
+    canonical_identity_json,
+    extract_daily_data_identity,
+)
+
 from src.agent.tools.data_tools import _handle_get_daily_history
 from src.services.history_loader import reset_frozen_target_date, set_frozen_target_date
 
@@ -29,6 +36,8 @@ class _DailyRow:
         self.ma20 = close - 2
         self.volume_ratio = 1.1
         self.data_source = "unit-test"
+        self.data_identity_json = None
+        self.data_identity_hash = None
 
     def to_dict(self):
         return {
@@ -46,6 +55,8 @@ class _DailyRow:
             "ma20": self.ma20,
             "volume_ratio": self.volume_ratio,
             "data_source": self.data_source,
+            "data_identity_json": self.data_identity_json,
+            "data_identity_hash": self.data_identity_hash,
         }
 
 
@@ -54,6 +65,31 @@ def _rows(code: str, latest: date, count: int):
         _DailyRow(code, latest - timedelta(days=offset), close=100 + offset)
         for offset in range(count)
     ]
+
+
+def _rows_with_identity(code: str, latest: date, count: int):
+    rows = _rows(code, latest, count)
+    frame = pd.DataFrame([row.to_dict() for row in rows])
+    identity = build_daily_data_identity(
+        frame,
+        provider_identity="unit-test",
+        provider_route="unit.db-cache",
+        actual_response_branch="fixture:qfq",
+        requested_adjustment_basis="qfq",
+        observed_adjustment_basis="qfq",
+        basis_evidence="unit-test",
+        requested_start=str(frame["date"].min()),
+        requested_end=str(frame["date"].max()),
+        currency="CNY",
+        volume_unit="share",
+        amount_unit="CNY",
+        identity_state="OBSERVED",
+    )
+    identity_json = canonical_identity_json(identity)
+    for row in rows:
+        row.data_identity_json = identity_json
+        row.data_identity_hash = identity["identity_hash"]
+    return rows
 
 
 class _FakeDb:
@@ -102,6 +138,20 @@ class DailyHistoryCacheToolTest(unittest.TestCase):
         self.assertEqual(result["data"][-1]["date"], str(target))
         manager.get_daily_data.assert_not_called()
 
+    def test_db_cache_restores_and_rebinds_persisted_daily_identity(self) -> None:
+        target = date(2026, 4, 24)
+        db = _FakeDb({"600519": _rows_with_identity("600519", target, 3)})
+        manager = SimpleNamespace(get_daily_data=MagicMock())
+
+        with patch("src.storage.get_db", return_value=db), \
+             patch("src.services.history_loader._get_fetcher_manager", return_value=manager):
+            result = self._run_with_frozen_date(target, "600519", days=3)
+
+        hashes = {item["data_identity_hash"] for item in result["data"]}
+        self.assertEqual(len(hashes), 1)
+        self.assertNotIn(None, hashes)
+        manager.get_daily_data.assert_not_called()
+
     def test_prefers_fuller_candidate_when_dates_tie(self) -> None:
         target = date(2026, 4, 24)
         db = _FakeDb(
@@ -146,6 +196,22 @@ class DailyHistoryCacheToolTest(unittest.TestCase):
                 {"date": target, "open": 1, "high": 2, "low": 0.5, "close": 1.5},
             ]
         )
+        identity = build_daily_data_identity(
+            df,
+            provider_identity="Fetcher",
+            provider_route="unit.provider",
+            actual_response_branch="fixture:qfq",
+            requested_adjustment_basis="qfq",
+            observed_adjustment_basis="qfq",
+            basis_evidence="unit-test",
+            requested_start=target.isoformat(),
+            requested_end=target.isoformat(),
+            currency="CNY",
+            volume_unit="share",
+            amount_unit="CNY",
+            identity_state="OBSERVED",
+        )
+        attach_daily_data_identity(df, identity)
         manager = SimpleNamespace(get_daily_data=MagicMock(return_value=(df, "Fetcher")))
 
         with patch("src.storage.get_db", return_value=db), \
@@ -162,6 +228,9 @@ class DailyHistoryCacheToolTest(unittest.TestCase):
         self.assertEqual(saved_source, "Fetcher")
         self.assertTrue((saved_df["data_source"] == "Fetcher").all())
         self.assertEqual(saved_df["date"].tolist(), [target])
+        saved_identity = extract_daily_data_identity(saved_df, strict=True)
+        self.assertEqual(saved_identity["provider_identity"], "Fetcher")
+        self.assertEqual(saved_identity["observed_adjustment_basis"], "qfq")
         self.assertFalse(result["cache_hit"])
         self.assertEqual(result["source"], "Fetcher")
 

@@ -17,6 +17,12 @@ from datetime import date, timedelta
 
 import pandas as pd
 
+from data_provider.daily_data_identity import (
+    attach_daily_data_identity,
+    build_daily_data_identity,
+    extract_daily_data_identity,
+)
+
 from src.config import Config
 from src.storage import DatabaseManager, StockDaily
 
@@ -179,6 +185,57 @@ class GetLatestDataTestCase(unittest.TestCase):
         self.assertAlmostEqual(by_date[base_date].volume_ratio or 0.0, 1.8, places=6)
         self.assertEqual(by_date[base_date].data_source, "batch-2")
         self.assertAlmostEqual(by_date[base_date + timedelta(days=2)].close, 122.0, places=6)
+
+    def test_daily_identity_roundtrip_and_identityless_overwrite_clears_stale_provenance(self) -> None:
+        target = date(2026, 2, 2)
+        first = pd.DataFrame(
+            [
+                {
+                    "date": target,
+                    "open": 10.0,
+                    "high": 11.0,
+                    "low": 9.0,
+                    "close": 10.5,
+                    "volume": 1000.0,
+                    "amount": 10500.0,
+                    "pct_chg": 1.0,
+                }
+            ]
+        )
+        identity = build_daily_data_identity(
+            first,
+            provider_identity="TestData",
+            provider_route="unit.test",
+            actual_response_branch="fixture:qfq",
+            requested_adjustment_basis="qfq",
+            observed_adjustment_basis="qfq",
+            basis_evidence="unit-test",
+            requested_start=target.isoformat(),
+            requested_end=target.isoformat(),
+            currency="CNY",
+            volume_unit="share",
+            amount_unit="CNY",
+            identity_state="OBSERVED",
+        )
+        attach_daily_data_identity(first, identity)
+
+        self.assertEqual(self.db.save_daily_data(first, "600519", data_source="TestData"), 1)
+        stored = self.db.get_latest_data("600519", days=1)[0]
+        self.assertEqual(stored.data_identity_hash, identity["identity_hash"])
+        restored = extract_daily_data_identity(
+            pd.DataFrame([stored.to_dict()]),
+            strict=True,
+        )
+        self.assertEqual(restored["observed_adjustment_basis"], "qfq")
+
+        overwrite = first.copy()
+        overwrite.attrs.clear()
+        overwrite.loc[0, "close"] = 11.0
+        self.assertEqual(self.db.save_daily_data(overwrite, "600519", data_source="TestData"), 0)
+        cleared = self.db.get_latest_data("600519", days=1)[0]
+        self.assertIsNone(cleared.data_identity_json)
+        self.assertIsNone(cleared.data_identity_hash)
+
 
 
 if __name__ == "__main__":

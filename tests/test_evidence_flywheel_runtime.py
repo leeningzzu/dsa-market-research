@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import pytest
-from sqlalchemy import inspect, text
+from sqlalchemy import inspect, select, text
 
 from src.analyzer import GeminiAnalyzer
 from src.config import Config
@@ -32,7 +32,7 @@ from src.services.evidence_flywheel_runtime import (
     replay_specified_codes_daily_sessions,
 )
 from src.services.pit_dataset_service import PITDatasetService
-from src.storage import DatabaseManager
+from src.storage import DatabaseManager, StockDaily
 
 
 @pytest.fixture()
@@ -895,6 +895,11 @@ def test_native_zero_model_record_writes_only_the_admitted_temp_db_surfaces(
     assert "ADJUSTMENT_BASIS_NOT_PERSISTED" in receipt["ledger_receipts"][0][
         "pit_ineligibility_reasons"
     ]
+    with isolated_db.get_session() as session:
+        cached_rows = session.execute(select(StockDaily)).scalars().all()
+    assert cached_rows
+    assert all(row.data_identity_json is None for row in cached_rows)
+    assert all(row.data_identity_hash is None for row in cached_rows)
     completion.assert_not_called()
     get_keys.assert_not_called()
     send_email.assert_not_called()

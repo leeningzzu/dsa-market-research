@@ -16,6 +16,13 @@ from typing import Any, List, Optional, Tuple
 
 import pandas as pd
 
+from data_provider.daily_data_identity import (
+    DailyDataIdentityError,
+    attach_daily_data_identity,
+    extract_daily_data_identity,
+    rebind_daily_data_identity,
+)
+
 logger = logging.getLogger(__name__)
 _CACHE_MIN_RECORDS = 30
 
@@ -154,6 +161,9 @@ def load_history_df(
         latest_date = max((_bar_date(bar) for bar in bars), default=date.min)
         if bars and latest_date >= end and len(bars) >= required_records:
             df = pd.DataFrame([b.to_dict() for b in bars])
+            identity = extract_daily_data_identity(df, strict=False)
+            if identity is not None:
+                attach_daily_data_identity(df, rebind_daily_data_identity(identity, df))
             logger.debug(
                 "load_history_df(%s): %d bars from DB (requested %d)",
                 stock_code, len(df), days,
@@ -184,6 +194,16 @@ def load_history_df(
                 )
                 return None, "none"
 
+            try:
+                identity = extract_daily_data_identity(df, strict=True)
+            except DailyDataIdentityError as exc:
+                logger.warning(
+                    "load_history_df(%s): provider %s returned malformed daily identity: %s",
+                    stock_code,
+                    source,
+                    exc,
+                )
+                return None, "none"
             frame = df.copy()
             bar_dates = pd.to_datetime(frame["date"], errors="coerce").dt.date
             in_window = bar_dates.notna() & (bar_dates >= start) & (bar_dates <= end)
@@ -202,6 +222,8 @@ def load_history_df(
             # Persist that route on every consumed row so downstream PIT/price
             # identity never has to guess from a side-channel.
             frame["data_source"] = str(source or "").strip() or None
+            if identity is not None:
+                attach_daily_data_identity(frame, rebind_daily_data_identity(identity, frame))
             return frame, source
     except Exception as e:
         logger.warning("load_history_df(%s): DataFetcherManager failed: %s", stock_code, e)
