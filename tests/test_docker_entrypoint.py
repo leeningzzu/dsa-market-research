@@ -34,6 +34,16 @@ def test_dockerfile_bundles_builtin_screening_engine() -> None:
     assert "import src.services.screening.pipeline" in dockerfile
 
 
+def test_dockerfile_bundles_canonical_slot_map_without_enabling_report_templates() -> None:
+    dockerfile = (REPO_ROOT / "docker" / "Dockerfile").read_text(encoding="utf-8")
+    slot_map = REPO_ROOT / "templates" / "v2_5" / "STOCK_DSA_V2_5_EVIDENCE_SLOT_MAP_V1.json"
+    exact_copy = "COPY templates/v2_5/STOCK_DSA_V2_5_EVIDENCE_SLOT_MAP_V1.json ./templates/v2_5/STOCK_DSA_V2_5_EVIDENCE_SLOT_MAP_V1.json"
+
+    assert slot_map.is_file()
+    assert exact_copy in dockerfile
+    assert "COPY templates/ ./templates/" not in dockerfile
+
+
 def test_docker_entrypoint_repairs_ownership_and_user_permissions() -> None:
     entrypoint = (REPO_ROOT / "docker" / "entrypoint.sh").read_text(encoding="utf-8")
 

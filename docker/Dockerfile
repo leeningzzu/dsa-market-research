@@ -56,6 +56,7 @@ COPY data_provider/ ./data_provider/
 COPY bot/ ./bot/
 COPY src/ ./src/
 COPY strategies/ ./strategies/
+COPY templates/v2_5/STOCK_DSA_V2_5_EVIDENCE_SLOT_MAP_V1.json ./templates/v2_5/STOCK_DSA_V2_5_EVIDENCE_SLOT_MAP_V1.json
 COPY --from=web-builder /app/static ./static/
 COPY docker/entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 

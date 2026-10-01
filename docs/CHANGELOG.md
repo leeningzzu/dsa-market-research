@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] Docker 运行镜像仅显式打包 canonical trace 校验所需的 `STOCK_DSA_V2_5_EVIDENCE_SLOT_MAP_V1.json` 语义 sidecar，避免 `src.notification` 导入 canonical brief validator 时因容器缺失 slot-map 失败；继续保留报告模板缺失时的既有 fallback，不打包整套 `templates/`，不修改 V2.5 原件或报告渲染语义。
 - [修复] 收紧 B3 canonical/Product 动作权威边界：新增共享 canonical semantic validator 与 `canonical-decision-binding-v1`，将合法 deterministic decision 同当前 evidence trace/manifest identity 绑定；Production 缺失趋势证据显式退化为 UNKNOWN/watch，不再保留旧 BUY/SELL，伪造 canonical tuple/brief、legacy score-derived history 与无效 durable projection 均 fail-closed。Skill/Agent、LLM invalid-JSON fallback、sentiment/trend 兼容字段继续保留为非权威诊断上下文；不改变 B4 recording denominator、PredictionLedgerService、V2.5 原件、模型或通知通道。
 - [测试] 增加 B3 canonical authority 回归：覆盖非法 `WAIT+avoid` tuple、canonical↔trace/brief binding、缺 trend_result 的 Production fail-closed、legacy history 不再按分数重建 buy/sell、伪造 durable `BUY` 拒绝，以及现有投资者简报在合法 binding 下保持原有内容语义。
 
