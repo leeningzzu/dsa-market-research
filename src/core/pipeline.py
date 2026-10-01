@@ -109,6 +109,8 @@ from src.services.factor_decision_summary import (
     assert_canonical_consumer_consistency,
     build_stock_factor_decision_summary,
     canonical_explanation_degradation_eligible,
+    validate_canonical_factor_binding,
+    validate_investor_brief_binding,
 )
 from src.enums import ReportType
 from src.stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult
@@ -2545,8 +2547,8 @@ class StockAnalysisPipeline:
         if is_index_or_etf and self.p0_bounded_trial:
             raise P0BoundedTrialError(f"P0 rejects ETF or index result: {code}")
         asset_type = "etf" if is_index_or_etf else "stock"
-        if trend_result is None and not self.p0_bounded_trial:
-            return
+        # Missing deterministic trend evidence must still finalize an explicit
+        # UNKNOWN/watch canonical state; never preserve a stale legacy BUY/SELL.
         report_language = normalize_report_language(
             getattr(result, "report_language", None)
             or getattr(self.config, "report_language", "zh")
@@ -2598,20 +2600,23 @@ class StockAnalysisPipeline:
         if not isinstance(factor, dict):
             return {}
 
+        try:
+            canonical_identity = validate_canonical_factor_binding(factor)
+            brief = validate_investor_brief_binding(factor)
+        except ValueError:
+            return {}
         canonical = factor.get("canonical_decision")
-        canonical_projection = {}
-        if isinstance(canonical, dict):
-            canonical_projection = {
-                key: canonical.get(key)
-                for key in (
-                    "authority",
-                    "action",
-                    "public_action",
-                    "evidence_state",
-                    "hard_veto",
-                    "reason_codes",
-                )
-            }
+        canonical_projection = {
+            key: canonical.get(key)
+            for key in (
+                "authority",
+                "action",
+                "public_action",
+                "evidence_state",
+                "hard_veto",
+                "reason_codes",
+            )
+        }
 
         def compact_state(value: Any) -> Any:
             if isinstance(value, dict):
@@ -2658,7 +2663,6 @@ class StockAnalysisPipeline:
             if compacted not in ({}, [], None):
                 evidence_projection[key] = compacted
 
-        brief = factor.get("investor_brief")
         brief_projection = {}
         if isinstance(brief, dict):
             valuation = brief.get("valuation")
@@ -2691,6 +2695,7 @@ class StockAnalysisPipeline:
             "strategy_id": factor.get("strategy_id"),
             "asset_type": factor.get("asset_type"),
             "canonical_decision": canonical_projection,
+            "canonical_identity": canonical_identity,
             "evidence_states": evidence_projection,
             "brief": brief_projection,
         }
@@ -2722,7 +2727,14 @@ class StockAnalysisPipeline:
         if not isinstance(dashboard, dict):
             return None
         factor = dashboard.get("factor_decision")
-        return factor if isinstance(factor, dict) else None
+        if not isinstance(factor, dict):
+            return None
+        try:
+            validate_canonical_factor_binding(factor)
+            validate_investor_brief_binding(factor)
+        except ValueError:
+            return None
+        return factor
 
     @classmethod
     def _history_selection_source(cls, record: Any) -> str:

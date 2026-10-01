@@ -3,6 +3,8 @@ from pathlib import Path
 
 from types import SimpleNamespace
 
+from src.core.pipeline import StockAnalysisPipeline
+
 from src.services.factor_decision_summary import (
     apply_canonical_decision_to_result,
     assert_canonical_consumer_consistency,
@@ -279,6 +281,32 @@ def test_phase_a_non_finite_prices_are_not_rendered_as_usable_values():
     assert brief["current_price"]["value"] is None
     assert brief["key_levels"]["support"] == "10.10"
     assert brief["key_levels"]["resistance"] == "11.20"
+
+
+def test_phase_a_production_missing_trend_finalizes_unknown_watch_instead_of_stale_buy():
+    pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+    pipeline.p0_bounded_trial = False
+    pipeline.config = SimpleNamespace(report_language="zh")
+    result = _result()
+    result.code = "600519"
+    result.name = "贵州茅台"
+    result.report_language = "zh"
+
+    pipeline._attach_factor_decision_summary(
+        result,
+        code="600519",
+        trend_result=None,
+        fundamental_context=None,
+        chip_data=None,
+    )
+
+    factor = result.dashboard["factor_decision"]
+    assert factor["canonical_decision"]["action"] == "WAIT"
+    assert factor["canonical_decision"]["public_action"] == "watch"
+    assert factor["canonical_decision"]["evidence_state"] == "UNKNOWN"
+    assert result.action == "watch"
+    assert result.decision_type == "hold"
+    assert_canonical_consumer_consistency(result, scope="production")
 
 
 def test_phase_a_pipeline_wiring_keeps_etf_p0_boundary_and_normal_canonical_consistency():

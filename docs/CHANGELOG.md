@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] 收紧 B3 canonical/Product 动作权威边界：新增共享 canonical semantic validator 与 `canonical-decision-binding-v1`，将合法 deterministic decision 同当前 evidence trace/manifest identity 绑定；Production 缺失趋势证据显式退化为 UNKNOWN/watch，不再保留旧 BUY/SELL，伪造 canonical tuple/brief、legacy score-derived history 与无效 durable projection 均 fail-closed。Skill/Agent、LLM invalid-JSON fallback、sentiment/trend 兼容字段继续保留为非权威诊断上下文；不改变 B4 recording denominator、PredictionLedgerService、V2.5 原件、模型或通知通道。
+- [测试] 增加 B3 canonical authority 回归：覆盖非法 `WAIT+avoid` tuple、canonical↔trace/brief binding、缺 trend_result 的 Production fail-closed、legacy history 不再按分数重建 buy/sell、伪造 durable `BUY` 拒绝，以及现有投资者简报在合法 binding 下保持原有内容语义。
+
 - [修复] 日线价格身份不再由 provider 名称或请求参数推断：新增 `DailyDataIdentityV1`，显式记录 Tencent 实际 `qfqday/day` 分支与 BaoStock 成功 `adjustflag=2` 查询证据，并在标准化、HistoryLoader、StockDaily nullable JSON/hash、completed-history snapshot 与 MTF/PIT reason 间贯通。仅 `day` 返回及旧缓存行保持未分类；无身份覆盖会清除旧 provenance，不回填历史 qfq，也不改变 V2.5、策略阈值、模型或通知。
 - [修复] 收紧 MUE V1 方法语义身份：Production Pipeline 只为实际返回的 deterministic producer 生成 `method-execution-receipt-v1`，绑定 B1 数据快照、stock/market/target/timeframe、producer source SHA/version/config、parent/output hash；REGIME 与 TREND_RS 分别校验实际 parent identity 及股票+510300 benchmark 的 typed price identity。注册表改为独立 accepted requirement-set equality，并验证 metric metadata/数学域；MA60 少于60根保持 missing，不再用 MA20 代填。direct unit/research 调用不伪造 Pipeline receipt；不改变 canonical action/Product authority、V2.5、数据源、模型或通知。
 - [改进] 增加证据溯源注册表与仅语义 V2.5 侧边映射：现有确定性证据生成策略资格、覆盖收据和不含解释文字的 v2 数值快照；保留旧 Ledger v1 身份，新特征未获 PIT/模型准入，缺失 30m 等必需证据仍不形成合法策略机会。原 V2.5 HTML、渲染器、策略阈值与外部调用不变；MACD 文案仅描述已计算状态，不再把金叉称为独立强买信号。

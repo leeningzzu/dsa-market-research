@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import pandas as pd
+import pytest
 
 from src.analyzer import AnalysisResult
 from src.services.factor_decision_summary import (
@@ -183,6 +184,55 @@ def test_p0_canonical_wait_overrides_conflicting_llm_buy_in_every_action_slot():
     assert result.dashboard["decision_stability"]["final_action"] == "watch"
     assert "P0 不生成买卖点" in result.dashboard["battle_plan"]["sniper_points"]["ideal_buy"]
     assert_canonical_consumer_consistency(result)
+
+
+def test_canonical_summary_binds_exact_decision_to_current_trace():
+    summary = build_stock_factor_decision_summary(_trend(), include_canonical=True)
+
+    binding = summary["canonical_decision_identity"]
+    assert binding == summary["investor_brief"]["canonical_binding"]
+    assert binding["strategy_id"] == "stock_trend_quality_pullback_v1"
+    assert binding["canonical_decision_hash"]
+    assert binding["runtime_trace_hash"] == summary["evidence_traceability"]["runtime_trace_hash"]
+    assert binding["manifest_hash"] == summary["evidence_traceability"]["manifest_hash"]
+
+
+def test_copy_consistency_cannot_legalize_invalid_canonical_tuple():
+    summary = build_stock_factor_decision_summary(_trend(), include_canonical=True)
+    summary["canonical_decision"] = {
+        "authority": "stock_trend_quality_pullback_v1",
+        "action": "WAIT",
+        "public_action": "avoid",
+        "evidence_state": "PROVEN",
+        "hard_veto": False,
+        "reason_codes": ["SYNTHETIC"],
+    }
+
+    with pytest.raises(ValueError, match="tuple is illegal"):
+        apply_canonical_decision_to_result(_llm_result(), summary, scope="production")
+
+
+def test_failed_legacy_result_stays_failed_and_cannot_own_action():
+    summary = build_stock_factor_decision_summary(_trend(), include_canonical=True)
+    result = _llm_result(advice="买入", action="buy", decision_type="buy")
+    result.success = False
+
+    apply_canonical_decision_to_result(result, summary, scope="production")
+
+    assert result.success is False
+    assert result.action == "watch"
+    assert result.decision_type == "hold"
+    assert result.sentiment_score == 96
+    assert result.trend_prediction == "强烈看多"
+    assert result.dashboard["strategy_synthesis"]["final_signal"] == "hold"
+
+
+def test_degraded_explanation_rejects_stale_brief_binding():
+    summary = build_stock_factor_decision_summary(_trend(), include_canonical=True)
+    assert canonical_explanation_degradation_eligible(summary) is True
+
+    summary["investor_brief"]["canonical_binding"]["runtime_trace_hash"] = "forged"
+    assert canonical_explanation_degradation_eligible(summary) is False
 
 
 def test_p0_canonical_wait_overrides_unsupported_llm_sell():

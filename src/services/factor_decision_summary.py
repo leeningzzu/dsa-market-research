@@ -18,7 +18,11 @@ from src.services.evidence_traceability_registry import (
     describe_macd_state,
     digest,
 )
-from src.services.research_state_projection import STRATEGY_ELIGIBILITY_SCHEMA_VERSION
+from src.services.research_state_projection import (
+    STRATEGY_ELIGIBILITY_SCHEMA_VERSION,
+    build_canonical_decision_identity,
+    validate_canonical_decision_semantics,
+)
 from src.services.v2_5_evidence_coverage import compile_product_coverage
 
 
@@ -37,6 +41,7 @@ _COST_STRUCTURE_VERSION = "cost-structure-v1"
 _PRICE_STRUCTURE_VERSION = "price-structure-v1"
 _VOLATILITY_MOMENTUM_VERSION = "volatility-momentum-v1"
 _PATTERN_TRIGGER_VERSION = "pattern-trigger-v1"
+_CANONICAL_BINDING_VERSION = "canonical-decision-binding-v1"
 
 
 def _enum_value(value: Any) -> str:
@@ -874,6 +879,63 @@ def _canonical_public_text(summary: Dict[str, Any], *, scope: str = "p0") -> Dic
     }
 
 
+def canonical_factor_binding(summary: Any) -> Dict[str, Any]:
+    """Bind one legal canonical decision to the current deterministic trace."""
+
+    if not isinstance(summary, dict):
+        raise ValueError("factor_decision summary is required")
+    strategy_id = str(summary.get("strategy_id") or "").strip()
+    decision = summary.get("canonical_decision")
+    semantic_identity = build_canonical_decision_identity(
+        decision,
+        strategy_id=strategy_id or None,
+    )
+    trace = summary.get("evidence_traceability")
+    if not isinstance(trace, dict):
+        raise ValueError("evidence traceability is required for canonical binding")
+    expected_trace = build_runtime_trace(summary)
+    if trace != expected_trace:
+        raise ValueError("evidence traceability is stale for canonical binding")
+    runtime_trace_hash = str(trace.get("runtime_trace_hash") or "").strip()
+    manifest_hash = str(trace.get("manifest_hash") or "").strip()
+    if not runtime_trace_hash or not manifest_hash:
+        raise ValueError("canonical binding requires trace and manifest identity")
+    return {
+        **semantic_identity,
+        "schema_version": _CANONICAL_BINDING_VERSION,
+        "runtime_trace_hash": runtime_trace_hash,
+        "manifest_hash": manifest_hash,
+        "data_snapshot_identity": trace.get("data_snapshot_identity"),
+    }
+
+
+def validate_canonical_factor_binding(summary: Any) -> Dict[str, Any]:
+    """Require the stored canonical identity to match the current decision and trace."""
+
+    expected = canonical_factor_binding(summary)
+    actual = summary.get("canonical_decision_identity") if isinstance(summary, dict) else None
+    if actual != expected:
+        raise ValueError("canonical decision identity is missing or stale")
+    return expected
+
+
+def validate_investor_brief_binding(
+    summary: Any,
+    brief: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Return the brief only when it is bound to the current canonical trace."""
+
+    if not isinstance(summary, dict):
+        raise ValueError("factor_decision summary is required")
+    candidate = brief if isinstance(brief, dict) else summary.get("investor_brief")
+    if not isinstance(candidate, dict):
+        raise ValueError("investor brief is required")
+    expected = validate_canonical_factor_binding(summary)
+    if candidate.get("canonical_binding") != expected:
+        raise ValueError("investor brief canonical binding is missing or stale")
+    return candidate
+
+
 def apply_canonical_decision_to_result(
     result: Any,
     summary: Dict[str, Any],
@@ -881,13 +943,11 @@ def apply_canonical_decision_to_result(
     scope: str = "p0",
 ) -> Any:
     """Make the deterministic decision the sole public action authority."""
-    decision = summary.get("canonical_decision") if isinstance(summary, dict) else None
-    if not isinstance(decision, dict):
-        raise ValueError("factor_decision.canonical_decision is required")
-    if decision.get("action") not in {"WAIT", "PASS"}:
-        raise ValueError("canonical action must be WAIT or PASS")
-    if decision.get("public_action") not in {"watch", "avoid"}:
-        raise ValueError("canonical public_action must be watch or avoid")
+    raw_decision = summary.get("canonical_decision") if isinstance(summary, dict) else None
+    decision = validate_canonical_decision_semantics(
+        raw_decision,
+        strategy_id=str(summary.get("strategy_id") or "").strip() or None,
+    )
 
     text = _canonical_public_text(summary, scope=scope)
     conclusion = str(summary.get("conclusion") or text["advice"]).strip()
@@ -911,6 +971,16 @@ def apply_canonical_decision_to_result(
     dashboard["analysis_summary"] = result.analysis_summary
     dashboard["buy_reason"] = result.buy_reason
     dashboard["factor_decision"] = summary
+    agent_explanation = dashboard.get("agent_disagreement_explanation")
+    if isinstance(agent_explanation, dict):
+        agent_explanation = dict(agent_explanation)
+        prior_agent_action = agent_explanation.get("final_action")
+        if prior_agent_action not in (None, ""):
+            agent_explanation["legacy_final_action"] = prior_agent_action
+        agent_explanation["action_authority"] = False
+        agent_explanation["canonical_public_action"] = decision["public_action"]
+        agent_explanation["final_action"] = decision["public_action"]
+        dashboard["agent_disagreement_explanation"] = agent_explanation
 
     dashboard["core_conclusion"] = {
         "one_sentence": conclusion,
@@ -922,7 +992,14 @@ def apply_canonical_decision_to_result(
         },
     }
 
-    dashboard["phase_decision"] = {
+    previous_phase = dashboard.get("phase_decision")
+    previous_phase_context = (
+        dict(previous_phase.get("phase_context"))
+        if isinstance(previous_phase, dict)
+        and isinstance(previous_phase.get("phase_context"), dict)
+        else None
+    )
+    phase_decision = {
         "action_window": (
             "P0 有界验收：仅观察，不执行买卖动作"
             if scope == "p0" else "条件化研究：等待关注或失效条件触发"
@@ -960,6 +1037,17 @@ def apply_canonical_decision_to_result(
             )
         ),
     }
+    if isinstance(previous_phase, dict):
+        previous_limits = previous_phase.get("data_limitations")
+        if isinstance(previous_limits, list):
+            merged_limits = []
+            for item in [*previous_limits, *phase_decision["data_limitations"]]:
+                if item not in merged_limits:
+                    merged_limits.append(item)
+            phase_decision["data_limitations"] = merged_limits
+    if previous_phase_context is not None:
+        phase_decision["phase_context"] = previous_phase_context
+    dashboard["phase_decision"] = phase_decision
 
     dashboard["strategy_synthesis"] = {
         "authority": decision.get("authority") or _CANONICAL_AUTHORITY,
@@ -1028,9 +1116,11 @@ def assert_canonical_consumer_consistency(result: Any, *, scope: str = "p0") -> 
     """Fail closed if any public action slot diverges from canonical output."""
     dashboard = result.dashboard if isinstance(getattr(result, "dashboard", None), dict) else {}
     summary = dashboard.get("factor_decision")
-    decision = summary.get("canonical_decision") if isinstance(summary, dict) else None
-    if not isinstance(decision, dict):
-        raise ValueError("canonical decision missing from result")
+    raw_decision = summary.get("canonical_decision") if isinstance(summary, dict) else None
+    decision = validate_canonical_decision_semantics(
+        raw_decision,
+        strategy_id=str(summary.get("strategy_id") or "").strip() or None,
+    )
     text = _canonical_public_text(summary, scope=scope)
     reason_text = "、".join(str(item) for item in decision.get("reason_codes") or []) or "CONDITIONAL_OBSERVATION_ONLY"
     authority_label = "确定性 P0 权威" if scope == "p0" else "确定性研究权威"
@@ -1132,13 +1222,17 @@ def canonical_explanation_degradation_eligible(summary: Any) -> bool:
     brief = summary.get("investor_brief")
     if not isinstance(decision, dict) or not isinstance(brief, dict):
         return False
-    if decision.get("authority") != _CANONICAL_AUTHORITY:
+    try:
+        validated = validate_canonical_decision_semantics(
+            decision,
+            strategy_id=str(summary.get("strategy_id") or "").strip() or None,
+        )
+        validate_investor_brief_binding(summary, brief)
+    except ValueError:
         return False
-    if decision.get("evidence_state") != "PROVEN":
+    if validated.get("authority") != _CANONICAL_AUTHORITY:
         return False
-    if decision.get("action") not in {"WAIT", "PASS"}:
-        return False
-    if decision.get("public_action") not in {"watch", "avoid"}:
+    if validated.get("evidence_state") != "PROVEN":
         return False
     if _safe_float(summary.get("composite_score")) is None:
         return False
@@ -1292,6 +1386,7 @@ def _build_asset_research_brief_v1(trend_result, summary, *, asset_type: str = "
         "hard_veto": False,
         "reason_codes": [],
     }
+    canonical_binding = _mapping(summary.get("canonical_decision_identity"))
 
     price = _asset_brief_v1_num(getattr(trend_result, "current_price", None))
     price_text = _asset_brief_v1_price(price)
@@ -1494,6 +1589,7 @@ def _build_asset_research_brief_v1(trend_result, summary, *, asset_type: str = "
             "timeframe_rule": "CROSS_TIMEFRAME_CONFIRMATION_NOT_INDEPENDENT_VOTES",
         },
         "canonical": canonical,
+        "canonical_binding": canonical_binding,
         "one_line_conclusion": conclusion,
         "fused_paragraph": paragraph,
         "current_price": {
@@ -1844,6 +1940,7 @@ def build_stock_factor_decision_summary(
             summary, schema_version=STRATEGY_ELIGIBILITY_SCHEMA_VERSION,
         )
         summary["evidence_traceability"] = build_runtime_trace(summary)
+        summary["canonical_decision_identity"] = canonical_factor_binding(summary)
         summary["evidence_product_coverage"] = compile_product_coverage(summary)
     summary["investor_brief"] = _build_asset_research_brief_v1(
         trend_result,

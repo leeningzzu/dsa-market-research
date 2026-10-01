@@ -16,6 +16,19 @@ CANONICAL_OPPORTUNITY_PROJECTION_VERSION = "canonical-opportunity-v3"
 STRATEGY_ELIGIBILITY_SCHEMA_VERSION = "strategy-eligibility-v2"
 STRATEGY_ELIGIBILITY_LEDGER_SCHEMA_VERSION = "prediction-ledger-v5"
 STOCK_TREND_QUALITY_PULLBACK_STRATEGY_ID = "stock_trend_quality_pullback_v1"
+ETF_RELATIVE_STRENGTH_ROTATION_STRATEGY_ID = "etf_relative_strength_rotation_v1"
+CANONICAL_DECISION_SEMANTIC_VERSION = "canonical-decision-semantic-v1"
+CANONICAL_DECISION_IDENTITY_VERSION = "canonical-decision-identity-v1"
+
+_SUPPORTED_CANONICAL_AUTHORITIES = {
+    STOCK_TREND_QUALITY_PULLBACK_STRATEGY_ID,
+    ETF_RELATIVE_STRENGTH_ROTATION_STRATEGY_ID,
+}
+_LEGAL_CANONICAL_TUPLES = {
+    ("WAIT", "watch", "UNKNOWN", False),
+    ("WAIT", "watch", "PROVEN", False),
+    ("PASS", "avoid", "PROVEN", True),
+}
 
 STRATEGY_CONTRACT_COVERAGE_VERSION = "stock-trend-quality-pullback-contract-coverage-v1"
 # Preserve the accepted v1 clause document/hash; derive its membership from one registry.
@@ -73,6 +86,66 @@ def _normalized_reason_codes(value: Any) -> tuple[list[str], bool]:
             continue
         normalized.append(text)
     return sorted(set(normalized)), valid
+
+
+def validate_canonical_decision_semantics(
+    canonical_decision: Mapping[str, Any],
+    *,
+    strategy_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Validate and normalize the one legal deterministic action state."""
+
+    if not isinstance(canonical_decision, Mapping) or not canonical_decision:
+        raise ValueError("canonical decision is required")
+    authority = str(canonical_decision.get("authority") or "").strip()
+    action = str(canonical_decision.get("action") or "").strip().upper()
+    public_action = str(canonical_decision.get("public_action") or "").strip().lower()
+    evidence_state = str(canonical_decision.get("evidence_state") or "").strip().upper()
+    raw_hard_veto = canonical_decision.get("hard_veto")
+    if authority not in _SUPPORTED_CANONICAL_AUTHORITIES:
+        raise ValueError("canonical authority is not admitted")
+    expected_strategy = str(strategy_id or "").strip()
+    if expected_strategy and authority != expected_strategy:
+        raise ValueError("canonical authority does not match strategy_id")
+    if not isinstance(raw_hard_veto, bool):
+        raise ValueError("canonical hard_veto must be boolean")
+    if (action, public_action, evidence_state, raw_hard_veto) not in _LEGAL_CANONICAL_TUPLES:
+        raise ValueError("canonical action/public_action/evidence_state/hard_veto tuple is illegal")
+    reason_codes, reasons_valid = _normalized_reason_codes(canonical_decision.get("reason_codes"))
+    if not reasons_valid:
+        raise ValueError("canonical reason_codes are invalid")
+    return {
+        "authority": authority,
+        "action": action,
+        "public_action": public_action,
+        "evidence_state": evidence_state,
+        "hard_veto": raw_hard_veto,
+        "reason_codes": reason_codes,
+    }
+
+
+def build_canonical_decision_identity(
+    canonical_decision: Mapping[str, Any],
+    *,
+    strategy_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Return a stable semantic identity for the validated canonical decision."""
+
+    normalized = validate_canonical_decision_semantics(
+        canonical_decision,
+        strategy_id=strategy_id,
+    )
+    document = {
+        "schema_version": CANONICAL_DECISION_SEMANTIC_VERSION,
+        **normalized,
+    }
+    return {
+        "schema_version": CANONICAL_DECISION_IDENTITY_VERSION,
+        "strategy_id": str(strategy_id or normalized["authority"]).strip(),
+        "canonical_decision_hash": hashlib.sha256(
+            _canonical_json(document).encode("utf-8")
+        ).hexdigest(),
+    }
 
 
 def build_strategy_eligibility_identity(
@@ -178,6 +251,51 @@ def build_strategy_eligibility_identity(
     }
 
 
+def _normalize_opportunity_decision_for_projection(
+    canonical_decision: Mapping[str, Any],
+    *,
+    strategy_id: Optional[str],
+) -> Dict[str, Any]:
+    """Validate current canonical state while preserving legacy package readability."""
+
+    decision = dict(canonical_decision)
+    if "authority" in decision or "public_action" in decision:
+        if "authority" not in decision or "public_action" not in decision:
+            raise ValueError("canonical semantic identity is incomplete")
+        return validate_canonical_decision_semantics(
+            decision,
+            strategy_id=strategy_id,
+        )
+
+    if set(decision) - {"action", "evidence_state", "hard_veto"}:
+        raise ValueError("legacy canonical projection contains unsupported fields")
+    authority = str(strategy_id or "").strip()
+    if authority not in _SUPPORTED_CANONICAL_AUTHORITIES:
+        raise ValueError("legacy canonical projection requires admitted strategy_id")
+    action = str(decision.get("action") or "").strip().upper()
+    evidence_state = str(decision.get("evidence_state") or "").strip().upper()
+    hard_veto = decision.get("hard_veto")
+    if not isinstance(hard_veto, bool):
+        raise ValueError("legacy canonical hard_veto must be boolean")
+    legacy_tuple = (action, evidence_state, hard_veto)
+    public_action_by_tuple = {
+        ("WAIT", "UNKNOWN", False): "watch",
+        ("WAIT", "PROVEN", False): "watch",
+        ("PASS", "PROVEN", True): "avoid",
+    }
+    public_action = public_action_by_tuple.get(legacy_tuple)
+    if public_action is None:
+        raise ValueError("legacy canonical projection tuple is illegal")
+    return {
+        "authority": authority,
+        "action": action,
+        "public_action": public_action,
+        "evidence_state": evidence_state,
+        "hard_veto": hard_veto,
+        "reason_codes": [],
+    }
+
+
 def build_canonical_opportunity_projection(
     canonical_decision: Optional[Mapping[str, Any]],
     *,
@@ -187,6 +305,11 @@ def build_canonical_opportunity_projection(
     """Return the durable projection required by Outcome/PIT consumers."""
 
     decision = dict(canonical_decision) if isinstance(canonical_decision, Mapping) else {}
+    if decision:
+        decision = _normalize_opportunity_decision_for_projection(
+            decision,
+            strategy_id=strategy_id,
+        )
     action = str(decision.get("action") or "").strip().upper() or None
     evidence_state = str(decision.get("evidence_state") or "").strip().upper() or None
     raw_hard_veto = decision.get("hard_veto")

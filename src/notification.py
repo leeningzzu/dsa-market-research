@@ -60,6 +60,7 @@ from src.schemas.decision_action import (
     display_decision_type_for_result,
     display_operation_advice_for_result,
 )
+from src.services.factor_decision_summary import validate_investor_brief_binding
 from bot.models import BotMessage
 from src.utils.sanitize import sanitize_diagnostic_text
 from src.formatters import strip_hidden_markdown_metadata
@@ -143,6 +144,10 @@ def _get_valid_investor_brief(factor: Any, report_language: str) -> Optional[Dic
     if not str(brief.get("one_line_conclusion") or "").strip():
         return None
     if not str(brief.get("fused_paragraph") or "").strip():
+        return None
+    try:
+        validate_investor_brief_binding(factor, brief)
+    except ValueError:
         return None
     return brief
 
@@ -1664,16 +1669,15 @@ class NotificationService(
         dashboard = dashboard if isinstance(dashboard, dict) else {}
         factor = dashboard.get("factor_decision")
         factor = factor if isinstance(factor, dict) else {}
-        brief = factor.get("investor_brief")
-        if isinstance(brief, dict):
+        if isinstance(factor.get("canonical_decision"), dict):
+            try:
+                brief = validate_investor_brief_binding(factor)
+            except ValueError:
+                return ""
             conclusion = str(brief.get("one_line_conclusion") or "").strip()
             if conclusion:
                 return conclusion
-        canonical = factor.get("canonical_decision")
-        if isinstance(canonical, dict):
-            public_action = str(canonical.get("public_action") or "").strip()
-            if public_action:
-                return public_action
+            return str(factor["canonical_decision"].get("public_action") or "").strip()
         core = dashboard.get("core_conclusion")
         if isinstance(core, dict):
             conclusion = str(core.get("one_sentence") or "").strip()
@@ -1693,8 +1697,8 @@ class NotificationService(
         dashboard = dashboard if isinstance(dashboard, dict) else {}
         factor = dashboard.get("factor_decision")
         factor = factor if isinstance(factor, dict) else {}
-        brief = factor.get("investor_brief")
-        if not isinstance(brief, dict):
+        brief = _get_valid_investor_brief(factor, report_language)
+        if brief is None:
             return []
 
         detail_lines: List[str] = []

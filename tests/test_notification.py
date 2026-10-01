@@ -32,13 +32,20 @@ for optional_module in ("litellm", "json_repair"):
         sys.modules[optional_module] = mock.MagicMock()
 
 from src.config import Config
-from src.notification import NotificationBuilder, NotificationChannel, NotificationService
+from src.notification import (
+    NotificationBuilder,
+    NotificationChannel,
+    NotificationService,
+    _get_valid_investor_brief,
+)
 from src.notification_noise import reset_notification_noise_state
 from src.analyzer import AnalysisResult
 from src.services.factor_decision_summary import (
     apply_canonical_decision_to_result,
     assert_canonical_consumer_consistency,
+    canonical_factor_binding,
 )
+from src.services.evidence_traceability_registry import build_runtime_trace
 from src.share_image import build_share_image_html
 from bot.models import BotMessage, ChatType
 import requests
@@ -68,7 +75,7 @@ def _attach_decision_signal_summary(result: AnalysisResult) -> AnalysisResult:
 
 
 def _make_investor_brief_result() -> AnalysisResult:
-    return AnalysisResult(
+    result = AnalysisResult(
         code="600519",
         name="贵州茅台",
         sentiment_score=43,
@@ -170,6 +177,17 @@ def _make_investor_brief_result() -> AnalysisResult:
             },
         },
     )
+
+
+    factor = result.dashboard["factor_decision"]
+    factor["strategy_id"] = "stock_trend_quality_pullback_v1"
+    factor["canonical_decision"] = deepcopy(factor["investor_brief"]["canonical"])
+    factor["evidence_traceability"] = build_runtime_trace(factor)
+    factor["canonical_decision_identity"] = canonical_factor_binding(factor)
+    factor["investor_brief"]["canonical_binding"] = deepcopy(
+        factor["canonical_decision_identity"]
+    )
+    return result
 
 
 def _make_feishu_message() -> BotMessage:
@@ -821,6 +839,22 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
 
 
 class TestNotificationServiceReportGeneration(unittest.TestCase):
+
+    def test_investor_brief_requires_current_canonical_trace_binding(self):
+        result = _make_investor_brief_result()
+        factor = result.dashboard["factor_decision"]
+        brief = factor["investor_brief"]
+
+        self.assertIs(_get_valid_investor_brief(factor, "zh"), brief)
+
+        forged = deepcopy(factor)
+        forged["investor_brief"]["canonical_binding"]["runtime_trace_hash"] = "forged"
+        self.assertIsNone(_get_valid_investor_brief(forged, "zh"))
+
+        legacy = deepcopy(factor)
+        legacy.pop("canonical_decision_identity", None)
+        legacy["investor_brief"].pop("canonical_binding", None)
+        self.assertIsNone(_get_valid_investor_brief(legacy, "zh"))
 
     @mock.patch("src.notification.get_config")
     def test_research_email_subject_distinguishes_auto_and_watchlist(

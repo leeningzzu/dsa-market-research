@@ -1769,21 +1769,24 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
 
             self.assertIsNotNone(result)
             self.assertEqual(result.decision_type, "hold")
-            self.assertEqual(result.action, "buy")
-            self.assertEqual(result.action_label, "买入")
+            self.assertEqual(result.action, "watch")
+            self.assertEqual(result.action_label, "观望")
 
             explanation = result.dashboard["agent_disagreement_explanation"]
             self.assertNotIn("final_signal", explanation)
             self.assertEqual(explanation["pipeline_start_action"], "buy")
+            self.assertEqual(explanation["legacy_final_action"], "buy")
+            self.assertFalse(explanation["action_authority"])
+            self.assertEqual(explanation["canonical_public_action"], "watch")
             self.assertEqual(explanation["final_adjustments"], [])
-            self.assertEqual(explanation["final_action"], "buy")
+            self.assertEqual(explanation["final_action"], "watch")
 
             saved_result = pipeline.db.save_analysis_history.call_args.kwargs["result"]
             self.assertIs(saved_result, result)
-            self.assertEqual(saved_result.action, "buy")
+            self.assertEqual(saved_result.action, "watch")
             self.assertEqual(
                 saved_result.dashboard["agent_disagreement_explanation"]["final_action"],
-                "buy",
+                "watch",
             )
 
             signal_result = (
@@ -1799,7 +1802,7 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
                 profile_source="auto_default",
             )
             self.assertIsNotNone(signal_payload)
-            self.assertEqual(signal_payload["action"], "buy")
+            self.assertEqual(signal_payload["action"], "watch")
             self.assertEqual(signal_payload["metadata"]["decision_type"], "hold")
 
     def test_analyze_with_agent_keeps_ambiguous_action_fail_closed_across_outputs(self):
@@ -1880,14 +1883,18 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
             )
 
             self.assertIsNotNone(result)
-            self.assertEqual(result.decision_type, "buy")
-            self.assertIsNone(result.action)
-            self.assertIsNone(result.action_label)
+            self.assertEqual(result.decision_type, "hold")
+            self.assertEqual(result.action, "watch")
+            self.assertEqual(result.action_label, "观望")
+            factor = result.dashboard["factor_decision"]
+            self.assertEqual(factor["canonical_decision"]["action"], "WAIT")
+            self.assertEqual(factor["canonical_decision"]["public_action"], "watch")
+            self.assertEqual(factor["canonical_decision"]["evidence_state"], "UNKNOWN")
             self.assertNotIn("agent_disagreement_explanation", result.dashboard)
 
             saved_result = pipeline.db.save_analysis_history.call_args.kwargs["result"]
             self.assertIs(saved_result, result)
-            self.assertIsNone(saved_result.action)
+            self.assertEqual(saved_result.action, "watch")
             self.assertNotIn("agent_disagreement_explanation", saved_result.dashboard)
 
             signal_result = (
@@ -1902,7 +1909,9 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
                 report_type="simple",
                 profile_source="auto_default",
             )
-            self.assertIsNone(signal_payload)
+            self.assertIsNotNone(signal_payload)
+            self.assertEqual(signal_payload["action"], "watch")
+            self.assertEqual(signal_payload["metadata"]["decision_type"], "hold")
 
     def test_analyze_with_agent_uses_resolved_name_for_news_persistence(self):
         """Should use resolved stock name from dashboard for search and DB persistence."""
@@ -2090,21 +2099,25 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
 
             self.assertIsNotNone(result)
             self.assertEqual(result.decision_type, "hold")
-            self.assertEqual(result.operation_advice, "洗盘观察")
+            self.assertEqual(result.action, "watch")
+            self.assertTrue(result.operation_advice.startswith("观望"))
             self.assertEqual(result.dashboard.get("decision_type"), "hold")
-            self.assertEqual(result.dashboard.get("operation_advice"), "洗盘观察")
+            self.assertEqual(result.dashboard.get("operation_advice"), result.operation_advice)
             self.assertEqual(result.dashboard.get("sentiment_score"), result.sentiment_score)
             explanation = result.dashboard["agent_disagreement_explanation"]
             self.assertEqual(explanation["risk_control"]["post_risk_signal"], "sell")
             self.assertNotIn("final_signal", explanation)
+            self.assertFalse(explanation["action_authority"])
+            self.assertEqual(explanation["canonical_public_action"], "watch")
             self.assertEqual(explanation["final_action"], result.action)
+            self.assertIn("legacy_final_action", explanation)
             self.assertEqual(
                 explanation["final_adjustments"],
                 [
                     {
                         "source": "structure_and_fundamentals",
                         "from_action": "sell",
-                        "to_action": result.action,
+                        "to_action": explanation["legacy_final_action"],
                     }
                 ],
             )
@@ -2229,11 +2242,14 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
             self.assertTrue(ok, missing)
             phase_decision = result.dashboard["phase_decision"]
             self.assertEqual(phase_decision["phase_context"]["phase"], "intraday")
-            self.assertEqual(phase_decision["action_window"], "模型未提供阶段化行动窗口")
-            self.assertEqual(phase_decision["immediate_action"], "模型未提供阶段化即时动作")
-            self.assertEqual(phase_decision["watch_conditions"], [])
-            self.assertEqual(phase_decision["next_check_time"], "模型未提供下一次检查点")
-            self.assertEqual(phase_decision["confidence_reason"], "模型未提供阶段化置信度理由")
+            self.assertEqual(phase_decision["phase_context"]["market"], "cn")
+            self.assertEqual(phase_decision["action_window"], "条件化研究：等待关注或失效条件触发")
+            self.assertTrue(phase_decision["immediate_action"].startswith("观望"))
+            self.assertEqual(len(phase_decision["watch_conditions"]), 2)
+            self.assertEqual(phase_decision["next_check_time"], "下一次具备完整确定性证据时")
+            self.assertEqual(phase_decision["confidence_reason"], "必需证据不足，按 UNKNOWN 保持观望。")
+            self.assertEqual(result.action, "watch")
+            self.assertEqual(result.decision_type, "hold")
 
     def test_analyze_with_agent_explains_daily_market_softening_before_risk(self):
         """A partial result produced before risk must retain its Pipeline start signal."""

@@ -30,6 +30,7 @@ from src.services.research_state_projection import (
     STRATEGY_ELIGIBILITY_REQUIRED_EVIDENCE,
     STRATEGY_ELIGIBILITY_SCHEMA_VERSION,
     build_strategy_eligibility_identity,
+    build_canonical_opportunity_projection,
     is_white_box_opportunity_record,
 )
 from src.storage import AnalysisHistory, Base, DatabaseManager, PredictionLedgerRecord
@@ -86,9 +87,12 @@ def _result(*, score: int = 67, strategy_eligibility: dict | None = None):
         "contract_version": "1.0",
         "composite_score": score,
         "canonical_decision": {
+            "authority": "stock_trend_quality_pullback_v1",
             "action": "WAIT",
+            "public_action": "watch",
             "evidence_state": "PROVEN",
             "hard_veto": False,
+            "reason_codes": ["CONDITIONAL_OBSERVATION_ONLY"],
         },
         "market_sector_regime": {"status": "READY", "schema_version": "market-sector-regime-v1"},
         "trend_relative_strength": {"status": "READY", "schema_version": "trend-relative-strength-v1"},
@@ -135,6 +139,21 @@ def _signal() -> dict:
             }
         },
     }
+
+
+def test_durable_projection_rejects_forged_canonical_action() -> None:
+    with pytest.raises(ValueError, match="canonical"):
+        build_canonical_opportunity_projection(
+            {
+                "authority": "stock_trend_quality_pullback_v1",
+                "action": "BUY",
+                "public_action": "watch",
+                "evidence_state": "PROVEN",
+                "hard_veto": False,
+                "reason_codes": ["FORGED"],
+            },
+            strategy_id="stock_trend_quality_pullback_v1",
+        )
 
 
 def test_schema_is_append_only_identity_surface(isolated_db) -> None:
