@@ -32,6 +32,7 @@ from src.services.pit_identity import (
     build_specified_codes_selection_context,
     sha256_payload,
 )
+from src.services.prediction_ledger_service import PREDICTION_LEDGER_SCHEMA_VERSION
 from src.services.research_state_projection import (
     STRATEGY_ELIGIBILITY_SCHEMA_VERSION,
     build_strategy_eligibility_identity,
@@ -52,6 +53,7 @@ _CLOSED_WORLD_ALLOWED_NONZERO_DELTAS = frozenset(
         "analysis_history",
         "decision_signals",
         "fundamental_snapshot",
+        "learning_recording_journal",
         "prediction_ledger",
         "stock_daily",
     }
@@ -60,12 +62,14 @@ _CLOSED_WORLD_EXACT_SINGLE_ROW_TABLES = (
     "analysis_history",
     "decision_signals",
     "fundamental_snapshot",
+    "learning_recording_journal",
     "prediction_ledger",
 )
 _CLOSED_WORLD_CORE_TABLES = (
     "analysis_history",
     "decision_signals",
     "fundamental_snapshot",
+    "learning_recording_journal",
     "prediction_ledger",
     "prediction_outcomes",
     "pit_dataset_manifests",
@@ -170,6 +174,15 @@ def _validated_ledger_receipt(
         )
     return {
         "stock_code": str(stock_code or "").strip(),
+        "status": _require_choice(
+            raw_receipt.get("status"),
+            field="ledger receipt status",
+            allowed={"RECORDED"},
+        ),
+        "reason_code": _require_optional_text(
+            raw_receipt.get("reason_code"),
+            field="ledger receipt reason_code",
+        ),
         "id": _require_positive_int(raw_receipt.get("id"), field="ledger receipt id"),
         "created": _require_bool(
             raw_receipt.get("created"),
@@ -180,9 +193,20 @@ def _validated_ledger_receipt(
             length=64,
             field="prediction_hash",
         ),
-        "schema_version": _require_optional_text(
+        "schema_version": _require_choice(
             raw_receipt.get("schema_version"),
             field="ledger receipt schema_version",
+            allowed={PREDICTION_LEDGER_SCHEMA_VERSION},
+        ),
+        "recording_intent_hash": _require_sha(
+            raw_receipt.get("recording_intent_hash"),
+            length=64,
+            field="ledger receipt recording_intent_hash",
+        ),
+        "intended_cohort_id": _require_sha(
+            raw_receipt.get("intended_cohort_id"),
+            length=64,
+            field="ledger receipt intended_cohort_id",
         ),
         "evidence_hash": _require_sha(
             raw_receipt.get("evidence_hash"),
@@ -571,6 +595,8 @@ def _ledger_identity_snapshot(db_manager: Any, prediction_hash: str) -> Dict[str
             "data_snapshot_identity": row.data_snapshot_identity,
             "selection_source": row.selection_source,
             "selection_context_hash": row.selection_context_hash,
+            "recording_intent_hash": row.recording_intent_hash,
+            "intended_cohort_id": row.intended_cohort_id,
             "pit_eligible": bool(row.pit_eligible),
             "pit_ineligibility_reasons": [str(item) for item in pit_reasons],
             "durability_state": row.durability_state,
@@ -740,6 +766,7 @@ def record_canonical_run(
     require_single_stock: bool = False,
     closed_world_database_receipt: bool = False,
     receipt_only: bool = False,
+    intended_cohort_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run one bounded, notification-suppressed canonical analysis into Ledger."""
     codes = _validated_codes(
@@ -747,6 +774,15 @@ def record_canonical_run(
         require_single_stock=require_single_stock,
     )
     bound_code_sha = _require_sha(code_sha, length=40, field="code_sha")
+    bound_intended_cohort_id = (
+        _require_sha(
+            intended_cohort_id,
+            length=64,
+            field="intended_cohort_id",
+        )
+        if intended_cohort_id is not None
+        else None
+    )
     if config is None:
         from src.config import get_config
 
@@ -779,6 +815,12 @@ def record_canonical_run(
             research_selection_context=selection_context,
             research_code_sha=bound_code_sha,
         )
+        if bound_intended_cohort_id is not None:
+            setattr(
+                pipeline,
+                "research_intended_cohort_id",
+                bound_intended_cohort_id,
+            )
         if closed_world_database_receipt:
             db_manager = getattr(pipeline, "db", None)
             if db_manager is None:
@@ -836,6 +878,20 @@ def record_canonical_run(
         seen_hashes.add(prediction_hash)
         receipts.append(validated_receipt)
 
+    cohort_ids = {item["intended_cohort_id"] for item in receipts}
+    if len(cohort_ids) != 1:
+        raise EvidenceFlywheelRuntimeError(
+            "bounded record phase requires one intended cohort identity"
+        )
+    recorded_cohort_id = next(iter(cohort_ids))
+    if (
+        bound_intended_cohort_id is not None
+        and recorded_cohort_id != bound_intended_cohort_id
+    ):
+        raise EvidenceFlywheelRuntimeError(
+            "bounded record phase intended cohort identity mismatch"
+        )
+
     ledger_identities = []
     if receipt_only:
         receipt_db = getattr(pipeline, "db", None)
@@ -861,6 +917,7 @@ def record_canonical_run(
         "status": "RECORDED",
         "query_id": query_id,
         "code_sha": bound_code_sha,
+        "intended_cohort_id": recorded_cohort_id,
         "record_count": len(receipts),
         "notification_suppressed": True,
         "external_durability": "NOT_REQUESTED",
@@ -935,6 +992,15 @@ def replay_specified_codes_daily_sessions(
         session_dates,
         reference_time=reference_time,
     )
+    replay_cohort_id = sha256_payload(
+        {
+            "schema_version": "evidence-flywheel-replay-cohort-v1",
+            "stock_code": code,
+            "session_dates": [item.isoformat() for item in sessions],
+            "code_sha": bound_code_sha,
+            "selection_source": "SPECIFIED_CODES",
+        }
+    )
     if config is None:
         from src.config import get_config
 
@@ -954,6 +1020,7 @@ def replay_specified_codes_daily_sessions(
             require_single_stock=True,
             closed_world_database_receipt=False,
             receipt_only=True,
+            intended_cohort_id=replay_cohort_id,
         )
         if not isinstance(receipt, Mapping):
             raise EvidenceFlywheelRuntimeError("historical replay record returned no receipt")
@@ -961,6 +1028,10 @@ def replay_specified_codes_daily_sessions(
             raise EvidenceFlywheelRuntimeError("historical replay record phase did not complete")
         if receipt.get("record_count") != 1:
             raise EvidenceFlywheelRuntimeError("historical replay requires exactly one Ledger row per session")
+        if receipt.get("intended_cohort_id") != replay_cohort_id:
+            raise EvidenceFlywheelRuntimeError(
+                "historical replay intended cohort identity mismatch"
+            )
         if receipt.get("notification_suppressed") is not True:
             raise EvidenceFlywheelRuntimeError("historical replay must suppress notification")
         if receipt.get("model_request_count") != 0 or receipt.get("training_requested") is not False:
@@ -986,6 +1057,14 @@ def replay_specified_codes_daily_sessions(
             raise EvidenceFlywheelRuntimeError("historical replay Ledger code_sha mismatch")
         if ledger_identity.get("selection_source") != "SPECIFIED_CODES":
             raise EvidenceFlywheelRuntimeError("historical replay selection source drift")
+        if ledger_receipt.get("intended_cohort_id") != replay_cohort_id:
+            raise EvidenceFlywheelRuntimeError(
+                "historical replay Ledger receipt cohort mismatch"
+            )
+        if ledger_identity.get("intended_cohort_id") != replay_cohort_id:
+            raise EvidenceFlywheelRuntimeError(
+                "historical replay persisted Ledger cohort mismatch"
+            )
         if (
             ledger_identity.get("strategy_id") == "stock_trend_quality_pullback_v1"
             and ledger_identity.get("strategy_eligibility_state") == "ELIGIBLE"
@@ -1030,6 +1109,7 @@ def replay_specified_codes_daily_sessions(
         "stock_code": code,
         "code_sha": bound_code_sha,
         "selection_source": "SPECIFIED_CODES",
+        "intended_cohort_id": replay_cohort_id,
         "session_count": len(session_receipts),
         "session_dates": [item["requested_session_date"] for item in session_receipts],
         "notification_suppressed": True,
@@ -1082,6 +1162,7 @@ def evaluate_prediction_outcome(
 def build_pit_manifest_receipt(
     *,
     cost_identity: Mapping[str, Any],
+    intended_cohort_id: Optional[str] = None,
     service: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Freeze one explicitly non-training PIT manifest receipt."""
@@ -1100,6 +1181,7 @@ def build_pit_manifest_receipt(
         cost_identity_approved=False,
         durable_references_admitted=False,
         execution_realism_approved=False,
+        intended_cohort_id=intended_cohort_id,
     )
     if result.get("training_admission") != "BLOCKED":
         raise EvidenceFlywheelRuntimeError(
@@ -1115,6 +1197,8 @@ def build_pit_manifest_receipt(
         "dataset_hash": result.get("dataset_hash"),
         "disposition": result.get("disposition"),
         "cost_identity_hash": cost_identity_hash,
+        "intended_cohort_id": manifest.get("intended_cohort_id"),
+        "recording_coverage_state": manifest.get("recording_coverage_state"),
         "final_test_state": result.get("final_test_state"),
         "training_admission": result.get("training_admission"),
         "training_admission_reasons": list(
@@ -1170,6 +1254,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     manifest = subparsers.add_parser("build-manifest", help="freeze a blocked PIT manifest")
     manifest.add_argument("--cost-identity-file", required=True)
+    manifest.add_argument("--intended-cohort-id")
     return parser
 
 
@@ -1241,7 +1326,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                 cost_identity=_read_json_object(
                     args.cost_identity_file,
                     label="cost_identity",
-                )
+                ),
+                intended_cohort_id=args.intended_cohort_id,
             )
     except Exception as exc:
         print(

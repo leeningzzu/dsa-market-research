@@ -22,6 +22,7 @@ from src.services.prediction_ledger_service import (
 from src.services.research_state_projection import (
     CANONICAL_OPPORTUNITY_PROJECTION_VERSION,
     STRATEGY_ELIGIBILITY_SCHEMA_VERSION,
+    build_strategy_eligibility_identity,
     is_white_box_opportunity_record,
 )
 from src.services.prediction_outcome_service import (
@@ -29,11 +30,11 @@ from src.services.prediction_outcome_service import (
     PRIMARY_HORIZON_IDENTITY,
     PRIMARY_LABEL_IDENTITY,
 )
-from src.storage import DatabaseManager, PredictionLedgerRecord, PredictionOutcomeRecord
+from src.storage import DatabaseManager, LearningRecordingRecord, PredictionLedgerRecord, PredictionOutcomeRecord
 
 
-PIT_DATASET_SCHEMA_VERSION = "pit-dataset-manifest-v2"
-DATASET_PURPOSE_V2 = "ASSET_LEVEL_META_FILTER_ON_STRATEGY_ELIGIBLE_OPPORTUNITIES_V2"
+PIT_DATASET_SCHEMA_VERSION = "pit-dataset-manifest-v3"
+DATASET_PURPOSE_V2 = "ASSET_LEVEL_META_FILTER_ON_STRATEGY_ELIGIBLE_OPPORTUNITIES_V3"
 SPLIT_POLICY_ID = "XSHG_SESSION_GROUPED_CHRONO_60_20_20_PURGED_V1"
 PURGE_POLICY_ID = "EXACT_LABEL_INTERVAL_AND_AVAILABLE_AT"
 EMBARGO_POLICY_ID = "FORWARD_ONLY_ZERO_POST_BLOCK_V1"
@@ -65,17 +66,34 @@ class PITDatasetService:
         cost_identity_approved: bool = False,
         durable_references_admitted: bool = False,
         execution_realism_approved: bool = False,
+        intended_cohort_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         cost_hash = str(cost_identity_hash or "").strip().lower()
         if len(cost_hash) != 64 or any(ch not in "0123456789abcdef" for ch in cost_hash):
             raise ValueError("cost_identity_hash must be a 64-hex SHA-256 identity")
 
+        recording_coverage = self._recording_coverage(intended_cohort_id)
+        recorded_prediction_hashes = recording_coverage.pop(
+            "_recorded_prediction_hashes",
+            None,
+        )
+        recording_reference_time = recording_coverage.pop(
+            "_reference_time",
+            None,
+        )
         rows = self.ledger_repo.list_dataset_candidates(
             strategy_id=STRATEGY_ID_V1,
             strategy_version=STRATEGY_ID_V1,
             feature_schema_version=PREDICTION_FEATURE_SCHEMA_VERSION,
             feature_schema_hash=PREDICTION_FEATURE_SCHEMA_HASH,
         )
+        if recorded_prediction_hashes is not None:
+            rows = [
+                row
+                for row in rows
+                if row.prediction_hash in recorded_prediction_hashes
+                and row.intended_cohort_id == intended_cohort_id
+            ]
         denominator = [row for row in rows if self._is_white_box_opportunity(row)]
         eligible: List[PredictionLedgerRecord] = []
         pre_split_exclusions: List[Dict[str, Any]] = []
@@ -184,9 +202,11 @@ class PITDatasetService:
         code_shas = sorted({str(row.code_sha) for row in eligible if row.code_sha})
         code_sha = code_shas[0] if len(code_shas) == 1 else None
         reference_times = [row.created_at for row in denominator if row.created_at is not None] + outcome_times
+        if recording_reference_time is not None:
+            reference_times.append(recording_reference_time)
         frozen_at = max(reference_times) if reference_times else datetime(1970, 1, 1)
 
-        admission_reasons: List[str] = []
+        admission_reasons: List[str] = list(recording_coverage.get("reason_codes") or [])
         if not denominator:
             admission_reasons.append("NO_WHITE_BOX_OPPORTUNITIES")
         if pre_split_exclusions:
@@ -223,6 +243,9 @@ class PITDatasetService:
             "cost_identity_hash": cost_hash,
             "evaluation_engine_version": PREDICTION_OUTCOME_ENGINE_VERSION,
             "selection_route_policy": SELECTION_ROUTE_POLICY_ID,
+            "intended_cohort_id": intended_cohort_id,
+            "recording_coverage_state": recording_coverage["state"],
+            "recording_coverage": recording_coverage,
             "split_policy": SPLIT_POLICY_ID,
             "purge_policy": PURGE_POLICY_ID,
             "embargo_policy": EMBARGO_POLICY_ID,
@@ -270,6 +293,8 @@ class PITDatasetService:
                 "purge_policy": PURGE_POLICY_ID,
                 "embargo_policy": EMBARGO_POLICY_ID,
                 "selection_route_policy": SELECTION_ROUTE_POLICY_ID,
+                "intended_cohort_id": intended_cohort_id,
+                "recording_coverage_state": recording_coverage["state"],
                 "code_sha": code_sha,
                 "final_test_state": FINAL_TEST_STATE,
                 "training_admission": TRAINING_ADMISSION_BLOCKED,
@@ -287,9 +312,140 @@ class PITDatasetService:
             "manifest": json.loads(manifest_json),
         }
 
+    def _recording_coverage(
+        self,
+        intended_cohort_id: Optional[str],
+    ) -> Dict[str, Any]:
+        cohort = str(intended_cohort_id or "").strip().lower()
+        if len(cohort) != 64 or any(ch not in "0123456789abcdef" for ch in cohort):
+            return {
+                "state": "LEGACY_UNCLASSIFIED",
+                "reason_codes": [
+                    "INTENDED_COHORT_NOT_BOUND",
+                    "RECORDING_COVERAGE_INCOMPLETE",
+                ],
+                "counts": {
+                    "intended": 0,
+                    "recorded": 0,
+                    "lawfully_rejected": 0,
+                    "pending": 0,
+                    "technically_lost": 0,
+                },
+                "_recorded_prediction_hashes": None,
+                "_reference_time": None,
+            }
+
+        with self.db.get_session() as session:
+            intents = list(
+                session.execute(
+                    select(LearningRecordingRecord)
+                    .where(LearningRecordingRecord.intended_cohort_id == cohort)
+                    .order_by(
+                        LearningRecordingRecord.created_at,
+                        LearningRecordingRecord.id,
+                    )
+                ).scalars().all()
+            )
+        counts = {
+            "intended": len(intents),
+            "recorded": 0,
+            "lawfully_rejected": 0,
+            "pending": 0,
+            "technically_lost": 0,
+        }
+        reasons: List[str] = []
+        recorded_hashes: set[str] = set()
+        reference_times = [
+            item.updated_at or item.created_at
+            for item in intents
+            if (item.updated_at or item.created_at) is not None
+        ]
+        if not intents:
+            reasons.extend(
+                [
+                    "INTENDED_COHORT_EMPTY",
+                    "RECORDING_COVERAGE_INCOMPLETE",
+                ]
+            )
+
+        for item in intents:
+            if (
+                item.schema_version != "learning-recording-intent-v1"
+                or item.policy_version != "learning-recording-policy-v1"
+            ):
+                reasons.append("RECORDING_POLICY_IDENTITY_MISMATCH")
+            disposition = str(item.disposition or "").strip().upper()
+            if disposition == "RECORDED":
+                counts["recorded"] += 1
+                prediction_hash = str(item.prediction_hash or "").strip().lower()
+                ledger = (
+                    self.ledger_repo.get_by_prediction_hash(prediction_hash)
+                    if len(prediction_hash) == 64
+                    else None
+                )
+                if (
+                    ledger is None
+                    or ledger.schema_version != PREDICTION_LEDGER_SCHEMA_VERSION
+                    or ledger.recording_intent_hash != item.recording_intent_hash
+                    or ledger.intended_cohort_id != cohort
+                ):
+                    reasons.append("RECORDED_LEDGER_READBACK_MISSING")
+                else:
+                    recorded_hashes.add(prediction_hash)
+            elif disposition == "LAWFULLY_REJECTED":
+                counts["lawfully_rejected"] += 1
+                if not str(item.reason_code or "").strip():
+                    reasons.append("LAWFUL_REJECTION_REASON_MISSING")
+            elif disposition == "TECHNICALLY_LOST":
+                counts["technically_lost"] += 1
+                reasons.append("TECHNICALLY_LOST_INTENDED_SAMPLE")
+            elif disposition == "PENDING":
+                counts["pending"] += 1
+                reasons.append("PENDING_RECORDING_INTENT")
+            else:
+                reasons.append("RECORDING_DISPOSITION_UNKNOWN")
+
+        if reasons:
+            reasons.append("RECORDING_COVERAGE_INCOMPLETE")
+        return {
+            "state": "COMPLETE" if not reasons else "INCOMPLETE",
+            "reason_codes": sorted(set(reasons)),
+            "counts": counts,
+            "_recorded_prediction_hashes": recorded_hashes,
+            "_reference_time": max(reference_times) if reference_times else None,
+        }
+
     @staticmethod
     def _is_white_box_opportunity(row: PredictionLedgerRecord) -> bool:
-        return is_white_box_opportunity_record(row)
+        if row.schema_version != PREDICTION_LEDGER_SCHEMA_VERSION:
+            return is_white_box_opportunity_record(row)
+        raw_json = row.strategy_eligibility_json
+        if not isinstance(raw_json, str) or not raw_json:
+            return False
+        try:
+            raw = json.loads(raw_json)
+        except (TypeError, ValueError):
+            return False
+        expected = build_strategy_eligibility_identity(
+            raw,
+            strategy_id=str(row.strategy_id or "").strip() or None,
+        )
+        return bool(
+            str(row.strategy_id or "").strip() == STRATEGY_ID_V1
+            and str(row.opportunity_projection_version or "").strip()
+            == CANONICAL_OPPORTUNITY_PROJECTION_VERSION
+            and str(row.canonical_action or "").upper() == "WAIT"
+            and str(row.canonical_evidence_state or "").upper() == "PROVEN"
+            and row.canonical_hard_veto is False
+            and row.strategy_eligibility_version
+            == expected["strategy_eligibility_version"]
+            and row.strategy_eligibility_state
+            == expected["strategy_eligibility_state"]
+            and row.strategy_eligibility_hash
+            == expected["strategy_eligibility_hash"]
+            and raw_json == expected["strategy_eligibility_json"]
+            and expected["strategy_eligibility_state"] == "ELIGIBLE"
+        )
 
     @staticmethod
     def _pit_gap_reasons(row: PredictionLedgerRecord) -> List[str]:
@@ -298,6 +454,8 @@ class PITDatasetService:
             reasons.append("LEDGER_PIT_INELIGIBLE")
         if row.schema_version != PREDICTION_LEDGER_SCHEMA_VERSION:
             reasons.append("LEDGER_CLOCK_SCHEMA_NOT_ADMITTED")
+        if not row.recording_intent_hash or not row.intended_cohort_id:
+            reasons.append("RECORDING_IDENTITY_GAP")
         if row.data_as_of is None or row.decision_time is None or not row.decision_timezone:
             reasons.append("DECISION_IDENTITY_GAP")
         if (

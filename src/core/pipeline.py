@@ -1102,13 +1102,19 @@ class StockAnalysisPipeline:
                         timezone.utc
                     ).isoformat()
                     result.diagnostic_context_snapshot = context_snapshot
+                    recording_intent = self._compile_learning_recording_intent(
+                        result=result,
+                        query_id=query_id,
+                        report_type=report_type.value,
+                    )
                     saved_history_id = self.db.save_analysis_history(
                         result=result,
                         query_id=query_id,
                         report_type=report_type.value,
                         news_content=news_context,
                         context_snapshot=context_snapshot,
-                        save_snapshot=self.save_context_snapshot
+                        save_snapshot=self.save_context_snapshot,
+                        recording_intent=recording_intent,
                     )
                     valid_saved_history_id = (
                         isinstance(saved_history_id, int)
@@ -1959,6 +1965,11 @@ class StockAnalysisPipeline:
                     ).isoformat()
                     result.diagnostic_context_snapshot = agent_context_snapshot
                     agent_context_snapshot["stock_name"] = resolved_stock_name
+                    recording_intent = self._compile_learning_recording_intent(
+                        result=result,
+                        query_id=query_id,
+                        report_type=report_type.value,
+                    )
                     saved_history_id = self.db.save_analysis_history(
                         result=result,
                         query_id=query_id,
@@ -1966,6 +1977,7 @@ class StockAnalysisPipeline:
                         news_content=None,
                         context_snapshot=agent_context_snapshot,
                         save_snapshot=self.save_context_snapshot,
+                        recording_intent=recording_intent,
                     )
                     valid_saved_history_id = (
                         isinstance(saved_history_id, int)
@@ -3477,6 +3489,79 @@ class StockAnalysisPipeline:
                 type(exc).__name__,
             )
 
+    def _compile_learning_recording_intent(
+        self,
+        *,
+        result: AnalysisResult,
+        query_id: str,
+        report_type: str,
+    ) -> Dict[str, Any]:
+        """Compile one stable learning-recording identity before History is committed."""
+        from src.services.learning_recording_service import LearningRecordingService
+
+        cohort_query_id = (
+            str(getattr(self, "research_recording_run_id", None) or "").strip()
+            or query_id
+        )
+        intent = LearningRecordingService.compile_intent(
+            result=result,
+            query_id=cohort_query_id,
+            report_type=report_type,
+            selection_context=getattr(self, "research_selection_context", None),
+            code_sha=getattr(self, "research_code_sha", None),
+            intended_cohort_id=getattr(
+                self,
+                "research_intended_cohort_id",
+                None,
+            ),
+        )
+        setattr(result, "learning_recording_intent", dict(intent))
+        setattr(
+            result,
+            "learning_recording_intent_hash",
+            intent["recording_intent_hash"],
+        )
+        setattr(result, "intended_cohort_id", intent.get("intended_cohort_id"))
+        return intent
+
+    def _transition_learning_recording(
+        self,
+        *,
+        result: AnalysisResult,
+        status: str,
+        reason_code: Optional[str] = None,
+        prediction_hash: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Best-effort transition of an already-durable same-DB recording intent."""
+        from src.services.learning_recording_service import LearningRecordingService
+
+        intent_hash = str(
+            getattr(result, "learning_recording_intent_hash", "") or ""
+        ).strip()
+        if not intent_hash:
+            return None
+        service = LearningRecordingService(db_manager=self.db)
+        target = str(status or "").strip().upper()
+        if target == "RECORDED" and prediction_hash:
+            receipt = service.mark_recorded(
+                intent_hash,
+                prediction_hash=prediction_hash,
+            )
+        elif target == "LAWFULLY_REJECTED":
+            receipt = service.mark_lawfully_rejected(
+                intent_hash,
+                reason_code=reason_code or "LEDGER_LAWFUL_REJECTION",
+            )
+        else:
+            receipt = service.mark_technically_lost(
+                intent_hash,
+                reason_code=reason_code or "LEARNING_RECORDING_TECHNICAL_LOSS",
+            )
+        if isinstance(receipt, dict):
+            setattr(result, "learning_recording_receipt", dict(receipt))
+            return dict(receipt)
+        return None
+
     def _extract_decision_signal_after_history_save(
         self,
         *,
@@ -3517,6 +3602,11 @@ class StockAnalysisPipeline:
                 if summary:
                     setattr(result, "decision_signal_summary", summary)
                 return signal_result
+            self._transition_learning_recording(
+                result=result,
+                status="TECHNICALLY_LOST",
+                reason_code="DECISION_SIGNAL_NOT_RECORDED",
+            )
             return None
         except Exception as exc:
             logger.warning(
@@ -3525,6 +3615,11 @@ class StockAnalysisPipeline:
                 getattr(result, "code", None),
                 exc,
                 exc_info=True,
+            )
+            self._transition_learning_recording(
+                result=result,
+                status="TECHNICALLY_LOST",
+                reason_code="DECISION_SIGNAL_TECHNICAL_FAILURE",
             )
             return None
 
@@ -3535,9 +3630,17 @@ class StockAnalysisPipeline:
         analysis_history_id: int,
         decision_signal: Optional[Dict[str, Any]],
     ) -> Optional[Dict[str, Any]]:
-        """Best-effort append-only snapshot for later PIT/outcome research."""
+        """Persist one typed Ledger outcome and reconcile the durable recording intent."""
         try:
             from src.services.prediction_ledger_service import PredictionLedgerService
+
+            if not isinstance(decision_signal, dict):
+                self._transition_learning_recording(
+                    result=result,
+                    status="TECHNICALLY_LOST",
+                    reason_code="DECISION_SIGNAL_READBACK_MISSING",
+                )
+                return None
 
             receipt = PredictionLedgerService(db_manager=self.db).persist(
                 analysis_history_id=analysis_history_id,
@@ -3545,10 +3648,45 @@ class StockAnalysisPipeline:
                 decision_signal=decision_signal,
                 code_sha=getattr(self, "research_code_sha", None),
                 selection_context=getattr(self, "research_selection_context", None),
+                recording_intent_hash=getattr(
+                    result,
+                    "learning_recording_intent_hash",
+                    None,
+                ),
+                intended_cohort_id=getattr(result, "intended_cohort_id", None),
             )
-            if isinstance(receipt, dict):
+            if not isinstance(receipt, dict):
+                self._transition_learning_recording(
+                    result=result,
+                    status="TECHNICALLY_LOST",
+                    reason_code="LEDGER_TYPED_OUTCOME_MISSING",
+                )
+                return None
+
+            status = str(receipt.get("status") or "").strip().upper()
+            reason_code = str(receipt.get("reason_code") or "").strip() or None
+            if status == "RECORDED":
+                prediction_hash = str(receipt.get("prediction_hash") or "").strip()
+                self._transition_learning_recording(
+                    result=result,
+                    status="RECORDED",
+                    prediction_hash=prediction_hash,
+                )
                 setattr(result, "prediction_ledger_receipt", dict(receipt))
                 return dict(receipt)
+            if status == "LAWFULLY_REJECTED":
+                self._transition_learning_recording(
+                    result=result,
+                    status=status,
+                    reason_code=reason_code or "LEDGER_LAWFUL_REJECTION",
+                )
+                return None
+
+            self._transition_learning_recording(
+                result=result,
+                status="TECHNICALLY_LOST",
+                reason_code=reason_code or "LEDGER_TECHNICAL_FAILURE",
+            )
             return None
         except Exception as exc:
             logger.warning(
@@ -3557,6 +3695,11 @@ class StockAnalysisPipeline:
                 analysis_history_id,
                 getattr(result, "code", None),
                 type(exc).__name__,
+            )
+            self._transition_learning_recording(
+                result=result,
+                status="TECHNICALLY_LOST",
+                reason_code="LEDGER_TECHNICAL_EXCEPTION",
             )
             return None
 
@@ -4062,6 +4205,14 @@ class StockAnalysisPipeline:
 
         # 冻结本轮运行的统一参考时间，避免跨市场收盘边界时同批股票使用不同目标交易日。
         resume_reference_time = current_time or datetime.now(timezone.utc)
+        # One Pipeline.run invocation is one intended learning cohort even though
+        # each worker receives its own AnalysisHistory query id.  An explicit
+        # research_intended_cohort_id (for example historical replay) remains
+        # authoritative; this seed is only the default cohort boundary.
+        self.research_recording_run_id = (
+            str(getattr(self, "query_id", None) or "").strip()
+            or f"pipeline-run-{uuid.uuid4().hex}"
+        )
         
         # === 批量预取实时行情（优化：避免每只股票都触发全量拉取）===
         # 只有股票数量 >= 5 时才进行预取，少量股票直接逐个查询更高效

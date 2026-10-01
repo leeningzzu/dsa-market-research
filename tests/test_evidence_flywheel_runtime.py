@@ -118,9 +118,13 @@ def _config() -> SimpleNamespace:
 def _ledger_receipt(*, created: bool = True) -> dict:
     return {
         "id": 7,
+        "status": "RECORDED",
+        "reason_code": None,
         "created": created,
         "prediction_hash": "a" * 64,
-        "schema_version": "prediction-ledger-v5",
+        "schema_version": "prediction-ledger-v6",
+        "recording_intent_hash": "e" * 64,
+        "intended_cohort_id": "f" * 64,
         "evidence_hash": "b" * 64,
         "feature_schema_hash": "c" * 64,
         "strategy_eligibility_version": "strategy-eligibility-v2",
@@ -327,6 +331,8 @@ def _fake_replay_record_runner(expected_sessions: list[date], code_sha: str, cal
         session_text = session_date.isoformat()
         calls.append(kwargs)
         receipt = _ledger_receipt()
+        cohort_id = kwargs["intended_cohort_id"]
+        receipt["intended_cohort_id"] = cohort_id
         receipt["prediction_hash"] = f"{index + 1:064x}"
         receipt["session_date"] = session_text
         receipt["effective_daily_bar_date"] = session_text
@@ -337,6 +343,7 @@ def _fake_replay_record_runner(expected_sessions: list[date], code_sha: str, cal
             "phase": "record",
             "status": "RECORDED",
             "record_count": 1,
+            "intended_cohort_id": cohort_id,
             "notification_suppressed": True,
             "training_requested": False,
             "model_request_budget": 0,
@@ -347,6 +354,7 @@ def _fake_replay_record_runner(expected_sessions: list[date], code_sha: str, cal
                     "stock_code": "600519",
                     "code_sha": code_sha,
                     "selection_source": "SPECIFIED_CODES",
+                    "intended_cohort_id": cohort_id,
                     "strategy_id": "stock_trend_quality_pullback_v1",
                     "strategy_eligibility_state": "UNKNOWN",
                     "decision_phase": "postmarket",
@@ -382,6 +390,11 @@ def test_replay_specified_codes_sessions_are_ordered_receipt_only(tmp_path) -> N
     assert receipt["selection_source"] == "SPECIFIED_CODES"
     assert receipt["session_dates"] == ["2026-09-17", "2026-09-18"]
     assert receipt["session_count"] == 2
+    assert len(receipt["intended_cohort_id"]) == 64
+    assert {
+        call["intended_cohort_id"]
+        for call in calls
+    } == {receipt["intended_cohort_id"]}
     assert receipt["artifact_policy"] == {
         "receipt_only": True,
         "report_files_created": False,
@@ -397,6 +410,56 @@ def test_replay_specified_codes_sessions_are_ordered_receipt_only(tmp_path) -> N
     assert all(call["receipt_only"] is True for call in calls)
     assert all(call["closed_world_database_receipt"] is False for call in calls)
     assert all(call["require_single_stock"] is True for call in calls)
+    repeated_calls: list[dict] = []
+    repeated = replay_specified_codes_daily_sessions(
+        stock_code="600519",
+        session_dates=sessions,
+        code_sha=code_sha,
+        config=SimpleNamespace(database_path=str(tmp_path / "replay-repeat.db")),
+        reference_time=datetime(2026, 9, 21, 10, 0, tzinfo=timezone.utc),
+        record_runner=_fake_replay_record_runner(
+            sessions,
+            code_sha,
+            repeated_calls,
+        ),
+    )
+    assert repeated["intended_cohort_id"] == receipt["intended_cohort_id"]
+
+
+
+def test_replay_cohort_changes_when_exact_session_set_changes(tmp_path) -> None:
+    code_sha = "7" * 40
+    first_sessions = [date(2026, 9, 17)]
+    second_sessions = [date(2026, 9, 18)]
+    first_calls: list[dict] = []
+    second_calls: list[dict] = []
+
+    first = replay_specified_codes_daily_sessions(
+        stock_code="600519",
+        session_dates=first_sessions,
+        code_sha=code_sha,
+        config=SimpleNamespace(database_path=str(tmp_path / "replay-first.db")),
+        reference_time=datetime(2026, 9, 21, 10, 0, tzinfo=timezone.utc),
+        record_runner=_fake_replay_record_runner(
+            first_sessions,
+            code_sha,
+            first_calls,
+        ),
+    )
+    second = replay_specified_codes_daily_sessions(
+        stock_code="600519",
+        session_dates=second_sessions,
+        code_sha=code_sha,
+        config=SimpleNamespace(database_path=str(tmp_path / "replay-second.db")),
+        reference_time=datetime(2026, 9, 21, 10, 0, tzinfo=timezone.utc),
+        record_runner=_fake_replay_record_runner(
+            second_sessions,
+            code_sha,
+            second_calls,
+        ),
+    )
+
+    assert first["intended_cohort_id"] != second["intended_cohort_id"]
 
 
 @pytest.mark.parametrize(
@@ -756,11 +819,15 @@ def test_record_receipt_projects_only_the_strict_allowlist() -> None:
 
     ledger_receipt = receipt["ledger_receipts"][0]
     assert set(ledger_receipt) == {
+        "status",
+        "reason_code",
         "stock_code",
         "id",
         "created",
         "prediction_hash",
         "schema_version",
+        "recording_intent_hash",
+        "intended_cohort_id",
         "evidence_hash",
         "feature_schema_hash",
         "strategy_eligibility_version",
@@ -790,6 +857,18 @@ def test_record_receipt_projects_only_the_strict_allowlist() -> None:
     (
         ("id", True, "positive integer"),
         ("created", 1, "created must be a boolean"),
+        ("status", "TECHNICALLY_LOST", "ledger receipt status must be one of"),
+        ("schema_version", "prediction-ledger-v5", "ledger receipt schema_version must be one of"),
+        (
+            "recording_intent_hash",
+            "x" * 64,
+            "recording_intent_hash must be exact 64-hex",
+        ),
+        (
+            "intended_cohort_id",
+            "x" * 64,
+            "intended_cohort_id must be exact 64-hex",
+        ),
         ("prediction_hash", "x" * 64, "prediction_hash must be exact 64-hex"),
         ("evidence_hash", "x" * 64, "evidence_hash must be exact 64-hex"),
         ("feature_schema_hash", "x" * 64, "feature_schema_hash must be exact 64-hex"),
@@ -864,7 +943,18 @@ def test_native_zero_model_record_writes_only_the_admitted_temp_db_surfaces(
     relative_strength.build_context.return_value = None
     before = _table_counts(isolated_db)
     repository_reports = Path(__file__).resolve().parents[1] / "reports"
-    assert not repository_reports.exists()
+    repository_report_state_before = (
+        {
+            str(path.relative_to(repository_reports)): (
+                path.stat().st_size,
+                path.stat().st_mtime_ns,
+            )
+            for path in repository_reports.rglob("*")
+            if path.is_file()
+        }
+        if repository_reports.exists()
+        else {}
+    )
     notification_module_file = tmp_path / "src" / "notification.py"
 
     with patch("src.core.pipeline.DataFetcherManager", return_value=fetcher), \
@@ -909,6 +999,7 @@ def test_native_zero_model_record_writes_only_the_admitted_temp_db_surfaces(
         "analysis_history": 1,
         "decision_signals": 1,
         "fundamental_snapshot": 1,
+        "learning_recording_journal": 1,
         "prediction_ledger": 1,
         "stock_daily": len(frame),
     }
@@ -917,7 +1008,9 @@ def test_native_zero_model_record_writes_only_the_admitted_temp_db_surfaces(
     assert receipt["model_request_budget"] == 0
     assert receipt["model_request_count"] == 0
     assert receipt["ledger_receipts"][0]["pit_eligible"] is False
-    assert receipt["ledger_receipts"][0]["schema_version"] == "prediction-ledger-v5"
+    assert receipt["ledger_receipts"][0]["schema_version"] == "prediction-ledger-v6"
+    assert len(receipt["ledger_receipts"][0]["recording_intent_hash"]) == 64
+    assert len(receipt["ledger_receipts"][0]["intended_cohort_id"]) == 64
     assert receipt["ledger_receipts"][0]["strategy_eligibility_version"] == "strategy-eligibility-v2"
     assert receipt["ledger_receipts"][0]["strategy_eligibility_state"] == "UNKNOWN"
     assert "REQUIRED_EVIDENCE_INCOMPLETE" in receipt["ledger_receipts"][0][
@@ -948,13 +1041,26 @@ def test_native_zero_model_record_writes_only_the_admitted_temp_db_surfaces(
     send_with_results.assert_not_called()
     report_files = sorted((tmp_path / "reports").glob("report_*.md"))
     assert report_files == []
-    assert not repository_reports.exists()
+    repository_report_state_after = (
+        {
+            str(path.relative_to(repository_reports)): (
+                path.stat().st_size,
+                path.stat().st_mtime_ns,
+            )
+            for path in repository_reports.rglob("*")
+            if path.is_file()
+        }
+        if repository_reports.exists()
+        else {}
+    )
+    assert repository_report_state_after == repository_report_state_before
     assert len(fetcher.daily_calls) == 1
     database_receipt = receipt["database_receipt"]
     assert database_receipt["core_table_counts_after"] == {
         "analysis_history": 1,
         "decision_signals": 1,
         "fundamental_snapshot": 1,
+        "learning_recording_journal": 1,
         "prediction_ledger": 1,
         "prediction_outcomes": 0,
         "pit_dataset_manifests": 0,
@@ -973,7 +1079,9 @@ def test_native_zero_model_record_writes_only_the_admitted_temp_db_surfaces(
     assert ledger_identity["data_snapshot_identity"]
     assert ledger_identity["strategy_id"]
     assert ledger_identity["canonical_action"] in {"WAIT", "PASS"}
-    assert ledger_identity["schema_version"] == "prediction-ledger-v5"
+    assert ledger_identity["schema_version"] == "prediction-ledger-v6"
+    assert len(ledger_identity["recording_intent_hash"]) == 64
+    assert len(ledger_identity["intended_cohort_id"]) == 64
     assert ledger_identity["strategy_eligibility_version"] == "strategy-eligibility-v2"
     assert ledger_identity["strategy_eligibility_state"] == "UNKNOWN"
     assert len(ledger_identity["strategy_eligibility_hash"]) == 64

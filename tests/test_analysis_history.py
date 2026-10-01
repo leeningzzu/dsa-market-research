@@ -18,6 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+from sqlalchemy.orm import Session as SQLAlchemySession
 
 # Keep this test runnable when optional LLM runtime deps are not installed.
 try:
@@ -45,6 +46,7 @@ from src.storage import (
     DecisionSignalFeedbackRecord,
     DecisionSignalOutcomeRecord,
     DecisionSignalRecord,
+    LearningRecordingRecord,
 )
 from src.analyzer import AnalysisResult
 from src.daily_market_context_guardrail import apply_daily_market_context_guardrail
@@ -310,6 +312,82 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             self.assertEqual(row.secondary_buy, 120.0)
             self.assertEqual(row.stop_loss, 110.0)
             self.assertEqual(row.take_profit, 150.0)
+
+    def test_learning_recording_intent_reuses_one_history_and_one_pending_journal(self) -> None:
+        result = self._build_result()
+        intent = {
+            "recording_intent_hash": "a" * 64,
+            "schema_version": "learning-recording-intent-v1",
+            "policy_version": "learning-recording-policy-v1",
+            "intended_cohort_id": "b" * 64,
+            "stock_code": "600519",
+            "market": "cn",
+            "report_type": "simple",
+            "strategy_id": "stock_trend_quality_pullback_v1",
+            "strategy_version": "stock_trend_quality_pullback_v1",
+            "canonical_binding_hash": "c" * 64,
+            "data_snapshot_identity": "d" * 64,
+            "code_sha": "e" * 40,
+            "selection_source": "SPECIFIED_CODES",
+            "selection_context_hash": "b" * 64,
+        }
+
+        first = self.db.save_analysis_history(
+            result=result,
+            query_id="query-recording-idempotent",
+            report_type="simple",
+            news_content=None,
+            save_snapshot=False,
+            recording_intent=intent,
+        )
+        repeated = self.db.save_analysis_history(
+            result=result,
+            query_id="query-recording-idempotent-retry",
+            report_type="simple",
+            news_content=None,
+            save_snapshot=False,
+            recording_intent=intent,
+        )
+
+        self.assertGreater(first, 0)
+        self.assertEqual(repeated, first)
+        with self.db.get_session() as session:
+            self.assertEqual(session.query(AnalysisHistory).count(), 1)
+            rows = session.query(LearningRecordingRecord).all()
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0].analysis_history_id, first)
+            self.assertEqual(rows[0].disposition, "PENDING")
+            self.assertEqual(rows[0].intended_cohort_id, "b" * 64)
+
+    def test_learning_recording_journal_failure_rolls_back_history_atomically(self) -> None:
+        result = self._build_result()
+        intent = {
+            "recording_intent_hash": "f" * 64,
+            "schema_version": "learning-recording-intent-v1",
+            "policy_version": "learning-recording-policy-v1",
+            "intended_cohort_id": "1" * 64,
+        }
+        original_flush = SQLAlchemySession.flush
+
+        def fail_on_journal(session, objects=None):
+            if any(isinstance(item, LearningRecordingRecord) for item in session.new):
+                raise RuntimeError("synthetic journal flush failure")
+            return original_flush(session, objects)
+
+        with patch.object(SQLAlchemySession, "flush", fail_on_journal):
+            saved = self.db.save_analysis_history(
+                result=result,
+                query_id="query-recording-rollback",
+                report_type="simple",
+                news_content=None,
+                save_snapshot=False,
+                recording_intent=intent,
+            )
+
+        self.assertEqual(saved, 0)
+        with self.db.get_session() as session:
+            self.assertEqual(session.query(AnalysisHistory).count(), 0)
+            self.assertEqual(session.query(LearningRecordingRecord).count(), 0)
 
     def test_history_display_resolves_bare_jp_kr_code_from_stock_pool(self) -> None:
         result = self._build_result()

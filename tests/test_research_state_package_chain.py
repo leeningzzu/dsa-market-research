@@ -379,6 +379,51 @@ def _seed_state(path: Path, *, extra_ledger: bool = False) -> None:
         conn.close()
 
 
+def _bind_current_recording_state(path: Path) -> None:
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute(
+            "UPDATE prediction_ledger SET schema_version=?, recording_intent_hash=?, "
+            "intended_cohort_id=? WHERE prediction_hash=?",
+            ("prediction-ledger-v6", "b" * 64, "c" * 64, "1" * 64),
+        )
+        conn.execute(
+            "INSERT INTO learning_recording_journal ("
+            "recording_intent_hash,schema_version,policy_version,analysis_history_id,"
+            "intended_cohort_id,stock_code,market,report_type,strategy_id,strategy_version,"
+            "canonical_binding_hash,data_snapshot_identity,code_sha,selection_source,"
+            "selection_context_hash,disposition,reason_code,prediction_hash,retry_count,"
+            "created_at,updated_at"
+            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "b" * 64,
+                "learning-recording-intent-v1",
+                "learning-recording-policy-v1",
+                101,
+                "c" * 64,
+                "600519",
+                "cn",
+                "simple",
+                "stock_trend_quality_pullback_v1",
+                "stock_trend_quality_pullback_v1",
+                "d" * 64,
+                "3" * 64,
+                CODE_SHA,
+                "SPECIFIED_CODES",
+                "4" * 64,
+                "RECORDED",
+                None,
+                "1" * 64,
+                0,
+                "2026-09-18 10:00:00",
+                "2026-09-18 10:01:00",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 @pytest.fixture()
 def seeded_db(tmp_path: Path) -> Path:
     path = tmp_path / "source.db"
@@ -481,6 +526,7 @@ def test_empty_state_is_packageable_without_rights_admission(tmp_path: Path) -> 
     _create_db(db)
     package = build_checkpoint_package(db)
     assert package.table_counts == {
+        "learning_recording_journal": 0,
         "prediction_ledger": 0,
         "prediction_outcomes": 0,
         "pit_dataset_manifests": 0,
@@ -505,6 +551,7 @@ def test_safe_nonempty_roundtrip_restores_pit_identity_without_raw_evidence(
 
     restored = restore_checkpoint(store, target)
     assert restored.inserted == {
+        "learning_recording_journal": 0,
         "prediction_ledger": 1,
         "prediction_outcomes": 2,
         "pit_dataset_manifests": 1,
@@ -557,6 +604,63 @@ def test_safe_nonempty_roundtrip_restores_pit_identity_without_raw_evidence(
     assert rebuilt.payload == store.get_bytes(receipt.package_key)
 
 
+def test_current_v2_roundtrip_preserves_recording_and_cohort_identity(
+    seeded_db: Path,
+    tmp_path: Path,
+) -> None:
+    _bind_current_recording_state(seeded_db)
+    package = build_checkpoint_package(seeded_db)
+    document = json.loads(package.payload.decode("utf-8"))
+    assert document["schema_version"] == "research-state-package-v2"
+    assert document["tables"]["learning_recording_journal"]["row_count"] == 1
+
+    journal_row = document["tables"]["learning_recording_journal"]["rows"][0]
+    ledger_row = document["tables"]["prediction_ledger"]["rows"][0]
+    assert journal_row["recording_intent_hash"] == ledger_row["recording_intent_hash"] == "b" * 64
+    assert journal_row["intended_cohort_id"] == ledger_row["intended_cohort_id"] == "c" * 64
+    assert journal_row["disposition"] == "RECORDED"
+    assert journal_row["prediction_hash"] == ledger_row["prediction_hash"] == "1" * 64
+    assert ledger_row["schema_version"] == "prediction-ledger-v6"
+
+    store = FilesystemObjectStore(tmp_path / "recording-v2-objects")
+    publish_checkpoint(
+        store,
+        seeded_db,
+        source_code_sha=CODE_SHA,
+        created_at=NOW,
+        rights_admitted=False,
+        rights_classification="NO_CONDITIONAL_VALUES",
+    )
+    target = tmp_path / "recording-v2-target.db"
+    _create_db(target)
+    restored = restore_checkpoint(store, target)
+    assert restored.inserted["learning_recording_journal"] == 1
+    assert restored.inserted["prediction_ledger"] == 1
+
+    conn = sqlite3.connect(target)
+    try:
+        restored_journal = conn.execute(
+            "SELECT recording_intent_hash,intended_cohort_id,disposition,prediction_hash,"
+            "analysis_history_id FROM learning_recording_journal"
+        ).fetchone()
+        restored_ledger = conn.execute(
+            "SELECT schema_version,recording_intent_hash,intended_cohort_id "
+            "FROM prediction_ledger WHERE prediction_hash=?",
+            ("1" * 64,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert restored_journal == (
+        "b" * 64,
+        "c" * 64,
+        "RECORDED",
+        "1" * 64,
+        0,
+    )
+    assert restored_ledger == ("prediction-ledger-v6", "b" * 64, "c" * 64)
+
+
 def test_roundtrip_is_deterministic_and_duplicate_restore_is_idempotent(
     seeded_db: Path,
     tmp_path: Path,
@@ -580,12 +684,14 @@ def test_roundtrip_is_deterministic_and_duplicate_restore_is_idempotent(
 
     restored = restore_checkpoint(store, target)
     assert restored.inserted == {
+        "learning_recording_journal": 0,
         "prediction_ledger": 1,
         "prediction_outcomes": 2,
         "pit_dataset_manifests": 1,
     }
     again = restore_checkpoint(store, target)
     assert again.existing == {
+        "learning_recording_journal": 0,
         "prediction_ledger": 1,
         "prediction_outcomes": 2,
         "pit_dataset_manifests": 1,

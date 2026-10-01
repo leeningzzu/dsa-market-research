@@ -105,6 +105,7 @@ def test_empty_remote_chain_allows_only_empty_local_bootstrap(
         runtime,
         "research_state_counts",
         lambda path: {
+            "learning_recording_journal": 0,
             "prediction_ledger": 1,
             "prediction_outcomes": 0,
             "pit_dataset_manifests": 0,
@@ -172,6 +173,7 @@ def test_publish_success_uses_fail_closed_rights_contract(
         runtime,
         "research_state_counts",
         lambda path: {
+            "learning_recording_journal": 0,
             "prediction_ledger": 1,
             "prediction_outcomes": 0,
             "pit_dataset_manifests": 0,
@@ -208,6 +210,7 @@ def test_publish_skips_unchanged_projection(
         runtime,
         "research_state_counts",
         lambda path: {
+            "learning_recording_journal": 0,
             "prediction_ledger": 1,
             "prediction_outcomes": 0,
             "pit_dataset_manifests": 0,
@@ -246,6 +249,7 @@ def test_publish_requires_exact_source_sha_when_state_exists(
         runtime,
         "research_state_counts",
         lambda path: {
+            "learning_recording_journal": 0,
             "prediction_ledger": 1,
             "prediction_outcomes": 0,
             "pit_dataset_manifests": 0,
@@ -270,6 +274,7 @@ def test_empty_smoke_publish_then_restore_is_identity_bound(tmp_path: Path) -> N
         ensure_schema=_ensure,
     )
     zero_counts = {
+        "learning_recording_journal": 0,
         "prediction_ledger": 0,
         "prediction_outcomes": 0,
         "pit_dataset_manifests": 0,
@@ -319,6 +324,7 @@ def test_empty_smoke_refuses_nonempty_local_or_remote_prefix(
         runtime,
         "research_state_counts",
         lambda path: {
+            "learning_recording_journal": 0,
             "prediction_ledger": 1,
             "prediction_outcomes": 0,
             "pit_dataset_manifests": 0,
@@ -412,6 +418,7 @@ def test_smoke_cli_emits_machine_readable_identity_receipt(
         "package_bytes": 1024,
         "rights_classification": "NO_CONDITIONAL_VALUES",
         "table_counts": {
+            "learning_recording_journal": 0,
             "prediction_ledger": 0,
             "prediction_outcomes": 0,
             "pit_dataset_manifests": 0,

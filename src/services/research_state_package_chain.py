@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
 """Selective immutable cross-run package chain for DSA research state.
 
-V1 is intentionally CHECKPOINT_ONLY: every committed generation contains the
-full allowlisted durable projection of Prediction Ledger, PredictionOutcome,
-and PIT dataset manifest rows. The package is a transport artifact, never a
-second writable runtime database.
+V2 is intentionally CHECKPOINT_ONLY: every new committed generation contains
+the allowlisted learning-recording journal plus recording-linked Prediction
+Ledger, PredictionOutcome, and PIT dataset manifest rows. Legacy V1 packages
+remain explicitly readable/restorable and are never reclassified as current-
+complete learning state. The package is a transport artifact, never a second
+writable runtime database.
 
 No network or R2 SDK is required here. Object transport is represented by a
 small protocol and a filesystem implementation used by deterministic tests.
@@ -27,13 +29,14 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Protocol, Seque
 from src.services.research_state_projection import (
     CANONICAL_OPPORTUNITY_PROJECTION_VERSION,
     STRATEGY_ELIGIBILITY_SCHEMA_VERSION,
-    STRATEGY_ELIGIBILITY_LEDGER_SCHEMA_VERSION,
+    STRATEGY_ELIGIBILITY_LEDGER_SCHEMA_VERSIONS,
     build_canonical_opportunity_projection,
     build_strategy_eligibility_identity,
 )
 
 
-PACKAGE_SCHEMA_VERSION = "research-state-package-v1"
+PACKAGE_SCHEMA_VERSION = "research-state-package-v2"
+LEGACY_PACKAGE_SCHEMA_VERSION = "research-state-package-v1"
 MANIFEST_SCHEMA_VERSION = "research-state-manifest-v1"
 PACKAGE_KIND = "CHECKPOINT_ONLY_V1"
 DURABILITY_STATE = "R2_PACKAGE_CHAIN_V1"
@@ -76,19 +79,27 @@ _PROJECTION_MODES = {
     SAFE_PROJECTION_MODE,
 }
 
+_LEGACY_TABLE_ORDER = (
+    "prediction_ledger",
+    "prediction_outcomes",
+    "pit_dataset_manifests",
+)
 _TABLE_ORDER = (
+    "learning_recording_journal",
     "prediction_ledger",
     "prediction_outcomes",
     "pit_dataset_manifests",
 )
 
 _IDENTITY_COLUMN = {
+    "learning_recording_journal": "recording_intent_hash",
     "prediction_ledger": "prediction_hash",
     "prediction_outcomes": "outcome_hash",
     "pit_dataset_manifests": "dataset_hash",
 }
 
 _JSON_COLUMNS = {
+    "learning_recording_journal": set(),
     "prediction_ledger": {
         "evidence_json",
         "asset_identity_json",
@@ -109,6 +120,30 @@ _JSON_COLUMNS = {
 # Every current schema column is classified. FORBIDDEN means "never leaves the
 # runtime DB in package V1", not that the column is invalid in the runtime DB.
 COLUMN_CLASSIFICATION: Dict[str, Dict[str, str]] = {
+    "learning_recording_journal": {
+        "id": FORBIDDEN,
+        "recording_intent_hash": SAFE_LOW_SENSITIVITY,
+        "schema_version": SAFE_LOW_SENSITIVITY,
+        "policy_version": SAFE_LOW_SENSITIVITY,
+        "analysis_history_id": FORBIDDEN,
+        "intended_cohort_id": SAFE_LOW_SENSITIVITY,
+        "stock_code": SAFE_LOW_SENSITIVITY,
+        "market": SAFE_LOW_SENSITIVITY,
+        "report_type": SAFE_LOW_SENSITIVITY,
+        "strategy_id": SAFE_LOW_SENSITIVITY,
+        "strategy_version": SAFE_LOW_SENSITIVITY,
+        "canonical_binding_hash": SAFE_LOW_SENSITIVITY,
+        "data_snapshot_identity": SAFE_LOW_SENSITIVITY,
+        "code_sha": SAFE_LOW_SENSITIVITY,
+        "selection_source": SAFE_LOW_SENSITIVITY,
+        "selection_context_hash": SAFE_LOW_SENSITIVITY,
+        "disposition": SAFE_LOW_SENSITIVITY,
+        "reason_code": SAFE_LOW_SENSITIVITY,
+        "prediction_hash": SAFE_LOW_SENSITIVITY,
+        "retry_count": SAFE_LOW_SENSITIVITY,
+        "created_at": SAFE_LOW_SENSITIVITY,
+        "updated_at": SAFE_LOW_SENSITIVITY,
+    },
     "prediction_ledger": {
         "id": FORBIDDEN,
         "prediction_hash": SAFE_LOW_SENSITIVITY,
@@ -160,6 +195,8 @@ COLUMN_CLASSIFICATION: Dict[str, Dict[str, str]] = {
         "selection_source": SAFE_LOW_SENSITIVITY,
         "selection_context_hash": SAFE_LOW_SENSITIVITY,
         "selection_context_json": RIGHTS_CONDITIONAL,
+        "recording_intent_hash": SAFE_LOW_SENSITIVITY,
+        "intended_cohort_id": SAFE_LOW_SENSITIVITY,
         "pit_eligible": SAFE_LOW_SENSITIVITY,
         "pit_ineligibility_json": SAFE_LOW_SENSITIVITY,
         "durability_state": FORBIDDEN,
@@ -216,6 +253,8 @@ COLUMN_CLASSIFICATION: Dict[str, Dict[str, str]] = {
         "embargo_policy": SAFE_LOW_SENSITIVITY,
         "selection_route_policy": SAFE_LOW_SENSITIVITY,
         "code_sha": SAFE_LOW_SENSITIVITY,
+        "intended_cohort_id": SAFE_LOW_SENSITIVITY,
+        "recording_coverage_state": SAFE_LOW_SENSITIVITY,
         "final_test_state": SAFE_LOW_SENSITIVITY,
         "training_admission": SAFE_LOW_SENSITIVITY,
         "training_admission_reasons_json": SAFE_LOW_SENSITIVITY,
@@ -424,6 +463,37 @@ def package_columns(table: str, *, projection_mode: str) -> Tuple[str, ...]:
         }
         columns = tuple(column for column in columns if column not in new_projection_columns)
     return columns
+
+
+def _table_order_for_package_schema(schema_version: Any) -> Tuple[str, ...]:
+    schema = str(schema_version or "")
+    if schema == PACKAGE_SCHEMA_VERSION:
+        return _TABLE_ORDER
+    if schema == LEGACY_PACKAGE_SCHEMA_VERSION:
+        return _LEGACY_TABLE_ORDER
+    raise ManifestChainError(f"unsupported package schema: {schema}")
+
+
+def _package_columns_for_schema(
+    table: str,
+    *,
+    projection_mode: str,
+    package_schema_version: str,
+) -> Tuple[str, ...]:
+    columns = package_columns(table, projection_mode=projection_mode)
+    if package_schema_version != LEGACY_PACKAGE_SCHEMA_VERSION:
+        return columns
+    if table == "prediction_ledger":
+        excluded = {"recording_intent_hash", "intended_cohort_id"}
+        return tuple(column for column in columns if column not in excluded)
+    if table == "pit_dataset_manifests":
+        excluded = {"intended_cohort_id", "recording_coverage_state"}
+        return tuple(column for column in columns if column not in excluded)
+    return columns
+
+
+def _is_current_eligibility_ledger_schema(value: Any) -> bool:
+    return str(value or "") in STRATEGY_ELIGIBILITY_LEDGER_SCHEMA_VERSIONS
 
 
 def forbidden_columns(table: str) -> Tuple[str, ...]:
@@ -743,7 +813,9 @@ def restore_checkpoint(
     package_doc = _validate_package_document(package)
     if package_doc.get("package_kind") != document.get("package_kind"):
         raise ManifestChainError("manifest/package kind mismatch")
-    for table in _TABLE_ORDER:
+    package_schema_version = str(package_doc.get("schema_version") or "")
+    package_table_order = _table_order_for_package_schema(package_schema_version)
+    for table in package_table_order:
         table_doc = package_doc["tables"][table]
         if int(document["table_counts"][table]) != int(table_doc["row_count"]):
             raise ManifestChainError(f"manifest/package row-count mismatch: {table}")
@@ -751,9 +823,9 @@ def restore_checkpoint(
             raise ManifestChainError(f"manifest/package table-root mismatch: {table}")
 
     validate_current_schema(db_path)
-    inserted = {table: 0 for table in _TABLE_ORDER}
+    inserted = {table: 0 for table in package_table_order}
     projection_mode = _projection_mode_from_document(package_doc)
-    existing = {table: 0 for table in _TABLE_ORDER}
+    existing = {table: 0 for table in package_table_order}
 
     conn = sqlite3.connect(str(Path(db_path)))
     try:
@@ -763,13 +835,14 @@ def restore_checkpoint(
                 projection_mode=projection_mode,
             )
         conn.execute("BEGIN IMMEDIATE")
-        for table in _TABLE_ORDER:
+        for table in package_table_order:
             table_doc = package_doc["tables"][table]
             identity = _IDENTITY_COLUMN[table]
             columns = tuple(table_doc["columns"])
-            expected_columns = package_columns(
+            expected_columns = _package_columns_for_schema(
                 table,
                 projection_mode=projection_mode,
+                package_schema_version=package_schema_version,
             )
             if columns != expected_columns:
                 raise ManifestChainError(f"package column contract mismatch: {table}")
@@ -805,6 +878,10 @@ def restore_checkpoint(
                     fields["analysis_history_id"] = 0
                     fields["decision_signal_id"] = None
                     fields["durability_state"] = DURABILITY_STATE
+                elif table == "learning_recording_journal":
+                    # AnalysisHistory stays run-local; restored journal rows retain
+                    # their durable semantic identity with a weak zero reference.
+                    fields["analysis_history_id"] = 0
                 _insert_row(conn, table, fields)
                 inserted[table] += 1
 
@@ -832,23 +909,28 @@ def _validate_package_document(payload: bytes) -> Mapping[str, Any]:
     if len(payload) > MAX_PACKAGE_BYTES:
         raise PackageTooLarge("package exceeds hard byte cap")
     document = _parse_canonical_json(payload, label="package")
-    if document.get("schema_version") != PACKAGE_SCHEMA_VERSION:
-        raise ManifestChainError("package schema mismatch")
+    package_schema_version = str(document.get("schema_version") or "")
+    table_order = _table_order_for_package_schema(package_schema_version)
     if document.get("package_kind") != PACKAGE_KIND:
         raise ManifestChainError("package kind mismatch")
     if document.get("durability_state_on_restore") != DURABILITY_STATE:
         raise ManifestChainError("package durability-state mismatch")
     tables = document.get("tables")
-    if not isinstance(tables, dict) or set(tables) != set(_TABLE_ORDER):
+    if not isinstance(tables, dict) or set(tables) != set(table_order):
         raise ManifestChainError("package table set mismatch")
 
     projection_mode = _projection_mode_from_document(document)
-    for table in _TABLE_ORDER:
+    for table in table_order:
         table_doc = tables[table]
         if not isinstance(table_doc, dict):
             raise ManifestChainError(f"invalid package table document: {table}")
         columns = tuple(table_doc.get("columns") or [])
-        if columns != package_columns(table, projection_mode=projection_mode):
+        expected_columns = _package_columns_for_schema(
+            table,
+            projection_mode=projection_mode,
+            package_schema_version=package_schema_version,
+        )
+        if columns != expected_columns:
             raise ManifestChainError(f"package column contract mismatch: {table}")
         if table_doc.get("identity_column") != _IDENTITY_COLUMN[table]:
             raise ManifestChainError(f"package identity column mismatch: {table}")
@@ -885,8 +967,8 @@ def _validate_manifest_document(
         raise ManifestChainError(f"manifest generation/key mismatch: {key}")
     if document.get("package_kind") != PACKAGE_KIND:
         raise ManifestChainError(f"manifest package kind mismatch: {key}")
-    if document.get("package_schema_version") != PACKAGE_SCHEMA_VERSION:
-        raise ManifestChainError(f"manifest package schema mismatch: {key}")
+    package_schema_version = str(document.get("package_schema_version") or "")
+    table_order = _table_order_for_package_schema(package_schema_version)
 
     package_sha = str(document.get("package_sha256") or "")
     if not _SHA64_RE.fullmatch(package_sha):
@@ -906,11 +988,11 @@ def _validate_manifest_document(
 
     counts = document.get("table_counts")
     roots = document.get("table_roots")
-    if not isinstance(counts, dict) or set(counts) != set(_TABLE_ORDER):
+    if not isinstance(counts, dict) or set(counts) != set(table_order):
         raise ManifestChainError(f"manifest table-count contract mismatch: {key}")
-    if not isinstance(roots, dict) or set(roots) != set(_TABLE_ORDER):
+    if not isinstance(roots, dict) or set(roots) != set(table_order):
         raise ManifestChainError(f"manifest table-root contract mismatch: {key}")
-    for table in _TABLE_ORDER:
+    for table in table_order:
         count = counts[table]
         root = str(roots[table] or "")
         if not isinstance(count, int) or count < 0:
@@ -925,12 +1007,41 @@ def _validate_manifest_document(
 
 def _validate_cross_table_invariants(document: Mapping[str, Any]) -> None:
     tables = document["tables"]
+    journal_rows = (tables.get("learning_recording_journal") or {}).get("rows") or []
     ledger_rows = tables["prediction_ledger"]["rows"]
     outcome_rows = tables["prediction_outcomes"]["rows"]
     pit_rows = tables["pit_dataset_manifests"]["rows"]
 
+    journal_by_hash = {
+        str(row["recording_intent_hash"]): row
+        for row in journal_rows
+    }
     ledger_ids = {str(row["prediction_hash"]) for row in ledger_rows}
+    ledger_by_hash = {str(row["prediction_hash"]): row for row in ledger_rows}
     outcome_by_hash = {str(row["outcome_hash"]): row for row in outcome_rows}
+
+    for row in journal_rows:
+        disposition = str(row.get("disposition") or "").upper()
+        prediction_hash = str(row.get("prediction_hash") or "")
+        if disposition == "RECORDED":
+            ledger = ledger_by_hash.get(prediction_hash)
+            if ledger is None:
+                raise ManifestChainError(
+                    f"recorded journal references missing prediction: {prediction_hash}"
+                )
+            if (
+                ledger.get("recording_intent_hash") != row.get("recording_intent_hash")
+                or ledger.get("intended_cohort_id") != row.get("intended_cohort_id")
+            ):
+                raise ManifestChainError("journal/Ledger recording identity mismatch")
+
+    if journal_rows:
+        for row in ledger_rows:
+            intent_hash = str(row.get("recording_intent_hash") or "")
+            if intent_hash and intent_hash not in journal_by_hash:
+                raise ManifestChainError(
+                    f"Ledger references missing recording intent: {intent_hash}"
+                )
 
     for row in outcome_rows:
         prediction_hash = str(row.get("prediction_hash") or "")
@@ -1046,7 +1157,7 @@ def _validate_strategy_eligibility_projection(item: Dict[str, Any]) -> Dict[str,
         "strategy_eligibility_hash",
         "strategy_eligibility_json",
     )
-    if projected.get("schema_version") != STRATEGY_ELIGIBILITY_LEDGER_SCHEMA_VERSION:
+    if not _is_current_eligibility_ledger_schema(projected.get("schema_version")):
         if any(projected.get(field) is not None for field in eligibility_fields):
             raise ResearchStateError(
                 "legacy prediction_ledger row cannot claim StrategyEligibility V1"
@@ -1105,8 +1216,9 @@ def _materialize_safe_ledger_projection(
         )
         expected_projection_version = (
             CANONICAL_OPPORTUNITY_PROJECTION_VERSION
-            if projected.get("schema_version")
-            == STRATEGY_ELIGIBILITY_LEDGER_SCHEMA_VERSION
+            if _is_current_eligibility_ledger_schema(
+                projected.get("schema_version")
+            )
             else _LEGACY_CANONICAL_OPPORTUNITY_PROJECTION_VERSION
         )
         expected_values = {
@@ -1125,8 +1237,9 @@ def _materialize_safe_ledger_projection(
 
     expected_projection_version = (
         CANONICAL_OPPORTUNITY_PROJECTION_VERSION
-        if projected.get("schema_version")
-        == STRATEGY_ELIGIBILITY_LEDGER_SCHEMA_VERSION
+        if _is_current_eligibility_ledger_schema(
+            projected.get("schema_version")
+        )
         else _LEGACY_CANONICAL_OPPORTUNITY_PROJECTION_VERSION
     )
     if (

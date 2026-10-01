@@ -15,6 +15,13 @@ from src.services.evidence_traceability_registry import strategy_contract_covera
 CANONICAL_OPPORTUNITY_PROJECTION_VERSION = "canonical-opportunity-v3"
 STRATEGY_ELIGIBILITY_SCHEMA_VERSION = "strategy-eligibility-v2"
 STRATEGY_ELIGIBILITY_LEDGER_SCHEMA_VERSION = "prediction-ledger-v5"
+STRATEGY_ELIGIBILITY_RECORDING_LEDGER_SCHEMA_VERSION = "prediction-ledger-v6"
+STRATEGY_ELIGIBILITY_LEDGER_SCHEMA_VERSIONS = frozenset(
+    {
+        STRATEGY_ELIGIBILITY_LEDGER_SCHEMA_VERSION,
+        STRATEGY_ELIGIBILITY_RECORDING_LEDGER_SCHEMA_VERSION,
+    }
+)
 STOCK_TREND_QUALITY_PULLBACK_STRATEGY_ID = "stock_trend_quality_pullback_v1"
 ETF_RELATIVE_STRENGTH_ROTATION_STRATEGY_ID = "etf_relative_strength_rotation_v1"
 CANONICAL_DECISION_SEMANTIC_VERSION = "canonical-decision-semantic-v1"
@@ -361,7 +368,7 @@ def is_white_box_opportunity_record(record: Any) -> bool:
 
     return bool(
         str(getattr(record, "schema_version", None) or "").strip()
-        == STRATEGY_ELIGIBILITY_LEDGER_SCHEMA_VERSION
+        in STRATEGY_ELIGIBILITY_LEDGER_SCHEMA_VERSIONS
         and str(getattr(record, "strategy_id", None) or "").strip()
         == STOCK_TREND_QUALITY_PULLBACK_STRATEGY_ID
         and str(

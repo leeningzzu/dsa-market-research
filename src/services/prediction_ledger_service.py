@@ -17,17 +17,14 @@ from src.services.pit_identity import (
     canonical_json,
     normalize_research_selection_context,
 )
-from src.services.research_state_projection import (
-    STRATEGY_ELIGIBILITY_LEDGER_SCHEMA_VERSION,
-    build_canonical_opportunity_projection,
-)
+from src.services.research_state_projection import build_canonical_opportunity_projection
 from src.storage import DatabaseManager
 from src.services.evidence_traceability_registry import (
     MANIFEST_HASH, METRIC_BINDINGS, digest, ledger_evidence_keys, learning_projection,
 )
 
 
-PREDICTION_LEDGER_SCHEMA_VERSION = STRATEGY_ELIGIBILITY_LEDGER_SCHEMA_VERSION
+PREDICTION_LEDGER_SCHEMA_VERSION = "prediction-ledger-v6"
 PREDICTION_FEATURE_SCHEMA_VERSION = "stock-factor-evidence-v1"
 
 _FACTOR_EVIDENCE_KEYS = ledger_evidence_keys()
@@ -75,17 +72,25 @@ class PredictionLedgerService:
         decision_signal: Optional[Mapping[str, Any]] = None,
         code_sha: Optional[str] = None,
         selection_context: Optional[Mapping[str, Any]] = None,
+        recording_intent_hash: Optional[str] = None,
+        intended_cohort_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         history_id = self._positive_int(analysis_history_id, "analysis_history_id")
         history = self.db.get_analysis_history_by_id(history_id)
         if history is None or history.created_at is None:
-            return None
+            return self._typed_outcome(
+                "TECHNICALLY_LOST",
+                "ANALYSIS_HISTORY_READBACK_MISSING",
+            )
 
         dashboard = self._mapping(getattr(result, "dashboard", None))
         factor_decision = self._mapping(dashboard.get("factor_decision"))
         strategy_id = self._text(factor_decision.get("strategy_id"))
         if not strategy_id:
-            return None
+            return self._typed_outcome(
+                "LAWFULLY_REJECTED",
+                "STRATEGY_ID_NOT_BOUND",
+            )
 
         traced = "evidence_traceability" in factor_decision
         if traced:
@@ -114,7 +119,10 @@ class PredictionLedgerService:
         signal_horizon = self._text(signal.get("horizon"))
         signal_market = self._text(signal.get("market"))
         if not canonical_action or signal_id is None or not signal_horizon or not signal_market:
-            return None
+            return self._typed_outcome(
+                "LAWFULLY_REJECTED",
+                "LEDGER_PRECONDITION_NOT_BOUND",
+            )
         multi_timeframe = self._mapping(
             factor_decision.get("multi_timeframe_structure_context")
         )
@@ -151,6 +159,8 @@ class PredictionLedgerService:
         selection_context_json = (
             canonical_json(normalized_selection) if normalized_selection else None
         )
+        bound_recording_intent_hash = self._normalize_sha256(recording_intent_hash)
+        bound_intended_cohort_id = self._normalize_sha256(intended_cohort_id)
         universe_snapshot_id = self._text(
             normalized_selection.get("universe_snapshot_id")
             or metadata.get("universe_snapshot_id")
@@ -221,6 +231,8 @@ class PredictionLedgerService:
             pit_reasons.append("DATA_SNAPSHOT_IDENTITY_NOT_BOUND")
         if not selection_source or not selection_context_hash:
             pit_reasons.append("SELECTION_SOURCE_NOT_BOUND")
+        if not bound_recording_intent_hash or not bound_intended_cohort_id:
+            pit_reasons.append("RECORDING_IDENTITY_NOT_BOUND")
         if (
             available_at_max is not None
             and decision_time is not None
@@ -285,6 +297,8 @@ class PredictionLedgerService:
             "data_snapshot_identity": data_snapshot_identity,
             "selection_source": selection_source,
             "selection_context_hash": selection_context_hash,
+            "recording_intent_hash": bound_recording_intent_hash,
+            "intended_cohort_id": bound_intended_cohort_id,
         }
         prediction_hash = self._sha256_text(self._canonical_json(prediction_identity))
 
@@ -350,17 +364,39 @@ class PredictionLedgerService:
             "selection_source": selection_source,
             "selection_context_hash": selection_context_hash,
             "selection_context_json": selection_context_json,
+            "recording_intent_hash": bound_recording_intent_hash,
+            "intended_cohort_id": bound_intended_cohort_id,
             "pit_eligible": not pit_reasons,
             "pit_ineligibility_json": self._canonical_json(pit_reasons),
             "durability_state": "LOCAL_DB_ONLY",
         }
         if not fields["stock_code"] or fields["market"] == "unknown":
-            return None
+            return self._typed_outcome(
+                "LAWFULLY_REJECTED",
+                "ASSET_IDENTITY_NOT_BOUND",
+            )
 
         row_id, created = self.repo.insert_if_history_exists(fields)
         if row_id is None:
-            return None
+            return self._typed_outcome(
+                "TECHNICALLY_LOST",
+                "LEDGER_WRITE_OR_HISTORY_LINK_MISSING",
+            )
+        readback = self.repo.get_by_prediction_hash(prediction_hash)
+        if (
+            readback is None
+            or int(readback.id or 0) != int(row_id)
+            or str(readback.prediction_hash or "") != prediction_hash
+            or str(readback.recording_intent_hash or "") != str(bound_recording_intent_hash or "")
+            or str(readback.intended_cohort_id or "") != str(bound_intended_cohort_id or "")
+        ):
+            return self._typed_outcome(
+                "TECHNICALLY_LOST",
+                "LEDGER_POSTCOMMIT_READBACK_MISMATCH",
+            )
         return {
+            "status": "RECORDED",
+            "reason_code": None,
             "id": row_id,
             "created": created,
             "prediction_hash": prediction_hash,
@@ -394,7 +430,23 @@ class PredictionLedgerService:
             "pit_eligible": not pit_reasons,
             "pit_ineligibility_reasons": pit_reasons,
             "durability_state": "LOCAL_DB_ONLY",
+            "recording_intent_hash": bound_recording_intent_hash,
+            "intended_cohort_id": bound_intended_cohort_id,
         }
+
+    @staticmethod
+    def _typed_outcome(status: str, reason_code: str) -> Dict[str, Any]:
+        return {
+            "status": str(status).strip().upper(),
+            "reason_code": str(reason_code).strip().upper(),
+        }
+
+    @staticmethod
+    def _normalize_sha256(value: Any) -> Optional[str]:
+        text = str(value or "").strip().lower()
+        if len(text) != 64 or any(ch not in "0123456789abcdef" for ch in text):
+            return None
+        return text
 
     @staticmethod
     def _signal_item(value: Optional[Mapping[str, Any]]) -> Dict[str, Any]:

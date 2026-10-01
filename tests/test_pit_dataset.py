@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 from datetime import date, datetime, timedelta
 
@@ -27,11 +28,17 @@ from src.services.research_state_projection import (
     STRATEGY_ELIGIBILITY_SCHEMA_VERSION,
     build_strategy_eligibility_identity,
 )
-from src.storage import DatabaseManager, PredictionLedgerRecord, PredictionOutcomeRecord
+from src.storage import (
+    DatabaseManager,
+    LearningRecordingRecord,
+    PredictionLedgerRecord,
+    PredictionOutcomeRecord,
+)
 
 
 COST_HASH = "d" * 64
 CODE_SHA = "a" * 40
+COHORT_ID = "c" * 64
 
 
 def _strategy_eligibility_identity() -> dict:
@@ -155,6 +162,58 @@ def _seed_prediction(
     return prediction_hash
 
 
+def _seed_recording_cohort(
+    db: DatabaseManager,
+    prediction_hashes: list[str],
+    *,
+    cohort_id: str = COHORT_ID,
+    disposition_by_hash: dict[str, str] | None = None,
+) -> None:
+    overrides = disposition_by_hash or {}
+    with db.session_scope() as session:
+        for prediction_hash in prediction_hashes:
+            row = session.query(PredictionLedgerRecord).filter_by(
+                prediction_hash=prediction_hash
+            ).one()
+            intent_hash = hashlib.sha256(
+                f"recording:{prediction_hash}".encode("utf-8")
+            ).hexdigest()
+            disposition = overrides.get(prediction_hash, "RECORDED")
+            row.recording_intent_hash = intent_hash
+            row.intended_cohort_id = cohort_id
+            session.add(
+                LearningRecordingRecord(
+                    recording_intent_hash=intent_hash,
+                    schema_version="learning-recording-intent-v1",
+                    policy_version="learning-recording-policy-v1",
+                    analysis_history_id=row.analysis_history_id,
+                    intended_cohort_id=cohort_id,
+                    stock_code=row.stock_code,
+                    market=row.market,
+                    report_type="simple",
+                    strategy_id=row.strategy_id,
+                    strategy_version=row.strategy_version,
+                    canonical_binding_hash=row.evidence_hash,
+                    data_snapshot_identity=row.data_snapshot_identity,
+                    code_sha=row.code_sha,
+                    selection_source=row.selection_source,
+                    selection_context_hash=cohort_id,
+                    disposition=disposition,
+                    reason_code=(
+                        "TEST_TECHNICAL_LOSS"
+                        if disposition == "TECHNICALLY_LOST"
+                        else "TEST_LAWFUL_REJECTION"
+                        if disposition == "LAWFULLY_REJECTED"
+                        else None
+                    ),
+                    prediction_hash=(
+                        prediction_hash if disposition == "RECORDED" else None
+                    ),
+                    retry_count=0,
+                )
+            )
+
+
 def _seed_outcome(
     db: DatabaseManager,
     *,
@@ -199,7 +258,12 @@ def _seed_outcome(
     return outcome_hash
 
 
-def _seed_twenty_sessions(db: DatabaseManager, *, auto_screen: bool = False) -> list[str]:
+def _seed_twenty_sessions(
+    db: DatabaseManager,
+    *,
+    auto_screen: bool = False,
+    bind_recording: bool = True,
+) -> list[str]:
     start = date(2026, 1, 1)
     hashes = []
     for index in range(20):
@@ -219,6 +283,8 @@ def _seed_twenty_sessions(db: DatabaseManager, *, auto_screen: bool = False) -> 
             available_at=datetime.combine(day + timedelta(days=3), datetime.min.time()).replace(hour=8),
             suffix=index + 1,
         )
+    if bind_recording:
+        _seed_recording_cohort(db, hashes)
     return hashes
 
 
@@ -254,7 +320,8 @@ def test_pre_correction_strategy_identity_is_outside_current_denominator(
         row.strategy_eligibility_version = "strategy-eligibility-v1"
 
     result = PITDatasetService(db_manager=isolated_db).build_manifest(
-        cost_identity_hash=COST_HASH
+        cost_identity_hash=COST_HASH,
+        intended_cohort_id=COHORT_ID,
     )
     assert result["manifest"]["counts"]["denominator"] == 19
     assert rejected_hash not in {
@@ -267,8 +334,14 @@ def test_manifest_is_chronological_grouped_sealed_and_idempotent(isolated_db) ->
     _seed_twenty_sessions(isolated_db)
     service = PITDatasetService(db_manager=isolated_db)
 
-    first = service.build_manifest(cost_identity_hash=COST_HASH)
-    second = service.build_manifest(cost_identity_hash=COST_HASH)
+    first = service.build_manifest(
+        cost_identity_hash=COST_HASH,
+        intended_cohort_id=COHORT_ID,
+    )
+    second = service.build_manifest(
+        cost_identity_hash=COST_HASH,
+        intended_cohort_id=COHORT_ID,
+    )
 
     assert first["dataset_hash"] == second["dataset_hash"]
     assert first["disposition"] == "created"
@@ -283,8 +356,10 @@ def test_manifest_is_chronological_grouped_sealed_and_idempotent(isolated_db) ->
         "final_test_last": "2026-01-20",
     }
     assert manifest["final_test_state"] == "SEALED"
-    assert manifest["schema_version"] == "pit-dataset-manifest-v2"
-    assert manifest["dataset_purpose"] == "ASSET_LEVEL_META_FILTER_ON_STRATEGY_ELIGIBLE_OPPORTUNITIES_V2"
+    assert manifest["schema_version"] == "pit-dataset-manifest-v3"
+    assert manifest["dataset_purpose"] == "ASSET_LEVEL_META_FILTER_ON_STRATEGY_ELIGIBLE_OPPORTUNITIES_V3"
+    assert manifest["recording_coverage_state"] == "COMPLETE"
+    assert "RECORDING_COVERAGE_INCOMPLETE" not in first["training_admission_reasons"]
     assert manifest["opportunity_projection_version"] == CANONICAL_OPPORTUNITY_PROJECTION_VERSION
     assert manifest["strategy_eligibility_version"] == STRATEGY_ELIGIBILITY_SCHEMA_VERSION
     assert manifest["counts"]["raw_by_fold"] == {"TRAIN": 12, "VALIDATION": 4, "FINAL_TEST": 4}
@@ -293,6 +368,79 @@ def test_manifest_is_chronological_grouped_sealed_and_idempotent(isolated_db) ->
     assert all("label_value" not in item for item in manifest["assignments"])
     assert all("net_return_pct" not in item for item in manifest["assignments"])
     assert PITDatasetRepository(isolated_db).get_by_hash(first["dataset_hash"]) is not None
+
+
+def test_explicit_recording_cohort_is_complete_when_every_recorded_intent_reads_back(isolated_db) -> None:
+    hashes = _seed_twenty_sessions(isolated_db)
+
+    result = PITDatasetService(db_manager=isolated_db).build_manifest(
+        cost_identity_hash=COST_HASH,
+        intended_cohort_id=COHORT_ID,
+    )
+    manifest = result["manifest"]
+
+    assert manifest["recording_coverage_state"] == "COMPLETE"
+    assert manifest["recording_coverage"]["counts"] == {
+        "intended": 20,
+        "recorded": 20,
+        "lawfully_rejected": 0,
+        "pending": 0,
+        "technically_lost": 0,
+    }
+    assert "RECORDING_COVERAGE_INCOMPLETE" not in result["training_admission_reasons"]
+    assert manifest["counts"]["denominator"] == 20
+
+
+def test_lawful_reject_counts_toward_complete_cohort_but_not_opportunity_denominator(isolated_db) -> None:
+    hashes = _seed_twenty_sessions(isolated_db, bind_recording=False)
+    rejected_hash = hashes[0]
+    _seed_recording_cohort(
+        isolated_db,
+        hashes,
+        disposition_by_hash={rejected_hash: "LAWFULLY_REJECTED"},
+    )
+
+    result = PITDatasetService(db_manager=isolated_db).build_manifest(
+        cost_identity_hash=COST_HASH,
+        intended_cohort_id=COHORT_ID,
+    )
+    coverage = result["manifest"]["recording_coverage"]
+
+    assert coverage["state"] == "COMPLETE"
+    assert coverage["counts"]["intended"] == 20
+    assert coverage["counts"]["recorded"] == 19
+    assert coverage["counts"]["lawfully_rejected"] == 1
+    assert result["manifest"]["counts"]["denominator"] == 19
+    assert rejected_hash not in {
+        item["prediction_hash"]
+        for item in result["manifest"]["assignments"]
+    }
+
+
+def test_pending_and_technical_loss_make_recording_coverage_incomplete(isolated_db) -> None:
+    hashes = _seed_twenty_sessions(isolated_db, bind_recording=False)
+    _seed_recording_cohort(
+        isolated_db,
+        hashes,
+        disposition_by_hash={
+            hashes[0]: "PENDING",
+            hashes[1]: "TECHNICALLY_LOST",
+        },
+    )
+
+    result = PITDatasetService(db_manager=isolated_db).build_manifest(
+        cost_identity_hash=COST_HASH,
+        intended_cohort_id=COHORT_ID,
+    )
+    reasons = set(result["training_admission_reasons"])
+    coverage = result["manifest"]["recording_coverage"]
+
+    assert coverage["state"] == "INCOMPLETE"
+    assert coverage["counts"]["pending"] == 1
+    assert coverage["counts"]["technically_lost"] == 1
+    assert "PENDING_RECORDING_INTENT" in reasons
+    assert "TECHNICALLY_LOST_INTENDED_SAMPLE" in reasons
+    assert "RECORDING_COVERAGE_INCOMPLETE" in reasons
 
 
 def test_boundary_purge_and_late_correction_use_only_knowable_outcome(isolated_db) -> None:
@@ -310,7 +458,8 @@ def test_boundary_purge_and_late_correction_use_only_knowable_outcome(isolated_d
     )
 
     manifest = PITDatasetService(db_manager=isolated_db).build_manifest(
-        cost_identity_hash=COST_HASH
+        cost_identity_hash=COST_HASH,
+        intended_cohort_id=COHORT_ID,
     )["manifest"]
     target_assignment = next(item for item in manifest["assignments"] if item["prediction_hash"] == target)
     assert target_assignment["outcome_hash"] == early_hash
@@ -328,6 +477,7 @@ def test_training_admission_stays_blocked_for_local_unapproved_foundation(isolat
         cost_identity_approved=False,
         durable_references_admitted=False,
         execution_realism_approved=False,
+        intended_cohort_id=COHORT_ID,
     )
     assert result["training_admission"] == "BLOCKED"
     assert "LOCAL_DB_ONLY_REFERENCES" in result["training_admission_reasons"]
@@ -338,6 +488,7 @@ def test_training_admission_stays_blocked_for_local_unapproved_foundation(isolat
     realism_approved = PITDatasetService(db_manager=isolated_db).build_manifest(
         cost_identity_hash=COST_HASH,
         execution_realism_approved=True,
+        intended_cohort_id=COHORT_ID,
     )
     assert "EXECUTION_REALISM_NOT_APPROVED" not in realism_approved["training_admission_reasons"]
     assert realism_approved["training_admission"] == "BLOCKED"
@@ -345,7 +496,10 @@ def test_training_admission_stays_blocked_for_local_unapproved_foundation(isolat
 
 def test_asset_level_auto_screen_does_not_require_universe_snapshot(isolated_db) -> None:
     _seed_twenty_sessions(isolated_db, auto_screen=True)
-    result = PITDatasetService(db_manager=isolated_db).build_manifest(cost_identity_hash=COST_HASH)
+    result = PITDatasetService(db_manager=isolated_db).build_manifest(
+        cost_identity_hash=COST_HASH,
+        intended_cohort_id=COHORT_ID,
+    )
     reasons = result["training_admission_reasons"]
     assert "UNIVERSE_SNAPSHOT_NOT_BOUND" not in reasons
     assert result["manifest"]["counts"]["pit_eligible"] == 20
@@ -360,7 +514,11 @@ def test_pit_ineligible_prediction_is_retained_as_gap_and_blocks_admission(isola
         session_date=gap_day,
         pit_eligible=False,
     )
-    result = PITDatasetService(db_manager=isolated_db).build_manifest(cost_identity_hash=COST_HASH)
+    _seed_recording_cohort(isolated_db, [gap_hash])
+    result = PITDatasetService(db_manager=isolated_db).build_manifest(
+        cost_identity_hash=COST_HASH,
+        intended_cohort_id=COHORT_ID,
+    )
     assert "PIT_GAPS_PRESENT" in result["training_admission_reasons"]
     gap_assignment = next(
         item for item in result["manifest"]["assignments"] if item["prediction_hash"] == gap_hash
@@ -369,7 +527,7 @@ def test_pit_ineligible_prediction_is_retained_as_gap_and_blocks_admission(isola
     assert "LEDGER_PIT_INELIGIBLE" in gap_assignment["purge_or_exclusion_reason"]
 
 
-def test_legacy_v4_runtime_pit_true_is_outside_v2_denominator(isolated_db) -> None:
+def test_legacy_v4_runtime_pit_true_is_outside_v3_denominator(isolated_db) -> None:
     _seed_twenty_sessions(isolated_db)
     legacy_hash = _seed_prediction(
         isolated_db,
@@ -377,6 +535,7 @@ def test_legacy_v4_runtime_pit_true_is_outside_v2_denominator(isolated_db) -> No
         session_date=date(2026, 2, 2),
         pit_eligible=True,
     )
+    _seed_recording_cohort(isolated_db, [legacy_hash])
     with isolated_db.session_scope() as session:
         row = session.query(PredictionLedgerRecord).filter_by(
             prediction_hash=legacy_hash
@@ -391,7 +550,8 @@ def test_legacy_v4_runtime_pit_true_is_outside_v2_denominator(isolated_db) -> No
         row.pit_ineligibility_json = "[]"
 
     result = PITDatasetService(db_manager=isolated_db).build_manifest(
-        cost_identity_hash=COST_HASH
+        cost_identity_hash=COST_HASH,
+        intended_cohort_id=COHORT_ID,
     )
     assert result["training_admission"] == "BLOCKED"
     assert result["manifest"]["counts"]["denominator"] == 20
@@ -401,7 +561,7 @@ def test_legacy_v4_runtime_pit_true_is_outside_v2_denominator(isolated_db) -> No
     }
 
 
-def test_missing_strategy_eligibility_is_outside_v2_denominator(isolated_db) -> None:
+def test_missing_strategy_eligibility_is_outside_v3_denominator(isolated_db) -> None:
     _seed_twenty_sessions(isolated_db)
     missing_hash = _seed_prediction(
         isolated_db,
@@ -409,9 +569,11 @@ def test_missing_strategy_eligibility_is_outside_v2_denominator(isolated_db) -> 
         session_date=date(2026, 2, 4),
         include_strategy_eligibility=False,
     )
+    _seed_recording_cohort(isolated_db, [missing_hash])
 
     result = PITDatasetService(db_manager=isolated_db).build_manifest(
-        cost_identity_hash=COST_HASH
+        cost_identity_hash=COST_HASH,
+        intended_cohort_id=COHORT_ID,
     )
 
     assert result["manifest"]["counts"]["denominator"] == 20

@@ -19,7 +19,7 @@ import logging
 import threading
 import time
 from datetime import datetime, date, timedelta, timezone
-from typing import Optional, List, Dict, Any, TYPE_CHECKING, Tuple, Callable, TypeVar, Union
+from typing import Optional, List, Dict, Any, TYPE_CHECKING, Tuple, Callable, TypeVar, Union, Mapping
 
 import pandas as pd
 from sqlalchemy import (
@@ -1167,6 +1167,40 @@ class DecisionSignalFeedbackRecord(Base):
     updated_at = Column(DateTime, default=utc_naive_now, onupdate=utc_naive_now, index=True)
 
 
+class LearningRecordingRecord(Base):
+    """Durable same-DB intent/disposition for one learning-eligible canonical run."""
+
+    __tablename__ = 'learning_recording_journal'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    recording_intent_hash = Column(String(64), nullable=False, index=True)
+    schema_version = Column(String(64), nullable=False, index=True)
+    policy_version = Column(String(64), nullable=False, index=True)
+    analysis_history_id = Column(Integer, nullable=False, index=True)
+    intended_cohort_id = Column(String(64), index=True)
+    stock_code = Column(String(16), index=True)
+    market = Column(String(8), index=True)
+    report_type = Column(String(16), index=True)
+    strategy_id = Column(String(128), index=True)
+    strategy_version = Column(String(64), index=True)
+    canonical_binding_hash = Column(String(64), index=True)
+    data_snapshot_identity = Column(String(64), index=True)
+    code_sha = Column(String(40), index=True)
+    selection_source = Column(String(32), index=True)
+    selection_context_hash = Column(String(64), index=True)
+    disposition = Column(String(32), nullable=False, default='PENDING', index=True)
+    reason_code = Column(String(128), index=True)
+    prediction_hash = Column(String(64), index=True)
+    retry_count = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=utc_naive_now, nullable=False, index=True)
+    updated_at = Column(DateTime, default=utc_naive_now, onupdate=utc_naive_now, nullable=False, index=True)
+
+    __table_args__ = (
+        UniqueConstraint('recording_intent_hash', name='uix_learning_recording_intent_hash'),
+        Index('ix_learning_recording_cohort_disposition', 'intended_cohort_id', 'disposition'),
+    )
+
+
 class PredictionLedgerRecord(Base):
     """Append-only deterministic prediction snapshot for later PIT research."""
 
@@ -1229,6 +1263,8 @@ class PredictionLedgerRecord(Base):
     selection_source = Column(String(32))
     selection_context_hash = Column(String(64))
     selection_context_json = Column(Text)
+    recording_intent_hash = Column(String(64), index=True)
+    intended_cohort_id = Column(String(64), index=True)
     pit_eligible = Column(Boolean, nullable=False, default=False, index=True)
     pit_ineligibility_json = Column(Text, nullable=False)
     durability_state = Column(String(32), nullable=False, default='LOCAL_DB_ONLY', index=True)
@@ -1308,6 +1344,8 @@ class PITDatasetManifestRecord(Base):
     embargo_policy = Column(String(128), nullable=False)
     selection_route_policy = Column(String(128), nullable=False)
     code_sha = Column(String(40), index=True)
+    intended_cohort_id = Column(String(64), index=True)
+    recording_coverage_state = Column(String(32), index=True)
     final_test_state = Column(String(16), nullable=False, default='SEALED', index=True)
     training_admission = Column(String(16), nullable=False, default='BLOCKED', index=True)
     training_admission_reasons_json = Column(Text, nullable=False)
@@ -1528,6 +1566,8 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             self._ensure_stock_daily_identity_schema()
             self._ensure_prediction_ledger_pit_schema()
             self._ensure_prediction_ledger_strategy_eligibility_schema()
+            self._ensure_prediction_ledger_recording_schema()
+            self._ensure_pit_dataset_recording_schema()
             self._ensure_prediction_outcome_execution_schema()
             self._ensure_intelligence_item_scope_values()
             self._ensure_schema_migration_record()
@@ -1722,6 +1762,66 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                     f"CREATE INDEX IF NOT EXISTS {index_name} "
                     f"ON {PredictionLedgerRecord.__tablename__} ({column})"
                 )
+
+    def _ensure_prediction_ledger_recording_schema(self) -> None:
+        """Add nullable learning-recording links without backfilling legacy rows."""
+        if not self._is_sqlite_engine:
+            return
+        inspector = inspect(self._engine)
+        if not inspector.has_table(PredictionLedgerRecord.__tablename__):
+            return
+        existing = {
+            column["name"]
+            for column in inspector.get_columns(PredictionLedgerRecord.__tablename__)
+        }
+        expected = {
+            "recording_intent_hash": "VARCHAR(64)",
+            "intended_cohort_id": "VARCHAR(64)",
+        }
+        with self._engine.begin() as connection:
+            for column, sql_type in expected.items():
+                if column not in existing:
+                    connection.exec_driver_sql(
+                        f"ALTER TABLE {PredictionLedgerRecord.__tablename__} "
+                        f"ADD COLUMN {column} {sql_type}"
+                    )
+                    existing.add(column)
+            connection.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_prediction_ledger_recording_intent_hash "
+                "ON prediction_ledger (recording_intent_hash)"
+            )
+            connection.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_prediction_ledger_intended_cohort_id "
+                "ON prediction_ledger (intended_cohort_id)"
+            )
+
+    def _ensure_pit_dataset_recording_schema(self) -> None:
+        """Add frozen cohort/coverage identity to existing PIT manifests."""
+        if not self._is_sqlite_engine:
+            return
+        inspector = inspect(self._engine)
+        if not inspector.has_table(PITDatasetManifestRecord.__tablename__):
+            return
+        existing = {
+            column["name"]
+            for column in inspector.get_columns(PITDatasetManifestRecord.__tablename__)
+        }
+        expected = {
+            "intended_cohort_id": "VARCHAR(64)",
+            "recording_coverage_state": "VARCHAR(32)",
+        }
+        with self._engine.begin() as connection:
+            for column, sql_type in expected.items():
+                if column not in existing:
+                    connection.exec_driver_sql(
+                        f"ALTER TABLE {PITDatasetManifestRecord.__tablename__} "
+                        f"ADD COLUMN {column} {sql_type}"
+                    )
+                    existing.add(column)
+            connection.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_pit_dataset_manifest_intended_cohort "
+                "ON pit_dataset_manifests (intended_cohort_id)"
+            )
 
     def _ensure_prediction_outcome_execution_schema(self) -> None:
         """Add nullable execution-evidence identity columns without backfilling legacy rows."""
@@ -2736,13 +2836,18 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         report_type: str,
         news_content: Optional[str],
         context_snapshot: Optional[Dict[str, Any]] = None,
-        save_snapshot: bool = True
+        save_snapshot: bool = True,
+        recording_intent: Optional[Mapping[str, Any]] = None,
     ) -> int:
         """
         保存分析结果历史记录。
 
+        When a learning-recording intent is supplied, AnalysisHistory and its
+        PENDING journal row are created/reused atomically in the same DB
+        transaction. Legacy callers without an intent retain the old behavior.
+
         Returns:
-            新保存的 AnalysisHistory.id；保存失败返回 0。
+            新保存或幂等复用的 AnalysisHistory.id；保存失败返回 0。
         """
         if result is None:
             return 0
@@ -2752,9 +2857,20 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         context_text = None
         if save_snapshot and context_snapshot is not None:
             context_text = self._safe_json_dumps(context_snapshot)
+        intent = dict(recording_intent) if isinstance(recording_intent, Mapping) else {}
+        intent_hash = str(intent.get("recording_intent_hash") or "").strip() or None
 
         try:
             def _write(session: Session) -> int:
+                if intent_hash:
+                    existing = session.execute(
+                        select(LearningRecordingRecord)
+                        .where(LearningRecordingRecord.recording_intent_hash == intent_hash)
+                        .limit(1)
+                    ).scalar_one_or_none()
+                    if existing is not None:
+                        return int(existing.analysis_history_id or 0)
+
                 history = AnalysisHistory(
                     query_id=query_id,
                     code=result.code,
@@ -2775,7 +2891,36 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 )
                 session.add(history)
                 session.flush()
+
+                if intent_hash:
+                    def _text(name: str) -> Optional[str]:
+                        value = str(intent.get(name) or "").strip()
+                        return value or None
+
+                    session.add(
+                        LearningRecordingRecord(
+                            recording_intent_hash=intent_hash,
+                            schema_version=_text("schema_version") or "learning-recording-intent-v1",
+                            policy_version=_text("policy_version") or "learning-recording-policy-v1",
+                            analysis_history_id=int(history.id),
+                            intended_cohort_id=_text("intended_cohort_id"),
+                            stock_code=_text("stock_code"),
+                            market=_text("market"),
+                            report_type=_text("report_type"),
+                            strategy_id=_text("strategy_id"),
+                            strategy_version=_text("strategy_version"),
+                            canonical_binding_hash=_text("canonical_binding_hash"),
+                            data_snapshot_identity=_text("data_snapshot_identity"),
+                            code_sha=_text("code_sha"),
+                            selection_source=_text("selection_source"),
+                            selection_context_hash=_text("selection_context_hash"),
+                            disposition="PENDING",
+                            retry_count=0,
+                        )
+                    )
+                    session.flush()
                 return int(history.id or 0)
+
             return self._run_write_transaction(
                 f"save_analysis_history[{result.code}]",
                 _write,

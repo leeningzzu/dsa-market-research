@@ -108,6 +108,65 @@ def _make_pipeline(*, agent_mode: bool = False, save_context_snapshot: bool = Tr
     return pipeline
 
 
+def test_run_freezes_one_recording_batch_across_per_stock_query_ids() -> None:
+    pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+    pipeline.p0_bounded_trial = True
+    pipeline.p0_stock_codes = ["600519", "000001"]
+    pipeline.p0_suppress_notification = True
+    pipeline.max_workers = 1
+    pipeline.query_id = None
+    pipeline.research_selection_context = {"selection_source": "SPECIFIED_CODES"}
+    pipeline.config = SimpleNamespace(
+        single_stock_notify=False,
+        report_type="simple",
+        analysis_delay=0,
+    )
+    pipeline.fetcher_manager = MagicMock()
+    pipeline.fetcher_manager.prefetch_stock_names.return_value = 2
+    pipeline._finalize_p0_bounded_run = MagicMock(return_value="")
+    observed: list[tuple[str, str]] = []
+
+    def process_single_stock(code, **kwargs):
+        observed.append(
+            (
+                kwargs["analysis_query_id"],
+                pipeline.research_recording_run_id,
+            )
+        )
+        return SimpleNamespace(code=code, success=True)
+
+    pipeline.process_single_stock = process_single_stock
+
+    results = pipeline.run(
+        stock_codes=["600519", "000001"],
+        dry_run=False,
+        send_notification=False,
+        merge_notification=False,
+        current_time=datetime(2026, 9, 24, 10, 0),
+    )
+
+    self_query_ids = {item[0] for item in observed}
+    cohort_seeds = {item[1] for item in observed}
+    assert len(results) == 2
+    assert len(self_query_ids) == 2
+    assert len(cohort_seeds) == 1
+    first_cohort_seed = next(iter(cohort_seeds))
+    assert first_cohort_seed.startswith("pipeline-run-")
+
+    observed.clear()
+    repeated = pipeline.run(
+        stock_codes=["600519", "000001"],
+        dry_run=False,
+        send_notification=False,
+        merge_notification=False,
+        current_time=datetime(2026, 9, 24, 10, 5),
+    )
+    repeated_cohort_seeds = {item[1] for item in observed}
+    assert len(repeated) == 2
+    assert len(repeated_cohort_seeds) == 1
+    assert next(iter(repeated_cohort_seeds)) != first_cohort_seed
+
+
 class PipelineMarketPhaseContextTestCase(unittest.TestCase):
     def test_jp_kr_analysis_context_uses_daily_fetcher_when_db_context_missing(self):
         pipeline = _make_pipeline()

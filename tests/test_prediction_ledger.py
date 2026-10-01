@@ -194,6 +194,8 @@ def test_service_freezes_factor_payload_idempotently_and_excludes_human_brief(is
 
     assert first is not None and first["created"] is True
     assert repeated is not None and repeated["created"] is False
+    assert first["status"] == repeated["status"] == "RECORDED"
+    assert first["reason_code"] is None
     assert repeated["id"] == first["id"]
     rows = PredictionLedgerRepository(isolated_db).list_for_history(history_id)
     assert len(rows) == 1
@@ -443,6 +445,10 @@ def test_bound_first_slice_identities_can_be_semantically_pit_eligible(isolated_
         "research_decision_time_utc": "2026-09-17T10:05:00+00:00",
     }
 
+    selection_context = build_specified_codes_selection_context(
+        raw_selection_source="manual",
+        query_source="api",
+    )
     with patch(
         "src.services.prediction_ledger_service.resolve_historical_daily_bar_date",
         return_value=date(2026, 9, 17),
@@ -452,17 +458,19 @@ def test_bound_first_slice_identities_can_be_semantically_pit_eligible(isolated_
             result=result,
             decision_signal=_signal(),
             code_sha="5" * 40,
-            selection_context=build_specified_codes_selection_context(
-                raw_selection_source="manual",
-                query_source="api",
-            ),
+            selection_context=selection_context,
+            recording_intent_hash="e" * 64,
+            intended_cohort_id=selection_context["selection_context_hash"],
         )
 
     assert outcome is not None
+    assert outcome["status"] == "RECORDED"
     assert outcome["pit_eligible"] is True
     assert outcome["pit_ineligibility_reasons"] == []
     row = PredictionLedgerRepository(isolated_db).list_for_history(history_id)[0]
-    assert row.schema_version == "prediction-ledger-v5" == PREDICTION_LEDGER_SCHEMA_VERSION
+    assert row.schema_version == "prediction-ledger-v6" == PREDICTION_LEDGER_SCHEMA_VERSION
+    assert row.recording_intent_hash == "e" * 64
+    assert row.intended_cohort_id == selection_context["selection_context_hash"]
     assert row.strategy_eligibility_state == "UNKNOWN"
     assert row.decision_timezone == "Asia/Shanghai"
     assert row.decision_phase == "postmarket"
@@ -688,39 +696,73 @@ def test_history_deletion_keeps_prediction_ledger_snapshot(isolated_db) -> None:
         assert rows[0].analysis_history_id == history_id
 
 
-def test_missing_canonical_signal_identity_or_history_creates_no_snapshot(isolated_db) -> None:
+def test_missing_canonical_signal_identity_or_history_returns_typed_outcome_without_snapshot(isolated_db) -> None:
     history_id = _add_history(isolated_db)
     service = PredictionLedgerService(db_manager=isolated_db)
 
-    assert service.persist(
+    missing_strategy = service.persist(
         analysis_history_id=history_id,
         result=SimpleNamespace(code="600519", dashboard={}),
         decision_signal=_signal(),
-    ) is None
+    )
+    assert missing_strategy == {
+        "status": "LAWFULLY_REJECTED",
+        "reason_code": "STRATEGY_ID_NOT_BOUND",
+    }
 
     missing_canonical = _result()
     del missing_canonical.dashboard["factor_decision"]["canonical_decision"]
-    assert service.persist(
+    canonical_outcome = service.persist(
         analysis_history_id=history_id,
         result=missing_canonical,
         decision_signal=_signal(),
-    ) is None
+    )
+    assert canonical_outcome == {
+        "status": "LAWFULLY_REJECTED",
+        "reason_code": "LEDGER_PRECONDITION_NOT_BOUND",
+    }
 
     signal_without_horizon = _signal()
     signal_without_horizon.pop("horizon")
-    assert service.persist(
+    signal_outcome = service.persist(
         analysis_history_id=history_id,
         result=_result(),
         decision_signal=signal_without_horizon,
-    ) is None
+    )
+    assert signal_outcome == {
+        "status": "LAWFULLY_REJECTED",
+        "reason_code": "LEDGER_PRECONDITION_NOT_BOUND",
+    }
 
-    assert service.persist(
+    missing_history = service.persist(
         analysis_history_id=history_id + 999,
         result=_result(),
         decision_signal=_signal(),
-    ) is None
+    )
+    assert missing_history == {
+        "status": "TECHNICALLY_LOST",
+        "reason_code": "ANALYSIS_HISTORY_READBACK_MISSING",
+    }
     with isolated_db.get_session() as session:
         assert session.query(PredictionLedgerRecord).count() == 0
+
+
+def test_postcommit_readback_mismatch_is_typed_technical_loss(isolated_db) -> None:
+    history_id = _add_history(isolated_db)
+    service = PredictionLedgerService(db_manager=isolated_db)
+    with patch.object(service.repo, "get_by_prediction_hash", return_value=None):
+        outcome = service.persist(
+            analysis_history_id=history_id,
+            result=_result(),
+            decision_signal=_signal(),
+            code_sha="9" * 40,
+            recording_intent_hash="a" * 64,
+            intended_cohort_id="b" * 64,
+        )
+    assert outcome == {
+        "status": "TECHNICALLY_LOST",
+        "reason_code": "LEDGER_POSTCOMMIT_READBACK_MISMATCH",
+    }
 
 
 def test_pipeline_helper_uses_same_database_and_fails_open() -> None:
@@ -752,6 +794,8 @@ def test_pipeline_helper_returns_and_attaches_machine_readable_receipt() -> None
     pipeline.research_code_sha = "a" * 40
     result = _result()
     receipt = {
+        "status": "RECORDED",
+        "reason_code": None,
         "id": 9,
         "created": True,
         "prediction_hash": "b" * 64,

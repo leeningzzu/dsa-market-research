@@ -31,6 +31,7 @@ _TRUE_VALUES = {"1", "true", "yes", "on"}
 _FALSE_VALUES = {"", "0", "false", "no", "off"}
 _SHA40_RE = re.compile(r"^[0-9a-f]{40}$")
 _RESEARCH_TABLES = (
+    "learning_recording_journal",
     "prediction_ledger",
     "prediction_outcomes",
     "pit_dataset_manifests",
