@@ -12,7 +12,11 @@ import math
 from typing import Any, Dict, List, Optional, Tuple
 
 from src.services.evidence_traceability_registry import (
-    build_runtime_trace, build_strategy_eligibility, describe_macd_state,
+    build_method_execution_receipt,
+    build_runtime_trace,
+    build_strategy_eligibility,
+    describe_macd_state,
+    digest,
 )
 from src.services.research_state_projection import STRATEGY_ELIGIBILITY_SCHEMA_VERSION
 from src.services.v2_5_evidence_coverage import compile_product_coverage
@@ -1558,6 +1562,7 @@ def build_stock_factor_decision_summary(
     volatility_momentum_context: Optional[Dict[str, Any]] = None,
     pattern_trigger_context: Optional[Dict[str, Any]] = None,
     multi_timeframe_structure_context: Optional[Dict[str, Any]] = None,
+    method_execution_receipts: Optional[Dict[str, Any]] = None,
     include_canonical: bool = False,
     asset_type: str = "stock",
 ) -> Dict[str, Any]:
@@ -1598,6 +1603,87 @@ def build_stock_factor_decision_summary(
         volatility_momentum_context,
     )
     pattern_trigger_evidence = _build_pattern_trigger_evidence(pattern_trigger_context)
+    strict_receipts = method_execution_receipts is not None
+    receipts = dict(method_execution_receipts or {})
+    if strict_receipts:
+        mtf_identity = _mapping(multi_timeframe_structure_context)
+        rs_context = _mapping(relative_strength_context)
+        structure_context = _mapping(market_structure_context)
+        daily_payload = (
+            dict(daily_market_context)
+            if isinstance(daily_market_context, dict)
+            else daily_market_context.to_safe_dict()
+            if hasattr(daily_market_context, "to_safe_dict")
+            else {}
+        )
+        stock_code = str(
+            mtf_identity.get("stock_code")
+            or rs_context.get("stock_code")
+            or getattr(trend_result, "code", "")
+            or ""
+        ).strip()
+        market = str(
+            mtf_identity.get("market")
+            or rs_context.get("market")
+            or structure_context.get("market")
+            or ""
+        ).strip().lower()
+        target_date = (
+            mtf_identity.get("target_date")
+            or rs_context.get("target_date")
+            or structure_context.get("trade_date")
+            or daily_payload.get("trade_date")
+            or getattr(daily_market_context, "trade_date", None)
+        )
+        asset_route = "ETF" if asset_type == "etf" else "STOCK"
+        daily_trade_date = daily_payload.get("trade_date") or getattr(daily_market_context, "trade_date", None)
+        if hasattr(daily_trade_date, "isoformat"):
+            daily_trade_date = daily_trade_date.isoformat()
+        elif daily_trade_date is not None:
+            daily_trade_date = str(daily_trade_date)
+        structure_trade_date = structure_context.get("trade_date")
+        if hasattr(structure_trade_date, "isoformat"):
+            structure_trade_date = structure_trade_date.isoformat()
+        elif structure_trade_date is not None:
+            structure_trade_date = str(structure_trade_date)
+        regime_upstream_identity = {
+            "daily_market_context": {
+                "hash": digest(daily_payload),
+                "trade_date": daily_trade_date,
+                "market": str(daily_payload.get("region") or market or "").strip().lower() or None,
+            },
+            "market_structure_context": {
+                "hash": digest(structure_context),
+                "trade_date": structure_trade_date,
+                "market": str(structure_context.get("market") or market or "").strip().lower() or None,
+                "stock_code": stock_code or None,
+            },
+        }
+        market_sector_regime["upstream_identity"] = regime_upstream_identity
+        receipts["REGIME"] = build_method_execution_receipt(
+            "REGIME",
+            output=market_sector_regime,
+            asset_route=asset_route,
+            stock_code=stock_code,
+            market=market,
+            target_date=target_date,
+            timeframe="asset",
+            upstream_hashes=regime_upstream_identity,
+        )
+        receipts["TREND_RS"] = build_method_execution_receipt(
+            "TREND_RS",
+            output=trend_relative_strength,
+            asset_route=asset_route,
+            stock_code=stock_code,
+            market=market,
+            target_date=rs_context.get("target_date") or target_date,
+            timeframe="daily",
+            input_identity=rs_context.get("input_identity"),
+            upstream_hashes={
+                "trend_result": digest(trend_result.to_dict()) if hasattr(trend_result, "to_dict") else digest({}),
+                "relative_strength_context": digest(rs_context),
+            },
+        )
     authority = _ETF_CANONICAL_AUTHORITY if asset_type == "etf" else _CANONICAL_AUTHORITY
     canonical_decision = (
         _canonical_decision(trend_result, market_sector_regime, authority=authority)
@@ -1738,6 +1824,14 @@ def build_stock_factor_decision_summary(
         "price_structure_evidence": price_structure_evidence,
         "volatility_momentum_evidence": volatility_momentum_evidence,
         "pattern_trigger_evidence": pattern_trigger_evidence,
+        **(
+            {
+                "method_execution_receipt_policy": "REQUIRED",
+                "method_execution_receipts": receipts,
+            }
+            if strict_receipts
+            else {}
+        ),
     }
     if isinstance(multi_timeframe_structure_context, dict):
         summary["multi_timeframe_structure_context"] = dict(multi_timeframe_structure_context)

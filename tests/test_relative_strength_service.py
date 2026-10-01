@@ -6,6 +6,11 @@ from unittest.mock import MagicMock
 
 import pandas as pd
 
+from data_provider.daily_data_identity import (
+    attach_daily_data_identity,
+    build_daily_data_identity,
+)
+
 from src.services.relative_strength_service import (
     CN_BENCHMARK_PROXY,
     RelativeStrengthService,
@@ -17,6 +22,29 @@ def _history(*, periods: int = 70, start_price: float = 100.0, end_price: float 
     dates = pd.bdate_range("2026-01-02", periods=periods)
     closes = [start_price + (end_price - start_price) * i / max(periods - 1, 1) for i in range(periods)]
     return pd.DataFrame({"date": dates, "close": closes})
+
+
+def _with_identity(frame: pd.DataFrame, *, provider: str = "Fetcher") -> pd.DataFrame:
+    frame = frame.copy()
+    frame["data_source"] = provider
+    start = pd.to_datetime(frame.iloc[0]["date"]).date().isoformat()
+    end = pd.to_datetime(frame.iloc[-1]["date"]).date().isoformat()
+    identity = build_daily_data_identity(
+        frame,
+        provider_identity=provider,
+        provider_route="synthetic-test",
+        actual_response_branch="synthetic_qfq",
+        requested_adjustment_basis="qfq",
+        observed_adjustment_basis="qfq",
+        basis_evidence="SYNTHETIC_TEST_EXPLICIT",
+        requested_start=start,
+        requested_end=end,
+        currency="CNY",
+        volume_unit="shares",
+        amount_unit="CNY",
+        identity_state="OBSERVED",
+    )
+    return attach_daily_data_identity(frame, identity)
 
 
 def test_exact_shared_endpoint_relative_strength_is_ready_and_formula_is_auditable():
@@ -114,13 +142,13 @@ def test_future_rows_are_trimmed_and_underperformance_is_preserved():
 
 
 def test_service_caches_one_benchmark_fetch_per_target_date_and_rejects_non_cn():
-    benchmark = _history(periods=70)
+    benchmark = _with_identity(_history(periods=70), provider="Fetcher")
     target = benchmark.iloc[-1]["date"].date()
     manager = MagicMock()
     manager.get_daily_data.return_value = (benchmark, "Fetcher")
     service = RelativeStrengthService(fetcher_manager=manager)
 
-    stock_history = benchmark.assign(data_source="Fetcher")
+    stock_history = _with_identity(benchmark, provider="Fetcher")
     first = service.build_context(
         stock_code="600519", market="cn", stock_history=stock_history, target_date=target
     )
@@ -140,12 +168,12 @@ def test_service_caches_one_benchmark_fetch_per_target_date_and_rejects_non_cn()
 
 
 def test_service_marks_cross_provider_price_return_as_partial_not_ready():
-    benchmark = _history(periods=70)
+    benchmark = _with_identity(_history(periods=70), provider="BenchmarkFetcher")
     target = benchmark.iloc[-1]["date"].date()
     manager = MagicMock()
     manager.get_daily_data.return_value = (benchmark, "BenchmarkFetcher")
     service = RelativeStrengthService(fetcher_manager=manager)
-    stock = benchmark.assign(data_source="StockFetcher")
+    stock = _with_identity(benchmark, provider="StockFetcher")
 
     context = service.build_context(
         stock_code="600519", market="cn", stock_history=stock, target_date=target
@@ -154,6 +182,23 @@ def test_service_marks_cross_provider_price_return_as_partial_not_ready():
     assert context["reason"] == "SOURCE_ALIGNMENT_UNPROVEN"
     assert context["data_quality"]["source_alignment"] == "UNPROVEN"
     assert context["relative"]["state"] in {"OUTPERFORMING", "UNDERPERFORMING", "NEUTRAL"}
+
+
+def test_service_provider_name_without_typed_price_identity_is_not_ready():
+    benchmark = _history(periods=70).assign(data_source="Fetcher")
+    target = benchmark.iloc[-1]["date"].date()
+    manager = MagicMock()
+    manager.get_daily_data.return_value = (benchmark, "Fetcher")
+    service = RelativeStrengthService(fetcher_manager=manager)
+
+    context = service.build_context(
+        stock_code="600519", market="cn", stock_history=benchmark, target_date=target
+    )
+
+    assert context["status"] == "PARTIAL"
+    assert context["reason"] == "SEMANTIC_PRICE_IDENTITY_UNPROVEN"
+    assert context["input_identity"]["stock"]["adjustment_basis"] is None
+    assert context["input_identity"]["benchmark"]["adjustment_basis"] is None
 
 
 def test_service_benchmark_fetch_failure_is_unknown_not_fabricated():

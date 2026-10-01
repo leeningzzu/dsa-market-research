@@ -16,6 +16,8 @@ from typing import Any, Dict, Mapping, Optional, Tuple
 
 import pandas as pd
 
+from src.services.pit_identity import build_completed_history_identity
+
 logger = logging.getLogger(__name__)
 
 RELATIVE_STRENGTH_SCHEMA_VERSION = "relative-strength-v1"
@@ -268,7 +270,19 @@ class RelativeStrengthService:
                 benchmark={**benchmark_meta, "source": source},
             )
 
-        return compute_relative_strength_context(
+        stock_identity = build_completed_history_identity(
+            stock_history,
+            stock_code=stock_code,
+            market="cn",
+            target_date=target_date,
+        )
+        benchmark_identity = build_completed_history_identity(
+            benchmark_history,
+            stock_code=CN_BENCHMARK_PROXY["code"],
+            market="cn",
+            target_date=target_date,
+        )
+        context = compute_relative_strength_context(
             stock_code=stock_code,
             market="cn",
             stock_history=stock_history,
@@ -277,6 +291,37 @@ class RelativeStrengthService:
             target_date=target_date,
             require_source_alignment=True,
         )
+        context["target_date"] = target_date.isoformat()
+        context["input_identity"] = {
+            "stock": {
+                **stock_identity,
+                "stock_code": stock_code,
+                "market": "cn",
+                "target_date": target_date.isoformat(),
+            },
+            "benchmark": {
+                **benchmark_identity,
+                "stock_code": CN_BENCHMARK_PROXY["code"],
+                "market": "cn",
+                "target_date": target_date.isoformat(),
+            },
+        }
+        identity_ready = bool(
+            stock_identity.get("data_snapshot_identity")
+            and benchmark_identity.get("data_snapshot_identity")
+            and stock_identity.get("provider_identity")
+            and benchmark_identity.get("provider_identity")
+            and stock_identity.get("provider_identity") == benchmark_identity.get("provider_identity")
+            and str(source or "").strip() == str(benchmark_identity.get("provider_identity") or "").strip()
+            and stock_identity.get("adjustment_basis")
+            and stock_identity.get("adjustment_basis") == benchmark_identity.get("adjustment_basis")
+            and not stock_identity.get("price_identity_reasons")
+            and not benchmark_identity.get("price_identity_reasons")
+        )
+        if context.get("status") == "READY" and not identity_ready:
+            context["status"] = "PARTIAL"
+            context["reason"] = "SEMANTIC_PRICE_IDENTITY_UNPROVEN"
+        return context
 
     def _load_benchmark(
         self,

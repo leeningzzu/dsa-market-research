@@ -19,11 +19,36 @@ from typing import Any
 
 MANIFEST_VERSION = "evidence-product-traceability-v1"
 TRACE_VERSION = "canonical-evidence-trace-v1"
+METHOD_EXECUTION_RECEIPT_VERSION = "method-execution-receipt-v1"
 STOCK_STRATEGY = "stock_trend_quality_pullback_v1"
 BASELINE_SHA256 = "039ca6394baf9cf39494cc29f512802b114c8227f8c965723197a8df4b9de823"
 BASELINE_BYTES = 125919
 TIMEFRAMES = ("monthly", "weekly", "daily", "60m", "30m", "15m", "5m")
 STATES = frozenset({"READY", "PARTIAL", "MISSING", "UNKNOWN", "NOT_APPLICABLE"})
+
+VALID_ASSET_ROUTES = frozenset({"STOCK", "ETF", "MARKET"})
+VALID_BINDING_TIMEFRAMES = frozenset({"asset", "daily", "multi", *TIMEFRAMES})
+VALID_METRIC_TIMEFRAMES = frozenset({"daily", "weekly", "monthly"})
+VALID_METRIC_UNITS = frozenset({
+    "PRICE_BASIS_CURRENCY", "PRICE_BASIS_CURRENCY_PROXY", "ratio", "pct",
+    "annualized_pct", "index_0_100", "METHOD_NOT_ADMITTED",
+})
+
+# This accepted contract is intentionally independent from the candidate tuples
+# under validation. A self-consistent deletion therefore cannot certify itself.
+ACCEPTED_REQUIREMENT_ROLES = frozenset({
+    ("REGIME", "ADMITTED"), ("TREND_RS", "ADMITTED"), ("SUPPLY", "ADMITTED"),
+    ("COST", "ADMITTED"), ("STRUCTURE", "ADMITTED"), ("MOMENTUM", "ADMITTED"),
+    ("PATTERN", "ADMITTED"), ("MTF", "ADMITTED"),
+    ("QUALITY", "DEFERRED"), ("VALUATION", "DEFERRED"), ("DISTRIBUTION", "DEFERRED"),
+    ("RISK_REWARD", "DEFERRED"), ("CANDLESTICK", "DEFERRED"),
+    ("EXTRA_INDICATORS", "DEFERRED"), ("AVWAP_PROFILE", "DEFERRED"),
+    ("CHAN", "DEFERRED"), ("WAVE", "DEFERRED"), ("ETF_SPECIFIC", "DEFERRED"),
+    ("GLOBAL", "DEFERRED"), ("BREADTH", "DEFERRED"), ("PROBABILITY", "DEFERRED"),
+    ("INTRADAY_60m", "DEFERRED"), ("INTRADAY_30m", "DEFERRED"),
+    ("INTRADAY_15m", "DEFERRED"), ("INTRADAY_5m", "DEFERRED"),
+    ("DECISION", "DECISION"),
+})
 
 
 class TraceabilityError(ValueError):
@@ -264,28 +289,56 @@ def manifest_document() -> dict:
 MANIFEST_HASH = digest(manifest_document())
 
 
-def validate_registry(bindings=None, strategy=None) -> None:
-    bindings = tuple(bindings if bindings is not None else EVIDENCE_BINDINGS + DEFERRED_BINDINGS)
+def validate_registry(bindings=None, strategy=None, metrics=None) -> None:
+    bindings = tuple(
+        bindings
+        if bindings is not None
+        else EVIDENCE_BINDINGS + DEFERRED_BINDINGS + (DECISION_BINDING,)
+    )
     strategy = tuple(strategy if strategy is not None else STRATEGY_BINDINGS)
+    metrics = tuple(metrics if metrics is not None else METRIC_BINDINGS)
     ids = [b.requirement_id for b in bindings]
     paths = [b.path for b in bindings]
     if len(ids) != len(set(ids)) or len(paths) != len(set(paths)):
         raise TraceabilityError("DUPLICATE_BINDING")
+    observed_roles = frozenset(
+        (
+            binding.requirement_id,
+            "DECISION"
+            if binding.requirement_id == "DECISION"
+            else "ADMITTED"
+            if binding.implementation_state == "EXISTING_REUSED"
+            else "DEFERRED",
+        )
+        for binding in bindings
+    )
+    if observed_roles != ACCEPTED_REQUIREMENT_ROLES:
+        raise TraceabilityError("ACCEPTED_REQUIREMENT_SET_MISMATCH")
     for binding in bindings:
         if not binding.owner or not binding.fields or not binding.reentry or not binding.correlation_group:
             raise TraceabilityError("INCOMPLETE_BINDING")
         if binding.implementation_state == "EXISTING_REUSED" and binding.callable_name == "NOT_ADMITTED":
             raise TraceabilityError("MISSING_METHOD_OWNER")
+        if not binding.asset_routes or not set(binding.asset_routes) <= VALID_ASSET_ROUTES:
+            raise TraceabilityError("INVALID_ASSET_ROUTE:" + binding.requirement_id)
+        if binding.timeframe not in VALID_BINDING_TIMEFRAMES:
+            raise TraceabilityError("INVALID_TIMEFRAME:" + binding.requirement_id)
     for binding in strategy:
         if binding.requirement_id not in ids:
             raise TraceabilityError("ORPHAN_STRATEGY_KEY:" + binding.clause)
     if len({b.clause for b in strategy}) != len(strategy):
         raise TraceabilityError("DUPLICATE_STRATEGY_KEY")
     lookup = {b.requirement_id: b for b in bindings}
-    metric_ids = [m["id"] for m in METRIC_BINDINGS]
+    metric_ids = [m.get("id") for m in metrics]
     if len(metric_ids) != len(set(metric_ids)):
         raise TraceabilityError("DUPLICATE_METRIC")
-    for metric in METRIC_BINDINGS:
+    for metric in metrics:
+        if metric.get("kind") != "number":
+            raise TraceabilityError("INVALID_METRIC_KIND")
+        if metric.get("unit") not in VALID_METRIC_UNITS:
+            raise TraceabilityError("INVALID_METRIC_UNIT")
+        if metric.get("timeframe") not in VALID_METRIC_TIMEFRAMES:
+            raise TraceabilityError("INVALID_METRIC_TIMEFRAME")
         owner = lookup.get(metric["requirement_id"])
         if owner is None or not metric["path"].startswith(owner.path + "."):
             raise TraceabilityError("ORPHAN_LEARNING_METRIC")
@@ -305,6 +358,201 @@ def validate_source_bindings(root: Path) -> dict:
                                               "callable": binding.callable_name}
     return identities
 
+@lru_cache(maxsize=32)
+def _owner_source_sha256(owner: str) -> str:
+    return sha256((Path(__file__).resolve().parents[2] / owner).read_bytes()).hexdigest()
+
+
+def _binding(requirement_id: str) -> EvidenceBinding:
+    for binding in EVIDENCE_BINDINGS + DEFERRED_BINDINGS + (DECISION_BINDING,):
+        if binding.requirement_id == requirement_id:
+            return binding
+    raise TraceabilityError("UNKNOWN_REQUIREMENT:" + str(requirement_id))
+
+
+def _identity_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    if hasattr(value, "isoformat"):
+        return str(value.isoformat())
+    return str(value).strip() or None
+
+
+def build_method_execution_receipt(
+    requirement_id: str,
+    *,
+    output: Any,
+    asset_route: str,
+    stock_code: Any,
+    market: Any,
+    target_date: Any,
+    timeframe: str,
+    input_identity: Any = None,
+    upstream_hashes: Any = None,
+) -> dict:
+    """Freeze one actual producer invocation after its output exists."""
+    binding = _binding(requirement_id)
+    if binding.implementation_state != "EXISTING_REUSED":
+        raise TraceabilityError("METHOD_NOT_ADMITTED:" + requirement_id)
+    route = str(asset_route or "").strip().upper()
+    if route not in VALID_ASSET_ROUTES or route not in binding.asset_routes:
+        raise TraceabilityError("INVALID_RECEIPT_ASSET_ROUTE:" + requirement_id)
+    if timeframe != binding.timeframe:
+        raise TraceabilityError("INVALID_RECEIPT_TIMEFRAME:" + requirement_id)
+    contract = method_contract(binding)
+    payload = {
+        "schema_version": METHOD_EXECUTION_RECEIPT_VERSION,
+        "requirement_id": requirement_id,
+        "asset_route": route,
+        "stock_code": str(stock_code or "").strip() or None,
+        "market": str(market or "").strip().lower() or None,
+        "target_date": _identity_text(target_date),
+        "timeframe": timeframe,
+        "input_identity": dict(input_identity) if isinstance(input_identity, Mapping) else None,
+        "upstream_hashes": dict(upstream_hashes) if isinstance(upstream_hashes, Mapping) else {},
+        "producer": {
+            "owner": binding.owner,
+            "callable": binding.callable_name,
+            "source_sha256": _owner_source_sha256(binding.owner),
+            "version": contract["version"],
+            "config_hash": contract["config_hash"],
+        },
+        "output_hash": digest(output),
+    }
+    payload["receipt_hash"] = digest(payload)
+    return payload
+
+
+def _observed_method_output(binding: EvidenceBinding, value: Mapping) -> Any:
+    if binding.requirement_id == "SUPPLY":
+        return value.get("completed_bar_context")
+    if binding.requirement_id in {"COST", "STRUCTURE", "MOMENTUM", "PATTERN"}:
+        return value.get("context")
+    return value
+
+
+def _receipt_required(factor: Mapping) -> bool:
+    return factor.get("method_execution_receipt_policy") == "REQUIRED"
+
+
+def _receipt_for(factor: Mapping, requirement_id: str) -> Any:
+    receipts = factor.get("method_execution_receipts")
+    return receipts.get(requirement_id) if isinstance(receipts, Mapping) else None
+
+
+def _receipt_state(binding: EvidenceBinding, value: Mapping, receipt: Any) -> tuple[bool, str]:
+    if not isinstance(receipt, Mapping):
+        return False, "METHOD_INVOCATION_RECEIPT_MISSING"
+    body = dict(receipt)
+    receipt_hash = body.pop("receipt_hash", None)
+    if body.get("schema_version") != METHOD_EXECUTION_RECEIPT_VERSION or digest(body) != receipt_hash:
+        return False, "METHOD_RECEIPT_INVALID"
+    if body.get("requirement_id") != binding.requirement_id:
+        return False, "METHOD_RECEIPT_REQUIREMENT_MISMATCH"
+    if body.get("asset_route") not in binding.asset_routes:
+        return False, "METHOD_RECEIPT_ASSET_MISMATCH"
+    if body.get("timeframe") != binding.timeframe:
+        return False, "METHOD_RECEIPT_TIMEFRAME_MISMATCH"
+    contract = method_contract(binding)
+    expected_producer = {
+        "owner": binding.owner,
+        "callable": binding.callable_name,
+        "source_sha256": _owner_source_sha256(binding.owner),
+        "version": contract["version"],
+        "config_hash": contract["config_hash"],
+    }
+    if body.get("producer") != expected_producer:
+        return False, "METHOD_RECEIPT_PRODUCER_MISMATCH"
+    observed_output = _observed_method_output(binding, value)
+    if body.get("output_hash") != digest(observed_output):
+        return False, "METHOD_RECEIPT_OUTPUT_MISMATCH"
+    if (
+        binding.requirement_id in {"SUPPLY", "COST", "STRUCTURE", "MOMENTUM", "PATTERN", "MTF"}
+        and isinstance(observed_output, Mapping)
+    ):
+        for key, receipt_key in (("stock_code", "stock_code"), ("market", "market"), ("target_date", "target_date")):
+            observed = str(observed_output.get(key) or "").strip().lower()
+            claimed = str(body.get(receipt_key) or "").strip().lower()
+            if observed and observed != claimed:
+                return False, "METHOD_RECEIPT_" + key.upper() + "_MISMATCH"
+    if binding.requirement_id in {"SUPPLY", "COST", "STRUCTURE", "MOMENTUM", "PATTERN", "MTF"}:
+        identity = body.get("input_identity")
+        if not isinstance(identity, Mapping) or not identity.get("data_snapshot_identity"):
+            return False, "METHOD_INPUT_IDENTITY_MISSING"
+        if not identity.get("provider_identity") or not identity.get("adjustment_basis"):
+            return False, "METHOD_PRICE_IDENTITY_UNPROVEN"
+        if identity.get("price_identity_reasons"):
+            return False, "METHOD_PRICE_IDENTITY_UNPROVEN"
+        for key in ("stock_code", "market", "target_date"):
+            actual = str(identity.get(key) or "").strip().lower()
+            claimed = str(body.get(key) or "").strip().lower()
+            if actual and actual != claimed:
+                return False, "METHOD_INPUT_" + key.upper() + "_MISMATCH"
+        if binding.requirement_id == "MTF" and value.get("data_snapshot_identity") != identity.get("data_snapshot_identity"):
+            return False, "METHOD_INPUT_SNAPSHOT_MISMATCH"
+    if binding.requirement_id == "TREND_RS":
+        identity = body.get("input_identity")
+        stock = identity.get("stock") if isinstance(identity, Mapping) else None
+        benchmark = identity.get("benchmark") if isinstance(identity, Mapping) else None
+        if not isinstance(stock, Mapping) or not isinstance(benchmark, Mapping):
+            return False, "RS_INPUT_IDENTITY_MISSING"
+        if not stock.get("data_snapshot_identity") or not benchmark.get("data_snapshot_identity"):
+            return False, "RS_INPUT_IDENTITY_MISSING"
+        if not stock.get("provider_identity") or not benchmark.get("provider_identity"):
+            return False, "RS_PROVIDER_IDENTITY_UNPROVEN"
+        if not stock.get("adjustment_basis") or stock.get("adjustment_basis") != benchmark.get("adjustment_basis"):
+            return False, "RS_PRICE_BASIS_UNPROVEN"
+        if stock.get("price_identity_reasons") or benchmark.get("price_identity_reasons"):
+            return False, "RS_PRICE_IDENTITY_UNPROVEN"
+        rs = value.get("relative_strength")
+        if not isinstance(rs, Mapping) or rs.get("input_identity") != identity:
+            return False, "RS_WRAPPER_IDENTITY_MISMATCH"
+        if rs.get("schema_version") != "relative-strength-v1":
+            return False, "RS_SCHEMA_MISMATCH"
+        if str(rs.get("stock_code") or "").strip() != str(body.get("stock_code") or "").strip():
+            return False, "RS_STOCK_IDENTITY_MISMATCH"
+        if str(stock.get("stock_code") or "").strip() != str(body.get("stock_code") or "").strip():
+            return False, "RS_STOCK_INPUT_IDENTITY_MISMATCH"
+        if str(stock.get("market") or "").strip().lower() != str(body.get("market") or "").strip().lower():
+            return False, "RS_MARKET_IDENTITY_MISMATCH"
+        if str(stock.get("target_date") or "") != str(body.get("target_date") or ""):
+            return False, "RS_TARGET_IDENTITY_MISMATCH"
+        benchmark_payload = rs.get("benchmark")
+        if not isinstance(benchmark_payload, Mapping):
+            return False, "RS_BENCHMARK_IDENTITY_MISSING"
+        if str(benchmark.get("stock_code") or "").strip() != str(benchmark_payload.get("code") or "").strip():
+            return False, "RS_BENCHMARK_IDENTITY_MISMATCH"
+        quality = rs.get("data_quality")
+        if not isinstance(quality, Mapping) or quality.get("source_alignment") != "MATCHED":
+            return False, "RS_SOURCE_ALIGNMENT_UNPROVEN"
+        if str(benchmark_payload.get("source") or "").strip() != str(benchmark.get("provider_identity") or "").strip():
+            return False, "RS_BENCHMARK_SOURCE_MISMATCH"
+        if quality.get("stock_endpoint_sources") != [stock.get("provider_identity")]:
+            return False, "RS_STOCK_SOURCE_MISMATCH"
+    if binding.requirement_id == "REGIME":
+        parents = body.get("upstream_hashes")
+        daily = parents.get("daily_market_context") if isinstance(parents, Mapping) else None
+        structure = parents.get("market_structure_context") if isinstance(parents, Mapping) else None
+        if not isinstance(daily, Mapping) or not isinstance(structure, Mapping):
+            return False, "REGIME_UPSTREAM_IDENTITY_MISSING"
+        if not daily.get("hash") or not structure.get("hash"):
+            return False, "REGIME_UPSTREAM_HASH_MISSING"
+        if value.get("upstream_identity") != parents:
+            return False, "REGIME_UPSTREAM_HASH_MISMATCH"
+        target = str(body.get("target_date") or "")
+        for parent in (daily, structure):
+            parent_date = str(parent.get("trade_date") or "")
+            if parent_date and target and parent_date != target:
+                return False, "REGIME_UPSTREAM_DATE_MISMATCH"
+        structure_market = str(structure.get("market") or "").strip().lower()
+        if structure_market and structure_market != str(body.get("market") or "").strip().lower():
+            return False, "REGIME_MARKET_IDENTITY_MISMATCH"
+        structure_stock = str(structure.get("stock_code") or "").strip()
+        if structure_stock and structure_stock != str(body.get("stock_code") or "").strip():
+            return False, "REGIME_STOCK_IDENTITY_MISMATCH"
+    return True, "METHOD_INVOCATION_VERIFIED"
+
+
 
 def _state(value: Any) -> str:
     if not isinstance(value, Mapping):
@@ -313,8 +561,14 @@ def _state(value: Any) -> str:
     return state if state in STATES else "UNKNOWN"
 
 
-def method_observation(binding: EvidenceBinding, value: Any) -> tuple[str, str]:
-    """Validate observed metadata, not merely the producer's READY word."""
+def method_observation(
+    binding: EvidenceBinding,
+    value: Any,
+    *,
+    receipt: Any = None,
+    require_receipt: bool = False,
+) -> tuple[str, str]:
+    """Validate metadata and, on Production paths, the actual execution receipt."""
     state = _state(value)
     if binding.implementation_state != "EXISTING_REUSED":
         return "UNKNOWN", "METHOD_NOT_ADMITTED"
@@ -351,13 +605,21 @@ def method_observation(binding: EvidenceBinding, value: Any) -> tuple[str, str]:
             return "UNKNOWN", "WARMUP_NOT_PROVEN"
         if alignment != "SINGLE_SOURCE":
             return "UNKNOWN", "SOURCE_ALIGNMENT_NOT_PROVEN"
+    if require_receipt:
+        receipt_ok, receipt_reason = _receipt_state(binding, value, receipt)
+        if not receipt_ok:
+            return "UNKNOWN", receipt_reason
+        return state, receipt_reason
     return state, "METHOD_METADATA_VERIFIED_NOT_INVOCATION_PROOF"
 
 
 def timeframe_ready(factor: Mapping, timeframe: str) -> bool:
     binding = next(b for b in EVIDENCE_BINDINGS if b.requirement_id == "MTF")
     parent = at(factor, binding.path)
-    state, _ = method_observation(binding, parent)
+    strict = _receipt_required(factor)
+    state, _ = method_observation(
+        binding, parent, receipt=_receipt_for(factor, "MTF"), require_receipt=strict,
+    )
     frame = at(parent, "timeframes." + timeframe)
     minimum = method_contract(binding)["warmup"]
     return bool(
@@ -375,7 +637,12 @@ def _resolve(binding: StrategyBinding, factor: Mapping) -> str:
     if kind in {"deferred", "not_used"}:
         return "UNKNOWN"
     owner = next(b for b in EVIDENCE_BINDINGS if b.requirement_id == binding.requirement_id)
-    checked, _ = method_observation(owner, at(factor, owner.path))
+    checked, _ = method_observation(
+        owner,
+        at(factor, owner.path),
+        receipt=_receipt_for(factor, owner.requirement_id),
+        require_receipt=_receipt_required(factor),
+    )
     if checked not in {"READY", "PARTIAL"}:
         return "UNKNOWN"
     regime = at(factor, "market_sector_regime") or {}
@@ -434,7 +701,12 @@ def build_runtime_trace(factor: Mapping) -> dict:
         value = at(factor, binding.path)
         declared = _state(value)
         deferred = binding.implementation_state != "EXISTING_REUSED"
-        admitted_state, admission_reason = method_observation(binding, value)
+        admitted_state, admission_reason = method_observation(
+            binding,
+            value,
+            receipt=_receipt_for(factor, binding.requirement_id),
+            require_receipt=_receipt_required(factor),
+        )
         observations.append({"requirement_id": binding.requirement_id, "path": binding.path,
                              "state": admitted_state, "declared_state": declared,
                              "method_state": "NOT_ADMITTED" if deferred else ("OUTPUT_OBSERVED" if value is not None else "NOT_OBSERVED"),
@@ -474,12 +746,31 @@ def learning_projection(factor: Mapping) -> dict:
         ready = states[metric["requirement_id"]] == "READY"
         if metric["timeframe"] in {"monthly", "weekly"}:
             ready = timeframe_ready(factor, metric["timeframe"]) and states["MTF"] in {"READY", "PARTIAL"}
-        numeric = isinstance(value, Real) and not isinstance(value, bool) and math.isfinite(float(value))
+        numeric = _metric_value_valid(metric, value)
         values[metric["id"]] = {"value": float(value) if ready and numeric else None,
                                "state": "READY" if ready and numeric else "MISSING_OR_UNADMITTED"}
     return {"schema_version": "stock-factor-numeric-evidence-v2", "manifest_hash": MANIFEST_HASH,
             "trace_identity": trace_identity(trace), "values": values,
             "training_admitted": False}
+
+
+def _metric_value_valid(metric: Mapping, value: Any) -> bool:
+    if not isinstance(value, Real) or isinstance(value, bool) or not math.isfinite(float(value)):
+        return False
+    number = float(value)
+    unit = metric.get("unit")
+    metric_id = str(metric.get("id") or "")
+    if unit == "index_0_100":
+        return 0.0 <= number <= 100.0
+    if unit == "annualized_pct":
+        return number >= 0.0
+    if unit in {"PRICE_BASIS_CURRENCY", "PRICE_BASIS_CURRENCY_PROXY"}:
+        return number > 0.0
+    if metric_id in {"daily.volume_ratio20", "daily.tr_sma20_not_wilder_atr"}:
+        return number >= 0.0
+    if metric_id in {"daily.directional_volume", "daily.cmf20"}:
+        return -1.0 <= number <= 1.0
+    return True
 
 
 def describe_macd_state(result: Any) -> str:

@@ -757,6 +757,24 @@ def test_explanation_degradation_requires_proven_canonical_evidence_and_valid_br
     assert canonical_explanation_degradation_eligible(missing_brief) is False
 
 
+def test_direct_builder_does_not_forge_pipeline_execution_receipts():
+    direct = build_stock_factor_decision_summary(_trend(), include_canonical=True)
+    assert "method_execution_receipt_policy" not in direct
+    assert "method_execution_receipts" not in direct
+
+    strict = build_stock_factor_decision_summary(
+        _trend(),
+        method_execution_receipts={},
+        include_canonical=True,
+    )
+    assert strict["method_execution_receipt_policy"] == "REQUIRED"
+    assert set(strict["method_execution_receipts"]) == {"REGIME", "TREND_RS"}
+    trace = strict["evidence_traceability"]
+    supply = next(item for item in trace["observations"] if item["requirement_id"] == "SUPPLY")
+    assert supply["state"] in {"MISSING", "UNKNOWN"}
+    assert supply["reason"] != "METHOD_INVOCATION_VERIFIED"
+
+
 def test_lower_timeframe_schema_cannot_override_higher_level_canonical_veto():
     summary = build_stock_factor_decision_summary(
         _trend(trend_status=_enum("空头排列")),

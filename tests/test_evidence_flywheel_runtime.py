@@ -32,7 +32,48 @@ from src.services.evidence_flywheel_runtime import (
     replay_specified_codes_daily_sessions,
 )
 from src.services.pit_dataset_service import PITDatasetService
+from src.services.evidence_traceability_registry import digest
 from src.storage import DatabaseManager, StockDaily
+
+
+def test_pipeline_execution_receipts_exist_only_for_actual_returned_producers():
+    target = date(2026, 9, 30)
+    identity = {
+        "data_snapshot_identity": "a" * 64,
+        "provider_identity": "synthetic",
+        "adjustment_basis": "qfq",
+        "price_identity_reasons": [],
+        "stock_code": "600519",
+        "market": "cn",
+        "target_date": target.isoformat(),
+    }
+    supply = {
+        "schema_version": "supply-demand-volume-price-v1",
+        "family": "supply_demand_volume_price",
+        "status": "MISSING",
+        "stock_code": "600519",
+        "target_date": target.isoformat(),
+    }
+
+    receipts = StockAnalysisPipeline._build_direct_method_execution_receipts(
+        code="600519",
+        market="cn",
+        asset_route="STOCK",
+        target_date=target,
+        completed_history_identity=identity,
+        chip_data=None,
+        canonical_trend_result=None,
+        supply_demand_context=supply,
+        cost_structure_context=None,
+        price_structure_context=None,
+        volatility_momentum_context=None,
+        pattern_trigger_context=None,
+        multi_timeframe_structure_context=None,
+    )
+
+    assert set(receipts) == {"SUPPLY"}
+    assert receipts["SUPPLY"]["output_hash"] == digest(supply)
+    assert receipts["SUPPLY"]["input_identity"] == identity
 
 
 @pytest.fixture()

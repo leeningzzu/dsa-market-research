@@ -82,7 +82,12 @@ from src.services.price_structure_service import build_price_structure_context
 from src.services.volatility_momentum_service import build_volatility_momentum_context
 from src.services.pattern_trigger_service import build_pattern_trigger_context
 from src.services.multi_timeframe_structure_service import build_multi_timeframe_structure_context
-from src.services.pit_identity import normalize_research_selection_context, sha256_payload
+from src.services.evidence_traceability_registry import build_method_execution_receipt
+from src.services.pit_identity import (
+    build_completed_history_identity,
+    normalize_research_selection_context,
+    sha256_payload,
+)
 from src.services.run_diagnostics import (
     activate_run_diagnostic_context,
     current_diagnostic_snapshot,
@@ -701,6 +706,29 @@ class StockAnalysisPipeline:
                 except Exception as e:
                     logger.warning(f"{stock_name}({code}) 相对强弱证据构建失败，按缺失处理: {e}")
 
+            market_data_snapshot_observed_at = datetime.now(timezone.utc)
+            completed_history_identity = (
+                build_completed_history_identity(
+                    completed_daily_history,
+                    stock_code=code,
+                    market=market,
+                    target_date=daily_market_target_date,
+                    observed_at=market_data_snapshot_observed_at,
+                )
+                if isinstance(completed_daily_history, pd.DataFrame)
+                and not completed_daily_history.empty
+                else {}
+            )
+            if completed_history_identity:
+                completed_history_identity = {
+                    **completed_history_identity,
+                    "stock_code": str(code or "").strip(),
+                    "market": str(market or "").strip().lower() or None,
+                    "target_date": daily_market_target_date.isoformat(),
+                }
+            receipt_asset_route = (
+                "ETF" if SearchService.is_index_or_etf(code, stock_name) else "STOCK"
+            )
             supply_demand_context = build_supply_demand_context(
                 stock_code=code,
                 history=completed_daily_history,
@@ -735,7 +763,6 @@ class StockAnalysisPipeline:
                 price_structure_context=price_structure_context,
                 supply_demand_context=supply_demand_context,
             )
-            market_data_snapshot_observed_at = datetime.now(timezone.utc)
             multi_timeframe_structure_context = build_multi_timeframe_structure_context(
                 stock_code=code,
                 history=completed_daily_history,
@@ -745,6 +772,21 @@ class StockAnalysisPipeline:
                 daily_trend_result=canonical_trend_result,
                 daily_price_structure_context=price_structure_context,
                 snapshot_observed_at=market_data_snapshot_observed_at,
+            )
+            method_execution_receipts = self._build_direct_method_execution_receipts(
+                code=code,
+                market=market,
+                asset_route=receipt_asset_route,
+                target_date=daily_market_target_date,
+                completed_history_identity=completed_history_identity,
+                chip_data=chip_data,
+                canonical_trend_result=canonical_trend_result,
+                supply_demand_context=supply_demand_context,
+                cost_structure_context=cost_structure_context,
+                price_structure_context=price_structure_context,
+                volatility_momentum_context=volatility_momentum_context,
+                pattern_trigger_context=pattern_trigger_context,
+                multi_timeframe_structure_context=multi_timeframe_structure_context,
             )
 
             if use_agent:
@@ -772,6 +814,7 @@ class StockAnalysisPipeline:
                     volatility_momentum_context=volatility_momentum_context,
                     pattern_trigger_context=pattern_trigger_context,
                     multi_timeframe_structure_context=multi_timeframe_structure_context,
+                    method_execution_receipts=method_execution_receipts,
                 )
 
             # Step 4: 多维度情报搜索（最新消息+风险排查+业绩预期）
@@ -1029,6 +1072,7 @@ class StockAnalysisPipeline:
                     volatility_momentum_context=volatility_momentum_context,
                     pattern_trigger_context=pattern_trigger_context,
                     multi_timeframe_structure_context=multi_timeframe_structure_context,
+                    method_execution_receipts=method_execution_receipts,
                 )
                 self._attach_research_delivery_state(
                     result,
@@ -1543,6 +1587,7 @@ class StockAnalysisPipeline:
         volatility_momentum_context: Optional[Dict[str, Any]] = None,
         pattern_trigger_context: Optional[Dict[str, Any]] = None,
         multi_timeframe_structure_context: Optional[Dict[str, Any]] = None,
+        method_execution_receipts: Optional[Dict[str, Any]] = None,
     ) -> Optional[AnalysisResult]:
         """
         使用 Agent 模式分析单只股票。
@@ -1865,6 +1910,7 @@ class StockAnalysisPipeline:
                     volatility_momentum_context=volatility_momentum_context,
                     pattern_trigger_context=pattern_trigger_context,
                     multi_timeframe_structure_context=multi_timeframe_structure_context,
+                method_execution_receipts=method_execution_receipts,
                 )
 
             resolved_stock_name = result.name if result and result.name else stock_name
@@ -2346,6 +2392,127 @@ class StockAnalysisPipeline:
             explicit_action = result.dashboard.get("action")
         return populate_decision_action_fields(result, explicit_action=explicit_action)
 
+    @staticmethod
+    def _build_direct_method_execution_receipts(
+        *,
+        code: str,
+        market: Optional[str],
+        asset_route: str,
+        target_date: date,
+        completed_history_identity: Dict[str, Any],
+        chip_data: Any,
+        canonical_trend_result: Optional[TrendAnalysisResult],
+        supply_demand_context: Optional[Dict[str, Any]],
+        cost_structure_context: Optional[Dict[str, Any]],
+        price_structure_context: Optional[Dict[str, Any]],
+        volatility_momentum_context: Optional[Dict[str, Any]],
+        pattern_trigger_context: Optional[Dict[str, Any]],
+        multi_timeframe_structure_context: Optional[Dict[str, Any]],
+    ) -> Dict[str, Dict[str, Any]]:
+        """Bind only producer outputs that actually returned from Pipeline calls."""
+
+        def optional_hash(value: Any) -> Optional[str]:
+            """Hash deterministic parent payloads; opaque/mock objects stay unbound."""
+            if value is None:
+                return None
+            payload = value
+            if not isinstance(payload, (dict, list, tuple, str, int, float, bool)):
+                payload = StockAnalysisPipeline._safe_to_dict(value)
+            if payload is None or not isinstance(
+                payload, (dict, list, tuple, str, int, float, bool)
+            ):
+                return None
+            try:
+                return sha256_payload(payload)
+            except (TypeError, ValueError, RecursionError):
+                return None
+
+        chip_hash = optional_hash(chip_data)
+        trend_hash = optional_hash(
+            canonical_trend_result.to_dict()
+            if canonical_trend_result is not None
+            and hasattr(canonical_trend_result, "to_dict")
+            else None
+        )
+        price_structure_hash = optional_hash(price_structure_context)
+        supply_demand_hash = optional_hash(supply_demand_context)
+        common = {
+            "asset_route": asset_route,
+            "stock_code": code,
+            "market": market,
+            "target_date": target_date,
+            "input_identity": completed_history_identity,
+        }
+        receipts: Dict[str, Dict[str, Any]] = {}
+        if isinstance(supply_demand_context, dict):
+            receipts["SUPPLY"] = build_method_execution_receipt(
+                "SUPPLY", output=supply_demand_context, timeframe="daily", **common,
+            )
+        if isinstance(cost_structure_context, dict):
+            receipts["COST"] = build_method_execution_receipt(
+                "COST",
+                output=cost_structure_context,
+                timeframe="daily",
+                upstream_hashes={
+                    **({"chip_data": chip_hash} if chip_hash else {}),
+                },
+                **common,
+            )
+        if isinstance(price_structure_context, dict):
+            receipts["STRUCTURE"] = build_method_execution_receipt(
+                "STRUCTURE", output=price_structure_context, timeframe="daily", **common,
+            )
+        if isinstance(volatility_momentum_context, dict):
+            receipts["MOMENTUM"] = build_method_execution_receipt(
+                "MOMENTUM",
+                output=volatility_momentum_context,
+                timeframe="daily",
+                upstream_hashes={
+                    **({"trend_result": trend_hash} if trend_hash else {}),
+                    **(
+                        {"price_structure_context": price_structure_hash}
+                        if price_structure_hash
+                        else {}
+                    ),
+                },
+                **common,
+            )
+        if isinstance(pattern_trigger_context, dict):
+            receipts["PATTERN"] = build_method_execution_receipt(
+                "PATTERN",
+                output=pattern_trigger_context,
+                timeframe="daily",
+                upstream_hashes={
+                    **(
+                        {"price_structure_context": price_structure_hash}
+                        if price_structure_hash
+                        else {}
+                    ),
+                    **(
+                        {"supply_demand_context": supply_demand_hash}
+                        if supply_demand_hash
+                        else {}
+                    ),
+                },
+                **common,
+            )
+        if isinstance(multi_timeframe_structure_context, dict):
+            receipts["MTF"] = build_method_execution_receipt(
+                "MTF",
+                output=multi_timeframe_structure_context,
+                timeframe="multi",
+                upstream_hashes={
+                    **({"trend_result": trend_hash} if trend_hash else {}),
+                    **(
+                        {"price_structure_context": price_structure_hash}
+                        if price_structure_hash
+                        else {}
+                    ),
+                },
+                **common,
+            )
+        return receipts
+
     def _attach_factor_decision_summary(
         self,
         result: AnalysisResult,
@@ -2363,6 +2530,7 @@ class StockAnalysisPipeline:
         volatility_momentum_context: Optional[Dict[str, Any]] = None,
         pattern_trigger_context: Optional[Dict[str, Any]] = None,
         multi_timeframe_structure_context: Optional[Dict[str, Any]] = None,
+        method_execution_receipts: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Attach one asset-aware factor summary and finalize canonical public actions."""
         is_index_or_etf = SearchService.is_index_or_etf(
