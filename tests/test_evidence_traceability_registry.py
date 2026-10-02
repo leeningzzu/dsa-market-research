@@ -230,8 +230,15 @@ def test_method_window_policy_view_is_complete_manifest_bound_and_non_mutating()
     assert methods["MACD"]["window_classes"] == ("RECURSIVE_WARMUP",)
     assert methods["MACD"]["current_execution_timeframes"] == ("daily",)
     assert methods["MACD"]["target_timeframes"] == reg.TIMEFRAMES
-    assert methods["MA_COMPRESSION_RELEASE"]["leaf_implementation_state"] == "DESIGN_BOUND"
-    assert methods["MA_COMPRESSION_RELEASE"]["current_execution_timeframes"] == ()
+    assert methods["MA_SLOPE_CROSS"]["leaf_implementation_state"] == "EXISTING_REUSED"
+    assert methods["MA_SLOPE_CROSS"]["current_execution_timeframes"] == ("monthly", "weekly", "daily")
+    assert methods["MA_COMPRESSION_RELEASE"]["leaf_implementation_state"] == "EXISTING_REUSED"
+    assert methods["MA_COMPRESSION_RELEASE"]["current_execution_timeframes"] == ("monthly", "weekly", "daily")
+    assert set(methods["MA_COMPRESSION_RELEASE"]["window_classes"]) == {
+        "FIXED_ROLLING",
+        "ADAPTIVE_CONTEXT",
+        "INCREMENTAL_STATE_MACHINE",
+    }
     assert methods["MTF_MA_LEVEL_ALIGNMENT"]["current_execution_timeframes"] == ("monthly", "weekly")
     assert methods["MTF_MA_LEVEL_ALIGNMENT"]["target_timeframes"] == reg.NON_DAILY_TECHNICAL_TIMEFRAMES
     assert methods["CUP_HANDLE"]["window_classes"] == ("VARIABLE_STRUCTURE",)
@@ -258,6 +265,10 @@ def test_method_window_policy_view_is_complete_manifest_bound_and_non_mutating()
     assert reg.MANIFEST_HASH == "6f7b56789efdb962dae7377353dd72c98de5e55ec7e3cb40d41882d0aae71d1f"
     assert reg.MANIFEST_HASH == manifest_before == reg.digest(reg.manifest_document())
     assert reg.digest(reg.METRIC_BINDINGS) == metrics_before == "611d5c0657cc42de3f31ca9c911e65d8e2d84e4504fc6167a332de548705fde5"
+    assert not any(
+        any(token in metric["id"] for token in ("slope", "compression", "release", "cross"))
+        for metric in reg.METRIC_BINDINGS
+    )
     assert tuple(reg.manifest_document()) == (
         "schema_version", "baseline_sha256", "evidence", "metrics", "product_slots",
         "method_contracts", "strategy", "ledger_keys", "timeframes", "data_policy",
@@ -285,11 +296,14 @@ def test_method_window_policy_rejects_deletion_invalid_class_or_overclaim():
     with pytest.raises(reg.TraceabilityError, match="ORPHAN_METHOD_WINDOW_REQUIREMENT"):
         reg.validate_method_window_profiles(orphan)
 
-    false_ma_admission = list(profiles)
-    index = next(i for i, profile in enumerate(false_ma_admission) if profile.method_id == "MA_COMPRESSION_RELEASE")
-    false_ma_admission[index] = replace(false_ma_admission[index], implementation_state="EXISTING_REUSED")
+    missing_ma_execution = list(profiles)
+    index = next(i for i, profile in enumerate(missing_ma_execution) if profile.method_id == "MA_COMPRESSION_RELEASE")
+    missing_ma_execution[index] = replace(
+        missing_ma_execution[index],
+        current_execution_timeframes=(),
+    )
     with pytest.raises(reg.TraceabilityError, match="CURRENT_EXECUTION_MISSING"):
-        reg.validate_method_window_profiles(false_ma_admission)
+        reg.validate_method_window_profiles(missing_ma_execution)
 
     forged_macd_all_timeframes = list(profiles)
     index = next(i for i, profile in enumerate(forged_macd_all_timeframes) if profile.method_id == "MACD")

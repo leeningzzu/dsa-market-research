@@ -890,6 +890,94 @@ def test_multi_timeframe_context_fills_existing_brief_seam_without_inventing_int
     assert "MISSING" not in brief["coverage_text"]
 
 
+def test_material_daily_ma_structure_reaches_existing_investor_brief_without_template_authority():
+    trend = _AssetBriefPayloadNamespace(
+        current_price=10.5,
+        support_levels=[10.0],
+        resistance_levels=[11.0],
+    )
+    ma_text = "均线束已进入压缩区间，当前混合排列，仍需量价与结构确认方向"
+    summary = {
+        "sections": {
+            "trend": "趋势：日线均线结构偏强",
+            "volume_price": "量价：量能正常",
+            "price_structure": "结构：区间内运行",
+            "momentum": "动量：中性",
+            "cost_structure": "成本：当前仅作参考",
+            "valuation": "估值：数据不足",
+        },
+        "conclusion": "保持观察。",
+        "multi_timeframe_structure_context": {
+            "timeframes": {
+                "daily": {
+                    "status": "READY",
+                    "role": "PRIMARY_SETUP",
+                    "summary": ma_text,
+                    "ma_structure": {
+                        "status": "READY",
+                        "state": "COMPRESSED",
+                        "material": True,
+                        "summary": ma_text,
+                        "independent_action_authority": False,
+                    },
+                }
+            }
+        },
+    }
+
+    brief = _asset_brief_payload_builder(trend, summary)
+
+    assert ma_text in brief["timeframe_thesis"]["daily"]["summary"]
+    assert ma_text in brief["fused_paragraph"]
+    assert brief["timeframe_thesis"]["daily"]["summary"].count(ma_text) == 1
+    assert brief["fused_paragraph"].count(ma_text) == 1
+    assert "量能正常" in brief["timeframe_thesis"]["daily"]["summary"]
+    assert brief["short_term_execution_panel"]["status"] == "MISSING"
+
+
+def test_partial_daily_ma_cross_reaches_product_without_claiming_compression():
+    trend = _AssetBriefPayloadNamespace(
+        current_price=10.5,
+        support_levels=[10.0],
+        resistance_levels=[11.0],
+    )
+    ma_text = "均线发生MA5_CROSS_ABOVE_MA10，仅作趋势上下文，不单独构成方向确认"
+    summary = {
+        "sections": {
+            "trend": "趋势：日线均线结构待确认",
+            "volume_price": "量价：量能正常",
+        },
+        "conclusion": "保持观察。",
+        "multi_timeframe_structure_context": {
+            "timeframes": {
+                "daily": {
+                    "status": "PARTIAL",
+                    "role": "PRIMARY_SETUP",
+                    "summary": ma_text,
+                    "ma_structure": {
+                        "status": "PARTIAL",
+                        "state": "UNKNOWN",
+                        "material": True,
+                        "summary": ma_text,
+                        "readiness": {
+                            "slope_cross": {"status": "READY"},
+                            "compression_context": {"status": "MISSING"},
+                        },
+                        "independent_action_authority": False,
+                    },
+                }
+            }
+        },
+    }
+
+    brief = _asset_brief_payload_builder(trend, summary)
+
+    assert brief["timeframe_thesis"]["daily"]["summary"].count(ma_text) == 1
+    assert brief["fused_paragraph"].count(ma_text) == 1
+    assert "压缩区间" not in brief["fused_paragraph"]
+    assert brief["short_term_execution_panel"]["status"] == "MISSING"
+
+
 def test_higher_timeframe_material_structure_event_reaches_investor_brief_consumer():
     trend = _AssetBriefPayloadNamespace(
         current_price=10.5,

@@ -309,11 +309,13 @@ METHOD_WINDOW_PROFILES = (
     ),
     MethodWindowProfile(
         "MA_SLOPE_CROSS", "MTF",
-        ("FIXED_ROLLING",), TIMEFRAMES, (), "DESIGN_BOUND",
+        ("FIXED_ROLLING",), TIMEFRAMES, ("monthly", "weekly", "daily"),
+        "EXISTING_REUSED",
     ),
     MethodWindowProfile(
         "MA_COMPRESSION_RELEASE", "MTF",
-        ("FIXED_ROLLING", "ADAPTIVE_CONTEXT"), TIMEFRAMES, (), "DESIGN_BOUND",
+        ("FIXED_ROLLING", "ADAPTIVE_CONTEXT", "INCREMENTAL_STATE_MACHINE"),
+        TIMEFRAMES, ("monthly", "weekly", "daily"), "EXISTING_REUSED",
     ),
     MethodWindowProfile(
         "QUALITY", "QUALITY",

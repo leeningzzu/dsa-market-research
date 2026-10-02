@@ -1467,9 +1467,20 @@ def _build_asset_research_brief_v1(trend_result, summary, *, asset_type: str = "
     ):
         if _asset_brief_v1_usable(item) and item not in daily_components:
             daily_components.append(item)
-    daily_thesis = "；".join(daily_components[:5]) or None
-
     mtf_context = _mapping(summary.get("multi_timeframe_structure_context"))
+    mtf_timeframes = _mapping(mtf_context.get("timeframes"))
+    daily_mtf = _mapping(mtf_timeframes.get("daily"))
+    daily_ma_structure = _mapping(daily_mtf.get("ma_structure"))
+    daily_ma_summary = str(daily_ma_structure.get("summary") or "").strip()
+    if (
+        str(daily_ma_structure.get("status") or "").upper() in {"READY", "PARTIAL"}
+        and bool(daily_ma_structure.get("material"))
+        and daily_ma_summary
+        and daily_ma_summary not in daily_components
+    ):
+        daily_components.append(daily_ma_summary)
+    daily_thesis = "；".join(daily_components) or None
+
     monthly_thesis = _brief_timeframe_projection(mtf_context, "monthly", "LONG_TERM_CONTEXT")
     weekly_thesis = _brief_timeframe_projection(mtf_context, "weekly", "PRIMARY_TREND_CONTEXT")
     bridge_thesis = _brief_timeframe_projection(mtf_context, "60m", "OPTIONAL_BRIDGE")
@@ -1516,11 +1527,7 @@ def _build_asset_research_brief_v1(trend_result, summary, *, asset_type: str = "
         if sentence and sentence not in paragraph_parts:
             paragraph_parts.append(sentence)
 
-    daily_focus = [
-        item
-        for item in daily_components[:2]
-        if _asset_brief_v1_usable(item)
-    ]
+    daily_focus = [daily_thesis] if _asset_brief_v1_usable(daily_thesis) else []
     if daily_focus:
         daily_sentence = _brief_timeframe_sentence(
             "日线",

@@ -13,7 +13,15 @@ from data_provider.daily_data_identity import (
 
 from src.services.multi_timeframe_structure_service import (
     CROSS_RUN_PERSISTENCE_POLICY,
+    MA_COMPRESSION_READY_BARS,
+    MA_COMPRESSION_REFERENCE_WINDOW,
+    MA_LEVEL_READY_BARS,
+    MA_STRUCTURE_ALGORITHM_VERSION,
+    MA_STRUCTURE_CONFIG_HASH,
+    MA_SLOPE_CROSS_READY_BARS,
     _human_summary,
+    _ma_release_confirmation,
+    build_ma_structure_evidence,
     build_multi_timeframe_structure_context,
 )
 from src.services.pit_identity import (
@@ -39,6 +47,15 @@ def _history(periods: int = 150, *, future: int = 0) -> pd.DataFrame:
             }
         )
     return pd.DataFrame(rows)
+
+
+def _close_frame(values) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "date": pd.bdate_range("2025-01-02", periods=len(values)).date,
+            "close": [float(value) for value in values],
+        }
+    )
 
 
 def _with_observed_identity(
@@ -96,6 +113,199 @@ def _daily_trend(_history: pd.DataFrame, _target_index: int):
     return _trend_result()
 
 
+def _startup_evidence(values, lengths=(40, 60, 80, 120)):
+    frame = _close_frame(values)
+    return {
+        length: build_ma_structure_evidence(
+            frame.iloc[-length:].reset_index(drop=True),
+            timeframe="daily",
+        )
+        for length in lengths
+    }
+
+
+def _assert_same_ma_output(evidence_by_length, lengths, keys):
+    baseline = evidence_by_length[lengths[-1]]
+    for length in lengths[:-1]:
+        actual = evidence_by_length[length]
+        for key in keys:
+            assert actual[key] == baseline[key], (length, key, actual[key], baseline[key])
+
+
+def test_ma_structure_readiness_boundaries_separate_formula_slope_and_context():
+    values = [50.0 + index * 0.5 for index in range(40)]
+
+    evidence_19 = build_ma_structure_evidence(_close_frame(values[:19]), timeframe="daily")
+    evidence_20 = build_ma_structure_evidence(_close_frame(values[:20]), timeframe="daily")
+    evidence_25 = build_ma_structure_evidence(_close_frame(values[:25]), timeframe="daily")
+    evidence_26 = build_ma_structure_evidence(_close_frame(values[:26]), timeframe="daily")
+    evidence_39 = build_ma_structure_evidence(_close_frame(values[:39]), timeframe="daily")
+    evidence_40 = build_ma_structure_evidence(_close_frame(values), timeframe="daily")
+
+    assert MA_LEVEL_READY_BARS == 20
+    assert MA_SLOPE_CROSS_READY_BARS == 26
+    assert MA_COMPRESSION_READY_BARS == 40
+    assert MA_COMPRESSION_REFERENCE_WINDOW == 20
+    assert evidence_40["method_ids"] == ("MA_SLOPE_CROSS", "MA_COMPRESSION_RELEASE")
+
+    assert evidence_19["status"] == "MISSING"
+    assert evidence_19["readiness"]["level"]["status"] == "MISSING"
+
+    for evidence in (evidence_20, evidence_25):
+        assert evidence["status"] == "PARTIAL"
+        assert evidence["readiness"]["level"]["status"] == "READY"
+        assert evidence["readiness"]["slope_cross"]["status"] == "MISSING"
+        assert evidence["readiness"]["compression_context"]["status"] == "MISSING"
+
+    for evidence in (evidence_26, evidence_39):
+        assert evidence["status"] == "PARTIAL"
+        assert evidence["state"] == "UNKNOWN"
+        assert evidence["readiness"]["slope_cross"]["status"] == "READY"
+        assert evidence["readiness"]["compression_context"]["status"] == "MISSING"
+
+    assert evidence_26["readiness"]["compression_context"]["reference_observations"] == 6
+    assert evidence_39["readiness"]["compression_context"]["reference_observations"] == 19
+    assert evidence_40["status"] == "READY"
+    assert evidence_40["readiness"]["compression_context"]["status"] == "READY"
+    assert evidence_40["readiness"]["compression_context"]["reference_observations"] == 20
+
+
+def test_ma_structure_invalid_denominator_is_unknown_not_neutral():
+    evidence = build_ma_structure_evidence(
+        _close_frame([50.0 + index * 0.2 for index in range(39)] + [0.0]),
+        timeframe="daily",
+    )
+    assert evidence["status"] == "UNKNOWN"
+    assert evidence["state"] == "UNKNOWN"
+    assert evidence["reason"] == "DENOMINATOR_INVALID"
+
+
+def test_ma_structure_parallel_trend_is_not_false_compression():
+    frame = _close_frame([50.0 + index * 0.5 for index in range(80)])
+    evidence = build_ma_structure_evidence(
+        frame,
+        timeframe="daily",
+        trend_result=_trend_result("盘整"),
+    )
+
+    assert evidence["status"] == "READY"
+    assert evidence["state"] == "WIDE_TREND"
+    assert evidence["ordering"] == "BULLISH"
+    assert evidence["material"] is False
+    assert evidence["independent_action_authority"] is False
+    assert evidence["algorithm_version"] == MA_STRUCTURE_ALGORITHM_VERSION
+    assert len(evidence["config_hash"]) == 64
+    assert evidence["config_hash"] == MA_STRUCTURE_CONFIG_HASH
+
+
+def test_ma_structure_flattening_reaches_compressed_state_with_identity():
+    values = [50.0 + index * 0.5 for index in range(45)] + [72.0] * 35
+    evidence = build_ma_structure_evidence(
+        _close_frame(values),
+        timeframe="daily",
+    )
+
+    assert evidence["status"] == "READY"
+    assert evidence["state"] == "COMPRESSED"
+    assert evidence["compression_persistence"] >= 3
+    assert evidence["bundle_spread_abs"] <= evidence["compression_threshold_abs"]
+    assert evidence["bundle_spread_pct"] <= evidence["compression_threshold_pct"]
+    assert evidence["crossing_density"] >= 0
+    assert evidence["material"] is True
+    assert "压缩" in evidence["summary"]
+    assert evidence["correlation_group"] == "price_contraction"
+    assert evidence["learning_admitted"] is False
+    assert evidence["strategy_admitted"] is False
+    assert evidence["completed_bar_identity"]["completed_bar_only"] is True
+
+
+def test_ma_structure_startup_lengths_are_stable_for_wide_trend_branch():
+    evidence = _startup_evidence([40.0 + index * 0.3 for index in range(120)])
+    assert {item["state"] for item in evidence.values()} == {"WIDE_TREND"}
+    _assert_same_ma_output(
+        evidence,
+        (40, 60, 80, 120),
+        (
+            "state",
+            "ordering",
+            "bundle_spread_abs",
+            "bundle_spread_pct",
+            "compression_threshold_abs",
+            "compression_threshold_pct",
+            "slope_vector_pct",
+            "crossing_density",
+        ),
+    )
+
+
+def test_ma_structure_startup_lengths_are_stable_for_compressed_branch():
+    values = [50.0 + index * 0.5 for index in range(80)] + [89.5] * 40
+    evidence = _startup_evidence(values)
+    assert {item["state"] for item in evidence.values()} == {"COMPRESSED"}
+    _assert_same_ma_output(
+        evidence,
+        (40, 60, 80, 120),
+        (
+            "state",
+            "ordering",
+            "bundle_spread_abs",
+            "bundle_spread_pct",
+            "compression_threshold_abs",
+            "compression_threshold_pct",
+            "slope_vector_pct",
+            "crossing_density",
+        ),
+    )
+
+
+def test_ma_structure_release_branch_needs_lifecycle_history_then_stabilizes():
+    values = (
+        [30.0 + index * 0.5 for index in range(60)]
+        + [59.5] * 50
+        + [59.5 + index * 1.5 for index in range(1, 11)]
+    )
+    evidence = _startup_evidence(values)
+
+    assert evidence[40]["state"] not in {"RELEASING_UP", "RELEASING_DOWN"}
+    assert {evidence[length]["state"] for length in (60, 80, 120)} == {"RELEASING_UP"}
+    _assert_same_ma_output(
+        evidence,
+        (60, 80, 120),
+        (
+            "state",
+            "ordering",
+            "bundle_spread_abs",
+            "bundle_spread_pct",
+            "compression_threshold_abs",
+            "compression_threshold_pct",
+            "slope_vector_pct",
+            "crossing_density",
+            "provisional",
+        ),
+    )
+
+
+def test_ma_release_confirmation_requires_structure_and_volume_context():
+    structure = {"structure_event": {"state": "UP_BREAKOUT"}}
+    confirmed, structure_state, volume_state = _ma_release_confirmation(
+        "RELEASING_UP",
+        trend_result=_trend_result(),
+        structure_context=structure,
+    )
+    assert confirmed is False
+    assert structure_state == "UP_BREAKOUT"
+    assert volume_state == "量能正常"
+
+    heavy = _trend_result()
+    heavy.volume_status = SimpleNamespace(value="放量上涨")
+    confirmed, _, _ = _ma_release_confirmation(
+        "RELEASING_UP",
+        trend_result=heavy,
+        structure_context=structure,
+    )
+    assert confirmed is True
+
+
 def test_weekly_ready_monthly_missing_and_intraday_stays_missing():
     history = _history()
     target_index = len(history) - 1
@@ -126,6 +336,7 @@ def test_weekly_ready_monthly_missing_and_intraday_stays_missing():
     assert context["timeframes"]["monthly"]["reason"] == "WARMUP_INSUFFICIENT"
     for key in ("60m", "30m", "15m", "5m"):
         assert context["timeframes"][key]["status"] == "MISSING"
+        assert "ma_structure" not in context["timeframes"][key]
         assert (
             context["timeframes"][key]["reason"]
             == "INTRADAY_COMPLETED_BAR_CONTRACT_NOT_READY"
@@ -182,8 +393,13 @@ def test_monthly_trend_projection_requires_26_completed_bars():
 
     assert monthly_25["observations"] == 25
     assert monthly_25["trend"]["status"] == "MISSING"
+    assert monthly_25["ma_structure"]["status"] == "PARTIAL"
+    assert monthly_25["ma_structure"]["readiness"]["slope_cross"]["status"] == "MISSING"
     assert monthly_26["observations"] == 26
     assert monthly_26["trend"]["status"] == "READY"
+    assert monthly_26["ma_structure"]["status"] == "PARTIAL"
+    assert monthly_26["ma_structure"]["readiness"]["slope_cross"]["status"] == "READY"
+    assert monthly_26["ma_structure"]["readiness"]["compression_context"]["status"] == "MISSING"
 
 
 def test_target_date_trim_preserves_prefix_equivalence():
@@ -213,6 +429,10 @@ def test_target_date_trim_preserves_prefix_equivalence():
         prefix_context = build_multi_timeframe_structure_context(history=prefix, **kwargs)
 
     assert full_context == prefix_context
+    assert (
+        full_context["timeframes"]["daily"]["ma_structure"]
+        == prefix_context["timeframes"]["daily"]["ma_structure"]
+    )
 
 
 def test_missing_source_and_unproven_period_fail_closed():
@@ -235,6 +455,8 @@ def test_missing_source_and_unproven_period_fail_closed():
         )
     assert context["status"] == "PARTIAL"
     assert context["source_alignment"]["status"] == "UNPROVEN"
+    assert context["timeframes"]["daily"]["ma_structure"]["status"] == "MISSING"
+    assert context["timeframes"]["daily"]["ma_structure"]["reason"] == "SOURCE_ALIGNMENT_UNPROVEN"
     assert context["timeframes"]["weekly"]["reason"] == "COMPLETED_PERIOD_UNPROVEN"
     assert context["timeframes"]["monthly"]["reason"] == "COMPLETED_PERIOD_UNPROVEN"
 
