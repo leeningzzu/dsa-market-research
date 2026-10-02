@@ -1191,9 +1191,10 @@ def _insert_morning_plain_language_overlay(markdown: Any, payload: Dict[str, Any
     if not text:
         return block
 
-    # Preserve the accepted R004 conclusion-first lead.  The additive overlay
-    # sits between that existing lead and the first detailed section instead of
-    # replacing or pushing the original conclusion below a new top summary.
+    # Preserve the current conclusion-first Product ordering.  Historical R004
+    # remains a regression/pattern donor only; it does not authorize rendering,
+    # supply facts, or override the current canonical Product contract.  This
+    # additive overlay sits between the existing lead and first detail section.
     detail_heading = re.search(r"(?m)^###\s+.+$", text)
     if detail_heading is not None:
         return (

@@ -34,21 +34,23 @@
 
 Web 展示必须把这些 wire value 映射为当前 UI 语言的用户可读标签；API 响应继续保留原始枚举值。
 
-## Canonical 评分与 action 口径
+## Legacy DecisionSignal 评分兼容口径（非当前 canonical action 权威）
 
-个股分析、技术评分 fallback、报告展示 fallback 与 `DecisionSignal` 提取共用 `decision-scale-v1` 口径。`decision_type` 只保留 `buy|hold|sell` 兼容统计；更细的可执行语义以八态 `action` 为准。
+> **Current override：** 当前个股/ETF研究的唯一动作权威是 `dashboard.factor_decision` 中经过 `canonical-decision-semantic-v1` 与 `canonical-decision-binding-v1` 校验的 deterministic decision。`apply_canonical_decision_to_result()` 必须覆盖兼容字段，随后由 `assert_canonical_consumer_consistency()` 核对。下表仅保留旧 `DecisionSignal`、技术评分 fallback 与历史记录兼容语义；它不能满足 StrategyEligibility、补齐 Product 事实、进入 Ledger feature、冒充胜率/校准概率，也不能覆盖当前 canonical action。
+
+旧个股分析兼容字段、技术评分 fallback、旧报告展示 fallback 与 `DecisionSignal` 提取仍可能使用 `decision-scale-v1`。`decision_type` 只保留 `buy|hold|sell` 兼容统计；八态 `action` 也只有在不存在当前 factor canonical binding 的 legacy/compatibility surface 中按下表解释。当前 factor-bound 结果必须服从上述 current override。
 
 - 用户侧可见面存在两类字段：`operation_advice` 保留文本口径（如“持有观察”），`action` 作为统一 8 态决策口径（如 `hold/watch/reduce`）用于风控、回测与列表展示。新生成或最终保存前重算的个股报告应优先让两者保持一致；历史记录或兼容载荷仍出现语义冲突时，默认以 `action` 为列表、回测、DecisionSignal 等结构化展示的优先字段，`operation_advice` 仅作说明文本保留。
 
 | score | signal key | `action` | legacy `decision_type` | 语义 |
 | --- | --- | --- | --- | --- |
-| 80-100 | `strong_buy` | `buy` | `buy` | 强烈买入，高胜率机会，可执行买入/加仓计划 |
-| 60-79 | `buy` | `buy` | `buy` | 偏积极机会，允许少量待确认项 |
-| 40-59 | `watch` | `watch` | `hold` | 信号分歧或确认不足，等待触发条件 |
-| 20-39 | `reduce` | `reduce` | `sell` | 风险明显抬升，优先降低暴露 |
-| 0-19 | `sell` | `sell` | `sell` | 趋势或风险显著恶化，优先退出 |
+| 80-100 | `strong_buy` | `buy` | `buy` | legacy 强买映射；不代表历史胜率、校准概率或当前策略资格 |
+| 60-79 | `buy` | `buy` | `buy` | legacy 偏积极映射；仍需 current canonical guard 与完整证据 |
+| 40-59 | `watch` | `watch` | `hold` | legacy 观察映射；信号分歧或确认不足 |
+| 20-39 | `reduce` | `reduce` | `sell` | legacy 降低暴露映射；不得越过 current canonical action |
+| 0-19 | `sell` | `sell` | `sell` | legacy 风险退出映射；不得作为概率或训练标签 |
 
-如果 `score >= 60` 但最终 `action` 是 `hold/watch`，或 `score < 40` 但最终 `action` 仍是 `hold/watch`，必须有明确 guardrail 解释，例如 `dashboard.decision_stability.reason`、`dashboard.decision_score_calibration.guardrail_reason` 或 `metadata.guardrail_reason`。风控降级会保留 `raw_score`、`adjusted_score`、`raw_action`、`final_action` 和原因；没有明确原因的中性动作在 DecisionSignal 提取时会按 canonical score 对齐为 `buy/reduce/sell`。
+在 legacy `DecisionSignal` 兼容路径中，如果 `score >= 60` 但最终 `action` 是 `hold/watch`，或 `score < 40` 但最终 `action` 仍是 `hold/watch`，应保留明确 guardrail 解释，例如 `dashboard.decision_stability.reason`、`dashboard.decision_score_calibration.guardrail_reason` 或 `metadata.guardrail_reason`。风控降级可保留 `raw_score`、`adjusted_score`、`raw_action`、`final_action` 和原因；任何按分数对齐的 legacy action 都不得回写或替代当前 factor canonical decision。
 
 MUE V1 的 `market-sector-regime-v1` 不新增行情源、调度器或第二套决策引擎，而是复用现有 `MarketLightSnapshot` 与 `MarketStructureContext` 形成 factor-decision 内部确定性证据族。`MarketLight` 为 `red` 且 `data_quality=ok` 时可作为市场风险硬否决；`yellow`、partial red 与板块 `cooling` 仅形成谨慎/降级证据；`green` 或板块 `warming/accelerating` 只能确认/许可既有个股 setup，不能独立把 WAIT 升级为 BUY。缺失、partial、unsupported 必须保留相应 evidence state，不得补齐。
 
