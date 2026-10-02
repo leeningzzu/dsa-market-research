@@ -25,6 +25,24 @@ BASELINE_SHA256 = "039ca6394baf9cf39494cc29f512802b114c8227f8c965723197a8df4b9de
 BASELINE_BYTES = 125919
 TIMEFRAMES = ("monthly", "weekly", "daily", "60m", "30m", "15m", "5m")
 STATES = frozenset({"READY", "PARTIAL", "MISSING", "UNKNOWN", "NOT_APPLICABLE"})
+METHOD_WINDOW_POLICY_VERSION = "method-window-policy-view-v1"
+METHOD_WINDOW_CLASSES = frozenset({
+    "FIXED_ROLLING",
+    "RECURSIVE_WARMUP",
+    "ADAPTIVE_CONTEXT",
+    "VARIABLE_STRUCTURE",
+    "EVENT_ANCHORED",
+    "CROSS_SECTIONAL_ASOF",
+    "VINTAGE_ASOF",
+    "INCREMENTAL_STATE_MACHINE",
+})
+METHOD_WINDOW_STATES = frozenset({
+    "EXISTING_REUSED",
+    "DESIGN_BOUND",
+    "DEFERRED_WITH_OWNER_AND_REENTRY",
+})
+METHOD_WINDOW_TIMEFRAMES = frozenset({"asset", *TIMEFRAMES})
+NON_DAILY_TECHNICAL_TIMEFRAMES = ("monthly", "weekly", "60m", "30m", "15m", "5m")
 
 VALID_ASSET_ROUTES = frozenset({"STOCK", "ETF", "MARKET"})
 VALID_BINDING_TIMEFRAMES = frozenset({"asset", "daily", "multi", *TIMEFRAMES})
@@ -88,6 +106,18 @@ class EvidenceBinding:
     ledger: bool = True
 
 
+@dataclass(frozen=True)
+class MethodWindowProfile:
+    """Leaf-method design view bound to, but not part of, the runtime manifest hash."""
+
+    method_id: str
+    requirement_id: str
+    window_classes: tuple[str, ...]
+    target_timeframes: tuple[str, ...]
+    current_execution_timeframes: tuple[str, ...] = ()
+    implementation_state: str = "DEFERRED_WITH_OWNER_AND_REENTRY"
+
+
 # References name existing formula/config owners; no copied thresholds or formulas.
 EVIDENCE_BINDINGS = (
     EvidenceBinding("REGIME", "market_sector_regime", "src/services/factor_decision_summary.py", "_build_market_sector_regime_evidence", ("market_light", "stock_market_position"), "_MARKET_SECTOR_REGIME_VERSION", "UPSTREAM_REGIME_READINESS", "market_sector", "asset"),
@@ -131,6 +161,245 @@ DEFERRED_BINDINGS = tuple(
                     implementation_state="DEFERRED_WITH_OWNER_AND_REENTRY",
                     reentry="ONE_COMPLETED_5M_SOURCE_AND_SESSION_AGGREGATION", ledger=False)
     for tf in ("60m", "30m", "15m", "5m")
+)
+
+
+# Independent accepted leaf-method set. Candidate tuples below cannot certify their
+# own deletion; this is the same fail-closed pattern as ACCEPTED_REQUIREMENT_ROLES.
+ACCEPTED_METHOD_WINDOW_IDS = frozenset({
+    "MARKET_SECTOR_REGIME",
+    "RELATIVE_STRENGTH",
+    "MA_LEVEL_ALIGNMENT_DAILY",
+    "SUPPLY_RELATIVE_VOLUME",
+    "SUPPLY_DIRECTIONAL_VOLUME",
+    "SUPPLY_CMF",
+    "COST_ROLLING_REFERENCE",
+    "PRICE_PIVOT_SWING",
+    "BREAKOUT_RETEST_FAILED",
+    "MACD",
+    "RSI",
+    "ROC",
+    "VOLATILITY_TR_SMA",
+    "CONFIRMED_DIVERGENCE",
+    "CUP_HANDLE",
+    "DOUBLE_BOTTOM",
+    "VCP",
+    "FLAT_BASE",
+    "TIGHT_CONSOLIDATION",
+    "MTF_MA_LEVEL_ALIGNMENT",
+    "MTF_MOMENTUM_CONTEXT",
+    "MTF_PRICE_STRUCTURE",
+    "MA_SLOPE_CROSS",
+    "MA_COMPRESSION_RELEASE",
+    "QUALITY",
+    "VALUATION",
+    "DISTRIBUTION",
+    "RISK_REWARD",
+    "CANDLESTICK",
+    "ATR_WILDER",
+    "ADX_DMI",
+    "BOLLINGER",
+    "KDJ",
+    "OBV_ADL",
+    "MFI",
+    "VWAP",
+    "AVWAP_VOLUME_PROFILE",
+    "CHAN",
+    "WAVE",
+    "ETF_SPECIFIC",
+    "GLOBAL",
+    "BREADTH",
+    "PROBABILITY",
+})
+
+METHOD_WINDOW_PROFILES = (
+    MethodWindowProfile(
+        "MARKET_SECTOR_REGIME", "REGIME",
+        ("CROSS_SECTIONAL_ASOF", "VINTAGE_ASOF"), ("asset",), ("asset",),
+        "EXISTING_REUSED",
+    ),
+    MethodWindowProfile(
+        "RELATIVE_STRENGTH", "TREND_RS",
+        ("FIXED_ROLLING", "CROSS_SECTIONAL_ASOF"), TIMEFRAMES, ("daily",),
+        "EXISTING_REUSED",
+    ),
+    MethodWindowProfile(
+        "MA_LEVEL_ALIGNMENT_DAILY", "TREND_RS",
+        ("FIXED_ROLLING",), TIMEFRAMES, ("daily",), "EXISTING_REUSED",
+    ),
+    MethodWindowProfile(
+        "SUPPLY_RELATIVE_VOLUME", "SUPPLY",
+        ("FIXED_ROLLING",), TIMEFRAMES, ("daily",), "EXISTING_REUSED",
+    ),
+    MethodWindowProfile(
+        "SUPPLY_DIRECTIONAL_VOLUME", "SUPPLY",
+        ("FIXED_ROLLING",), TIMEFRAMES, ("daily",), "EXISTING_REUSED",
+    ),
+    MethodWindowProfile(
+        "SUPPLY_CMF", "SUPPLY",
+        ("FIXED_ROLLING",), TIMEFRAMES, ("daily",), "EXISTING_REUSED",
+    ),
+    MethodWindowProfile(
+        "COST_ROLLING_REFERENCE", "COST",
+        ("FIXED_ROLLING",), TIMEFRAMES, ("daily",), "EXISTING_REUSED",
+    ),
+    MethodWindowProfile(
+        "PRICE_PIVOT_SWING", "STRUCTURE",
+        ("VARIABLE_STRUCTURE",), TIMEFRAMES, ("daily",), "EXISTING_REUSED",
+    ),
+    MethodWindowProfile(
+        "BREAKOUT_RETEST_FAILED", "STRUCTURE",
+        ("VARIABLE_STRUCTURE", "EVENT_ANCHORED"), TIMEFRAMES, ("daily",),
+        "EXISTING_REUSED",
+    ),
+    MethodWindowProfile(
+        "MACD", "MOMENTUM",
+        ("RECURSIVE_WARMUP",), TIMEFRAMES, ("daily",), "EXISTING_REUSED",
+    ),
+    MethodWindowProfile(
+        "RSI", "MOMENTUM",
+        ("FIXED_ROLLING",), TIMEFRAMES, ("daily",), "EXISTING_REUSED",
+    ),
+    MethodWindowProfile(
+        "ROC", "MOMENTUM",
+        ("FIXED_ROLLING",), TIMEFRAMES, ("daily",), "EXISTING_REUSED",
+    ),
+    MethodWindowProfile(
+        "VOLATILITY_TR_SMA", "MOMENTUM",
+        ("FIXED_ROLLING",), TIMEFRAMES, ("daily",), "EXISTING_REUSED",
+    ),
+    MethodWindowProfile(
+        "CONFIRMED_DIVERGENCE", "MOMENTUM",
+        ("VARIABLE_STRUCTURE",), TIMEFRAMES, ("daily",), "EXISTING_REUSED",
+    ),
+    MethodWindowProfile(
+        "CUP_HANDLE", "PATTERN",
+        ("VARIABLE_STRUCTURE",), TIMEFRAMES, ("daily",), "EXISTING_REUSED",
+    ),
+    MethodWindowProfile(
+        "DOUBLE_BOTTOM", "PATTERN",
+        ("VARIABLE_STRUCTURE",), TIMEFRAMES, ("daily",), "EXISTING_REUSED",
+    ),
+    MethodWindowProfile(
+        "VCP", "PATTERN",
+        ("VARIABLE_STRUCTURE",), TIMEFRAMES, ("daily",), "EXISTING_REUSED",
+    ),
+    MethodWindowProfile(
+        "FLAT_BASE", "PATTERN",
+        ("FIXED_ROLLING",), TIMEFRAMES, ("daily",), "EXISTING_REUSED",
+    ),
+    MethodWindowProfile(
+        "TIGHT_CONSOLIDATION", "PATTERN",
+        ("FIXED_ROLLING",), TIMEFRAMES, ("daily",), "EXISTING_REUSED",
+    ),
+    MethodWindowProfile(
+        "MTF_MA_LEVEL_ALIGNMENT", "MTF",
+        ("FIXED_ROLLING",), NON_DAILY_TECHNICAL_TIMEFRAMES,
+        ("monthly", "weekly"), "EXISTING_REUSED",
+    ),
+    MethodWindowProfile(
+        "MTF_MOMENTUM_CONTEXT", "MTF",
+        ("FIXED_ROLLING", "RECURSIVE_WARMUP"), NON_DAILY_TECHNICAL_TIMEFRAMES,
+        ("monthly", "weekly"), "EXISTING_REUSED",
+    ),
+    MethodWindowProfile(
+        "MTF_PRICE_STRUCTURE", "MTF",
+        ("VARIABLE_STRUCTURE",), NON_DAILY_TECHNICAL_TIMEFRAMES,
+        ("monthly", "weekly"), "EXISTING_REUSED",
+    ),
+    MethodWindowProfile(
+        "MA_SLOPE_CROSS", "MTF",
+        ("FIXED_ROLLING",), TIMEFRAMES, (), "DESIGN_BOUND",
+    ),
+    MethodWindowProfile(
+        "MA_COMPRESSION_RELEASE", "MTF",
+        ("FIXED_ROLLING", "ADAPTIVE_CONTEXT"), TIMEFRAMES, (), "DESIGN_BOUND",
+    ),
+    MethodWindowProfile(
+        "QUALITY", "QUALITY",
+        ("VINTAGE_ASOF",), ("asset",), (), "DEFERRED_WITH_OWNER_AND_REENTRY",
+    ),
+    MethodWindowProfile(
+        "VALUATION", "VALUATION",
+        ("VINTAGE_ASOF",), ("asset",), (), "DEFERRED_WITH_OWNER_AND_REENTRY",
+    ),
+    MethodWindowProfile(
+        "DISTRIBUTION", "DISTRIBUTION",
+        ("ADAPTIVE_CONTEXT", "INCREMENTAL_STATE_MACHINE"), TIMEFRAMES, (),
+        "DEFERRED_WITH_OWNER_AND_REENTRY",
+    ),
+    MethodWindowProfile(
+        "RISK_REWARD", "RISK_REWARD",
+        ("EVENT_ANCHORED",), ("asset",), (), "DEFERRED_WITH_OWNER_AND_REENTRY",
+    ),
+    MethodWindowProfile(
+        "CANDLESTICK", "CANDLESTICK",
+        ("ADAPTIVE_CONTEXT",), TIMEFRAMES, (), "DEFERRED_WITH_OWNER_AND_REENTRY",
+    ),
+    MethodWindowProfile(
+        "ATR_WILDER", "EXTRA_INDICATORS",
+        ("RECURSIVE_WARMUP",), TIMEFRAMES, (), "DEFERRED_WITH_OWNER_AND_REENTRY",
+    ),
+    MethodWindowProfile(
+        "ADX_DMI", "EXTRA_INDICATORS",
+        ("FIXED_ROLLING", "RECURSIVE_WARMUP"), TIMEFRAMES, (),
+        "DEFERRED_WITH_OWNER_AND_REENTRY",
+    ),
+    MethodWindowProfile(
+        "BOLLINGER", "EXTRA_INDICATORS",
+        ("FIXED_ROLLING",), TIMEFRAMES, (), "DEFERRED_WITH_OWNER_AND_REENTRY",
+    ),
+    MethodWindowProfile(
+        "KDJ", "EXTRA_INDICATORS",
+        ("FIXED_ROLLING", "RECURSIVE_WARMUP"), TIMEFRAMES, (),
+        "DEFERRED_WITH_OWNER_AND_REENTRY",
+    ),
+    MethodWindowProfile(
+        "OBV_ADL", "EXTRA_INDICATORS",
+        ("RECURSIVE_WARMUP",), TIMEFRAMES, (), "DEFERRED_WITH_OWNER_AND_REENTRY",
+    ),
+    MethodWindowProfile(
+        "MFI", "EXTRA_INDICATORS",
+        ("FIXED_ROLLING",), TIMEFRAMES, (), "DEFERRED_WITH_OWNER_AND_REENTRY",
+    ),
+    MethodWindowProfile(
+        "VWAP", "AVWAP_PROFILE",
+        ("EVENT_ANCHORED",), ("daily", "60m", "30m", "15m", "5m"), (),
+        "DEFERRED_WITH_OWNER_AND_REENTRY",
+    ),
+    MethodWindowProfile(
+        "AVWAP_VOLUME_PROFILE", "AVWAP_PROFILE",
+        ("EVENT_ANCHORED",), TIMEFRAMES, (), "DEFERRED_WITH_OWNER_AND_REENTRY",
+    ),
+    MethodWindowProfile(
+        "CHAN", "CHAN",
+        ("INCREMENTAL_STATE_MACHINE",), TIMEFRAMES, (),
+        "DEFERRED_WITH_OWNER_AND_REENTRY",
+    ),
+    MethodWindowProfile(
+        "WAVE", "WAVE",
+        ("VARIABLE_STRUCTURE", "INCREMENTAL_STATE_MACHINE"), TIMEFRAMES, (),
+        "DEFERRED_WITH_OWNER_AND_REENTRY",
+    ),
+    MethodWindowProfile(
+        "ETF_SPECIFIC", "ETF_SPECIFIC",
+        ("FIXED_ROLLING", "CROSS_SECTIONAL_ASOF", "VINTAGE_ASOF"), ("asset",), (),
+        "DEFERRED_WITH_OWNER_AND_REENTRY",
+    ),
+    MethodWindowProfile(
+        "GLOBAL", "GLOBAL",
+        ("FIXED_ROLLING", "VINTAGE_ASOF"), ("asset",), (),
+        "DEFERRED_WITH_OWNER_AND_REENTRY",
+    ),
+    MethodWindowProfile(
+        "BREADTH", "BREADTH",
+        ("FIXED_ROLLING", "CROSS_SECTIONAL_ASOF"), ("asset",), (),
+        "DEFERRED_WITH_OWNER_AND_REENTRY",
+    ),
+    MethodWindowProfile(
+        "PROBABILITY", "PROBABILITY",
+        ("VINTAGE_ASOF",), ("asset",), (), "DEFERRED_WITH_OWNER_AND_REENTRY",
+    ),
 )
 
 
@@ -289,6 +558,172 @@ def manifest_document() -> dict:
 MANIFEST_HASH = digest(manifest_document())
 
 
+def _validate_method_window_profiles(
+    profiles: tuple[MethodWindowProfile, ...],
+    bindings: tuple[EvidenceBinding, ...],
+) -> tuple[MethodWindowProfile, ...]:
+    method_ids = [profile.method_id for profile in profiles]
+    if len(method_ids) != len(set(method_ids)):
+        raise TraceabilityError("DUPLICATE_METHOD_WINDOW_PROFILE")
+    if frozenset(method_ids) != ACCEPTED_METHOD_WINDOW_IDS:
+        raise TraceabilityError("ACCEPTED_METHOD_WINDOW_SET_MISMATCH")
+
+    binding_lookup = {
+        binding.requirement_id: binding
+        for binding in bindings
+        if binding.requirement_id != "DECISION"
+    }
+    expected_requirements = {
+        requirement_id
+        for requirement_id in binding_lookup
+        if not requirement_id.startswith("INTRADAY_")
+    }
+    covered_requirements = set()
+    intraday_gates = {
+        binding.timeframe: binding
+        for binding in binding_lookup.values()
+        if binding.requirement_id.startswith("INTRADAY_")
+    }
+
+    for profile in profiles:
+        binding = binding_lookup.get(profile.requirement_id)
+        if binding is None or profile.requirement_id.startswith("INTRADAY_"):
+            raise TraceabilityError("ORPHAN_METHOD_WINDOW_REQUIREMENT:" + profile.method_id)
+        if not profile.window_classes or not set(profile.window_classes) <= METHOD_WINDOW_CLASSES:
+            raise TraceabilityError("INVALID_METHOD_WINDOW_CLASS:" + profile.method_id)
+        if profile.implementation_state not in METHOD_WINDOW_STATES:
+            raise TraceabilityError("INVALID_METHOD_WINDOW_STATE:" + profile.method_id)
+        if not profile.target_timeframes or not set(profile.target_timeframes) <= METHOD_WINDOW_TIMEFRAMES:
+            raise TraceabilityError("INVALID_METHOD_TARGET_TIMEFRAME:" + profile.method_id)
+        if len(profile.target_timeframes) != len(set(profile.target_timeframes)):
+            raise TraceabilityError("DUPLICATE_METHOD_TARGET_TIMEFRAME:" + profile.method_id)
+        if "asset" in profile.target_timeframes and profile.target_timeframes != ("asset",):
+            raise TraceabilityError("ASSET_METHOD_TIMEFRAME_MIXED:" + profile.method_id)
+        if not set(profile.current_execution_timeframes) <= set(profile.target_timeframes):
+            raise TraceabilityError("CURRENT_EXECUTION_OUTSIDE_TARGET:" + profile.method_id)
+        if profile.implementation_state == "EXISTING_REUSED":
+            if not profile.current_execution_timeframes:
+                raise TraceabilityError("CURRENT_EXECUTION_MISSING:" + profile.method_id)
+            if binding.implementation_state != "EXISTING_REUSED":
+                raise TraceabilityError("LEAF_METHOD_EXCEEDS_PARENT_ADMISSION:" + profile.method_id)
+        elif profile.current_execution_timeframes:
+            raise TraceabilityError("UNADMITTED_METHOD_CLAIMS_CURRENT_EXECUTION:" + profile.method_id)
+
+        for timeframe in profile.current_execution_timeframes:
+            gate = intraday_gates.get(timeframe)
+            if gate is not None and gate.implementation_state != "EXISTING_REUSED":
+                raise TraceabilityError("CURRENT_EXECUTION_INTRADAY_GATE_DEFERRED:" + profile.method_id)
+        covered_requirements.add(profile.requirement_id)
+
+    if covered_requirements != expected_requirements:
+        raise TraceabilityError("METHOD_WINDOW_REQUIREMENT_COVERAGE_MISMATCH")
+    return profiles
+
+
+def validate_method_window_profiles(profiles=None) -> tuple[MethodWindowProfile, ...]:
+    """Validate the leaf-method view against the current accepted registry."""
+
+    profiles = tuple(METHOD_WINDOW_PROFILES if profiles is None else profiles)
+    bindings = EVIDENCE_BINDINGS + DEFERRED_BINDINGS + (DECISION_BINDING,)
+    return _validate_method_window_profiles(profiles, bindings)
+
+
+def compile_method_window_policy_view(profiles=None) -> dict:
+    """Derive method/window/Product/Learning coverage without mutating MANIFEST_HASH."""
+
+    validate_registry()
+    profiles = validate_method_window_profiles(profiles)
+    slots = load_slot_map()["slots"]
+    product_slots = {}
+    for slot in slots:
+        for requirement_id in slot["requirements"]:
+            product_slots.setdefault(requirement_id, []).append(slot["id"])
+
+    strategy_clauses = {}
+    for binding in STRATEGY_BINDINGS:
+        strategy_clauses.setdefault(binding.requirement_id, []).append(
+            {
+                "clause": binding.clause,
+                "classification": binding.classification,
+                "resolver": binding.resolver,
+            }
+        )
+
+    learning_metrics = {}
+    for metric in METRIC_BINDINGS:
+        learning_metrics.setdefault(metric["requirement_id"], []).append(metric["id"])
+
+    binding_lookup = {
+        binding.requirement_id: binding
+        for binding in EVIDENCE_BINDINGS + DEFERRED_BINDINGS
+    }
+    methods = []
+    for profile in profiles:
+        binding = binding_lookup[profile.requirement_id]
+        parent_contract = (
+            method_contract(binding)
+            if binding.implementation_state == "EXISTING_REUSED"
+            else {"version": None, "warmup": None, "config_hash": None}
+        )
+        methods.append(
+            {
+                "method_id": profile.method_id,
+                "requirement_id": profile.requirement_id,
+                "canonical_path": binding.path,
+                "owner": binding.owner,
+                "parent_callable": binding.callable_name,
+                "correlation_group": binding.correlation_group,
+                "asset_routes": binding.asset_routes,
+                "window_classes": profile.window_classes,
+                "target_timeframes": profile.target_timeframes,
+                "current_execution_timeframes": profile.current_execution_timeframes,
+                "leaf_implementation_state": profile.implementation_state,
+                "parent_implementation_state": binding.implementation_state,
+                "parent_method_contract": parent_contract,
+                "parent_product_slot_ids": tuple(product_slots.get(profile.requirement_id, ())),
+                "parent_strategy_clauses": tuple(strategy_clauses.get(profile.requirement_id, ())),
+                "parent_learning_metric_ids": tuple(learning_metrics.get(profile.requirement_id, ())),
+                "reentry": binding.reentry,
+            }
+        )
+
+    timeframe_gates = tuple(
+        {
+            "requirement_id": binding.requirement_id,
+            "timeframe": binding.timeframe,
+            "canonical_path": binding.path,
+            "implementation_state": binding.implementation_state,
+            "reentry": binding.reentry,
+        }
+        for binding in DEFERRED_BINDINGS
+        if binding.requirement_id.startswith("INTRADAY_")
+    )
+    document = {
+        "schema_version": METHOD_WINDOW_POLICY_VERSION,
+        "source_manifest_version": MANIFEST_VERSION,
+        "source_manifest_hash": MANIFEST_HASH,
+        "window_classes": tuple(sorted(METHOD_WINDOW_CLASSES)),
+        "timeframes": TIMEFRAMES,
+        "methods": methods,
+        "timeframe_gates": timeframe_gates,
+        "decision_authority": {
+            "requirement_id": DECISION_BINDING.requirement_id,
+            "canonical_path": DECISION_BINDING.path,
+            "window_method": False,
+        },
+        "policy": {
+            "derived_view_only": True,
+            "changes_runtime_manifest": False,
+            "window_type_is_method_property": True,
+            "seven_by_eight_is_coverage_not_votes": True,
+            "product_wider_than_learning": True,
+            "missing_unknown_never_filled_by_prose": True,
+        },
+    }
+    document["view_hash"] = digest(document)
+    return document
+
+
 def validate_registry(bindings=None, strategy=None, metrics=None) -> None:
     bindings = tuple(
         bindings
@@ -342,6 +777,7 @@ def validate_registry(bindings=None, strategy=None, metrics=None) -> None:
         owner = lookup.get(metric["requirement_id"])
         if owner is None or not metric["path"].startswith(owner.path + "."):
             raise TraceabilityError("ORPHAN_LEARNING_METRIC")
+    _validate_method_window_profiles(METHOD_WINDOW_PROFILES, bindings)
 
 
 def validate_source_bindings(root: Path) -> dict:

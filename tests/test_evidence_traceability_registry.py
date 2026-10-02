@@ -34,6 +34,62 @@ EXPECTED_REQUIRED = {
     "volume_price_confirmation", "distribution_risk_clear", "thirty_minute_trigger", "risk_reward",
 }
 
+EXPECTED_METHOD_WINDOW_IDS = {
+    "MARKET_SECTOR_REGIME",
+    "RELATIVE_STRENGTH",
+    "MA_LEVEL_ALIGNMENT_DAILY",
+    "SUPPLY_RELATIVE_VOLUME",
+    "SUPPLY_DIRECTIONAL_VOLUME",
+    "SUPPLY_CMF",
+    "COST_ROLLING_REFERENCE",
+    "PRICE_PIVOT_SWING",
+    "BREAKOUT_RETEST_FAILED",
+    "MACD",
+    "RSI",
+    "ROC",
+    "VOLATILITY_TR_SMA",
+    "CONFIRMED_DIVERGENCE",
+    "CUP_HANDLE",
+    "DOUBLE_BOTTOM",
+    "VCP",
+    "FLAT_BASE",
+    "TIGHT_CONSOLIDATION",
+    "MTF_MA_LEVEL_ALIGNMENT",
+    "MTF_MOMENTUM_CONTEXT",
+    "MTF_PRICE_STRUCTURE",
+    "MA_SLOPE_CROSS",
+    "MA_COMPRESSION_RELEASE",
+    "QUALITY",
+    "VALUATION",
+    "DISTRIBUTION",
+    "RISK_REWARD",
+    "CANDLESTICK",
+    "ATR_WILDER",
+    "ADX_DMI",
+    "BOLLINGER",
+    "KDJ",
+    "OBV_ADL",
+    "MFI",
+    "VWAP",
+    "AVWAP_VOLUME_PROFILE",
+    "CHAN",
+    "WAVE",
+    "ETF_SPECIFIC",
+    "GLOBAL",
+    "BREADTH",
+    "PROBABILITY",
+}
+EXPECTED_METHOD_WINDOW_CLASSES = {
+    "FIXED_ROLLING",
+    "RECURSIVE_WARMUP",
+    "ADAPTIVE_CONTEXT",
+    "VARIABLE_STRUCTURE",
+    "EVENT_ANCHORED",
+    "CROSS_SECTIONAL_ASOF",
+    "VINTAGE_ASOF",
+    "INCREMENTAL_STATE_MACHINE",
+}
+
 
 def _accepted_bindings():
     return reg.EVIDENCE_BINDINGS + reg.DEFERRED_BINDINGS + (reg.DECISION_BINDING,)
@@ -151,6 +207,121 @@ def test_binding_route_timeframe_and_metric_metadata_are_validated():
         metrics[0][field] = invalid
         with pytest.raises(reg.TraceabilityError, match=message):
             reg.validate_registry(metrics=metrics)
+
+
+def test_method_window_policy_view_is_complete_manifest_bound_and_non_mutating():
+    factor = native_summary()
+    learning_before = reg.learning_projection(factor)
+    manifest_before = reg.MANIFEST_HASH
+    metrics_before = reg.digest(reg.METRIC_BINDINGS)
+
+    view = reg.compile_method_window_policy_view()
+    methods = {row["method_id"]: row for row in view["methods"]}
+
+    assert view["schema_version"] == "method-window-policy-view-v1"
+    assert view["source_manifest_hash"] == manifest_before
+    assert set(view["window_classes"]) == EXPECTED_METHOD_WINDOW_CLASSES
+    assert set(methods) == EXPECTED_METHOD_WINDOW_IDS
+    assert set(view["timeframes"]) == set(reg.TIMEFRAMES)
+    assert {gate["timeframe"] for gate in view["timeframe_gates"]} == {"60m", "30m", "15m", "5m"}
+    assert all(gate["implementation_state"] == "DEFERRED_WITH_OWNER_AND_REENTRY" for gate in view["timeframe_gates"])
+    assert view["decision_authority"]["window_method"] is False
+
+    assert methods["MACD"]["window_classes"] == ("RECURSIVE_WARMUP",)
+    assert methods["MACD"]["current_execution_timeframes"] == ("daily",)
+    assert methods["MACD"]["target_timeframes"] == reg.TIMEFRAMES
+    assert methods["MA_COMPRESSION_RELEASE"]["leaf_implementation_state"] == "DESIGN_BOUND"
+    assert methods["MA_COMPRESSION_RELEASE"]["current_execution_timeframes"] == ()
+    assert methods["MTF_MA_LEVEL_ALIGNMENT"]["current_execution_timeframes"] == ("monthly", "weekly")
+    assert methods["MTF_MA_LEVEL_ALIGNMENT"]["target_timeframes"] == reg.NON_DAILY_TECHNICAL_TIMEFRAMES
+    assert methods["CUP_HANDLE"]["window_classes"] == ("VARIABLE_STRUCTURE",)
+    assert methods["CUP_HANDLE"]["current_execution_timeframes"] == ("daily",)
+    assert methods["CANDLESTICK"]["leaf_implementation_state"] == "DEFERRED_WITH_OWNER_AND_REENTRY"
+    assert set(methods["ADX_DMI"]["window_classes"]) == {"FIXED_ROLLING", "RECURSIVE_WARMUP"}
+    assert set(methods["KDJ"]["window_classes"]) == {"FIXED_ROLLING", "RECURSIVE_WARMUP"}
+    assert methods["ATR_WILDER"]["window_classes"] == ("RECURSIVE_WARMUP",)
+    assert methods["CHAN"]["window_classes"] == ("INCREMENTAL_STATE_MACHINE",)
+    assert methods["CHAN"]["current_execution_timeframes"] == ()
+    assert methods["VALUATION"]["target_timeframes"] == ("asset",)
+    assert methods["VALUATION"]["window_classes"] == ("VINTAGE_ASOF",)
+
+    pattern_slots = {
+        slot["id"]
+        for slot in reg.load_slot_map()["slots"]
+        if "PATTERN" in slot["requirements"]
+    }
+    assert set(methods["CUP_HANDLE"]["parent_product_slot_ids"]) == pattern_slots
+    assert set(methods["MACD"]["parent_learning_metric_ids"]) == {
+        metric["id"] for metric in reg.METRIC_BINDINGS if metric["requirement_id"] == "MOMENTUM"
+    }
+
+    assert reg.MANIFEST_HASH == "6f7b56789efdb962dae7377353dd72c98de5e55ec7e3cb40d41882d0aae71d1f"
+    assert reg.MANIFEST_HASH == manifest_before == reg.digest(reg.manifest_document())
+    assert reg.digest(reg.METRIC_BINDINGS) == metrics_before == "611d5c0657cc42de3f31ca9c911e65d8e2d84e4504fc6167a332de548705fde5"
+    assert tuple(reg.manifest_document()) == (
+        "schema_version", "baseline_sha256", "evidence", "metrics", "product_slots",
+        "method_contracts", "strategy", "ledger_keys", "timeframes", "data_policy",
+        "product_policy", "learning_policy",
+    )
+    assert reg.learning_projection(factor) == learning_before
+
+
+def test_method_window_policy_rejects_deletion_invalid_class_or_overclaim():
+    profiles = list(reg.METHOD_WINDOW_PROFILES)
+
+    deleted = [profile for profile in profiles if profile.method_id != "CUP_HANDLE"]
+    with pytest.raises(reg.TraceabilityError, match="ACCEPTED_METHOD_WINDOW_SET_MISMATCH"):
+        reg.validate_method_window_profiles(deleted)
+
+    invalid_class = list(profiles)
+    index = next(i for i, profile in enumerate(invalid_class) if profile.method_id == "CANDLESTICK")
+    invalid_class[index] = replace(invalid_class[index], window_classes=("MAGIC_WINDOW",))
+    with pytest.raises(reg.TraceabilityError, match="INVALID_METHOD_WINDOW_CLASS"):
+        reg.validate_method_window_profiles(invalid_class)
+
+    orphan = list(profiles)
+    index = next(i for i, profile in enumerate(orphan) if profile.method_id == "VALUATION")
+    orphan[index] = replace(orphan[index], requirement_id="INVENTED")
+    with pytest.raises(reg.TraceabilityError, match="ORPHAN_METHOD_WINDOW_REQUIREMENT"):
+        reg.validate_method_window_profiles(orphan)
+
+    false_ma_admission = list(profiles)
+    index = next(i for i, profile in enumerate(false_ma_admission) if profile.method_id == "MA_COMPRESSION_RELEASE")
+    false_ma_admission[index] = replace(false_ma_admission[index], implementation_state="EXISTING_REUSED")
+    with pytest.raises(reg.TraceabilityError, match="CURRENT_EXECUTION_MISSING"):
+        reg.validate_method_window_profiles(false_ma_admission)
+
+    forged_macd_all_timeframes = list(profiles)
+    index = next(i for i, profile in enumerate(forged_macd_all_timeframes) if profile.method_id == "MACD")
+    forged_macd_all_timeframes[index] = replace(
+        forged_macd_all_timeframes[index],
+        current_execution_timeframes=reg.TIMEFRAMES,
+    )
+    with pytest.raises(reg.TraceabilityError, match="CURRENT_EXECUTION_INTRADAY_GATE_DEFERRED"):
+        reg.validate_method_window_profiles(forged_macd_all_timeframes)
+
+
+def test_runtime_trace_consumes_method_window_contract(monkeypatch):
+    factor = native_summary()
+    monkeypatch.setattr(
+        reg,
+        "METHOD_WINDOW_PROFILES",
+        tuple(
+            profile
+            for profile in reg.METHOD_WINDOW_PROFILES
+            if profile.method_id != "CUP_HANDLE"
+        ),
+    )
+    with pytest.raises(reg.TraceabilityError, match="ACCEPTED_METHOD_WINDOW_SET_MISMATCH"):
+        reg.build_runtime_trace(factor)
+
+
+def test_method_window_policy_keeps_asset_only_valuation_as_legal_nontrigger():
+    profiles = reg.validate_method_window_profiles()
+    valuation = next(profile for profile in profiles if profile.method_id == "VALUATION")
+    assert valuation.target_timeframes == ("asset",)
+    assert valuation.current_execution_timeframes == ()
+    assert valuation.implementation_state == "DEFERRED_WITH_OWNER_AND_REENTRY"
 
 
 def test_native_services_reach_strategy_trace_product_and_learning():
