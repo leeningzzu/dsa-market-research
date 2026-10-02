@@ -758,8 +758,10 @@ def _metric_value_valid(metric: Mapping, value: Any) -> bool:
     if not isinstance(value, Real) or isinstance(value, bool) or not math.isfinite(float(value)):
         return False
     number = float(value)
-    unit = metric.get("unit")
     metric_id = str(metric.get("id") or "")
+    if metric_id in {"daily.macd_dif", "daily.macd_dea", "daily.macd_bar"}:
+        return True
+    unit = metric.get("unit")
     if unit == "index_0_100":
         return 0.0 <= number <= 100.0
     if unit == "annualized_pct":

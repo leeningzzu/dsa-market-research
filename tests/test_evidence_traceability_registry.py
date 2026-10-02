@@ -489,15 +489,51 @@ def test_learning_metric_economic_domains_reject_invalid_values():
     factor["evidence_traceability"] = reg.build_runtime_trace(factor)
     assert reg.learning_projection(factor)["values"]["daily.realized_volatility20"]["value"] is None
 
-    rsi_metric = next(metric for metric in reg.METRIC_BINDINGS if metric["id"] == "daily.rsi6")
-    volatility_metric = next(
-        metric for metric in reg.METRIC_BINDINGS if metric["id"] == "daily.realized_volatility20"
-    )
+    metrics = {metric["id"]: metric for metric in reg.METRIC_BINDINGS}
+    rsi_metric = metrics["daily.rsi6"]
+    volatility_metric = metrics["daily.realized_volatility20"]
+    macd_metric = metrics["daily.macd_dif"]
+    price_metric = metrics["daily.price"]
+    cost_metric = metrics["daily.cost20_proxy"]
+    ma_metric = metrics["weekly.ma5"]
+
     assert reg._metric_value_valid(rsi_metric, float("nan")) is False
     assert reg._metric_value_valid(rsi_metric, float("inf")) is False
     assert reg._metric_value_valid(volatility_metric, -0.01) is False
+    assert reg._metric_value_valid(rsi_metric, -0.1) is False
     assert reg._metric_value_valid(rsi_metric, 0.0) is True
     assert reg._metric_value_valid(rsi_metric, 100.0) is True
+    assert reg._metric_value_valid(rsi_metric, 100.1) is False
+
+    for invalid in (float("nan"), float("inf"), True, False):
+        assert reg._metric_value_valid(macd_metric, invalid) is False
+    for positive_only_metric in (price_metric, cost_metric, ma_metric):
+        assert reg._metric_value_valid(positive_only_metric, 0.0) is False
+        assert reg._metric_value_valid(positive_only_metric, 1.0) is True
+
+
+@pytest.mark.parametrize(
+    ("dif", "dea", "bar"),
+    [
+        (-0.27126150004790617, -0.29420148919316635, 0.04587997829052037),
+        (0.0, 0.0, 0.0),
+        (0.27126150004790617, 0.29420148919316635, -0.04587997829052037),
+    ],
+)
+def test_learning_projection_preserves_finite_signed_macd_values(dif, dea, bar):
+    factor = native_summary()
+    macd = factor["volatility_momentum_evidence"]["context"]["momentum"]["macd"]
+    macd.update(dif=dif, dea=dea, bar=bar)
+    factor["evidence_traceability"] = reg.build_runtime_trace(factor)
+
+    values = reg.learning_projection(factor)["values"]
+    assert values["daily.macd_dif"] == {"value": pytest.approx(dif), "state": "READY"}
+    assert values["daily.macd_dea"] == {"value": pytest.approx(dea), "state": "READY"}
+    assert values["daily.macd_bar"] == {"value": pytest.approx(bar), "state": "READY"}
+
+    for metric_id in ("daily.macd_dif", "daily.macd_dea", "daily.macd_bar"):
+        metric = next(item for item in reg.METRIC_BINDINGS if item["id"] == metric_id)
+        assert metric["unit"] == "PRICE_BASIS_CURRENCY"
 
 
 def test_noncanonical_legacy_call_does_not_trigger_new_product_or_learning():
