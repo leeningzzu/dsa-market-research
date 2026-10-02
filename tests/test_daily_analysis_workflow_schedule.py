@@ -375,6 +375,7 @@ class TestDailyAnalysisStrictSchedule(unittest.TestCase):
 
     def test_evidence_flywheel_record_is_manual_single_stock_receipt_only(self):
         self.assertIn("- evidence-flywheel-record", self.text)
+        self.assertIn("evidence_product_probe:", self.text)
         step_start = self.text.index(
             "- name: 记录 Evidence Flywheel 有界真实账本（仅人工）"
         )
@@ -410,6 +411,8 @@ class TestDailyAnalysisStrictSchedule(unittest.TestCase):
             "REPORT_INTEGRITY_ENABLED: 'false'",
             "SEARXNG_PUBLIC_INSTANCES_ENABLED: 'false'",
             "RESEARCH_STATE_DURABILITY_ENABLED: 'false'",
+            "REPORT_RENDERER_ENABLED: 'false'",
+            "EVIDENCE_PRODUCT_PROBE: ${{ github.event.inputs.evidence_product_probe || 'false' }}",
         ):
             self.assertIn(binding, step_block)
         for forbidden in (
@@ -426,8 +429,18 @@ class TestDailyAnalysisStrictSchedule(unittest.TestCase):
             self.assertNotIn(forbidden, step_block)
         self.assertIn("--single-stock-only", step_block)
         self.assertIn("--closed-world-receipt", step_block)
-        self.assertIn('"receipt_only": True', step_block)
-        self.assertIn('"report_files_created": False', step_block)
+        self.assertIn("--product-report-receipt", step_block)
+        self.assertIn("PRODUCT_ARGS+=(--product-report-receipt)", step_block)
+        self.assertIn('receipt["route_boundaries"]["report_projection"] == "LOCAL_AUDIT_FILE"', step_block)
+        self.assertIn('receipt["route_boundaries"]["report_projection"] == "SUPPRESSED"', step_block)
+        self.assertIn('product["status"] == "PASS"', step_block)
+        self.assertIn('product["runtime_database_binding"] == "EXACT_FOR_CANONICAL_BRIEF_AND_COVERAGE"', step_block)
+        self.assertIn('"investor_brief.one_line_conclusion"', step_block)
+        self.assertIn('"investor_brief.fused_paragraph"', step_block)
+        self.assertIn('"investor_brief.coverage_text"', step_block)
+        self.assertIn('semantic["actual_render_consumer_proven"] is False', step_block)
+        self.assertIn('"receipt_only": not product_probe', step_block)
+        self.assertIn('"report_files_created": product_probe', step_block)
         self.assertIn('--receipt-file "$RECORD_RECEIPT"', step_block)
         self.assertIn("GITHUB_STEP_SUMMARY", step_block)
         self.assertIn('RECORD_DB="data/evidence_flywheel_record.db"', step_block)
@@ -467,6 +480,106 @@ class TestDailyAnalysisStrictSchedule(unittest.TestCase):
 
         schedule_gate = self._gate_source()
         self.assertNotIn("evidence-flywheel-record", schedule_gate)
+
+
+    def test_evidence_flywheel_receipt_validation_executes_both_product_modes(self):
+        step_start = self.text.index(
+            "- name: 记录 Evidence Flywheel 有界真实账本（仅人工）"
+        )
+        marker = "          python - <<'PY'\n"
+        start = self.text.index(marker, step_start) + len(marker)
+        end = self.text.index("\n          PY", start)
+        body = self.text[start:end]
+        validation_source = "\n".join(
+            line[10:] if line.startswith("          ") else line
+            for line in body.splitlines()
+        )
+
+        base = {
+            "status": "RECORDED",
+            "record_count": 1,
+            "model_request_budget": 0,
+            "model_request_count": 0,
+            "notification_suppressed": True,
+            "external_durability": "NOT_REQUESTED",
+            "training_requested": False,
+            "database_receipt": {
+                "fresh_isolated_database": True,
+                "unexpected_nonzero_table_deltas": {},
+                "ledger_identities": [{}],
+                "database_sha256_after_close": "a" * 64,
+            },
+        }
+        receipt_only = {
+            **base,
+            "artifact_policy": {
+                "database_uploaded": False,
+                "logs_uploaded": False,
+                "receipt_only": True,
+                "report_files_created": False,
+                "reports_uploaded": False,
+            },
+            "route_boundaries": {"report_projection": "SUPPRESSED"},
+        }
+        product = {
+            **base,
+            "artifact_policy": {
+                "database_uploaded": False,
+                "logs_uploaded": False,
+                "receipt_only": False,
+                "report_files_created": True,
+                "reports_uploaded": False,
+            },
+            "route_boundaries": {"report_projection": "LOCAL_AUDIT_FILE"},
+            "product_report_receipt": {
+                "status": "PASS",
+                "delivery_fact_hash": "b" * 64,
+                "investor_brief_hash": "c" * 64,
+                "runtime_database_binding": "EXACT_FOR_CANONICAL_BRIEF_AND_COVERAGE",
+                "report_anchor_paths": [
+                    "investor_brief.one_line_conclusion",
+                    "investor_brief.fused_paragraph",
+                    "investor_brief.coverage_text",
+                ],
+                "report_sha256": "d" * 64,
+                "report_bytes": 123,
+                "v25_semantic_coverage": {
+                    "rendered": False,
+                    "actual_render_consumer_proven": False,
+                    "slot_state_counts": {"EVIDENCE_AVAILABLE": 1},
+                },
+            },
+        }
+
+        for name, probe, payload in (
+            ("receipt-only", False, receipt_only),
+            ("product", True, product),
+        ):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                receipt_path = Path(tmp) / "receipt.json"
+                receipt_path.write_text(
+                    __import__("json").dumps(payload),
+                    encoding="utf-8",
+                )
+                env = os.environ.copy()
+                env.update(
+                    {
+                        "RECORD_RECEIPT": str(receipt_path),
+                        "EVIDENCE_PRODUCT_PROBE": "true" if probe else "false",
+                    }
+                )
+                completed = subprocess.run(
+                    [sys.executable, "-c", validation_source],
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(
+                    completed.returncode,
+                    0,
+                    msg=completed.stderr or completed.stdout,
+                )
 
 
     def test_evidence_flywheel_record_cleanup_is_failure_safe(self):

@@ -80,6 +80,9 @@ _CLOSED_WORLD_CORE_TABLES = (
     "alert_notifications",
 )
 
+_PRODUCT_REPORTS_DIR = Path(__file__).resolve().parents[2] / "reports"
+_PRODUCT_READY_STATES = frozenset({"READY", "PROVEN_CURRENT", "PARTIAL_CURRENT"})
+
 
 class EvidenceFlywheelRuntimeError(RuntimeError):
     """Fail-closed boundary error for the local evidence-flywheel entrypoint."""
@@ -698,6 +701,176 @@ def _resolve_database_file(config: Any) -> Path:
     return Path(value).expanduser().resolve()
 
 
+def _require_fresh_product_report_surface() -> None:
+    existing = sorted(
+        path.name
+        for path in _PRODUCT_REPORTS_DIR.glob("*.md")
+        if path.is_file()
+    )
+    if existing:
+        raise EvidenceFlywheelRuntimeError(
+            "product receipt requires a fresh local Markdown report surface"
+        )
+
+
+def _persisted_factor_snapshot(
+    db_manager: Any,
+    pipeline: Any,
+    prediction_hash: str,
+) -> tuple[Dict[str, Any], int]:
+    from sqlalchemy import select
+
+    from src.storage import PredictionLedgerRecord
+
+    with db_manager.get_session() as session:
+        ledger = session.execute(
+            select(PredictionLedgerRecord)
+            .where(PredictionLedgerRecord.prediction_hash == prediction_hash)
+            .limit(1)
+        ).scalar_one_or_none()
+        if ledger is None:
+            raise EvidenceFlywheelRuntimeError(
+                "product receipt cannot resolve the persisted Ledger row"
+            )
+        history_id = int(ledger.analysis_history_id or 0)
+
+    if history_id <= 0:
+        raise EvidenceFlywheelRuntimeError(
+            "product receipt requires a persisted AnalysisHistory identity"
+        )
+    history = db_manager.get_analysis_history_by_id(history_id)
+    factor = pipeline._factor_from_history_record(history)
+    if not isinstance(factor, dict):
+        raise EvidenceFlywheelRuntimeError(
+            "product receipt requires a valid persisted Product factor"
+        )
+    return factor, history_id
+
+
+def _build_product_report_receipt(
+    *,
+    db_manager: Any,
+    pipeline: Any,
+    result: Any,
+    prediction_hash: str,
+) -> Dict[str, Any]:
+    report_files = sorted(
+        path
+        for path in _PRODUCT_REPORTS_DIR.glob("*.md")
+        if path.is_file()
+    )
+    if len(report_files) != 1:
+        raise EvidenceFlywheelRuntimeError(
+            "product receipt requires exactly one local Markdown report"
+        )
+    report_file = report_files[0]
+    report_bytes = report_file.read_bytes()
+    if not report_bytes:
+        raise EvidenceFlywheelRuntimeError(
+            "product receipt found an empty local report"
+        )
+
+    persisted_factor, history_id = _persisted_factor_snapshot(
+        db_manager,
+        pipeline,
+        prediction_hash,
+    )
+    dashboard = getattr(result, "dashboard", None)
+    runtime_factor = (
+        dashboard.get("factor_decision")
+        if isinstance(dashboard, dict)
+        else None
+    )
+    if not isinstance(runtime_factor, dict):
+        raise EvidenceFlywheelRuntimeError(
+            "product receipt requires runtime factor_decision"
+        )
+    for field in (
+        "canonical_decision",
+        "investor_brief",
+        "evidence_product_coverage",
+    ):
+        if runtime_factor.get(field) != persisted_factor.get(field):
+            raise EvidenceFlywheelRuntimeError(
+                f"product receipt found runtime/database drift in {field}"
+            )
+
+    runtime_fact_hash = pipeline._delivery_fact_hash(runtime_factor)
+    persisted_fact_hash = pipeline._delivery_fact_hash(persisted_factor)
+    if (
+        not isinstance(runtime_fact_hash, str)
+        or len(runtime_fact_hash) != 64
+        or runtime_fact_hash != persisted_fact_hash
+    ):
+        raise EvidenceFlywheelRuntimeError(
+            "product receipt found delivery fact identity drift"
+        )
+
+    brief = persisted_factor.get("investor_brief")
+    if not isinstance(brief, Mapping):
+        raise EvidenceFlywheelRuntimeError(
+            "product receipt requires investor_brief"
+        )
+    report_text = report_bytes.decode("utf-8")
+    report_anchor_paths = []
+    for field in ("one_line_conclusion", "fused_paragraph", "coverage_text"):
+        value = str(brief.get(field) or "").strip()
+        if not value or value not in report_text:
+            raise EvidenceFlywheelRuntimeError(
+                f"product receipt report is missing investor_brief.{field}"
+            )
+        report_anchor_paths.append(f"investor_brief.{field}")
+    brief_coverage = brief.get("coverage")
+    missing_timeframes = []
+    if isinstance(brief_coverage, Mapping):
+        missing_timeframes = [
+            timeframe
+            for timeframe in ("monthly", "weekly", "daily", "60m", "30m", "15m", "5m")
+            if str(brief_coverage.get(timeframe) or "MISSING")
+            not in _PRODUCT_READY_STATES
+        ]
+
+    coverage = persisted_factor.get("evidence_product_coverage")
+    if not isinstance(coverage, Mapping) or coverage.get("rendered") is not False:
+        raise EvidenceFlywheelRuntimeError(
+            "product receipt requires semantic-only V2.5 coverage sidecar"
+        )
+    slots = coverage.get("slots")
+    if not isinstance(slots, list) or not slots:
+        raise EvidenceFlywheelRuntimeError(
+            "product receipt requires V2.5 semantic slot coverage"
+        )
+    slot_state_counts: Dict[str, int] = {}
+    for slot in slots:
+        if isinstance(slot, Mapping):
+            state = str(slot.get("state") or "UNKNOWN")
+            slot_state_counts[state] = slot_state_counts.get(state, 0) + 1
+
+    return {
+        "schema_version": "product-report-path-receipt-v1",
+        "status": "PASS",
+        "analysis_history_id": history_id,
+        "prediction_hash": prediction_hash,
+        "report_consumer": "StockAnalysisPipeline._generate_aggregate_report",
+        "report_file_name": report_file.name,
+        "report_bytes": len(report_bytes),
+        "report_sha256": hashlib.sha256(report_bytes).hexdigest(),
+        "delivery_fact_hash": runtime_fact_hash,
+        "investor_brief_hash": digest(brief),
+        "report_anchor_paths": report_anchor_paths,
+        "runtime_database_binding": "EXACT_FOR_CANONICAL_BRIEF_AND_COVERAGE",
+        "missing_timeframes": missing_timeframes,
+        "v25_semantic_coverage": {
+            "schema_version": coverage.get("schema_version"),
+            "receipt_hash": coverage.get("receipt_hash"),
+            "baseline_sha256": coverage.get("baseline_sha256"),
+            "rendered": False,
+            "actual_render_consumer_proven": False,
+            "slot_state_counts": slot_state_counts,
+        },
+    }
+
+
 def _reset_default_runtime_state() -> None:
     from src.config import Config
     from src.storage import DatabaseManager
@@ -766,6 +939,7 @@ def record_canonical_run(
     require_single_stock: bool = False,
     closed_world_database_receipt: bool = False,
     receipt_only: bool = False,
+    product_report_receipt: bool = False,
     intended_cohort_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run one bounded, notification-suppressed canonical analysis into Ledger."""
@@ -783,6 +957,14 @@ def record_canonical_run(
         if intended_cohort_id is not None
         else None
     )
+    if product_report_receipt and (
+        not closed_world_database_receipt or receipt_only
+    ):
+        raise EvidenceFlywheelBoundaryError(
+            "product report receipt requires closed-world database mode and receipt_only=false"
+        )
+    if product_report_receipt:
+        _require_fresh_product_report_surface()
     if config is None:
         from src.config import get_config
 
@@ -944,6 +1126,19 @@ def record_canonical_run(
             "pit_manifest": "NOT_REQUESTED",
             "training": "NOT_REQUESTED",
         }
+    if product_report_receipt:
+        receipt_db = getattr(pipeline, "db", None)
+        if receipt_db is None or len(results) != 1 or len(receipts) != 1:
+            raise EvidenceFlywheelRuntimeError(
+                "product receipt requires one native Pipeline result and database owner"
+            )
+        response["product_report_receipt"] = _build_product_report_receipt(
+            db_manager=receipt_db,
+            pipeline=pipeline,
+            result=results[0],
+            prediction_hash=receipts[0]["prediction_hash"],
+        )
+
     if closed_world_database_receipt:
         if db_manager is None or database_before is None:
             raise EvidenceFlywheelRuntimeError(
@@ -1235,6 +1430,7 @@ def _build_parser() -> argparse.ArgumentParser:
     record.add_argument("--code-sha", default=os.getenv("GITHUB_SHA", ""))
     record.add_argument("--single-stock-only", action="store_true")
     record.add_argument("--closed-world-receipt", action="store_true")
+    record.add_argument("--product-report-receipt", action="store_true")
     record.add_argument("--receipt-file")
 
     replay = subparsers.add_parser(
@@ -1270,6 +1466,10 @@ def main(argv: Optional[list[str]] = None) -> int:
                 raise EvidenceFlywheelBoundaryError(
                     "closed-world Actions receipt requires --single-stock-only"
                 )
+            if args.product_report_receipt and not args.closed_world_receipt:
+                raise EvidenceFlywheelBoundaryError(
+                    "product report receipt requires --closed-world-receipt"
+                )
             config = None
             database_file = None
             if args.closed_world_receipt:
@@ -1284,7 +1484,11 @@ def main(argv: Optional[list[str]] = None) -> int:
                 config=config,
                 require_single_stock=args.single_stock_only,
                 closed_world_database_receipt=args.closed_world_receipt,
-                receipt_only=args.closed_world_receipt,
+                receipt_only=(
+                    args.closed_world_receipt
+                    and not args.product_report_receipt
+                ),
+                product_report_receipt=args.product_report_receipt,
             )
             if args.closed_world_receipt:
                 _reset_default_runtime_state()

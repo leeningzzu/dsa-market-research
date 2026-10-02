@@ -738,6 +738,7 @@ def test_record_parser_binds_actions_receipt_flags() -> None:
     )
     assert args.single_stock_only is True
     assert args.closed_world_receipt is True
+    assert args.product_report_receipt is False
     assert args.receipt_file == "receipt.json"
 
 
@@ -793,11 +794,128 @@ def test_record_cli_closed_world_binds_receipt_only_and_plain_record_does_not(
                 "1" * 40,
             ]
         ) == 0
+        assert evidence_flywheel_main(
+            [
+                "record",
+                "--stocks",
+                "600519",
+                "--code-sha",
+                "1" * 40,
+                "--single-stock-only",
+                "--closed-world-receipt",
+                "--product-report-receipt",
+            ]
+        ) == 0
+        assert evidence_flywheel_main(
+            [
+                "record",
+                "--stocks",
+                "600519",
+                "--code-sha",
+                "1" * 40,
+                "--product-report-receipt",
+            ]
+        ) == 1
 
     assert observed[0]["closed_world_database_receipt"] is True
     assert observed[0]["receipt_only"] is True
+    assert observed[0]["product_report_receipt"] is False
     assert observed[1]["closed_world_database_receipt"] is False
     assert observed[1]["receipt_only"] is False
+    assert observed[1]["product_report_receipt"] is False
+    assert observed[2]["closed_world_database_receipt"] is True
+    assert observed[2]["receipt_only"] is False
+    assert observed[2]["product_report_receipt"] is True
+    assert len(observed) == 3
+
+
+def test_product_report_receipt_reuses_existing_delivery_fact_identity(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from src.services import evidence_flywheel_runtime as runtime
+
+    factor = {
+        "canonical_decision": {"action": "WAIT"},
+        "investor_brief": {
+            "one_line_conclusion": "当前结论",
+            "fused_paragraph": "月线与日线材料融合。",
+            "coverage_text": "周线、60分钟、30分钟、15分钟、5分钟本次暂无可用证据。",
+            "coverage": {
+                "monthly": "READY",
+                "weekly": "MISSING",
+                "daily": "PARTIAL_CURRENT",
+                "60m": "MISSING",
+                "30m": "MISSING",
+                "15m": "MISSING",
+                "5m": "MISSING",
+            },
+        },
+        "evidence_product_coverage": {
+            "schema_version": "v25-product-coverage-v1",
+            "receipt_hash": "b" * 64,
+            "baseline_sha256": "c" * 64,
+            "rendered": False,
+            "slots": [
+                {"state": "EVIDENCE_AVAILABLE"},
+                {"state": "DATA_INSUFFICIENT"},
+            ],
+        },
+    }
+    report = tmp_path / "report_20261002.md"
+    report.write_text(
+        "# actual local report\n"
+        "**综合结论**: 当前结论\n"
+        "月线与日线材料融合。\n"
+        "周线、60分钟、30分钟、15分钟、5分钟本次暂无可用证据。\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(runtime, "_PRODUCT_REPORTS_DIR", tmp_path)
+    monkeypatch.setattr(
+        runtime,
+        "_persisted_factor_snapshot",
+        lambda db_manager, pipeline, prediction_hash: (factor, 7),
+    )
+
+    class FakePipeline:
+        @staticmethod
+        def _delivery_fact_hash(value):
+            return "a" * 64 if value == factor else None
+
+    result = SimpleNamespace(dashboard={"factor_decision": factor})
+    receipt = runtime._build_product_report_receipt(
+        db_manager=object(),
+        pipeline=FakePipeline(),
+        result=result,
+        prediction_hash="d" * 64,
+    )
+
+    assert receipt["status"] == "PASS"
+    assert receipt["analysis_history_id"] == 7
+    assert receipt["delivery_fact_hash"] == "a" * 64
+    assert receipt["runtime_database_binding"] == "EXACT_FOR_CANONICAL_BRIEF_AND_COVERAGE"
+    assert receipt["report_anchor_paths"] == [
+        "investor_brief.one_line_conclusion",
+        "investor_brief.fused_paragraph",
+        "investor_brief.coverage_text",
+    ]
+    assert receipt["missing_timeframes"] == ["weekly", "60m", "30m", "15m", "5m"]
+    assert receipt["report_bytes"] > 0
+    assert len(receipt["report_sha256"]) == 64
+    report.write_text("# broken report\n", encoding="utf-8")
+    with pytest.raises(
+        EvidenceFlywheelRuntimeError,
+        match="report is missing investor_brief.one_line_conclusion",
+    ):
+        runtime._build_product_report_receipt(
+            db_manager=object(),
+            pipeline=FakePipeline(),
+            result=result,
+            prediction_hash="d" * 64,
+        )
+
+    assert receipt["v25_semantic_coverage"]["rendered"] is False
+    assert receipt["v25_semantic_coverage"]["actual_render_consumer_proven"] is False
 
 
 def test_record_phase_fails_closed_when_model_request_count_is_nonzero() -> None:

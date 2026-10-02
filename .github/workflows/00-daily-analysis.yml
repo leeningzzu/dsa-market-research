@@ -21,6 +21,11 @@ on:
           - research-state-smoke  # 仅人工：空 research-state durability smoke，不执行股票分析
           - baseline-transport  # 仅人工：V2.5已接受原件的真实SMTP运输验收，不执行分析
           - evidence-flywheel-record  # 仅人工：1只A股、零模型/通知、隔离SQLite的Ledger工程验收
+      evidence_product_probe:
+        description: 'Evidence Flywheel 同一canonical→本地Product报告验收（仅 evidence-flywheel-record；零通知/零模型）'
+        required: false
+        default: false
+        type: boolean
       force_run:
         description: '强制运行（跳过交易日检查）'
         required: false
@@ -189,6 +194,7 @@ jobs:
         if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'evidence-flywheel-record' }}
         env:
           EVIDENCE_FLYWHEEL_STOCK: ${{ github.event.inputs.p0_stock_codes || '' }}
+          EVIDENCE_PRODUCT_PROBE: ${{ github.event.inputs.evidence_product_probe || 'false' }}
           DATABASE_PATH: ./data/evidence_flywheel_record.db
           SQLITE_WAL_ENABLED: 'false'
           ENABLE_REALTIME_QUOTE: 'false'
@@ -202,6 +208,7 @@ jobs:
           REPORT_INTEGRITY_RETRY: '0'
           SEARXNG_PUBLIC_INSTANCES_ENABLED: 'false'
           RESEARCH_STATE_DURABILITY_ENABLED: 'false'
+          REPORT_RENDERER_ENABLED: 'false'
         shell: bash
         run: |
           set -euo pipefail
@@ -222,11 +229,16 @@ jobs:
           trap cleanup_evidence_flywheel_record EXIT
           rm -f "$RECORD_DB" "$RECORD_DB-wal" "$RECORD_DB-shm" "$RECORD_RECEIPT"
           rm -rf reports logs
+          PRODUCT_ARGS=()
+          if [ "${EVIDENCE_PRODUCT_PROBE:-false}" = "true" ]; then
+            PRODUCT_ARGS+=(--product-report-receipt)
+          fi
           python -m src.services.evidence_flywheel_runtime record \
             --stocks "$EVIDENCE_FLYWHEEL_STOCK" \
             --code-sha "$GITHUB_SHA" \
             --single-stock-only \
             --closed-world-receipt \
+            "${PRODUCT_ARGS[@]}" \
             --receipt-file "$RECORD_RECEIPT"
           python - <<'PY'
           import json
@@ -242,13 +254,35 @@ jobs:
           assert receipt["notification_suppressed"] is True
           assert receipt["external_durability"] == "NOT_REQUESTED"
           assert receipt["training_requested"] is False
+          product_probe = os.environ.get("EVIDENCE_PRODUCT_PROBE", "false").lower() == "true"
           assert receipt["artifact_policy"] == {
               "database_uploaded": False,
               "logs_uploaded": False,
-              "receipt_only": True,
-              "report_files_created": False,
+              "receipt_only": not product_probe,
+              "report_files_created": product_probe,
               "reports_uploaded": False,
           }
+          if product_probe:
+              assert receipt["route_boundaries"]["report_projection"] == "LOCAL_AUDIT_FILE"
+              product = receipt["product_report_receipt"]
+              assert product["status"] == "PASS"
+              assert len(product["delivery_fact_hash"]) == 64
+              assert len(product["investor_brief_hash"]) == 64
+              assert product["runtime_database_binding"] == "EXACT_FOR_CANONICAL_BRIEF_AND_COVERAGE"
+              assert product["report_anchor_paths"] == [
+                  "investor_brief.one_line_conclusion",
+                  "investor_brief.fused_paragraph",
+                  "investor_brief.coverage_text",
+              ]
+              assert len(product["report_sha256"]) == 64
+              assert product["report_bytes"] > 0
+              semantic = product["v25_semantic_coverage"]
+              assert semantic["rendered"] is False
+              assert semantic["actual_render_consumer_proven"] is False
+              assert semantic["slot_state_counts"]
+          else:
+              assert receipt["route_boundaries"]["report_projection"] == "SUPPRESSED"
+              assert "product_report_receipt" not in receipt
           database = receipt["database_receipt"]
           assert database["fresh_isolated_database"] is True
           assert database["unexpected_nonzero_table_deltas"] == {}
