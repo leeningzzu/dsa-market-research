@@ -246,6 +246,7 @@ jobs:
               "database_uploaded": False,
               "logs_uploaded": False,
               "receipt_only": True,
+              "report_files_created": False,
               "reports_uploaded": False,
           }
           database = receipt["database_receipt"]

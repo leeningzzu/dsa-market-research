@@ -426,6 +426,8 @@ class TestDailyAnalysisStrictSchedule(unittest.TestCase):
             self.assertNotIn(forbidden, step_block)
         self.assertIn("--single-stock-only", step_block)
         self.assertIn("--closed-world-receipt", step_block)
+        self.assertIn('"receipt_only": True', step_block)
+        self.assertIn('"report_files_created": False', step_block)
         self.assertIn('--receipt-file "$RECORD_RECEIPT"', step_block)
         self.assertIn("GITHUB_STEP_SUMMARY", step_block)
         self.assertIn('RECORD_DB="data/evidence_flywheel_record.db"', step_block)
@@ -485,7 +487,7 @@ class TestDailyAnalysisStrictSchedule(unittest.TestCase):
             '"training_requested":false,'
             '"artifact_policy":{"database_uploaded":false,'
             '"logs_uploaded":false,"receipt_only":true,'
-            '"reports_uploaded":false},'
+            '"report_files_created":false,"reports_uploaded":false},'
             '"database_receipt":{"fresh_isolated_database":true,'
             '"unexpected_nonzero_table_deltas":{},'
             '"ledger_identities":[{}],'

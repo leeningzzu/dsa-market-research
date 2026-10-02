@@ -1284,6 +1284,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 config=config,
                 require_single_stock=args.single_stock_only,
                 closed_world_database_receipt=args.closed_world_receipt,
+                receipt_only=args.closed_world_receipt,
             )
             if args.closed_world_receipt:
                 _reset_default_runtime_state()

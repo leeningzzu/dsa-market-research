@@ -741,6 +741,65 @@ def test_record_parser_binds_actions_receipt_flags() -> None:
     assert args.receipt_file == "receipt.json"
 
 
+def test_record_cli_closed_world_binds_receipt_only_and_plain_record_does_not(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from src.services.evidence_flywheel_runtime import main as evidence_flywheel_main
+
+    database = tmp_path / "closed.db"
+    database.write_bytes(b"closed-world-db")
+    config = Config(database_path=str(database), sqlite_wal_enabled=False)
+    observed = []
+
+    def fake_record_canonical_run(**kwargs):
+        observed.append(dict(kwargs))
+        return {
+            "status": "RECORDED",
+            "database_receipt": {},
+        }
+
+    monkeypatch.setattr(
+        "src.services.evidence_flywheel_runtime.record_canonical_run",
+        fake_record_canonical_run,
+    )
+    monkeypatch.setattr(
+        "src.services.evidence_flywheel_runtime._reset_default_runtime_state",
+        lambda: None,
+    )
+    monkeypatch.setattr("src.config.get_config", lambda: config)
+
+    with patch.dict(
+        "sys.modules",
+        {"main": SimpleNamespace(validate_p0_stock_codes=lambda raw: ["600519"])},
+    ):
+        assert evidence_flywheel_main(
+            [
+                "record",
+                "--stocks",
+                "600519",
+                "--code-sha",
+                "1" * 40,
+                "--single-stock-only",
+                "--closed-world-receipt",
+            ]
+        ) == 0
+        assert evidence_flywheel_main(
+            [
+                "record",
+                "--stocks",
+                "600519",
+                "--code-sha",
+                "1" * 40,
+            ]
+        ) == 0
+
+    assert observed[0]["closed_world_database_receipt"] is True
+    assert observed[0]["receipt_only"] is True
+    assert observed[1]["closed_world_database_receipt"] is False
+    assert observed[1]["receipt_only"] is False
+
+
 def test_record_phase_fails_closed_when_model_request_count_is_nonzero() -> None:
     class BadPipeline:
         def __init__(self, **kwargs):
