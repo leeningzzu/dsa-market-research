@@ -20,6 +20,7 @@ import unittest
 from copy import deepcopy
 from datetime import date
 from unittest import mock
+from types import SimpleNamespace
 from typing import Optional
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -36,6 +37,7 @@ from src.notification import (
     NotificationBuilder,
     NotificationChannel,
     NotificationService,
+    _append_factor_decision_block,
     _get_valid_investor_brief,
 )
 from src.notification_noise import reset_notification_noise_state
@@ -43,6 +45,7 @@ from src.analyzer import AnalysisResult
 from src.services.factor_decision_summary import (
     apply_canonical_decision_to_result,
     assert_canonical_consumer_consistency,
+    build_stock_factor_decision_summary,
     canonical_factor_binding,
 )
 from src.services.evidence_traceability_registry import build_runtime_trace
@@ -189,6 +192,26 @@ def _make_investor_brief_result() -> AnalysisResult:
     )
     return result
 
+
+
+def _make_builder_risk_factor(risks):
+    trend = SimpleNamespace(
+        signal_score=82,
+        trend_status=SimpleNamespace(value="多头排列"),
+        buy_signal=SimpleNamespace(value="买入"),
+        ma_alignment="MA5 > MA10 > MA20",
+        trend_strength=78,
+        current_price=10.5,
+        support_levels=[10.0],
+        resistance_levels=[11.0],
+        volume_status=SimpleNamespace(value="缩量回调"),
+        volume_ratio_5d=0.62,
+        volume_trend="缩量回调，卖压收缩；是否属于洗盘需后续确认",
+        macd_signal="MACD多头结构",
+        rsi_signal="RSI中性偏强",
+        risk_factors=list(risks),
+    )
+    return build_stock_factor_decision_summary(trend, include_canonical=True)
 
 def _make_feishu_message() -> BotMessage:
     return BotMessage(
@@ -1119,6 +1142,63 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         self.assertNotIn("旧空仓建议（不得出现）", out)
         self.assertNotIn("### 📌 核心结论", out)
         self.assertNotIn("### 🧭 综合评估", out)
+
+    @mock.patch("src.notification.get_config")
+    def test_builder_material_risks_survive_full_and_compact_complete_outputs(
+        self, mock_get_config: mock.MagicMock
+    ):
+        risks = [
+            "RISK_LIQUIDITY_DISTINCT",
+            "RISK_FINANCIAL_VINTAGE_DISTINCT",
+            "RISK_SUPPORT_BREAK_DISTINCT",
+            "RISK_VALUATION_ASSUMPTION_DISTINCT",
+        ]
+        factor = _make_builder_risk_factor(risks)
+        result = _make_investor_brief_result()
+        apply_canonical_decision_to_result(result, factor, scope="production")
+
+        for renderer_enabled in (False, True):
+            with self.subTest(report_renderer_enabled=renderer_enabled):
+                mock_get_config.return_value = _make_config(
+                    report_renderer_enabled=renderer_enabled
+                )
+                service = NotificationService()
+                full = service.generate_dashboard_report(
+                    [result], report_date="2026-09-14"
+                )
+                compact = service.generate_brief_report(
+                    [result], report_date="2026-09-14"
+                )
+                for risk in risks:
+                    self.assertIn(risk, full)
+                    self.assertIn(risk, compact)
+
+    def test_legacy_factor_fallback_preserves_all_material_risks(self):
+        risks = [
+            "RISK_LIQUIDITY_DISTINCT",
+            "RISK_FINANCIAL_VINTAGE_DISTINCT",
+            "RISK_SUPPORT_BREAK_DISTINCT",
+            "RISK_VALUATION_ASSUMPTION_DISTINCT",
+        ]
+        lines = []
+        _append_factor_decision_block(
+            lines,
+            {
+                "conclusion": "fixture",
+                "historical_reference": {},
+                "current_probability": {},
+                "why": [],
+                "action_condition": "",
+                "invalidation_condition": "",
+                "valuation": "",
+                "cost_structure": "",
+                "risk_notes": risks,
+            },
+            "zh",
+        )
+        output = "\n".join(lines)
+        for risk in risks:
+            self.assertIn(risk, output)
 
     @mock.patch("src.notification.get_config")
     def test_asset_investor_brief_template_matches_fallback_semantics(

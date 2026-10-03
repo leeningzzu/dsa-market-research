@@ -526,8 +526,6 @@ def _risk_notes(trend_result: Any) -> List[str]:
             text = text.replace("主力洗盘", "洗盘候选")
         if text not in risks:
             risks.append(text)
-        if len(risks) >= 3:
-            break
     return risks or ["需继续关注市场环境、行业变化及关键支撑失效风险。"]
 
 
@@ -1386,7 +1384,7 @@ def _build_asset_research_brief_v1(trend_result, summary, *, asset_type: str = "
         risks = summary.get("risks")
     if not isinstance(risks, list):
         risks = []
-    risks = [str(x).strip() for x in risks if str(x).strip()][:2]
+    risks = [str(x).strip() for x in risks if str(x).strip()]
 
     canonical = summary.get("canonical_decision")
     canonical = dict(canonical) if isinstance(canonical, dict) else {
