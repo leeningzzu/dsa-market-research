@@ -86,6 +86,8 @@ def test_missing_or_mixed_source_never_claims_ready_structure():
     )
     assert mixed["status"] == "PARTIAL"
     assert mixed["source_alignment"]["status"] == "UNPROVEN"
+    assert mixed["source_alignment"]["coverage"] == "FULL_NORMALIZED_HISTORY"
+    assert mixed["source_alignment"]["observations"] == len(mixed_source)
 
 
 def test_target_date_and_invalid_ohlc_fail_closed():
@@ -111,3 +113,48 @@ def test_pipeline_wires_one_price_structure_context_into_normal_and_agent_factor
     assert "from src.services.price_structure_service import build_price_structure_context" in source
     assert "price_structure_context = build_price_structure_context(" in source
     assert source.count("price_structure_context=price_structure_context") >= 3
+
+
+def test_full_history_source_alignment_rejects_old_source_pivot_outside_prior_60_row_suffix():
+    dates = pd.bdate_range("2025-01-02", periods=100)
+    rows = []
+    for i, day in enumerate(dates):
+        close = 50.0 + i * 0.05
+        high = close + 1.0
+        low = close - 1.0
+        if i == 20:
+            high = 100.0
+        if i == 80:
+            close, high, low = 101.0, 102.0, 99.0
+        elif i > 80:
+            close = 101.0 + (i - 80) * 0.05
+            high, low = close + 1.0, close - 1.0
+        rows.append(
+            {
+                "date": day,
+                "open": close,
+                "high": high,
+                "low": low,
+                "close": close,
+                "data_source": "OldFetcher" if i < 40 else "CurrentFetcher",
+            }
+        )
+    history = pd.DataFrame(rows)
+    context = build_price_structure_context(
+        stock_code="600519",
+        history=history,
+        target_date=history.iloc[-1]["date"].date(),
+        market="cn",
+    )
+    assert context["status"] == "PARTIAL"
+    assert context["reason"] == "SOURCE_ALIGNMENT_UNPROVEN"
+    assert context["historical_replay_eligible"] is False
+    assert context["source_alignment"] == {
+        "status": "UNPROVEN",
+        "sources": ["CurrentFetcher", "OldFetcher"],
+        "rows_complete": True,
+        "coverage": "FULL_NORMALIZED_HISTORY",
+        "observations": 100,
+        "start_date": history.iloc[0]["date"].date().isoformat(),
+        "end_date": history.iloc[-1]["date"].date().isoformat(),
+    }

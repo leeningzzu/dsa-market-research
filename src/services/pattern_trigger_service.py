@@ -16,11 +16,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
+from src.services.candlestick_pattern_service import build_candlestick_pattern_context
+
 
 PATTERN_TRIGGER_SCHEMA_VERSION = "pattern-trigger-v1"
-ALGORITHM_VERSION = "pattern-trigger-v1"
+ALGORITHM_VERSION = "pattern-trigger-v2"
 MIN_OBSERVATIONS = 30
-SOURCE_ALIGNMENT_WINDOW = 60
+SOURCE_ALIGNMENT_POLICY = "FULL_NORMALIZED_HISTORY"
 PRIOR_TREND_WINDOW = 20
 PRIOR_TREND_MIN_OBSERVATIONS = 10
 CUP_RIM_TOLERANCE_PCT = 8.0
@@ -47,7 +49,7 @@ MAX_PATTERNS = 5
 _CONFIG = {
     "algorithm_version": ALGORITHM_VERSION,
     "minimum_observations": MIN_OBSERVATIONS,
-    "source_alignment_window": SOURCE_ALIGNMENT_WINDOW,
+    "source_alignment_policy": SOURCE_ALIGNMENT_POLICY,
     "prior_trend_window": PRIOR_TREND_WINDOW,
     "prior_trend_min_observations": PRIOR_TREND_MIN_OBSERVATIONS,
     "cup_rim_tolerance_pct": CUP_RIM_TOLERANCE_PCT,
@@ -142,15 +144,21 @@ def _invalid_ohlc(frame: pd.DataFrame) -> bool:
 
 
 def _source_alignment(frame: pd.DataFrame) -> Dict[str, Any]:
-    window = frame.tail(SOURCE_ALIGNMENT_WINDOW)
-    if "data_source" not in window.columns:
-        return {"status": "UNPROVEN", "sources": [], "rows_complete": False}
-    values = window["data_source"].map(
+    base = {
+        "coverage": SOURCE_ALIGNMENT_POLICY,
+        "observations": int(len(frame)),
+        "start_date": frame.iloc[0]["date"].isoformat() if not frame.empty else None,
+        "end_date": frame.iloc[-1]["date"].isoformat() if not frame.empty else None,
+    }
+    if "data_source" not in frame.columns:
+        return {**base, "status": "UNPROVEN", "sources": [], "rows_complete": False}
+    values = frame["data_source"].map(
         lambda value: str(value).strip() if value not in (None, "") else ""
     )
     sources = sorted({value for value in values.tolist() if value})
     complete = bool((values != "").all())
     return {
+        **base,
         "status": "SINGLE_SOURCE" if len(sources) == 1 and complete else "UNPROVEN",
         "sources": sources,
         "rows_complete": complete,
@@ -196,7 +204,21 @@ def _empty_payload(
         "status": status,
         "reason": reason,
         "observations": observations,
-        "source_alignment": source_alignment or {"status": "UNPROVEN", "sources": [], "rows_complete": False},
+        "source_alignment": source_alignment or {
+            "status": "UNPROVEN",
+            "sources": [],
+            "rows_complete": False,
+            "coverage": SOURCE_ALIGNMENT_POLICY,
+            "observations": observations,
+            "start_date": None,
+            "end_date": None,
+        },
+        "candlestick": {
+            "status": "MISSING",
+            "reason": "PARENT_PATTERN_NOT_READY",
+            "material": False,
+            "historical_replay_eligible": False,
+        },
         "patterns": [],
         "primary_pattern": None,
         "pattern_count": 0,
@@ -242,7 +264,11 @@ def _validate_price_structure(
     structure_alignment = context.get("source_alignment") if isinstance(context.get("source_alignment"), dict) else {}
     if history_alignment.get("status") != "SINGLE_SOURCE" or structure_alignment.get("status") != "SINGLE_SOURCE":
         return None, "SOURCE_ALIGNMENT_UNPROVEN", structure_alignment, context.get("structure_event") or {"state": "NONE"}
-    if sorted(history_alignment.get("sources") or []) != sorted(structure_alignment.get("sources") or []):
+    alignment_keys = ("coverage", "observations", "start_date", "end_date", "rows_complete")
+    if (
+        sorted(history_alignment.get("sources") or []) != sorted(structure_alignment.get("sources") or [])
+        or any(history_alignment.get(key) != structure_alignment.get(key) for key in alignment_keys)
+    ):
         return None, "SOURCE_ALIGNMENT_MISMATCH", structure_alignment, context.get("structure_event") or {"state": "NONE"}
 
     pivots: List[Dict[str, Any]] = []
@@ -728,6 +754,14 @@ def build_pattern_trigger_context(
         )
 
     volume_ref = _volume_evidence_ref(supply_demand_context, target_date=target_date)
+    candlestick = build_candlestick_pattern_context(
+        stock_code=stock_code,
+        history=frame,
+        target_date=target_date,
+        market=market,
+        price_structure_context=price_structure_context,
+        supply_demand_context=supply_demand_context,
+    )
     raw_patterns = [
         *_detect_cups(frame, pivots, volume_ref=volume_ref),
         *_detect_double_bottoms(frame, pivots, volume_ref=volume_ref),
@@ -751,6 +785,7 @@ def build_pattern_trigger_context(
         "end_date": frame.iloc[-1]["date"].isoformat(),
         "source_alignment": structure_alignment,
         "history_source_alignment": history_alignment,
+        "candlestick": candlestick,
         "volume_evidence_ref": volume_ref,
         "patterns": patterns,
         "primary_pattern": primary,

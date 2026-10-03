@@ -2510,6 +2510,26 @@ class StockAnalysisPipeline:
                 },
                 **common,
             )
+            candlestick_context = pattern_trigger_context.get("candlestick")
+            if isinstance(candlestick_context, dict):
+                receipts["CANDLESTICK"] = build_method_execution_receipt(
+                    "CANDLESTICK",
+                    output=candlestick_context,
+                    timeframe="daily",
+                    upstream_hashes={
+                        **(
+                            {"price_structure_context": price_structure_hash}
+                            if price_structure_hash
+                            else {}
+                        ),
+                        **(
+                            {"supply_demand_context": supply_demand_hash}
+                            if supply_demand_hash
+                            else {}
+                        ),
+                    },
+                    **common,
+                )
         if isinstance(multi_timeframe_structure_context, dict):
             receipts["MTF"] = build_method_execution_receipt(
                 "MTF",

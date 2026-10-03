@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [改进] B6A Pattern/K线证据改为完整 consumed-history provenance：PriceStructure 与 PatternTrigger 不再仅以最后60行证明来源，必须覆盖完整 normalized history 并绑定 source/span；新增日线 `CANDLESTICK` 薄 typed leaf，作为既有 `pattern_trigger_evidence.context.candlestick` 嵌套证据，仅提供确定性 OHLC 几何、确认结构位置与形成/确认/失败生命周期。首批只准入犹豫、上下影拒绝、吞没与 inside/outside；gap/window、三根命名反转及未独立准入的扩张/收缩方向标签继续 deferred。沿用现有 Pattern Product slots，不新增证据族、报告 section、canonical action、Strategy/Learning/Ledger、模型、provider、依赖或 V2.5 DOM/CSS；同一 swing/structure 保持相关组去重，未来确认不得回填历史。
+
 - [改进] 为计划中的 `leeningzzu/dsa-market-research` public successor 收敛仓库 authority 迁移边界：公开 `main` 必须连续继承当前已验证的 `factor-decision-v1-r002@2f89eb9d...` 研发主线，并仅追加受控 publication hardening；初始 public 只开放 `pull_request(main)` / `push(main)` 的只读 CI，其余 daily live、Secret、写权限、release/publish workflow 全部 fail-closed。同步 README、个人操作手册与文档索引中的 public-code/private-state、19:00 定时、排错与回滚说明；不迁移旧 private `main`、Secrets、私人 Ledger/Outcome/训练数据、私人报告/R2 bytes 或 private Actions 历史，本变更本身不构成 authority Promotion。
 
 - [修复] 收敛 B5A consumer/legacy 边界：撤回未被真实入口证明且可通过修改 policy 集合自我放宽的重复 consumer-policy/helper/manifest coupling，继续复用既有 canonical/trace/brief/Learning guards；旧 `DecisionSignal` score/action 文档明确降为 legacy compatibility，不能覆盖 factor canonical action、冒充胜率/校准概率或进入当前策略资格。`market_review` 注释同步明确 R004 仅是历史 regression/pattern donor，不是当前 Product/fact authority。未修改数据库、provider、模板、V2.5 原件、模型或外部服务。
