@@ -556,7 +556,7 @@ def _append_factor_decision_block(lines: List[str], factor: Any, report_language
         lines.append(cost_structure)
     if risk_notes:
         lines.append("**主要风险**:")
-        for item in risk_notes[:3]:
+        for item in risk_notes:
             text = str(item or "").strip()
             if text:
                 lines.append(f"- {text}")

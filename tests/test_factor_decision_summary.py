@@ -9,6 +9,7 @@ from src.services.factor_decision_summary import (
     assert_canonical_consumer_consistency,
     build_stock_factor_decision_summary,
     canonical_explanation_degradation_eligible,
+    validate_investor_brief_binding,
 )
 from src.stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult, VolumeStatus
 
@@ -65,6 +66,49 @@ def test_summary_reuses_existing_score_without_inventing_probability_or_win_rate
     assert "筹码平均成本参考约 10.00" in summary["cost_structure"]
     assert "主力" not in str(summary)
 
+
+
+def test_material_risks_are_preserved_through_summary_brief_and_binding():
+    risks = [
+        "RISK_LIQUIDITY_DISTINCT",
+        "RISK_FINANCIAL_VINTAGE_DISTINCT",
+        "RISK_SUPPORT_BREAK_DISTINCT",
+        "RISK_VALUATION_ASSUMPTION_DISTINCT",
+    ]
+
+    summary = build_stock_factor_decision_summary(
+        _trend(risk_factors=risks),
+        include_canonical=True,
+    )
+    brief = validate_investor_brief_binding(summary)
+
+    assert summary["risk_notes"] == risks
+    assert brief["risk_notes"] == risks
+
+
+def test_material_risk_normalization_keeps_legal_nontriggers_without_duplicates():
+    duplicate = build_stock_factor_decision_summary(
+        _trend(risk_factors=["⚠️ 重复风险", "重复风险", "", "另一项风险"]),
+        include_canonical=True,
+    )
+    assert duplicate["risk_notes"] == ["重复风险", "另一项风险"]
+    assert duplicate["investor_brief"]["risk_notes"] == ["重复风险", "另一项风险"]
+
+    single = build_stock_factor_decision_summary(
+        _trend(risk_factors=["单一合法风险"]),
+        include_canonical=True,
+    )
+    assert single["risk_notes"] == ["单一合法风险"]
+    assert single["investor_brief"]["risk_notes"] == ["单一合法风险"]
+
+    no_event = build_stock_factor_decision_summary(
+        _trend(risk_factors=[]),
+        include_canonical=True,
+    )
+    assert no_event["risk_notes"] == [
+        "需继续关注市场环境、行业变化及关键支撑失效风险。"
+    ]
+    assert no_event["investor_brief"]["risk_notes"] == no_event["risk_notes"]
 
 def test_static_pe_pb_without_percentile_or_peers_does_not_claim_relative_valuation():
     summary = build_stock_factor_decision_summary(
