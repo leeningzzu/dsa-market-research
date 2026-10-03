@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 - [测试] 为 public code authority 的现有 Network Smoke 增加仅 workflow_dispatch 可运行的 ubuntu-latest 无代理 direct-egress 探针：显式清除 HTTP/HTTPS/ALL proxy 环境并以标准库验证 EastMoney 5m provider host 的 DNS/TLS/HTTP 可达性；不下载行情、不读取 Secret、不恢复 public schedule/live job，也不改变旧 private network-smoke 行为。
+- [修复] 修正 Network Smoke public direct-egress step 中大小写仅有差异的 proxy 环境变量重复定义，避免 GitHub Actions 在 runner 启动前判定 workflow 无效；保留 shell 内同时清除大小写 proxy 名称，并新增全 workflow 的 case-insensitive env-key 回归以在本地提前阻断同类 parser 漂移。
 - [修复] 保留 canonical Product 与 legacy complete-detail fallback 中全部不同且非空的材料风险：移除 factor summary 的固定三项上限、investor brief 的固定两项上限及 legacy fallback 的固定三项上限；full/compact 继续复用同一完整 risk facts，AUTO 4–10 总览仍只展示导航风险但同一完整报告保留逐资产全部详情。不修改 canonical action、策略/学习/标签、数据库、provider、workflow 或 V2.5 HTML/DOM/CSS。
 - [改进] B6A Pattern/K线证据改为完整 consumed-history provenance：PriceStructure 与 PatternTrigger 不再仅以最后60行证明来源，必须覆盖完整 normalized history 并绑定 source/span；新增日线 `CANDLESTICK` 薄 typed leaf，作为既有 `pattern_trigger_evidence.context.candlestick` 嵌套证据，仅提供确定性 OHLC 几何、确认结构位置与形成/确认/失败生命周期。首批只准入犹豫、上下影拒绝、吞没与 inside/outside；gap/window、三根命名反转及未独立准入的扩张/收缩方向标签继续 deferred。沿用现有 Pattern Product slots，不新增证据族、报告 section、canonical action、Strategy/Learning/Ledger、模型、provider、依赖或 V2.5 DOM/CSS；同一 swing/structure 保持相关组去重，未来确认不得回填历史。
 
