@@ -16,6 +16,7 @@ permissions:
 
 jobs:
   stale:
+    if: ${{ github.repository == 'leeningzzu/daily_stock_analysis-private' }}
     name: 🧹 清理过期 Issues/PRs
     runs-on: ubuntu-latest
     

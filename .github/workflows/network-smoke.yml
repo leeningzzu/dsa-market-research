@@ -11,6 +11,7 @@ concurrency:
 
 jobs:
   smoke:
+    if: ${{ github.repository == 'leeningzzu/daily_stock_analysis-private' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read

@@ -21,6 +21,7 @@ permissions:
 jobs:
   # ==================== 安全检查（仅通过 API 读取 PR 元数据）====================
   security-check:
+    if: ${{ github.repository == 'leeningzzu/daily_stock_analysis-private' }}
     name: 🔒 安全检查
     runs-on: ubuntu-latest
     permissions:
@@ -92,6 +93,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [security-check]
     if: |
+      github.repository == 'leeningzzu/daily_stock_analysis-private' &&
       needs.security-check.outputs.safe_to_run == 'true' &&
       needs.security-check.outputs.has_reviewable_changes == 'true' &&
       vars.ENABLE_AI_REVIEW != 'false'
@@ -144,6 +146,7 @@ jobs:
 
   # ==================== PR 标签自动分类（仅 GitHub API）====================
   labeler:
+    if: ${{ github.repository == 'leeningzzu/daily_stock_analysis-private' }}
     name: 🏷️ 自动标签
     runs-on: ubuntu-latest
     permissions:
@@ -209,7 +212,7 @@ jobs:
     name: 💬 审查报告
     runs-on: ubuntu-latest
     needs: [security-check, ai-review]
-    if: always() && needs.security-check.outputs.safe_to_run == 'true'
+    if: always() && github.repository == 'leeningzzu/daily_stock_analysis-private' && needs.security-check.outputs.safe_to_run == 'true'
     permissions:
       actions: read
       contents: read

@@ -1,28 +1,48 @@
-# 个人版操作手册：从配置到读懂邮件
+# 个人版操作手册：部署、配置、使用、排错与回滚
 
-本手册服务于 GitHub Actions 上的个人私有部署，不要求另装 Web 服务、Docker 或交易框架。需要其他部署方式时，再从[文档中心](INDEX.md)进入。
+本手册优先服务于 GitHub Actions 上的个人研究系统。当前代码正在从历史 private predecessor 迁移到公开 `leeningzzu/dsa-market-research`，但**代码公开不等于 API Key、邮件凭证、私人持仓、Ledger/Outcome、训练数据或 R2 状态公开**。需要 Docker / 云服务器 / Desktop 等其它部署方式时，再从[文档中心](INDEX.md)进入。
 
-核对日期：2026-09-27。**这是一份文档候选，不会替你启用任务、修改密钥或上线未实现功能。** “待实现”章节不能当成已生效的配置说明。
+核对日期：2026-10-03。页面、套餐、Actions 状态和 provider 能力会变化；本手册给出 current 操作合同，不会替你启用任务、复制 Secret、修改仓库设置或把待验收功能自动上线。
+
+<a id="task-authority"></a>
+## 0. 先看懂 current authority 与隐私边界
+
+当前迁移关系：
+
+```text
+private predecessor: factor-decision-v1-r002@2f89eb9d...
+        ↓ 保留完整 validated lineage，只追加受控 migration delta
+public current target: leeningzzu/dsa-market-research/main
+```
+
+- public `main` 是当前已验证开发主线的继续，不是旧 private `main` 的回退版。
+- public Git 保存代码、测试、模板和安全文档；Project Sources 继续保存项目治理/currentness，不要求全部公开进 Git。
+- `.env`、API Key、SMTP 授权码、私人持仓、原始 Ledger/Outcome、训练数据、模型状态、私人报告和私有 R2 bytes 不得提交到 public Git。
+- 初始 public migration 只开放只读 CI；daily live、Email/Telegram、R2/state、release/publish 需要后续各自 gate，不能因为仓库公开就自动启用。
+- Promotion 前 private predecessor 仍是 rollback/currentness 证据；Promotion 后 public 是唯一 current code authority，private 不再并列运行。
+
+遇到任何“README 写的是 public，但页面仍显示 private/current branch 不同”的情况，先核 exact repo、branch、SHA 和最新 Source/CI receipt，不凭名称猜 current。
 
 <a id="task-start"></a>
 ## 1. 第一次部署：先看对地方
 
-准备私有 DSA 仓库、至少一个可用模型服务、一组邮件发送配置；R2 不是发送第一封分析邮件的必需项。已有私有仓库就继续使用，不重新 Fork、不另建第二套系统。
+公开迁移完成后，正常入口是 `leeningzzu/dsa-market-research`。迁移尚未 Promotion 时，仍以已记录的 private predecessor exact SHA 为 current authority；不要同时把两个仓库都当 Production。
 
-在私有仓库检查三处：
+依次检查：
 
-1. **Code**：确认默认分支是准备承载正式版本的 `main`。开发分支用于测试，不等于已经合入 `main`。
-2. **Settings → Actions → General**：这是仓库 Actions 总开关。总开关打开，只代表允许工作流运行。
-3. **Actions → 每日股票分析**：这是单个工作流开关。黄色提示 `This workflow was disabled manually` 表示它仍被暂停；并不是仓库损坏。
+1. **Code**：确认你打开的是 `dsa-market-research`，默认分支为 `main`；迁移验收要确认这个 `main` 连续继承已验证主线，而不是 GitHub 新建的空 README root。
+2. **Actions → CI**：初始 public 阶段首先只要求 CI 能在 `push(main)` / `pull_request(main)` 运行并通过。CI 绿灯证明测试合同，不等于邮件已发送。
+3. **Settings → Actions → General**：确认仓库 Actions 总开关允许 CI 运行；不要因为其它 workflow 文件可见就认为它们已经被准入。
+4. **Actions → 每日股票分析**：初始 public migration 期间该 live job 预期被 repository guard 阻断/跳过。只有单独 live-analysis gate 通过后，才配置 Secret 并启用长期运行。
 
-不要点击 `New workflow` 来启动已有任务，也不要把当前运行页的 `Cancel workflow` 当成暂停以后的定时任务。
+不要点击 `New workflow` 来“新建”已有任务，也不要把某次运行页的 `Cancel workflow` 当成暂停未来 schedule。
 
-成功检查应能回答：在哪个私有仓库、测试哪个分支、单个 daily 工作流是否启用。页面与手册不同时先保留截图，不猜按钮。
+成功检查应能回答：**哪个 repo、哪个 main SHA、public CI 是否通过、live daily 当前是 READY 还是仍被 gate**。页面与手册不同时先保留截图并 STOP，不猜按钮。
 
 <a id="task-config"></a>
 ## 2. 配置邮件和模型
 
-统一入口：**Settings → Secrets and variables → Actions**。有两个标签：
+live-analysis gate 通过后，实际运行仓库的统一配置入口是 **Settings → Secrets and variables → Actions**。初始 public CI migration 不需要复制任何 Secret。这里有两个标签：
 
 - **Secrets**：API Key、SMTP 授权码等私密值。新建用 `New repository secret`。
 - **Variables**：非敏感参数。新建用 `New repository variable`，修改使用已有行的编辑按钮。
@@ -60,7 +80,7 @@ DeepSeek 不是第一次邮件验收的前置。增加其 Key 与配置跨服务
 
 **自动发现**回答“系统今天筛出了谁”；**我的自选**回答“我主动指定的代码现在怎样”。两者使用同一深析流程，但自选不占自动候选额度。
 
-在私有仓库进入 **Settings → Secrets and variables → Actions → Variables**，找到或新建 `STOCK_LIST`。值是代码列表，用英文逗号分隔。例如：
+在**实际运行仓库**进入 **Settings → Secrets and variables → Actions → Variables**，找到或新建 `STOCK_LIST`。public 初始 CI-only 阶段不用提前复制；等 live-analysis gate 允许该仓库执行分析后再配置。值是代码列表，用英文逗号分隔。例如：
 
 ```text
 600519,588000
@@ -89,9 +109,9 @@ DeepSeek 不是第一次邮件验收的前置。增加其 Key 与配置跨服务
 | 自动筛选 ETF | 暂无新增行业/主题/板块偏好限制 | 不继承股票医药排除；原有风险、流动性和数据要求仍保留 |
 | 用户主动指定代码 | 继续能研究被自动筛选排除的资产 | 仍不能跳过真实风险与数据底线 |
 
-### 本地开发候选的最小入口——尚未部署
+### 当前代码的可撤销配置入口
 
-当前本地开发候选已在现有配置层接入下面三个字段，而不是把“医药”写死在 Python 里：
+当前 `2f89eb9d` 基线已经在 `.env.example`、Actions 映射、配置解析和 AUTO 股票筛选 consumer 中接入下面三个字段，而不是把“医药”写死在 Python 里：
 
 ```text
 AUTO_SCREEN_STOCK_EXCLUDED_SECTORS = 医药
@@ -99,7 +119,7 @@ AUTO_SCREEN_STOCK_EXCLUDED_BOARDS = 北交所
 AUTO_SCREEN_STOCK_PREFERRED_BOARDS = 主板,科创板
 ```
 
-**这些字段目前只存在于未提交的本地开发候选，不要现在到 GitHub 添加并误以为私有 `main` 已经生效。** 当前候选已经贯通配置解析、工作流变量映射、股票 AUTO 筛选和本地测试；在配置样例、完整 CI、代码评审和部署验收闭合前，仍按“未上线”处理。ETF 不消费这三个股票偏好，SPECIFIED_CODES/watchlist 也不会因为 AUTO 偏好而失去研究入口。
+**代码已接入不等于 public live 已启用。** 这三个字段已经贯通配置解析、工作流变量映射、股票 AUTO 筛选和测试；但 public 初始阶段只有 CI，等 live-analysis gate 通过后才在实际运行仓库填写。ETF 不消费这三个股票偏好，SPECIFIED_CODES/watchlist 也不会因为 AUTO 偏好而失去研究入口。
 
 正式部署后的日常操作目标：
 
@@ -118,13 +138,13 @@ AUTO_SCREEN_STOCK_PREFERRED_BOARDS = 主板,科创板
 <a id="task-run"></a>
 ## 5. 手动验收一次：与长期自动运行分开
 
-本节描述操作方法，**不授权再跑已经完成的测试**。2026-09-21 已有一次私有 daily 运行成功和实际收件截图，该次不能为了补截图重跑。
+本节描述操作方法，**不授权再跑已经完成的测试**。历史 private daily 已有成功运行和实际收件证据，不能为了迁仓或补截图机械重跑。
 
-新的一次真实测试另行明确范围后：
+public 初始 CI-only 阶段不要运行 daily：repository guard 的目的就是先证明代码/CI迁移，不把 SMTP、模型、R2 或私人状态一起迁。等新的 live consumer gate 明确批准后：
 
-1. 打开私有库 **Actions → 每日股票分析**。
-2. 如有黄色 disabled 提示，点右侧 **Enable workflow**。
-3. 点 **Run workflow**，选择批准测试的开发分支，不默认选择 `main`。
+1. 打开当时的**实际运行仓库** → **Actions → 每日股票分析**。
+2. 确认本次 repo / branch / exact SHA 已被 live gate 准入；不要仅因页面上有 `Run workflow` 就执行。
+3. 如 workflow 被禁用且 gate 要求启用，再按批准范围启用；随后点 **Run workflow**，选择批准的 branch/SHA，不凭默认值猜 current。
 4. 自动发现测试填 `mode=auto-screen`，股票上限 `1`、ETF 上限 `1`；`force_run` 不勾；`auto_screen_bounded_live` 不勾；`auto_screen_bounded_model` 和 `p0_stock_codes` 留空；`research_state_smoke_phase` 保持默认。
 5. 最终绿色 **Run workflow** 只点一次。若提交结果不明，先查看是否已经出现新 run，不连续点。
 6. 在尚未长期上线的阶段，新 run 出现后回到该 workflow 页面，通过 `... → Disable workflow` 暂停以后新运行。不要点击运行页的 `Cancel workflow`。
@@ -137,13 +157,13 @@ AUTO_SCREEN_STOCK_PREFERRED_BOARDS = 主板,科创板
 <a id="task-schedule"></a>
 ## 6. 怎样真正每天自动发邮件
 
-开发分支测试 → 代码/报告验收 → 合入私有默认分支 `main` → 确认公开库不再重复发送 → 启用私有 daily → 观察一次自然定时运行。
+未来长期链路是：短期 feature branch / PR 验证 → 合入 public `main` → live-analysis consumer parity 验收 → 只启用**一个** current daily → 观察一次自然定时运行。迁移期间若 private predecessor 仍承担 live duty，public daily 必须保持阻断；Promotion 不能制造双 scheduler 或重复邮件。
 
-GitHub 的 `schedule` 只运行默认分支，**不会记住你上次手动 Run 选择的开发分支**。所以“开发分支收到邮件”后不能直接认定以后定时会用同一版代码。
+GitHub 的 `schedule` 只运行默认分支，**不会记住上次手动 Run 选择的 feature branch**。所以“某个临时分支收到邮件”不能直接认定以后定时会使用同一版本。
 
-本开发版本 cron 是 `0 11 * * 1-5`，即北京时间工作日19:00；程序还需按交易日规则决定是否分析。GitHub 可能排队延迟，不保证19:00准点到邮箱。早报计划必须等对应实现和验收后再标为可用。
+当前目标 cron 是 `0 11 * * 1-5`，即北京时间工作日 **19:00**；程序还需按交易日规则决定是否分析。GitHub 可能排队延迟，不保证19:00准点到邮箱。早报属于独立待验收能力，不能从晚间 schedule 推导为已上线。
 
-在 `main` 尚未晋升、报告仍未通过时，daily 保持 disabled，不必等到晚上再重复同一个邮件链路测试。长期上线后不需要每天人工 Enable/Disable。
+在 public `main` 尚未完成 live consumer parity、报告/通知仍未验收时，public daily 保持 blocked/disabled。长期上线后也不需要每天人工 Enable/Disable；版本 Promotion 与 workflow Enable 是两个不同动作。
 
 <a id="task-r2"></a>
 ## 7. Cloudflare R2：先配置，后按范围启用
@@ -154,7 +174,7 @@ R2 是保存研究状态包的存储服务，不是 SMTP，也不是模型服务
 
 进入 Cloudflare 控制台的 R2 页面，选择专用私有 bucket。记录 bucket 名和该账户的 S3 API Endpoint。管理 R2 API Tokens 时使用限定该 bucket 的权限；只读恢复和允许发布所需权限不同，不选择不必要的全账户 Admin 权限。创建页面显示的 Access Key ID、Secret Access Key 要安全保存，不能贴进 Chat。不同控制台版本入口文字可能不同，遇到不一致先按官方说明或截图确认。
 
-在 GitHub 私有库 **Settings → Secrets and variables → Actions** 填：
+在**获准承担 live duty 的实际运行仓库**的 **Settings → Secrets and variables → Actions** 填。public 初始 CI-only 迁移不复制这些值；以后即使仓库代码是 public，Repository Secrets 的值仍是私密配置，绝不能写进 Git：
 
 | 类型 | 名称 | 来源 |
 |---|---|---|
@@ -204,7 +224,7 @@ python -m src.services.evidence_flywheel_runtime build-manifest --cost-identity-
 
 成本与执行身份文件只接受有界 UTF-8 JSON object，内容必须满足既有 `cost-identity-v2` / `execution-identity-v1` 合同。Outcome 未成熟、交易日历无法证明、缺 bar 或执行证据未知时保持 `UNMATURED / EVALUATION_BLOCKED / UNLABELABLE`，不补标签。`build-manifest` 在本入口中不能打开训练准入。
 
-该入口不会读取或修改 R2 开关/凭证，不会 restore/publish research-state，不会发 Email/Telegram，不会 commit/push/merge，也不代表 private `main` 已晋升。R2、真实有界运行、自然 CI 与 main Promotion分别走各自授权和证据关口。
+该入口不会读取或修改 R2 开关/凭证，不会 restore/publish research-state，不会发 Email/Telegram，不会 commit/push/merge，也不代表当前 Production `main` 已晋升。R2、真实有界运行、自然 CI 与 authority Promotion 分别走各自授权和证据关口。
 
 ### 8.2 GitHub Actions 单股真实记录候选（仍需提交、CI与单独dispatch授权）
 
@@ -219,7 +239,7 @@ python -m src.services.evidence_flywheel_runtime build-manifest --cost-identity-
 
 现在主线仍是 A 股。底层已有港股、美股指定代码识别，例如 `hk00700`、`AAPL`；完整支持还取决于数据源、时区、交易日、币种、复权和已完成K线，不是名称能解析就算验收。
 
-未来先用一个指定股票/ETF样本检查：身份 → 数据与币种 → 同一分析 → 同一简报 → 收件。准确支持范围见 [市场支持](market-support.md)，但上游功能列表不等于本私有版本全部已验证。
+未来先用一个指定股票/ETF样本检查：身份 → 数据与币种 → 同一分析 → 同一简报 → 收件。准确支持范围见 [市场支持](market-support.md)，但上游功能列表不等于本个人 current 版本全部已验证。
 
 自动筛选是另一条能力：美股已有 snapshot/universe 原语，但现有内嵌策略限定 cn；港股当前 pipeline 未支持；海外 ETF 自动筛选也未准入。以后按需增加市场候选来源、策略范围、过滤和时钟测试，再通过原有深析/报告，不另建三套系统。
 
@@ -253,7 +273,7 @@ python -m src.services.evidence_flywheel_runtime build-manifest --cost-identity-
 
 修改报告时不能只检查“用了同一个 `AnalysisResult`”或某个字段/字符串是否存在；必须用同一组 canonical 输入比较保存报告、Jinja/Python compact、Email/Telegram 的实际输出，确认材料事实没有在最终消费者丢失。R004 exact Gold Master fixture 是内容/结构回归基线，不代表真实数据、策略效果、胜率或概率已经得到证明。
 
-实现前保留当前收到的错误邮件作为反例。离线检查第一屏可读性、完整详细区、事实和数字一致、重复预算、missingness、材料事件、风险否决、AUTO 4–10、自选触发以及 subject/body 一致性。任何晨报模板增量在 commit/push 前还必须生成一份由 exact R004 完整 HTML 增量得到的模拟版，让用户实际打开核查；没有用户接受，不得把代码测试或 CI 绿灯扩大成邮件体验通过。之后才以 private natural CI 做完整依赖环境验证，再经单独授权的 bounded consumer acceptance 验证真实收件效果。
+实现前保留当前收到的错误邮件作为反例。离线检查第一屏可读性、完整详细区、事实和数字一致、重复预算、missingness、材料事件、风险否决、AUTO 4–10、自选触发以及 subject/body 一致性。任何晨报模板增量在 commit/push 前还必须生成一份由 exact parent 完整 HTML 增量得到的模拟版，让用户实际打开核查；没有用户接受，不得把代码测试或 CI 绿灯扩大成邮件体验通过。之后才以**当前 code authority** 的 natural CI 做完整依赖环境验证，再经单独授权的 bounded consumer acceptance 验证真实收件效果。
 
 <a id="task-recovery"></a>
 ## 11. 常见问题和恢复
@@ -261,6 +281,9 @@ python -m src.services.evidence_flywheel_runtime build-manifest --cost-identity-
 | 现象 | 先检查什么 | 不要做什么 |
 |---|---|---|
 | Actions 绿了但没邮件 | 实际是否选出候选、通知步骤、SMTP结果、收件箱/垃圾箱 | 不把绿色等同发送成功 |
+| public CI 绿了但 daily 全部 skipped | 是否仍处于 CI-only migration；检查 repository guard 与 live-analysis gate | 不删除 guard 来“让它跑起来” |
+| 同时收到两套重复邮件 | private predecessor 与 public 是否都启用了 daily | 不把两个仓库同时当 Production |
+| 打开的 `main` 看起来比开发分支旧 | 核 repo、branch、exact SHA 与 lineage；public `main` 必须延续已验证 development | 不把旧 private `main` 当迁移基线 |
 | 多个 Gemini Key 已填，日志仍说未配置 | 旧检查行只看单数 Key；核实际模型调用 | 不直接判定所有 Key 失效 |
 | 收到了但太长、重复、像说明书 | 最终简报生成和两种渲染路径 | 不靠换模型或删掉全部风险信息 |
 | 到19:00没邮件 | daily是否启用、默认分支、交易日、排队、运行结果 | 不连续手动触发补跑 |
@@ -271,11 +294,13 @@ python -m src.services.evidence_flywheel_runtime build-manifest --cost-identity-
 
 ## 12. 手册维护与一手参考
 
-改功能时同时改“在哪里设置、有效值、示例、如何验证、如何撤销”，避免 README 说已经能用而运行路径未接通。个人中文入口本轮更新，英文/繁中上游文档保留作参考，不作为本私有版本上线证据。
+改功能或 authority 时同时检查五个文档 consumer：**README 快速入口、OPERATOR_RUNBOOK 操作步骤、docs/INDEX 导航、对应专题文档、docs/CHANGELOG [Unreleased]**。至少同步“在哪里设置、有效值、示例、如何验证、如何撤销”；没有文档 delta 时也应明确 NO_OP，不能等用户再次提醒。个人中文入口是当前个人运行说明，英文/繁中上游文档保留作参考，不作为本个人 current 版本上线证据。
+
+`docs/DEPLOY.md` 是通用服务器/Docker部署资料，不覆盖本手册的个人 GitHub Actions currentness；若其中旧默认时间或上游示例与本手册冲突，以当前代码、workflow 和本手册的已验证个人路线为准，并在下一次自然触碰 server-deploy 文档时修正，而不是让旧示例反向覆盖 Production。
 
 - [GitHub 工作流触发与默认分支](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows)
 - [Cloudflare R2 凭证与权限](https://developers.cloudflare.com/r2/api/tokens/)
 - [Jinja 模板复用](https://jinja.palletsprojects.com/en/stable/templates/)
 - [Freqtrade 的候选列表与排除方法](https://www.freqtrade.io/en/stable/plugins/)：仅借用配置/过滤方法，不安装交易框架。
 
-上面的外部说明核对于2026-09-21；真实 UI、服务套餐和模型可用性以后仍需重新核对。
+上面的外部链接保留作一手参考；真实 UI、服务套餐、Actions 行为和模型可用性在实际使用前仍需 fresh 核对，不能把旧文档日期或示例值当作 current proof。

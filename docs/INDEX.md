@@ -1,21 +1,22 @@
 # 文档中心
 
-## 个人私有版：优先看这些
+## 个人研究版：优先看这些
 
-[个人首页](../README.md)负责简短入口；[个人版操作手册](OPERATOR_RUNBOOK.md)按实际任务给出路径、设置形状、验证和恢复方法。
+[个人首页](../README.md)负责一眼入口和 current authority / 隐私边界；[个人版操作手册](OPERATOR_RUNBOOK.md)按实际任务给出逐步路径、设置形状、验证、撤销和恢复方法。代码仓库转 public 不代表私人 Secret / Ledger / R2 / 报告数据公开。
 
 | 我现在要做什么 | 直接入口 |
 |---|---|
-| 配好私有 GitHub，区分总开关与 daily 开关 | [部署](OPERATOR_RUNBOOK.md#task-start) |
+| 先弄清 public code / private data / rollback | [authority 与隐私](OPERATOR_RUNBOOK.md#task-authority) |
+| 配好 current GitHub repo，区分 CI、daily 与 Promotion | [部署](OPERATOR_RUNBOOK.md#task-start) |
 | 改邮箱、模型、多个 API Key | [配置](OPERATOR_RUNBOOK.md#task-config) |
 | 添加或取消自选股票、ETF | [自选列表](OPERATOR_RUNBOOK.md#task-watchlist) |
-| 排除医药/北交所，或者恢复纳入 | [筛选偏好](OPERATOR_RUNBOOK.md#task-preferences)（本地开发候选已实现，尚未部署） |
+| 排除医药/北交所，或者恢复纳入 | [筛选偏好](OPERATOR_RUNBOOK.md#task-preferences)（当前代码已接入；是否生效取决于实际 live repo / 配置） |
 | 手动测试与每天定时怎么区分 | [一次测试](OPERATOR_RUNBOOK.md#task-run) / [长期定时](OPERATOR_RUNBOOK.md#task-schedule) |
 | Cloudflare R2 怎么填、存什么、不存什么 | [R2](OPERATOR_RUNBOOK.md#task-r2) / [数据流程](OPERATOR_RUNBOOK.md#task-data) |
 | 港股、美股以后如何加入 | [多市场扩展](OPERATOR_RUNBOOK.md#task-markets) |
 | 改邮件模板、排查重复与失败 | [模板](OPERATOR_RUNBOOK.md#task-report) / [恢复](OPERATOR_RUNBOOK.md#task-recovery) |
 
-下方保留上游的专题资料导航，供按需查阅；不能把其中的所有部署方式、市场或功能都当作本私有版已验收能力。
+下方保留上游和通用专题资料导航，供按需查阅；不能把其中的所有部署方式、市场、默认时间或功能都当作本个人 current 版本已验收能力。个人 GitHub Actions 路线以 README + OPERATOR_RUNBOOK + 当前 workflow/CI 为准。
 
 ## 按场景选择
 
@@ -26,7 +27,8 @@
 | 配置大模型渠道 | [LLM 配置指南](LLM_CONFIG_GUIDE.md) | [LLM 服务商配置指南](llm-providers.md) |
 | 日常维护、换 API、轮换 Key 或回滚 | [DSA 日常操作手册](OPERATOR_RUNBOOK.md) | [LLM 服务商配置指南](llm-providers.md)、[通知能力基线](notifications.md) |
 | 配置推送通知 | [通知能力基线](notifications.md) | [完整配置与部署指南](full-guide.md) |
-| 部署到服务器或云平台 | [部署指南](DEPLOY.md) | [云端 WebUI 部署](deploy-webui-cloud.md)、[Zeabur 部署](docker/zeabur-deployment.md) |
+| 用 GitHub Actions 跑个人 current 版本 | [个人版操作手册](OPERATOR_RUNBOOK.md#task-start) | [长期定时](OPERATOR_RUNBOOK.md#task-schedule)、[排障](OPERATOR_RUNBOOK.md#task-recovery) |
+| 部署到服务器或云平台 | [通用部署指南](DEPLOY.md) | [云端 WebUI 部署](deploy-webui-cloud.md)、[Zeabur 部署](docker/zeabur-deployment.md) |
 | 使用 Bot / IM 接入 | [Bot 命令与接入](bot-command.md) | [Bot 平台配置](bot/) |
 | 排查运行问题 | [FAQ](FAQ.md) | [更新日志](CHANGELOG.md) |
 | 处理数据源失败或降级 | [数据源稳定性与故障处理图示](data-source-stability.md) | [FAQ](FAQ.md) |
@@ -70,7 +72,8 @@
 
 | 文档 | 内容 |
 | --- | --- |
-| [部署指南](DEPLOY.md) | 服务器部署、Docker、systemd、Supervisor 等部署方式 |
+| [个人版操作手册](OPERATOR_RUNBOOK.md) | current public-code / private-state GitHub Actions 路线、配置、运行、排错、回滚 |
+| [部署指南](DEPLOY.md) | 通用服务器部署、Docker、systemd、Supervisor；不覆盖个人 Actions currentness |
 | [云端 WebUI 部署](deploy-webui-cloud.md) | 云服务器访问 WebUI 的部署说明 |
 | [Zeabur 部署](docker/zeabur-deployment.md) | Zeabur 平台部署说明 |
 | [桌面端打包说明](desktop-package.md) | Electron 桌面端和 Web 构建产物打包说明 |
