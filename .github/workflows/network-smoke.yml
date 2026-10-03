@@ -52,3 +52,87 @@ jobs:
             pytest-network.log
             quick-smoke.log
           if-no-files-found: ignore
+
+  public-direct-egress:
+    name: direct-egress-no-proxy
+    if: ${{ github.repository == 'leeningzzu/dsa-market-research' && github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: read
+    steps:
+      - name: Verify direct EastMoney HTTPS egress without proxy
+        shell: bash
+        env:
+          HTTP_PROXY: ''
+          HTTPS_PROXY: ''
+          ALL_PROXY: ''
+          http_proxy: ''
+          https_proxy: ''
+          all_proxy: ''
+        run: |
+          set -euo pipefail
+          unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
+          python3 - <<'PY'
+          import http.client
+          import os
+          import socket
+          import ssl
+
+          host = "push2his.eastmoney.com"
+          proxy_vars = (
+              "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+              "http_proxy", "https_proxy", "all_proxy",
+          )
+          leaked = {name: os.environ.get(name) for name in proxy_vars if os.environ.get(name)}
+          if leaked:
+              raise SystemExit(f"proxy variables must be absent: {sorted(leaked)}")
+
+          addresses = sorted({
+              item[4][0]
+              for item in socket.getaddrinfo(
+                  host,
+                  443,
+                  type=socket.SOCK_STREAM,
+              )
+          })
+          if not addresses:
+              raise SystemExit("DNS returned no address")
+
+          context = ssl.create_default_context()
+          with socket.create_connection((host, 443), timeout=10) as sock:
+              with context.wrap_socket(sock, server_hostname=host) as tls:
+                  tls_version = tls.version()
+                  if not tls_version:
+                      raise SystemExit("TLS negotiation returned no version")
+
+          connection = http.client.HTTPSConnection(
+              host,
+              443,
+              timeout=10,
+              context=context,
+          )
+          try:
+              connection.request(
+                  "HEAD",
+                  "/",
+                  headers={
+                      "User-Agent": "stock-dsa-direct-egress-smoke/1",
+                      "Connection": "close",
+                  },
+              )
+              response = connection.getresponse()
+              status = int(response.status)
+              response.read()
+          finally:
+              connection.close()
+
+          if not 100 <= status < 600:
+              raise SystemExit(f"invalid HTTP status: {status}")
+
+          print(
+              "DIRECT_EGRESS_NO_PROXY_PASS "
+              f"host={host} dns_addresses={len(addresses)} "
+              f"tls={tls_version} http_status={status}"
+          )
+          PY
