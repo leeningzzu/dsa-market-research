@@ -4,6 +4,15 @@ on:
   schedule:
     - cron: '0 2 * * 1-5'
   workflow_dispatch:
+    inputs:
+      public_probe:
+        description: Public cloud probe
+        required: false
+        default: direct-egress
+        type: choice
+        options:
+          - direct-egress
+          - 5m-trial
 
 concurrency:
   group: network-smoke-${{ github.ref }}
@@ -55,81 +64,126 @@ jobs:
 
   public-direct-egress:
     name: direct-egress-no-proxy
-    if: ${{ github.repository == 'leeningzzu/dsa-market-research' && github.event_name == 'workflow_dispatch' }}
+    if: ${{ github.repository == 'leeningzzu/dsa-market-research' && github.event_name == 'workflow_dispatch' && inputs.public_probe == 'direct-egress' }}
     runs-on: ubuntu-latest
     timeout-minutes: 2
     permissions:
       contents: read
     steps:
-      - name: Verify direct EastMoney HTTPS egress without proxy
+      - name: Reject proxy-configured cloud runtime
         shell: bash
-        env:
-          HTTP_PROXY: ''
-          HTTPS_PROXY: ''
-          ALL_PROXY: ''
         run: |
           set -euo pipefail
-          unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
+          for name in HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy; do
+            if [ -n "${!name:-}" ]; then
+              echo "::error::CLOUD_PROXY_PRESENT name=${name}"
+              exit 1
+            fi
+          done
+      - name: Verify direct EastMoney HTTPS egress
+        shell: bash
+        run: |
+          set -euo pipefail
           python3 - <<'PY'
-          import http.client
-          import os
-          import socket
-          import ssl
-
-          host = "push2his.eastmoney.com"
-          proxy_vars = (
-              "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
-              "http_proxy", "https_proxy", "all_proxy",
-          )
-          leaked = {name: os.environ.get(name) for name in proxy_vars if os.environ.get(name)}
-          if leaked:
-              raise SystemExit(f"proxy variables must be absent: {sorted(leaked)}")
-
-          addresses = sorted({
-              item[4][0]
-              for item in socket.getaddrinfo(
-                  host,
-                  443,
-                  type=socket.SOCK_STREAM,
-              )
-          })
-          if not addresses:
-              raise SystemExit("DNS returned no address")
-
-          context = ssl.create_default_context()
-          with socket.create_connection((host, 443), timeout=10) as sock:
-              with context.wrap_socket(sock, server_hostname=host) as tls:
-                  tls_version = tls.version()
-                  if not tls_version:
-                      raise SystemExit("TLS negotiation returned no version")
-
-          connection = http.client.HTTPSConnection(
-              host,
-              443,
-              timeout=10,
-              context=context,
-          )
+          import http.client, socket, ssl
+          host="push2his.eastmoney.com"
+          addrs=sorted({x[4][0] for x in socket.getaddrinfo(host,443,type=socket.SOCK_STREAM)})
+          if not addrs: raise SystemExit("DNS_EMPTY")
+          ctx=ssl.create_default_context()
+          with socket.create_connection((host,443),timeout=10) as s:
+              with ctx.wrap_socket(s,server_hostname=host) as tls:
+                  version=tls.version()
+          c=http.client.HTTPSConnection(host,443,timeout=10,context=ctx)
           try:
-              connection.request(
-                  "HEAD",
-                  "/",
-                  headers={
-                      "User-Agent": "stock-dsa-direct-egress-smoke/1",
-                      "Connection": "close",
-                  },
-              )
-              response = connection.getresponse()
-              status = int(response.status)
-              response.read()
+              c.request("HEAD","/",headers={"User-Agent":"stock-dsa-direct-egress-smoke/2","Connection":"close"})
+              r=c.getresponse(); status=int(r.status); r.read()
           finally:
-              connection.close()
+              c.close()
+          if not 100 <= status < 600: raise SystemExit(f"HTTP_STATUS={status}")
+          print(f"DIRECT_EGRESS_ZERO_PROXY_PASS host={host} dns={len(addrs)} tls={version} status={status}")
+          PY
 
-          if not 100 <= status < 600:
-              raise SystemExit(f"invalid HTTP status: {status}")
+  public-5m-bounded-trial:
+    name: canonical-5m-bounded-trial
+    if: ${{ github.repository == 'leeningzzu/dsa-market-research' && github.event_name == 'workflow_dispatch' && inputs.public_probe == '5m-trial' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Reject proxy-configured cloud runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy; do
+            if [ -n "${!name:-}" ]; then
+              echo "::error::CLOUD_PROXY_PRESENT name=${name}"
+              exit 1
+            fi
+          done
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install exact AkShare trial package
+        run: python -m pip install --disable-pip-version-check "akshare==1.19.1"
+      - name: Run one-symbol canonical 5m bounded trial
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib, importlib.metadata, inspect, json, math, os
+          from pathlib import Path
+          import akshare as ak
+          import pandas as pd
 
-          print(
-              "DIRECT_EGRESS_NO_PROXY_PASS "
-              f"host={host} dns_addresses={len(addresses)} "
-              f"tls={tls_version} http_status={status}"
-          )
+          trial="CLOUD_CANONICAL_5M_AKSHARE_1_19_1_BOUNDED_TRIAL_R001"
+          symbol="600519"; start="2026-09-23 09:30:00"; end="2026-09-30 15:00:00"
+          sessions=["2026-09-23","2026-09-24","2026-09-28","2026-09-29","2026-09-30"]
+          cols=["时间","开盘","收盘","最高","最低","涨跌幅","涨跌额","成交量","成交额","振幅","换手率"]
+          proxies=("HTTP_PROXY","HTTPS_PROXY","ALL_PROXY","http_proxy","https_proxy","all_proxy")
+          leaked=[n for n in proxies if os.environ.get(n)]
+          if leaked: raise SystemExit(f"CLOUD_PROXY_PRESENT names={leaked}")
+          version=importlib.metadata.version("akshare")
+          if version!="1.19.1": raise SystemExit(f"AKSHARE_VERSION_DRIFT={version}")
+          fn=getattr(ak,"stock_zh_a_hist_min_em",None)
+          if fn is None: raise SystemExit("AKSHARE_CALLABLE_MISSING")
+          params=list(inspect.signature(fn).parameters)
+          if params!=["symbol","start_date","end_date","period","adjust"]:
+              raise SystemExit(f"AKSHARE_SIGNATURE_DRIFT={params}")
+          df=fn(symbol=symbol,start_date=start,end_date=end,period="5",adjust="qfq")
+          if df is None or df.empty: raise SystemExit("EMPTY_5M_RESPONSE")
+          if list(df.columns)!=cols: raise SystemExit(f"COLUMN_DRIFT={list(df.columns)}")
+          d=df.copy(); d["时间"]=pd.to_datetime(d["时间"],errors="coerce")
+          if d["时间"].isna().any() or d["时间"].duplicated().any() or not d["时间"].is_monotonic_increasing:
+              raise SystemExit("TIMESTAMP_INVALID")
+          for c in ["开盘","收盘","最高","最低","成交量","成交额"]:
+              d[c]=pd.to_numeric(d[c],errors="coerce")
+              if d[c].isna().any() or not d[c].map(math.isfinite).all(): raise SystemExit(f"NUMERIC_INVALID={c}")
+          if (d[["开盘","收盘","最高","最低"]]<=0).any().any(): raise SystemExit("OHLC_NONPOSITIVE")
+          if (d[["成交量","成交额"]]<0).any().any(): raise SystemExit("VOLUME_AMOUNT_NEGATIVE")
+          if ((d["最高"]<d[["开盘","收盘","最低"]].max(axis=1))|(d["最低"]>d[["开盘","收盘","最高"]].min(axis=1))).any():
+              raise SystemExit("OHLC_ENVELOPE_INVALID")
+          expected=[]
+          for s in sessions:
+              expected += list(pd.date_range(f"{s} 09:35:00",f"{s} 11:30:00",freq="5min"))
+              expected += list(pd.date_range(f"{s} 13:05:00",f"{s} 15:00:00",freq="5min"))
+          actual=d["时间"].tolist()
+          counts=d.assign(_s=d["时间"].dt.strftime("%Y-%m-%d")).groupby("_s").size().to_dict()
+          if actual!=expected: raise SystemExit(f"SESSION_OR_RIGHT_LABEL_MISMATCH rows={len(actual)} counts={counts}")
+          canon=d[cols].copy(); canon["时间"]=canon["时间"].dt.strftime("%Y-%m-%d %H:%M:%S")
+          digest=hashlib.sha256(canon.to_csv(index=False,lineterminator="\n").encode()).hexdigest()
+          receipt={"schema":"stock-dsa-cloud-5m-bounded-trial-v1","trial_id":trial,"trial_result":"PASS",
+                   "akshare_version":version,"callable":"stock_zh_a_hist_min_em","symbol":symbol,"start":start,"end":end,
+                   "period":"5","adjust":"qfq","returned_columns":cols,"row_count":len(d),"session_dates":sessions,"bars_per_session":counts,
+                   "first_timestamp":actual[0].strftime("%Y-%m-%d %H:%M:%S"),"last_timestamp":actual[-1].strftime("%Y-%m-%d %H:%M:%S"),
+                   "duplicate_count":0,"off_session_count":0,"lunch_count":0,"ohlc_valid":True,"volume_nonnegative":True,"amount_nonnegative":True,
+                   "raw_volume_unit":"HAND","raw_amount_unit":"UNPROVEN_BY_CURRENT_DOC","data_sha256":digest,
+                   "proxy_env_present":False,"retry_count":0,"provider_fallback_count":0,"raw_rows_persisted":False}
+          summary=os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary:
+              with Path(summary).open("a",encoding="utf-8") as h:
+                  h.write("## STOCK_DSA canonical 5m bounded trial\n\n```json\n")
+                  h.write(json.dumps(receipt,ensure_ascii=False,indent=2,sort_keys=True)); h.write("\n```\n")
+          print(json.dumps(receipt,ensure_ascii=False,sort_keys=True))
           PY
