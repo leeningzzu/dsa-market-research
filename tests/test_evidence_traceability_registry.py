@@ -243,7 +243,10 @@ def test_method_window_policy_view_is_complete_manifest_bound_and_non_mutating()
     assert methods["MTF_MA_LEVEL_ALIGNMENT"]["target_timeframes"] == reg.NON_DAILY_TECHNICAL_TIMEFRAMES
     assert methods["CUP_HANDLE"]["window_classes"] == ("VARIABLE_STRUCTURE",)
     assert methods["CUP_HANDLE"]["current_execution_timeframes"] == ("daily",)
-    assert methods["CANDLESTICK"]["leaf_implementation_state"] == "DEFERRED_WITH_OWNER_AND_REENTRY"
+    assert methods["CANDLESTICK"]["leaf_implementation_state"] == "EXISTING_REUSED"
+    assert methods["CANDLESTICK"]["canonical_path"] == "pattern_trigger_evidence.context.candlestick"
+    assert methods["CANDLESTICK"]["current_execution_timeframes"] == ("daily",)
+    assert set(methods["CANDLESTICK"]["window_classes"]) == {"ADAPTIVE_CONTEXT", "EVENT_ANCHORED"}
     assert set(methods["ADX_DMI"]["window_classes"]) == {"FIXED_ROLLING", "RECURSIVE_WARMUP"}
     assert set(methods["KDJ"]["window_classes"]) == {"FIXED_ROLLING", "RECURSIVE_WARMUP"}
     assert methods["ATR_WILDER"]["window_classes"] == ("RECURSIVE_WARMUP",)
@@ -258,11 +261,14 @@ def test_method_window_policy_view_is_complete_manifest_bound_and_non_mutating()
         if "PATTERN" in slot["requirements"]
     }
     assert set(methods["CUP_HANDLE"]["parent_product_slot_ids"]) == pattern_slots
+    assert set(methods["CANDLESTICK"]["parent_product_slot_ids"]) == pattern_slots
+    assert methods["CANDLESTICK"]["parent_learning_metric_ids"] == ()
+    assert "pattern_trigger_evidence.context.candlestick" not in reg.ledger_evidence_keys()
     assert set(methods["MACD"]["parent_learning_metric_ids"]) == {
         metric["id"] for metric in reg.METRIC_BINDINGS if metric["requirement_id"] == "MOMENTUM"
     }
 
-    assert reg.MANIFEST_HASH == "6f7b56789efdb962dae7377353dd72c98de5e55ec7e3cb40d41882d0aae71d1f"
+    assert reg.MANIFEST_HASH == "5818db4878f97f34c732a630ff1a5a41287b661ded299a3076473479123cefca"
     assert reg.MANIFEST_HASH == manifest_before == reg.digest(reg.manifest_document())
     assert reg.digest(reg.METRIC_BINDINGS) == metrics_before == "611d5c0657cc42de3f31ca9c911e65d8e2d84e4504fc6167a332de548705fde5"
     assert not any(
@@ -495,6 +501,39 @@ def test_macd_insufficient_history_does_not_turn_into_neutral_fact():
     assert reg.describe_macd_state(result) == ""
 
 
+
+
+def test_candlestick_strict_receipt_binds_nested_leaf_without_strategy_or_learning_admission():
+    factor = native_summary()
+    binding = next(item for item in reg.EVIDENCE_BINDINGS if item.requirement_id == "CANDLESTICK")
+    value = reg.at(factor, binding.path)
+    assert isinstance(value, dict)
+    target = pd.to_datetime(value["target_date"]).date()
+    identity = _strict_daily_identity(target)
+    receipt = reg.build_method_execution_receipt(
+        "CANDLESTICK",
+        output=value,
+        asset_route="STOCK",
+        stock_code="600519",
+        market="cn",
+        target_date=target,
+        timeframe="daily",
+        input_identity=identity,
+    )
+    state, reason = reg.method_observation(binding, value, receipt=receipt, require_receipt=True)
+    assert state in {"READY", "PARTIAL"}
+    assert reason == "METHOD_INVOCATION_VERIFIED"
+
+    missing_state, missing_reason = reg.method_observation(binding, value, receipt=None, require_receipt=True)
+    assert missing_state == "UNKNOWN"
+    assert missing_reason == "METHOD_INVOCATION_RECEIPT_MISSING"
+
+    wrong = deepcopy(receipt)
+    wrong["output_hash"] = "0" * 64
+    wrong = _rehash_receipt(wrong)
+    wrong_state, wrong_reason = reg.method_observation(binding, value, receipt=wrong, require_receipt=True)
+    assert wrong_state == "UNKNOWN"
+    assert wrong_reason == "METHOD_RECEIPT_OUTPUT_MISMATCH"
 
 
 def test_strict_supply_receipt_binds_actual_target_input_producer_and_output():

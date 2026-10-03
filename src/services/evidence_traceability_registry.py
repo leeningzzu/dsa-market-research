@@ -59,7 +59,7 @@ ACCEPTED_REQUIREMENT_ROLES = frozenset({
     ("COST", "ADMITTED"), ("STRUCTURE", "ADMITTED"), ("MOMENTUM", "ADMITTED"),
     ("PATTERN", "ADMITTED"), ("MTF", "ADMITTED"),
     ("QUALITY", "DEFERRED"), ("VALUATION", "DEFERRED"), ("DISTRIBUTION", "DEFERRED"),
-    ("RISK_REWARD", "DEFERRED"), ("CANDLESTICK", "DEFERRED"),
+    ("RISK_REWARD", "DEFERRED"), ("CANDLESTICK", "ADMITTED"),
     ("EXTRA_INDICATORS", "DEFERRED"), ("AVWAP_PROFILE", "DEFERRED"),
     ("CHAN", "DEFERRED"), ("WAVE", "DEFERRED"), ("ETF_SPECIFIC", "DEFERRED"),
     ("GLOBAL", "DEFERRED"), ("BREADTH", "DEFERRED"), ("PROBABILITY", "DEFERRED"),
@@ -127,6 +127,20 @@ EVIDENCE_BINDINGS = (
     EvidenceBinding("STRUCTURE", "price_structure_evidence", "src/services/price_structure_service.py", "build_price_structure_context", ("date", "open", "high", "low", "close", "data_source"), "PIVOT_ALGORITHM_VERSION", "MIN_OBSERVATIONS", "confirmed_price_swing"),
     EvidenceBinding("MOMENTUM", "volatility_momentum_evidence", "src/services/volatility_momentum_service.py", "build_volatility_momentum_context", ("date", "open", "high", "low", "close", "data_source"), "ALGORITHM_VERSION", "READY_OBSERVATIONS", "same_swing_momentum"),
     EvidenceBinding("PATTERN", "pattern_trigger_evidence", "src/services/pattern_trigger_service.py", "build_pattern_trigger_context", ("date", "open", "high", "low", "close", "volume", "data_source"), "ALGORITHM_VERSION", "MIN_OBSERVATIONS", "price_contraction"),
+    EvidenceBinding(
+        "CANDLESTICK",
+        "pattern_trigger_evidence.context.candlestick",
+        "src/services/candlestick_pattern_service.py",
+        "build_candlestick_pattern_context",
+        ("date", "open", "high", "low", "close", "data_source"),
+        "ALGORITHM_VERSION",
+        "MIN_OBSERVATIONS",
+        "confirmed_price_swing",
+        timeframe="daily",
+        implementation_state="EXISTING_REUSED",
+        reentry="CURRENT_OWNER_VERSION_AND_OUTPUT_VALIDATION",
+        ledger=False,
+    ),
     EvidenceBinding("MTF", "multi_timeframe_structure_context", "src/services/multi_timeframe_structure_service.py", "build_multi_timeframe_structure_context", ("date", "open", "high", "low", "close", "volume", "data_source"), "ALGORITHM_VERSION", "TREND_MIN_BARS", "nested_price_structure", "multi"),
 )
 
@@ -143,7 +157,6 @@ DEFERRED_BINDINGS = tuple(
         ("VALUATION", "valuation_evidence", "FACTOR:valuation", ("published_at", "financial_version", "share_count", "valuation_assumptions"), "valuation", "asset", "BUSINESS_ROUTED_VALUATION_METHOD_ADMISSION"),
         ("DISTRIBUTION", "distribution_risk_evidence", "FACTOR:distribution_risk", ("date", "open", "high", "low", "close", "volume"), "volume_pressure", "daily", "DETERMINISTIC_DISTRIBUTION_CLEAR_RESOLVER"),
         ("RISK_REWARD", "risk_reward_evidence", "FACTOR:execution", ("entry", "stop", "cost", "execution_identity"), "execution", "asset", "ACCEPTED_RISK_REWARD_RESOLVER"),
-        ("CANDLESTICK", "candlestick_evidence", "FACTOR:PatternTrigger", ("date", "open", "high", "low", "close", "volume"), "confirmed_price_swing", "daily", "CANONICAL_GEOMETRY_LOCATION_LIFECYCLE"),
         ("EXTRA_INDICATORS", "extended_indicator_evidence", "FACTOR:VolatilityMomentum", ("date", "open", "high", "low", "close", "volume"), "same_swing_momentum", "daily", "ADX_DMI_BOLLINGER_OBV_ADL_MFI_KDJ_INDEPENDENT_ADMISSION"),
         ("AVWAP_PROFILE", "anchored_cost_evidence", "FACTOR:CostStructure", ("anchor", "price_volume_distribution"), "price_volume_cost", "asset", "ANCHOR_AND_PRICE_VOLUME_METHOD_NOT_DAILY_PROXY"),
         ("CHAN", "chan_evidence", "FACTOR:ChanFeatureAdapter", ("date", "open", "high", "low", "close"), "confirmed_price_swing", "multi", "NARROW_ADAPTER_BAR_REPLAY_NO_BACKFILL"),
@@ -336,7 +349,7 @@ METHOD_WINDOW_PROFILES = (
     ),
     MethodWindowProfile(
         "CANDLESTICK", "CANDLESTICK",
-        ("ADAPTIVE_CONTEXT",), TIMEFRAMES, (), "DEFERRED_WITH_OWNER_AND_REENTRY",
+        ("ADAPTIVE_CONTEXT", "EVENT_ANCHORED"), TIMEFRAMES, ("daily",), "EXISTING_REUSED",
     ),
     MethodWindowProfile(
         "ATR_WILDER", "EXTRA_INDICATORS",
@@ -905,7 +918,7 @@ def _receipt_state(binding: EvidenceBinding, value: Mapping, receipt: Any) -> tu
     if body.get("output_hash") != digest(observed_output):
         return False, "METHOD_RECEIPT_OUTPUT_MISMATCH"
     if (
-        binding.requirement_id in {"SUPPLY", "COST", "STRUCTURE", "MOMENTUM", "PATTERN", "MTF"}
+        binding.requirement_id in {"SUPPLY", "COST", "STRUCTURE", "MOMENTUM", "PATTERN", "CANDLESTICK", "MTF"}
         and isinstance(observed_output, Mapping)
     ):
         for key, receipt_key in (("stock_code", "stock_code"), ("market", "market"), ("target_date", "target_date")):
@@ -913,7 +926,7 @@ def _receipt_state(binding: EvidenceBinding, value: Mapping, receipt: Any) -> tu
             claimed = str(body.get(receipt_key) or "").strip().lower()
             if observed and observed != claimed:
                 return False, "METHOD_RECEIPT_" + key.upper() + "_MISMATCH"
-    if binding.requirement_id in {"SUPPLY", "COST", "STRUCTURE", "MOMENTUM", "PATTERN", "MTF"}:
+    if binding.requirement_id in {"SUPPLY", "COST", "STRUCTURE", "MOMENTUM", "PATTERN", "CANDLESTICK", "MTF"}:
         identity = body.get("input_identity")
         if not isinstance(identity, Mapping) or not identity.get("data_snapshot_identity"):
             return False, "METHOD_INPUT_IDENTITY_MISSING"
@@ -1026,7 +1039,7 @@ def method_observation(
         return "UNKNOWN", "METHOD_VERSION_MISMATCH"
     if contract["config_hash"] and context.get("config_hash") != contract["config_hash"]:
         return "UNKNOWN", "METHOD_CONFIG_MISMATCH"
-    if binding.requirement_id in {"COST", "STRUCTURE", "MOMENTUM", "PATTERN", "MTF"} and context.get("completed_bar_only") is not True:
+    if binding.requirement_id in {"COST", "STRUCTURE", "MOMENTUM", "PATTERN", "CANDLESTICK", "MTF"} and context.get("completed_bar_only") is not True:
         return "UNKNOWN", "COMPLETED_BAR_NOT_PROVEN"
     if state == "READY" and binding.timeframe == "daily" and isinstance(contract["warmup"], (int, tuple)):
         minimum = contract["warmup"]

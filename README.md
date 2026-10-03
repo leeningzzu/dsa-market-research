@@ -6,10 +6,10 @@
 
 ## 先看清当前架构
 
-- **代码 authority**：公开迁移完成后以 `leeningzzu/dsa-market-research` 的 `main` 为唯一 current code authority；它必须连续继承 2026-10-03 已验证的 `factor-decision-v1-r002@2f89eb9d...` 主线，而不是退回旧 private `main`。
+- **代码 authority**：当前唯一 code/development/CI authority 是 `leeningzzu/dsa-market-research` 的 `main`；2026-10-03 Promotion 已完成，原 private 仓库仅保留 exact rollback/audit predecessor 身份。
 - **回滚 predecessor**：原 private 仓库保留 exact SHA 作为审计/回滚依据，但 Promotion 后不再与公开库并列成为第二个 Production authority。
 - **代码公开 ≠ 私人数据公开**：API Key、SMTP 授权码、私人持仓、原始 Ledger/Outcome、训练数据、模型状态、私人报告和私有 R2 数据都不得提交到公开 Git。
-- **初始 public 只证明 CI**：迁移首阶段仅允许只读 CI；daily live、Email/Telegram、R2/state、release/publish 等要在各自 gate 证明等效后再逐项启用。
+- **public code authority 不等于 live delivery Promotion**：公开 `main` 已承担代码/currentness/test/CI；daily live、Email/Telegram、R2/state、Secrets、release/publish 仍按各自 B8 gate 独立准入。
 - **Production Shell 仍是 DSA**：迁仓不会改变证据族、周期职责、canonical decision、Product、Ledger/PIT 或模型 Promotion 路线。
 
 ## 我现在要做什么
@@ -28,7 +28,7 @@
 
 ## 5 分钟部署路径
 
-1. 打开 `leeningzzu/dsa-market-research`，确认当前默认分支是 `main`；迁移尚未 Promotion 时，仍以记录的 private predecessor exact SHA 为 current authority。
+1. 打开 `leeningzzu/dsa-market-research`，确认默认分支是 `main`；当前 code authority 已 Promotion 到 public `main`，原 private repo 只作 rollback/audit predecessor。
 2. 先看 **Actions → CI**。公开库首次上线只要求 `push(main)` / `pull_request(main)` 的只读 CI 通过；不要因为看见其它 workflow 文件就认为 live 分析已经启用。
 3. 只有 live-analysis gate 另行通过后，才在实际运行仓库的 **Settings → Secrets and variables → Actions** 配置模型、SMTP、通知和需要的 Variables；Secret 值永远不写进 README、issue、日志或 Git。
 4. 真实运行必须绑定 exact branch/SHA、输入和成本/数据 effect；已有成功验收不为了补截图机械重跑。
@@ -38,14 +38,15 @@
 
 ## 已有能力与尚未完成的部分
 
-文档核对基线：2026-10-03，迁移父基线为已验证的 `factor-decision-v1-r002@2f89eb9d...`。README 只给用户侧状态；exact SHA、CI、OPEN/DEFERRED/CLOSED 和 Promotion 证据由 Project Sources / Git / CI receipt 管理。
+文档核对基线：2026-10-03，当前 code authority 为 `dsa-market-research/main`；原 private `factor-decision-v1-r002@2f89eb9d...` 仅保留 rollback/audit predecessor 身份。README 只给用户侧状态；exact SHA、CI、OPEN/DEFERRED/CLOSED 和 Promotion 证据由 Project Sources / Git / CI receipt 管理。
 
 | 功能 | 当前状态 |
 |---|---|
 | A 股股票、A 股 ETF 自动候选与共用深析 | 已有代码；候选只是研究入口，不等于可以买入 |
 | 指定代码研究 | 已有入口；与自动候选共用同一 deep-analysis / canonical / report consumer |
 | 月/周/日 MA 结构 | readiness-aware MA 叶已通过自然 CI；20/26/40 分别承担 level、slope/cross、完整 compression context，分钟周期仍不能冒充 READY |
-| GitHub Actions | public migration 初始只开放只读 CI；live daily / Email / Telegram 等不是因为代码公开就自动启用 |
+| 日线 Candlestick/K-line | 以确定性 OHLC 几何 + 已确认结构位置 + 生命周期作为 Pattern/Trigger 的嵌套叶；首批覆盖犹豫/影线拒绝/吞没/inside-outside，不把单根名称变成独立 BUY/SELL、概率或模型特征；月周与分钟 K线尚未宣称准入 |
+| GitHub Actions | public `main` 已成为 code/CI authority；live daily / Email / Telegram / R2 等仍是独立 B8 gate，不因代码公开或 CI 绿色自动启用 |
 | 医药/板块排除与板块优先 | 当前代码已接入配置、Actions 映射和 AUTO 股票筛选；配置是否生效取决于实际运行仓库/版本与 live gate，不需要重训模型 |
 | V2.5 邮件 | accepted exact baseline 继续作为格式/逻辑 parent；完整动态七周期和所有实际消费者仍按独立证据推进，不因迁仓重画模板 |
 | Ledger / Outcome / PIT | 已有第一条有界真实 Ledger vertical；成熟 Outcome/PIT cohort 和训练准入仍未完成 |
@@ -63,11 +64,11 @@
 
 ## 公开代码、私人状态与自动运行
 
-公开迁移完成后，`dsa-market-research/main` 承担 current code authority；原 private 仓库只保留 predecessor / rollback 身份。**公开的是代码与安全文档，不是私人运行数据。** Repository Secrets 的值即使以后配置在 public repo 也不会进入 Git；初始迁移阶段不复制任何 Secret。
+当前 `dsa-market-research/main` 已承担 current code authority；原 private 仓库只保留 predecessor / rollback 身份。**公开的是代码与安全文档，不是私人运行数据。** Repository Secrets 的值即使以后配置在 public repo 也不会进入 Git；live delivery 尚未准入时不需要为了“迁移完整”而复制 Secret。
 
 GitHub `schedule` 只运行默认分支，因此“某个临时 feature branch 测试通过”不等于长期定时已经升级。未来开发使用短期 feature branch → PR → `main` → 删除 branch；是否启用 live workflow 仍是独立 Promotion/consumer gate，不能把“代码在 main”与“生产定时已经启用”混成一件事。
 
-当前晚间研究目标是北京时间 **19:00**。GitHub 可能排队延迟；早报属于独立待验收能力。迁移期间 private live 与 public live 不得同时启用，避免重复邮件和双 scheduler authority。日常启用前按 [操作手册](docs/OPERATOR_RUNBOOK.md#task-schedule) 核对实际 repo、SHA、workflow 和开关。
+当前晚间研究目标是北京时间 **19:00**。GitHub 可能排队延迟；早报属于独立待验收能力。code authority Promotion 不自动启用 live scheduler；未来 re-entry 时也不得同时启用 private/public 两套 daily，避免重复邮件和双 scheduler authority。日常启用前按 [操作手册](docs/OPERATOR_RUNBOOK.md#task-schedule) 核对实际 repo、SHA、workflow 和开关。
 
 ## 出问题先从哪里查
 

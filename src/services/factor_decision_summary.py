@@ -455,8 +455,13 @@ def _build_pattern_trigger_evidence(context_value: Any) -> Dict[str, Any]:
 
 def _pattern_trigger_summary(evidence: Dict[str, Any]) -> str:
     context = _mapping(evidence.get("context"))
+    candlestick = _mapping(context.get("candlestick"))
+    candle_summary = str(candlestick.get("summary") or "").strip().rstrip("。")
+    candle_material = bool(candlestick.get("material")) and bool(candle_summary)
     primary = _mapping(context.get("primary_pattern"))
     if not primary:
+        if candle_material:
+            return "形态/触发：" + candle_summary + "。"
         if evidence.get("evidence_state") == "READY":
             return "形态/触发：当前没有材料性的基底形态变化。"
         return "形态/触发：数据不足。"
@@ -489,6 +494,8 @@ def _pattern_trigger_summary(evidence: Dict[str, Any]) -> str:
         parts.append("突破量能已确认")
     elif volume_confirmation == "NOT_CONFIRMED":
         parts.append("突破量能尚未确认")
+    if candle_material:
+        parts.append(candle_summary)
     return "形态/触发：" + "；".join(parts) + "。"
 
 
@@ -1357,6 +1364,10 @@ def _material_event_sentences(summary: Dict[str, Any]) -> List[str]:
             }.get(lifecycle)
         if state_text:
             events.append(f"日线{label}{state_text}")
+    candle = _mapping(pattern.get("candlestick"))
+    candle_summary = str(candle.get("summary") or "").strip().rstrip("。")
+    if candle.get("material") is True and candle_summary:
+        events.append(candle_summary)
     return list(dict.fromkeys(events))
 
 

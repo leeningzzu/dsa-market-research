@@ -18,18 +18,18 @@ import pandas as pd
 
 
 PRICE_STRUCTURE_SCHEMA_VERSION = "price-structure-v1"
-PIVOT_ALGORITHM_VERSION = "confirmed-pivot-v1"
+PIVOT_ALGORITHM_VERSION = "confirmed-pivot-v2"
 PIVOT_LEFT_BARS = 2
 PIVOT_RIGHT_BARS = 2
 MIN_OBSERVATIONS = 10
-SOURCE_ALIGNMENT_WINDOW = 60
+SOURCE_ALIGNMENT_POLICY = "FULL_NORMALIZED_HISTORY"
 
 _CONFIG = {
     "algorithm_version": PIVOT_ALGORITHM_VERSION,
     "left_bars": PIVOT_LEFT_BARS,
     "right_bars": PIVOT_RIGHT_BARS,
     "minimum_observations": MIN_OBSERVATIONS,
-    "source_alignment_window": SOURCE_ALIGNMENT_WINDOW,
+    "source_alignment_policy": SOURCE_ALIGNMENT_POLICY,
 }
 CONFIG_HASH = sha256(
     json.dumps(_CONFIG, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -55,16 +55,26 @@ def _normalize_history(history: Any, *, target_date: date) -> pd.DataFrame:
 
 
 def _source_alignment(frame: pd.DataFrame) -> Dict[str, Any]:
-    window = frame.tail(SOURCE_ALIGNMENT_WINDOW)
-    if "data_source" not in window.columns:
-        return {"status": "UNPROVEN", "sources": [], "rows_complete": False}
-    text = window["data_source"].map(
+    base = {
+        "coverage": SOURCE_ALIGNMENT_POLICY,
+        "observations": int(len(frame)),
+        "start_date": frame.iloc[0]["date"].isoformat() if not frame.empty else None,
+        "end_date": frame.iloc[-1]["date"].isoformat() if not frame.empty else None,
+    }
+    if "data_source" not in frame.columns:
+        return {**base, "status": "UNPROVEN", "sources": [], "rows_complete": False}
+    text = frame["data_source"].map(
         lambda value: str(value).strip() if value not in (None, "") else ""
     )
     sources = sorted({value for value in text.tolist() if value})
     complete = bool((text != "").all())
     status = "SINGLE_SOURCE" if len(sources) == 1 and complete else "UNPROVEN"
-    return {"status": status, "sources": sources, "rows_complete": complete}
+    return {
+        **base,
+        "status": status,
+        "sources": sources,
+        "rows_complete": complete,
+    }
 
 
 def _invalid_ohlc(frame: pd.DataFrame) -> bool:

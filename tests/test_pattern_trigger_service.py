@@ -38,20 +38,30 @@ def _pivot(history: pd.DataFrame, index: int, kind: str, price: float, *, confir
         "origin_time": history.iloc[index]["date"].date().isoformat(),
         "confirmed_at": history.iloc[index + confirm_lag]["date"].date().isoformat(),
         "provisional": False,
-        "algorithm_version": "confirmed-pivot-v1",
+        "algorithm_version": "confirmed-pivot-v2",
         "config_hash": "price-structure-config",
     }
 
 
 def _price_context(history: pd.DataFrame, pivots: list[dict], *, target_index: int = -1, event: dict | None = None) -> dict:
     target = history.iloc[target_index]["date"].date()
+    completed = history[pd.to_datetime(history["date"]).dt.date <= target].copy()
     return {
         "schema_version": "price-structure-v1",
         "status": "READY",
         "target_date": target.isoformat(),
         "historical_replay_eligible": True,
-        "source_alignment": {"status": "SINGLE_SOURCE", "sources": ["Fetcher"], "rows_complete": True},
+        "source_alignment": {
+            "status": "SINGLE_SOURCE",
+            "sources": ["Fetcher"],
+            "rows_complete": True,
+            "coverage": "FULL_NORMALIZED_HISTORY",
+            "observations": len(completed),
+            "start_date": pd.to_datetime(completed.iloc[0]["date"]).date().isoformat(),
+            "end_date": pd.to_datetime(completed.iloc[-1]["date"]).date().isoformat(),
+        },
         "pivots": pivots,
+        "swings": [],
         "structure_event": event or {"state": "NONE", "provisional": False},
     }
 
@@ -111,7 +121,7 @@ def test_double_bottom_forming_confirmed_and_failed_reuse_price_structure_event_
         "event_time": history.iloc[65]["date"].date().isoformat(),
         "provisional": False,
         "invalidation": "COMPLETED_CLOSE_BELOW_BROKEN_RESISTANCE",
-        "algorithm_version": "confirmed-pivot-v1",
+        "algorithm_version": "confirmed-pivot-v2",
         "config_hash": "price-structure-config",
     }
     confirmed = _build(history, _price_context(history, pivots, event=breakout_event))
@@ -228,6 +238,75 @@ def test_near_miss_missing_and_source_mismatch_fail_closed_without_canonical_pat
     )
     assert missing_target["status"] == "MISSING"
     assert missing_target["reason"] == "TARGET_DATE_BAR_MISSING"
+
+
+def test_full_history_source_alignment_rejects_pattern_using_old_source_context_outside_prior_suffix():
+    dates = pd.bdate_range("2025-01-02", periods=100)
+    rows = []
+    for i, day in enumerate(dates):
+        if i <= 29:
+            close = 50.0 + i * (49.0 / 29.0)
+        elif i == 30:
+            close = 100.0
+        elif i <= 45:
+            close = 100.0 - (i - 30) * (20.0 / 15.0)
+        elif i <= 60:
+            close = 80.0 + (i - 45) * (25.0 / 15.0)
+        else:
+            close = 104.0 + (i - 60) * 0.05
+        high, low = close + 1.0, close - 1.0
+        if i == 30:
+            high, low = 110.0, 99.0
+        if i == 45:
+            close, high, low = 80.0, 81.0, 78.0
+        if i == 60:
+            close, high, low = 105.0, 108.0, 103.0
+        rows.append(
+            {
+                "date": day,
+                "open": close,
+                "high": high,
+                "low": low,
+                "close": close,
+                "volume": 1_000_000 + i * 1000,
+                "data_source": "OldFetcher" if i < 40 else "CurrentFetcher",
+            }
+        )
+    history = pd.DataFrame(rows)
+    target = history.iloc[-1]["date"].date()
+    from src.services.price_structure_service import build_price_structure_context
+
+    price = build_price_structure_context(
+        stock_code="600519", history=history, target_date=target, market="cn"
+    )
+    context = build_pattern_trigger_context(
+        stock_code="600519",
+        history=history,
+        target_date=target,
+        market="cn",
+        price_structure_context=price,
+        supply_demand_context=_supply_context(history),
+    )
+    assert price["status"] == "PARTIAL"
+    assert price["historical_replay_eligible"] is False
+    assert context["status"] == "PARTIAL"
+    assert context["reason"] == "PRICE_STRUCTURE_NOT_READY"
+    assert context["historical_replay_eligible"] is False
+
+
+def test_price_structure_full_history_span_mismatch_fails_closed():
+    history = _history()
+    pivots = [
+        _pivot(history, 35, "LOW", 80.0),
+        _pivot(history, 43, "HIGH", 94.0),
+        _pivot(history, 52, "LOW", 78.5),
+    ]
+    price = _price_context(history, pivots)
+    price["source_alignment"] = dict(price["source_alignment"], observations=len(history) - 1)
+    context = _build(history, price)
+    assert context["status"] == "PARTIAL"
+    assert context["reason"] == "SOURCE_ALIGNMENT_MISMATCH"
+    assert context["historical_replay_eligible"] is False
 
 
 def test_target_date_prefix_equivalence_and_future_confirmation_never_backfills():
