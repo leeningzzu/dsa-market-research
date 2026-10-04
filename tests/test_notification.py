@@ -1331,6 +1331,53 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
                 1,
             )
 
+
+
+    @mock.patch("src.notification.get_config")
+    def test_partial_current_intraday_context_renders_without_claiming_trigger(
+        self, mock_get_config: mock.MagicMock
+    ):
+        result = _make_investor_brief_result()
+        brief = result.dashboard["factor_decision"]["investor_brief"]
+        brief["timeframe_thesis"]["60m"] = {
+            "status": "PARTIAL_CURRENT",
+            "role": "OPTIONAL_BRIDGE",
+            "summary": "均线多头；MACD偏强；分钟结构尚未准入",
+        }
+        brief["short_term_execution_panel"] = {
+            "status": "READY",
+            "state": "CONTEXT_ONLY_NO_TRIGGER_AUTHORITY",
+            "independent_action_authority": False,
+            "30m": {
+                "status": "PARTIAL_CURRENT",
+                "role": "PRIMARY_STRUCTURE",
+                "summary": "均线压缩；RSI中性；分钟结构尚未准入",
+            },
+            "15m": {
+                "status": "PARTIAL_CURRENT",
+                "role": "TRIGGER_CONFIRMATION",
+                "summary": "量能正常；MACD偏强；分钟结构尚未准入",
+            },
+            "5m": {
+                "status": "PARTIAL_CURRENT",
+                "role": "MICRO_TIMING",
+                "summary": "均线交叉；RSI中性；分钟结构尚未准入",
+            },
+            "summary": "低周期仅作上下文，不构成独立触发。",
+        }
+        for renderer_enabled in (False, True):
+            mock_get_config.return_value = _make_config(
+                report_renderer_enabled=renderer_enabled
+            )
+            service = NotificationService()
+            full = service.generate_dashboard_report([result], report_date="2026-09-14")
+            compact = service.generate_brief_report([result])
+            for rendered in (full, compact):
+                self.assertIn("30分钟：均线压缩；RSI中性；分钟结构尚未准入", rendered)
+                self.assertIn("15分钟：量能正常；MACD偏强；分钟结构尚未准入", rendered)
+                self.assertIn("5分钟：均线交叉；RSI中性；分钟结构尚未准入", rendered)
+                self.assertNotIn("TRIGGERED", rendered)
+            self.assertIn("60分钟：均线多头；MACD偏强；分钟结构尚未准入", full)
     @mock.patch("src.notification.get_config")
     def test_etf_valuation_label_and_explicit_short_timeframes_render_from_same_brief(
         self, mock_get_config: mock.MagicMock
