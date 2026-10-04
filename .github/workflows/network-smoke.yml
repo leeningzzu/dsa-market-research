@@ -125,65 +125,92 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-      - name: Install exact AkShare trial package
-        run: python -m pip install --disable-pip-version-check "akshare==1.19.1"
+      - name: Install exact BaoStock trial package
+        run: python -m pip install --disable-pip-version-check "baostock==0.9.4"
       - name: Run one-symbol canonical 5m bounded trial
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
-          import hashlib, importlib.metadata, inspect, json, math, os
+          import hashlib, importlib.metadata, json, math, os
           from pathlib import Path
-          import akshare as ak
+          import baostock as bs
           import pandas as pd
 
-          trial="CLOUD_CANONICAL_5M_AKSHARE_1_19_1_BOUNDED_TRIAL_R001"
-          symbol="600519"; start="2026-09-23 09:30:00"; end="2026-09-30 15:00:00"
+          trial="CLOUD_CANONICAL_5M_BAOSTOCK_0_9_4_BOUNDED_TRIAL_R001"
+          code="sh.600519"; start="2026-09-23"; end="2026-09-30"
           sessions=["2026-09-23","2026-09-24","2026-09-28","2026-09-29","2026-09-30"]
-          cols=["时间","开盘","收盘","最高","最低","涨跌幅","涨跌额","成交量","成交额","振幅","换手率"]
+          fields=["date","time","code","open","high","low","close","volume","amount","adjustflag"]
           proxies=("HTTP_PROXY","HTTPS_PROXY","ALL_PROXY","http_proxy","https_proxy","all_proxy")
           leaked=[n for n in proxies if os.environ.get(n)]
           if leaked: raise SystemExit(f"CLOUD_PROXY_PRESENT names={leaked}")
-          version=importlib.metadata.version("akshare")
-          if version!="1.19.1": raise SystemExit(f"AKSHARE_VERSION_DRIFT={version}")
-          fn=getattr(ak,"stock_zh_a_hist_min_em",None)
-          if fn is None: raise SystemExit("AKSHARE_CALLABLE_MISSING")
-          params=list(inspect.signature(fn).parameters)
-          if params!=["symbol","start_date","end_date","period","adjust"]:
-              raise SystemExit(f"AKSHARE_SIGNATURE_DRIFT={params}")
-          df=fn(symbol=symbol,start_date=start,end_date=end,period="5",adjust="qfq")
-          if df is None or df.empty: raise SystemExit("EMPTY_5M_RESPONSE")
-          if list(df.columns)!=cols: raise SystemExit(f"COLUMN_DRIFT={list(df.columns)}")
-          d=df.copy(); d["时间"]=pd.to_datetime(d["时间"],errors="coerce")
-          if d["时间"].isna().any() or d["时间"].duplicated().any() or not d["时间"].is_monotonic_increasing:
+          version=importlib.metadata.version("baostock")
+          if version!="0.9.4": raise SystemExit(f"BAOSTOCK_VERSION_DRIFT={version}")
+
+          login=bs.login()
+          if str(login.error_code)!="0": raise SystemExit(f"BAOSTOCK_LOGIN_FAILED code={login.error_code} msg={login.error_msg}")
+          login_count=1; query_count=0; logout_count=0
+          query_succeeded=False
+          try:
+              rs=bs.query_history_k_data_plus(
+                  code=code,
+                  fields=",".join(fields),
+                  start_date=start,
+                  end_date=end,
+                  frequency="5",
+                  adjustflag="2",
+              )
+              query_count=1
+              if str(rs.error_code)!="0": raise SystemExit(f"BAOSTOCK_QUERY_FAILED code={rs.error_code} msg={rs.error_msg}")
+              if list(rs.fields)!=fields: raise SystemExit(f"FIELD_DRIFT={list(rs.fields)}")
+              rows=[]
+              while rs.next(): rows.append(rs.get_row_data())
+              if not rows: raise SystemExit("EMPTY_5M_RESPONSE")
+              query_succeeded=True
+          finally:
+              logout=bs.logout(); logout_count=1
+          if str(logout.error_code)!="0": raise SystemExit(f"BAOSTOCK_LOGOUT_FAILED code={logout.error_code} msg={logout.error_msg}")
+          if not query_succeeded: raise SystemExit("BAOSTOCK_QUERY_NOT_COMPLETED")
+
+          d=pd.DataFrame(rows,columns=fields)
+          raw_time=d["time"].astype(str)
+          if (~raw_time.str.match(r"^\d{14,17}$")).any(): raise SystemExit("TIME_FORMAT_INVALID")
+          d["_ts"]=pd.to_datetime(raw_time.str.slice(0,14),format="%Y%m%d%H%M%S",errors="coerce")
+          if d["_ts"].isna().any() or d["_ts"].duplicated().any() or not d["_ts"].is_monotonic_increasing:
               raise SystemExit("TIMESTAMP_INVALID")
-          for c in ["开盘","收盘","最高","最低","成交量","成交额"]:
+          if (d["date"].astype(str)!=d["_ts"].dt.strftime("%Y-%m-%d")).any(): raise SystemExit("DATE_TIME_MISMATCH")
+          if (d["code"].astype(str)!=code).any(): raise SystemExit("CODE_MISMATCH")
+          if (d["adjustflag"].astype(str)!="2").any(): raise SystemExit("ADJUSTFLAG_MISMATCH")
+          for c in ["open","high","low","close","volume","amount"]:
               d[c]=pd.to_numeric(d[c],errors="coerce")
               if d[c].isna().any() or not d[c].map(math.isfinite).all(): raise SystemExit(f"NUMERIC_INVALID={c}")
-          if (d[["开盘","收盘","最高","最低"]]<=0).any().any(): raise SystemExit("OHLC_NONPOSITIVE")
-          if (d[["成交量","成交额"]]<0).any().any(): raise SystemExit("VOLUME_AMOUNT_NEGATIVE")
-          if ((d["最高"]<d[["开盘","收盘","最低"]].max(axis=1))|(d["最低"]>d[["开盘","收盘","最高"]].min(axis=1))).any():
+          if (d[["open","high","low","close"]]<=0).any().any(): raise SystemExit("OHLC_NONPOSITIVE")
+          if (d[["volume","amount"]]<0).any().any(): raise SystemExit("VOLUME_AMOUNT_NEGATIVE")
+          if ((d["high"]<d[["open","close","low"]].max(axis=1))|(d["low"]>d[["open","close","high"]].min(axis=1))).any():
               raise SystemExit("OHLC_ENVELOPE_INVALID")
+
           expected=[]
           for s in sessions:
               expected += list(pd.date_range(f"{s} 09:35:00",f"{s} 11:30:00",freq="5min"))
               expected += list(pd.date_range(f"{s} 13:05:00",f"{s} 15:00:00",freq="5min"))
-          actual=d["时间"].tolist()
-          counts=d.assign(_s=d["时间"].dt.strftime("%Y-%m-%d")).groupby("_s").size().to_dict()
+          actual=d["_ts"].tolist()
+          counts=d.assign(_s=d["_ts"].dt.strftime("%Y-%m-%d")).groupby("_s").size().to_dict()
           if actual!=expected: raise SystemExit(f"SESSION_OR_RIGHT_LABEL_MISMATCH rows={len(actual)} counts={counts}")
-          canon=d[cols].copy(); canon["时间"]=canon["时间"].dt.strftime("%Y-%m-%d %H:%M:%S")
+
+          canon=d[fields].copy()
           digest=hashlib.sha256(canon.to_csv(index=False,lineterminator="\n").encode()).hexdigest()
-          receipt={"schema":"stock-dsa-cloud-5m-bounded-trial-v1","trial_id":trial,"trial_result":"PASS",
-                   "akshare_version":version,"callable":"stock_zh_a_hist_min_em","symbol":symbol,"start":start,"end":end,
-                   "period":"5","adjust":"qfq","returned_columns":cols,"row_count":len(d),"session_dates":sessions,"bars_per_session":counts,
+          receipt={"schema":"stock-dsa-cloud-5m-baostock-bounded-trial-v1","trial_id":trial,"trial_result":"PASS",
+                   "baostock_version":version,"callable":"query_history_k_data_plus","code":code,"start_date":start,"end_date":end,
+                   "frequency":"5","adjustflag":"2","returned_fields":fields,"row_count":len(d),"session_dates":sessions,"bars_per_session":counts,
                    "first_timestamp":actual[0].strftime("%Y-%m-%d %H:%M:%S"),"last_timestamp":actual[-1].strftime("%Y-%m-%d %H:%M:%S"),
                    "duplicate_count":0,"off_session_count":0,"lunch_count":0,"ohlc_valid":True,"volume_nonnegative":True,"amount_nonnegative":True,
-                   "raw_volume_unit":"HAND","raw_amount_unit":"UNPROVEN_BY_CURRENT_DOC","data_sha256":digest,
-                   "proxy_env_present":False,"retry_count":0,"provider_fallback_count":0,"raw_rows_persisted":False}
+                   "raw_volume_unit":"UNPROVEN_BY_CURRENT_TRIAL_CONTRACT","raw_amount_unit":"UNPROVEN_BY_CURRENT_TRIAL_CONTRACT",
+                   "data_sha256":digest,"proxy_env_present":False,"login_count":login_count,"query_count":query_count,"logout_count":logout_count,
+                   "retry_count":0,"provider_fallback_count":0,"raw_rows_persisted":False}
           summary=os.environ.get("GITHUB_STEP_SUMMARY")
           if summary:
               with Path(summary).open("a",encoding="utf-8") as h:
-                  h.write("## STOCK_DSA canonical 5m bounded trial\n\n```json\n")
+                  h.write("## STOCK_DSA canonical 5m BaoStock bounded trial\n\n```json\n")
                   h.write(json.dumps(receipt,ensure_ascii=False,indent=2,sort_keys=True)); h.write("\n```\n")
           print(json.dumps(receipt,ensure_ascii=False,sort_keys=True))
           PY

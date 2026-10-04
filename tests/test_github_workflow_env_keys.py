@@ -36,15 +36,19 @@ def test_5m_trial_is_explicit_bounded_and_effect_isolated():
     assert "public_probe:" in text and "- 5m-trial" in text
     assert "inputs.public_probe == '5m-trial'" in str(trial["if"]) and trial["timeout-minutes"]==5
     body="\n".join(str(x) for x in trial["steps"])
-    for token in ('akshare==1.19.1','CLOUD_CANONICAL_5M_AKSHARE_1_19_1_BOUNDED_TRIAL_R001',
-                  'symbol="600519"','period="5"','adjust="qfq"','retry_count','provider_fallback_count',
+    assert body.count("bs.login()")==1
+    assert body.count("bs.query_history_k_data_plus")==1
+    assert body.count("bs.logout()")==1
+    for token in ('baostock==0.9.4','CLOUD_CANONICAL_5M_BAOSTOCK_0_9_4_BOUNDED_TRIAL_R001',
+                  'code="sh.600519"','frequency="5"','adjustflag="2"','bs.login()','bs.query_history_k_data_plus','bs.logout()',
+                  'login_count','query_count','logout_count','retry_count','provider_fallback_count',
                   '2026-09-23','2026-09-24','2026-09-28','2026-09-29','2026-09-30',
                   '09:35:00','11:30:00','13:05:00','15:00:00','SESSION_OR_RIGHT_LABEL_MISMATCH',
-                  'returned_columns','volume_nonnegative','amount_nonnegative','raw_volume_unit','UNPROVEN_BY_CURRENT_DOC','raw_rows_persisted','GITHUB_STEP_SUMMARY'):
+                  'returned_fields','volume_nonnegative','amount_nonnegative','UNPROVEN_BY_CURRENT_TRIAL_CONTRACT',
+                  'raw_rows_persisted','GITHUB_STEP_SUMMARY'):
         assert token in body
-    for forbidden in ("actions/checkout","actions/upload-artifact","secrets.","send_email","telegram","prediction_ledger","training"):
+    for forbidden in ("akshare==","stock_zh_a_hist_min_em","actions/checkout","actions/upload-artifact","secrets.","send_email","telegram","prediction_ledger","training"):
         assert forbidden not in body.lower()
-
 
 def test_private_smoke_contract_is_preserved():
     text=WORKFLOW.read_text(encoding="utf-8"); jobs=yaml.safe_load(text)["jobs"]; smoke=jobs["smoke"]
