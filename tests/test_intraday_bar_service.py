@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import pandas as pd
 import pytest
@@ -14,6 +14,7 @@ from src.services.intraday_bar_service import (
     IntradayBarError,
     aggregate_completed_intraday_bars,
     normalize_cn_completed_5m_bars,
+    validate_complete_cn_5m_sessions,
 )
 
 
@@ -168,6 +169,137 @@ def test_normalizer_rejects_date_time_mismatch() -> None:
         )
 
 
+
+
+def _attach_test_identity(
+    frame: pd.DataFrame,
+    session_dates: list[date],
+    *,
+    source_rows_sha256: str,
+) -> pd.DataFrame:
+    observed = datetime(2026, 10, 1, 8, 0, tzinfo=timezone.utc)
+    identity = build_intraday_data_identity(
+        frame,
+        provider_identity="BaostockFetcher",
+        provider_route="unit.session-set",
+        package_version="0.9.4",
+        query_identity={"code": "sh.600519", "frequency": "5", "adjustflag": "2"},
+        requested_adjustment_basis="qfq",
+        observed_adjustment_basis="qfq",
+        basis_evidence="unit-test",
+        timeframe="5m",
+        timezone_name="Asia/Shanghai",
+        session_calendar="XSHG",
+        currency="CNY",
+        volume_unit="UNKNOWN",
+        amount_unit="UNKNOWN",
+        requested_start=session_dates[0].isoformat(),
+        requested_end=session_dates[-1].isoformat(),
+        identity_state="OBSERVED",
+        observed_at=observed,
+        source_rows_sha256=source_rows_sha256,
+    )
+    attach_intraday_data_identity(frame, identity)
+    frame["intraday_data_identity_hash"] = identity["identity_hash"]
+    return frame
+
+
+def _canonical_session_set(session_dates: list[date]) -> pd.DataFrame:
+    observed = datetime(2026, 10, 1, 8, 0, tzinfo=timezone.utc)
+    frames = []
+    for session_date in session_dates:
+        labels = list(
+            pd.date_range(
+                f"{session_date.isoformat()} 09:35:00",
+                f"{session_date.isoformat()} 11:30:00",
+                freq="5min",
+            )
+        )
+        labels += list(
+            pd.date_range(
+                f"{session_date.isoformat()} 13:05:00",
+                f"{session_date.isoformat()} 15:00:00",
+                freq="5min",
+            )
+        )
+        raw = pd.DataFrame(
+            {
+                "date": [session_date.isoformat()] * len(labels),
+                "time": [value.strftime("%Y%m%d%H%M%S") + "000" for value in labels],
+                "code": ["sh.600519"] * len(labels),
+                "open": [100.0 + index * 0.01 for index in range(len(labels))],
+                "high": [101.0 + index * 0.01 for index in range(len(labels))],
+                "low": [99.0 + index * 0.01 for index in range(len(labels))],
+                "close": [100.5 + index * 0.01 for index in range(len(labels))],
+                "volume": [1000.0 + index for index in range(len(labels))],
+                "amount": [100000.0 + index for index in range(len(labels))],
+                "adjustflag": ["2"] * len(labels),
+            }
+        )
+        frames.append(
+            normalize_cn_completed_5m_bars(
+                raw,
+                stock_code="600519",
+                data_source="BaostockFetcher",
+                observed_at=observed,
+            )
+        )
+    frame = pd.concat(frames, ignore_index=True)
+    return _attach_test_identity(
+        frame,
+        session_dates,
+        source_rows_sha256="9" * 64,
+    )
+
+
+def test_complete_session_validator_accepts_exact_ten_sessions() -> None:
+    sessions = [
+        date(2026, 9, 14),
+        date(2026, 9, 15),
+        date(2026, 9, 16),
+        date(2026, 9, 17),
+        date(2026, 9, 18),
+        date(2026, 9, 21),
+        date(2026, 9, 22),
+        date(2026, 9, 23),
+        date(2026, 9, 24),
+        date(2026, 9, 25),
+    ]
+    frame = _canonical_session_set(sessions)
+    receipt = validate_complete_cn_5m_sessions(
+        frame,
+        expected_session_dates=sessions,
+    )
+    assert len(frame) == 480
+    assert receipt["session_count"] == 10
+    assert receipt["row_count"] == 480
+    assert receipt["bars_per_session"] == 48
+
+
+def test_complete_session_validator_rejects_missing_bar_even_with_rebound_identity() -> None:
+    sessions = [
+        date(2026, 9, 14),
+        date(2026, 9, 15),
+        date(2026, 9, 16),
+        date(2026, 9, 17),
+        date(2026, 9, 18),
+        date(2026, 9, 21),
+        date(2026, 9, 22),
+        date(2026, 9, 23),
+        date(2026, 9, 24),
+        date(2026, 9, 25),
+    ]
+    frame = _canonical_session_set(sessions).drop(index=[4]).reset_index(drop=True)
+    frame = _attach_test_identity(
+        frame.drop(columns=["intraday_data_identity_hash"]),
+        sessions,
+        source_rows_sha256="8" * 64,
+    )
+    with pytest.raises(IntradayBarError, match="incomplete or noncanonical"):
+        validate_complete_cn_5m_sessions(
+            frame,
+            expected_session_dates=sessions,
+        )
 def test_aggregation_fails_closed_on_mixed_identity_hash() -> None:
     source = _canonical_full_day()
     source.loc[0, "intraday_data_identity_hash"] = "d" * 64

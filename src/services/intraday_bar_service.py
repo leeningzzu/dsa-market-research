@@ -109,6 +109,82 @@ def normalize_cn_completed_5m_bars(
     return working[columns].reset_index(drop=True)
 
 
+def validate_complete_cn_5m_sessions(
+    frame: pd.DataFrame,
+    *,
+    expected_session_dates: list[Any],
+) -> dict[str, Any]:
+    """Validate an exact closed set of complete XSHG 5m sessions."""
+    try:
+        identity = extract_intraday_data_identity(frame, strict=True)
+    except IntradayDataIdentityError as exc:
+        raise IntradayBarError(f"invalid canonical 5m identity: {exc}") from exc
+    if identity is None or identity.get("timeframe") != "5m":
+        raise IntradayBarError("complete-session validation requires canonical 5m identity")
+    if not isinstance(frame, pd.DataFrame) or frame.empty:
+        raise IntradayBarError("complete-session validation requires non-empty 5m bars")
+    required = {"bar_end", "session"}
+    if not required.issubset(frame.columns):
+        raise IntradayBarError("canonical 5m frame is missing session validation columns")
+
+    normalized_expected: list[str] = []
+    for value in list(expected_session_dates or []):
+        try:
+            text = pd.Timestamp(value).date().isoformat()
+        except Exception as exc:
+            raise IntradayBarError("expected session date is invalid") from exc
+        if text in normalized_expected:
+            raise IntradayBarError("expected session dates contain duplicates")
+        normalized_expected.append(text)
+    if not normalized_expected:
+        raise IntradayBarError("expected session dates must be non-empty")
+    if normalized_expected != sorted(normalized_expected):
+        raise IntradayBarError("expected session dates must be strictly increasing")
+
+    working = frame.copy()
+    working["bar_end"] = pd.to_datetime(working["bar_end"], errors="coerce")
+    if working["bar_end"].isna().any():
+        raise IntradayBarError("canonical 5m frame contains invalid bar_end")
+    local_dates: list[str] = []
+    for value in working["bar_end"]:
+        ts = pd.Timestamp(value)
+        if ts.tzinfo is None:
+            raise IntradayBarError("canonical 5m bar_end must be timezone-aware")
+        local_dates.append(ts.tz_convert(CN_TIMEZONE).date().isoformat())
+    working["_session_date"] = local_dates
+
+    actual_dates = sorted(set(local_dates))
+    if actual_dates != normalized_expected:
+        raise IntradayBarError(
+            f"5m session date mismatch: expected={normalized_expected}, actual={actual_dates}"
+        )
+
+    for session_date in normalized_expected:
+        day = working[working["_session_date"] == session_date].copy()
+        expected_labels = (
+            _expected_half_session_labels(session_date, "AM")
+            + _expected_half_session_labels(session_date, "PM")
+        )
+        observed_labels = [
+            pd.Timestamp(value).tz_convert(CN_TIMEZONE)
+            for value in day["bar_end"].tolist()
+        ]
+        if observed_labels != expected_labels:
+            raise IntradayBarError(f"incomplete or noncanonical 5m session: {session_date}")
+        expected_sessions = [f"{session_date}:AM"] * 24 + [f"{session_date}:PM"] * 24
+        if day["session"].astype(str).tolist() != expected_sessions:
+            raise IntradayBarError(f"5m session labels mismatch: {session_date}")
+
+    return {
+        "schema_version": "cn-complete-5m-session-set-v1",
+        "identity_hash": identity["identity_hash"],
+        "expected_session_dates": normalized_expected,
+        "session_count": len(normalized_expected),
+        "row_count": int(len(frame)),
+        "bars_per_session": 48,
+    }
+
+
 def aggregate_completed_intraday_bars(
     frame: pd.DataFrame,
     *,
