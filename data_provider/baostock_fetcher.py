@@ -17,7 +17,8 @@ BaostockFetcher - 备用数据源 2 (Priority 3)
 import logging
 import re
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
+from importlib import metadata
 from typing import Optional, Generator
 
 import pandas as pd
@@ -38,6 +39,9 @@ from .base import (
     _is_hk_market,
 )
 from .daily_data_identity import attach_daily_data_identity, build_daily_data_identity
+from .daily_data_identity import sha256_payload
+from .intraday_data_identity import attach_intraday_data_identity, build_intraday_data_identity
+from src.services.intraday_bar_service import normalize_cn_completed_5m_bars
 import os
 
 logger = logging.getLogger(__name__)
@@ -269,6 +273,100 @@ class BaostockFetcher(BaseFetcher):
                     raise
                 raise DataFetchError(f"Baostock 获取数据失败: {e}") from e
     
+    def get_intraday_data(
+        self,
+        stock_code: str,
+        *,
+        start_date: str,
+        end_date: str,
+        frequency: str = "5",
+        observed_at: Optional[datetime] = None,
+    ) -> pd.DataFrame:
+        """Fetch the explicit BaoStock completed-5m route without generic fallback."""
+        if str(frequency) != "5":
+            raise DataFetchError("BaoStock intraday only admits canonical 5m input")
+        if _is_us_code(stock_code) or _is_hk_market(stock_code) or is_bse_code(stock_code):
+            raise DataFetchError(f"BaoStock intraday does not support market code {stock_code}")
+        observed_at = observed_at or datetime.now(timezone.utc)
+        if observed_at.tzinfo is None or observed_at.utcoffset() is None:
+            observed_at = observed_at.replace(tzinfo=timezone.utc)
+        bs_code = self._convert_stock_code(stock_code)
+        fields = "date,time,code,open,high,low,close,volume,amount,adjustflag"
+        with self._baostock_session() as bs:
+            try:
+                rs = bs.query_history_k_data_plus(
+                    code=bs_code,
+                    fields=fields,
+                    start_date=start_date,
+                    end_date=end_date,
+                    frequency="5",
+                    adjustflag="2",
+                )
+                if rs.error_code != "0":
+                    raise DataFetchError(f"BaoStock intraday query failed: {rs.error_msg}")
+                expected_fields = fields.split(",")
+                if list(rs.fields) != expected_fields:
+                    raise DataFetchError(f"BaoStock intraday field drift: {list(rs.fields)}")
+                rows = []
+                while rs.next():
+                    rows.append(rs.get_row_data())
+                if not rows:
+                    raise DataFetchError(f"BaoStock intraday returned no rows for {stock_code}")
+                raw = pd.DataFrame(rows, columns=rs.fields)
+                if (raw["code"].astype(str) != bs_code).any():
+                    raise DataFetchError("BaoStock intraday response code mismatch")
+                if (raw["adjustflag"].astype(str) != "2").any():
+                    raise DataFetchError("BaoStock intraday response adjustflag mismatch")
+                returned_dates = pd.to_datetime(raw["date"], errors="coerce")
+                if returned_dates.isna().any():
+                    raise DataFetchError("BaoStock intraday response date invalid")
+                if (returned_dates < pd.Timestamp(start_date)).any() or (returned_dates > pd.Timestamp(end_date)).any():
+                    raise DataFetchError("BaoStock intraday response outside requested date range")
+            except Exception as exc:
+                if isinstance(exc, DataFetchError):
+                    raise
+                raise DataFetchError(f"BaoStock intraday fetch failed: {exc}") from exc
+        frame = normalize_cn_completed_5m_bars(
+            raw,
+            stock_code=stock_code,
+            data_source=self.name,
+            observed_at=observed_at,
+        )
+        if frame.empty:
+            raise DataFetchError("BaoStock intraday returned no completed 5m bars")
+        source_rows_sha256 = sha256_payload(raw.astype(str).to_dict("records"))
+        identity = build_intraday_data_identity(
+            frame,
+            provider_identity=self.name,
+            provider_route="baostock.query_history_k_data_plus",
+            package_version=metadata.version("baostock"),
+            query_identity={
+                "code": bs_code,
+                "fields": fields,
+                "start_date": start_date,
+                "end_date": end_date,
+                "frequency": "5",
+                "adjustflag": "2",
+            },
+            requested_adjustment_basis="qfq",
+            observed_adjustment_basis="qfq",
+            basis_evidence="successful_nonempty_query:adjustflag=2",
+            timeframe="5m",
+            timezone_name="Asia/Shanghai",
+            session_calendar="XSHG",
+            currency="CNY",
+            volume_unit="UNKNOWN",
+            amount_unit="UNKNOWN",
+            requested_start=start_date,
+            requested_end=end_date,
+            identity_state="OBSERVED",
+            observed_at=observed_at,
+            source_rows_sha256=source_rows_sha256,
+        )
+        attach_intraday_data_identity(frame, identity)
+        frame["intraday_data_identity_hash"] = identity["identity_hash"]
+        return frame
+
     def _normalize_data(self, df: pd.DataFrame, stock_code: str) -> pd.DataFrame:
         """
         标准化 Baostock 数据
