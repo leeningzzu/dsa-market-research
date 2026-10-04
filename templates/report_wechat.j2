@@ -8,7 +8,11 @@
 {% if summary_only %}
 **📊 {{ labels.summary_heading }}**
 {% for e in enriched %}
+{% if e.canonical_authority %}
+{{ e.signal_emoji }} **{{ e.stock_name }}({{ e.result.code }})**: {{ e.signal_text }}{% if e.investor_brief_valid and e.investor_brief.get('one_line_conclusion') %} | {{ e.investor_brief.get('one_line_conclusion') }}{% endif %}
+{% else %}
 {{ e.signal_emoji }} **{{ e.stock_name }}({{ e.result.code }})**: {{ e.signal_text }} | {{ labels.score_label }} {{ e.result.sentiment_score }} | {{ e.localized_trend_prediction }}
+{% endif %}
 {% endfor %}
 {% else %}
 {% for e in enriched %}
@@ -18,6 +22,30 @@
 {% set battle = dashboard.get('battle_plan') or {} %}
 {% set intel = dashboard.get('intelligence') or {} %}
 
+{% if e.canonical_authority %}
+### {{ e.signal_emoji }} **{{ e.signal_text }}** | {{ e.stock_name }}({{ result.code }})
+
+{% if e.investor_brief_valid %}
+📌 **{{ e.investor_brief.get('one_line_conclusion') }}**
+{{ e.investor_brief.get('fused_paragraph') }}
+{% if e.investor_brief.get('coverage_text') %}
+**多周期**: {{ e.investor_brief.get('coverage_text') }}
+{% endif %}
+{% if e.investor_brief.get('trigger') %}
+**触发条件**: {{ e.investor_brief.get('trigger') }}
+{% endif %}
+{% if e.investor_brief.get('invalidation') %}
+**失效条件**: {{ e.investor_brief.get('invalidation') }}
+{% endif %}
+{% if e.investor_brief.get('risk_notes') %}
+**主要风险**:
+{% for item in e.investor_brief.get('risk_notes') %}- {{ item }}
+{% endfor %}
+{% endif %}
+{% else %}
+📌 **当前确定性证据摘要不可用，本次保持观望。**
+{% endif %}
+{% else %}
 ### {{ e.signal_emoji }} **{{ e.signal_text }}** | {{ e.stock_name }}({{ result.code }})
 
 {% set one_sentence = core.get('one_sentence', result.analysis_summary) if core else result.analysis_summary %}
@@ -88,6 +116,7 @@
 {% endfor %}
 {% endif %}
 
+{% endif %}
 ---
 {% endfor %}
 {% endif %}

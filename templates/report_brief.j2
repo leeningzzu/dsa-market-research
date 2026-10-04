@@ -9,8 +9,8 @@
 {% set dash = e.result.dashboard or {} %}
 {% set factor = dash.get('factor_decision') or {} %}
 {% set delivery = dash.get('research_delivery') or {} %}
-{% set brief = factor.get('investor_brief') or {} %}
-{% set brief_valid = report_language == 'zh' and brief.get('schema_version') == 'investor-brief-v1' and brief.get('one_line_conclusion') and brief.get('fused_paragraph') %}
+{% set brief = e.investor_brief or {} %}
+{% set brief_valid = e.investor_brief_valid %}
 {% if brief_valid %}
 ## {{ e.signal_emoji }} {{ e.stock_name }} ({{ e.result.code }})｜{{ e.signal_text }}
 
@@ -97,9 +97,13 @@
 {% endfor %}
 {% endif %}
 {% else %}
+{% if e.canonical_authority %}
+**{{ e.stock_name }}({{ e.result.code }})** {{ e.signal_emoji }} {{ e.signal_text }} | 当前确定性证据摘要不可用，本次保持观望。
+{% else %}
 {% set core = (dash.get('core_conclusion') or {}) if dash else {} %}
 {% set one = (core.get('one_sentence') or e.result.analysis_summary or '')[:60] %}
 **{{ e.stock_name }}({{ e.result.code }})** {{ e.signal_emoji }} {{ e.signal_text }} | {{ labels.score_label }} {{ e.result.sentiment_score }} | {{ one }}
+{% endif %}
 {% endif %}
 {% endfor %}
 

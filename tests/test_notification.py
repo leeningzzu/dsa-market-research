@@ -194,6 +194,42 @@ def _make_investor_brief_result() -> AnalysisResult:
 
 
 
+
+
+def _make_canonical_wait_contaminated_result() -> AnalysisResult:
+    result = _make_investor_brief_result()
+    factor = result.dashboard["factor_decision"]
+    decision = {
+        "authority": "stock_trend_quality_pullback_v1",
+        "action": "WAIT",
+        "public_action": "watch",
+        "evidence_state": "PROVEN",
+        "hard_veto": False,
+        "reason_codes": ["WAIT_CONFIRMATION"],
+    }
+    factor["canonical_decision"] = deepcopy(decision)
+    factor["conclusion"] = "CANONICAL_WAIT_CONCLUSION"
+    factor["action_condition"] = "CANONICAL_TRIGGER"
+    factor["invalidation_condition"] = "CANONICAL_INVALIDATION"
+    factor["investor_brief"]["canonical"] = deepcopy(decision)
+    factor["investor_brief"]["one_line_conclusion"] = "CANONICAL_WAIT_CONCLUSION"
+    factor["investor_brief"]["fused_paragraph"] = "CANONICAL_FUSED_FACTS"
+    factor["investor_brief"]["risk_notes"] = ["CANONICAL_RISK"]
+    factor["evidence_traceability"] = build_runtime_trace(factor)
+    factor["canonical_decision_identity"] = canonical_factor_binding(factor)
+    factor["investor_brief"]["canonical_binding"] = deepcopy(
+        factor["canonical_decision_identity"]
+    )
+    apply_canonical_decision_to_result(result, factor, scope="research")
+
+    # Deliberate post-canonical legacy contamination.
+    result.sentiment_score = 99
+    result.trend_prediction = "LEGACY_STRONG_BULLISH"
+    result.operation_advice = "LEGACY_BUY_NOW"
+    result.analysis_summary = "LEGACY_ANALYSIS_SUMMARY_MUST_NOT_RENDER"
+    result.buy_reason = "LEGACY_BUY_REASON_MUST_NOT_RENDER"
+    result.trend_analysis = "LEGACY_TREND_ANALYSIS_MUST_NOT_RENDER"
+    return result
 def _make_builder_risk_factor(risks):
     trend = SimpleNamespace(
         signal_score=82,
@@ -862,6 +898,64 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
 
 
 class TestNotificationServiceReportGeneration(unittest.TestCase):
+
+    @mock.patch("src.notification.get_config")
+    def test_canonical_wait_blocks_legacy_score_trend_and_advice_across_public_reports(
+        self, mock_get_config: mock.MagicMock
+    ):
+        result = _make_canonical_wait_contaminated_result()
+
+        for renderer_enabled in (False, True):
+            mock_get_config.return_value = _make_config(
+                report_renderer_enabled=renderer_enabled
+            )
+            service = NotificationService()
+            outputs = {
+                "daily": service.generate_daily_report([result], report_date="2025-09-30"),
+                "dashboard": service.generate_dashboard_report([result], report_date="2025-09-30"),
+                "brief": service.generate_brief_report([result], report_date="2025-09-30"),
+                "wechat_dashboard": service.generate_wechat_dashboard([result]),
+                "wechat_summary": service.generate_wechat_summary([result]),
+                "single": service.generate_single_stock_report(result),
+                "quick_summary": NotificationBuilder.build_stock_summary([result]),
+            }
+
+            for name, rendered in outputs.items():
+                self.assertIn("观望", rendered, msg=name)
+                self.assertNotIn("LEGACY_STRONG_BULLISH", rendered, msg=name)
+                self.assertNotIn("LEGACY_BUY_NOW", rendered, msg=name)
+                self.assertNotIn("LEGACY_ANALYSIS_SUMMARY_MUST_NOT_RENDER", rendered, msg=name)
+                self.assertNotIn("LEGACY_BUY_REASON_MUST_NOT_RENDER", rendered, msg=name)
+                self.assertNotIn("LEGACY_TREND_ANALYSIS_MUST_NOT_RENDER", rendered, msg=name)
+                self.assertNotIn("评分 99", rendered, msg=name)
+                self.assertNotIn("评分:99", rendered, msg=name)
+                self.assertNotIn("评分：99", rendered, msg=name)
+
+            self.assertIn("CANONICAL_WAIT_CONCLUSION", outputs["daily"])
+            self.assertIn("CANONICAL_WAIT_CONCLUSION", outputs["dashboard"])
+            self.assertIn("CANONICAL_WAIT_CONCLUSION", outputs["brief"])
+
+    @mock.patch("src.notification.get_config")
+    def test_stale_canonical_brief_cannot_fall_back_to_legacy_buy_content(
+        self, mock_get_config: mock.MagicMock
+    ):
+        mock_get_config.return_value = _make_config(report_renderer_enabled=True)
+        result = _make_canonical_wait_contaminated_result()
+        result.dashboard["factor_decision"]["investor_brief"]["canonical_binding"] = {
+            "stale": True
+        }
+
+        service = NotificationService()
+        full = service.generate_dashboard_report([result], report_date="2025-09-30")
+        brief = service.generate_brief_report([result], report_date="2025-09-30")
+
+        for rendered in (full, brief):
+            self.assertIn("当前确定性证据摘要不可用，本次保持观望", rendered)
+            self.assertNotIn("LEGACY_STRONG_BULLISH", rendered)
+            self.assertNotIn("LEGACY_BUY_NOW", rendered)
+            self.assertNotIn("LEGACY_ANALYSIS_SUMMARY_MUST_NOT_RENDER", rendered)
+            self.assertNotIn("评分 99", rendered)
+            self.assertNotIn("评分:99", rendered)
 
     def test_investor_brief_requires_current_canonical_trace_binding(self):
         result = _make_investor_brief_result()
@@ -1642,13 +1736,16 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
                 self.assertNotIn("| 压力位 | 1499.0 |", out)
 
     @mock.patch("src.notification.get_config")
-    def test_asset_investor_brief_missing_preserves_legacy_core_and_factor(
+    def test_asset_canonical_without_investor_brief_fails_closed_not_legacy(
         self, mock_get_config: mock.MagicMock
     ):
         result = _make_investor_brief_result()
         factor_decision = dict(result.dashboard["factor_decision"])
         factor_decision.pop("investor_brief")
         result.dashboard["factor_decision"] = factor_decision
+        result.sentiment_score = 99
+        result.trend_prediction = "LEGACY_STRONG_BULLISH"
+        result.operation_advice = "LEGACY_BUY_NOW"
 
         for enabled in (False, True):
             with self.subTest(report_renderer_enabled=enabled):
@@ -1657,8 +1754,12 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
                     [result],
                     report_date="2026-09-14",
                 )
-                self.assertIn("旧核心结论（不得出现）", out)
-                self.assertIn("旧因子结论（不得重复）", out)
+                self.assertIn("当前确定性证据摘要不可用，本次保持观望", out)
+                self.assertNotIn("旧核心结论（不得出现）", out)
+                self.assertNotIn("旧因子结论（不得重复）", out)
+                self.assertNotIn("LEGACY_STRONG_BULLISH", out)
+                self.assertNotIn("LEGACY_BUY_NOW", out)
+                self.assertNotIn("评分 99", out)
                 self.assertNotIn("### 🧭 投资者简报", out)
 
     @mock.patch("src.notification.get_config")

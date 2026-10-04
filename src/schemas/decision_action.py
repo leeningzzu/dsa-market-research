@@ -9,9 +9,11 @@ This module is deliberately separate from ``src.agent.protocols``:
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from typing import Any, Dict, Literal, Optional, TypedDict, get_args
 
 from src.report_language import localize_operation_advice, normalize_report_language
+from src.services.research_state_projection import validate_canonical_decision_semantics
 from src.schemas.decision_scale import (
     action_for_score,
     extract_decision_guardrail_reason,
@@ -438,6 +440,51 @@ def display_action_fields(
     )
 
 
+def _canonical_factor_decision_for_result(result: Any) -> Optional[Mapping[str, Any]]:
+    dashboard = getattr(result, "dashboard", None)
+    if not isinstance(dashboard, Mapping):
+        return None
+    factor = dashboard.get("factor_decision")
+    if not isinstance(factor, Mapping) or "canonical_decision" not in factor:
+        return None
+    return factor
+
+
+def has_canonical_action_authority_for_result(result: Any) -> bool:
+    """Return True when the result declares one canonical factor-decision authority."""
+
+    return _canonical_factor_decision_for_result(result) is not None
+
+
+def _canonical_action_fields_for_result(
+    result: Any,
+    *,
+    report_language: Optional[str] = None,
+    report_type: Any = None,
+) -> Optional[DecisionActionFields]:
+    factor = _canonical_factor_decision_for_result(result)
+    if factor is None:
+        return None
+    resolved_report_type = report_type or getattr(result, "report_type", None)
+    if str(resolved_report_type or "").strip().lower() in _NON_STOCK_REPORT_TYPES:
+        return {"action": None, "action_label": None}
+    try:
+        decision = validate_canonical_decision_semantics(
+            factor.get("canonical_decision"),
+            strategy_id=str(factor.get("strategy_id") or "").strip() or None,
+        )
+        action = normalize_decision_action(decision.get("public_action")) or "watch"
+    except (TypeError, ValueError):
+        # A malformed/stale canonical object must fail closed; legacy score/advice
+        # cannot resurrect directional action authority.
+        action = "watch"
+    language = report_language or getattr(result, "report_language", "zh")
+    return {
+        "action": action,
+        "action_label": localize_action_label(action, language),
+    }
+
+
 def _display_result_kwargs(
     result: Any,
     *,
@@ -461,6 +508,13 @@ def display_action_fields_for_result(
     report_language: Optional[str] = None,
     report_type: Any = None,
 ) -> DecisionActionFields:
+    canonical = _canonical_action_fields_for_result(
+        result,
+        report_language=report_language,
+        report_type=report_type,
+    )
+    if canonical is not None:
+        return canonical
     return display_action_fields(
         **_display_result_kwargs(result, report_language=report_language, report_type=report_type)
     )
