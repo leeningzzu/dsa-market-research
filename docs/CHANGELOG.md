@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [改进] 在保持 public Production/schedule/模型/R2/普通分析全部 fail-closed 的前提下，仅允许 `dsa-market-research` 通过人工 `workflow_dispatch + baseline-transport` 复用既有 V2.5 原件运输步骤；private 仓库既有行为不变，且不修改 EmailSender、V2.5 HTML、行情/模型/研究状态逻辑或任何 Secret/Variable。
 - [测试] 为 public code authority 的现有 Network Smoke 增加仅 workflow_dispatch 可运行的 ubuntu-latest 无代理 direct-egress 探针：显式清除 HTTP/HTTPS/ALL proxy 环境并以标准库验证 EastMoney 5m provider host 的 DNS/TLS/HTTP 可达性；不下载行情、不读取 Secret、不恢复 public schedule/live job，也不改变旧 private network-smoke 行为。
 - [修复] 修正 Network Smoke public direct-egress step 中大小写仅有差异的 proxy 环境变量重复定义，避免 GitHub Actions 在 runner 启动前判定 workflow 无效；保留 shell 内同时清除大小写 proxy 名称，并新增全 workflow 的 case-insensitive env-key 回归以在本地提前阻断同类 parser 漂移。
 - [测试] 将 public Network Smoke 收敛为显式 direct-egress / 5m-trial 两种人工探针：云端不配置、清除或回退代理，发现任一代理环境即 fail-closed；5m-trial 仅安装 exact `akshare==1.19.1`，对 600519 在固定 2026-09-23..30 窗口执行一次 `stock_zh_a_hist_min_em(period=5, adjust=qfq)`，验证完整交易日48根、右标签/午休/OHLC/量额非负，并只向 Step Summary 输出无原始行情的哈希收据；不写 DB/R2、不通知、不调用模型、不引入 provider fallback，也不改变 main 或 Production provider authority。
