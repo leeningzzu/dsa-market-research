@@ -8,6 +8,8 @@ from types import SimpleNamespace
 from typing import List, Optional
 
 import pytest
+
+pytestmark = pytest.mark.r004_forensic
 from jinja2 import Environment, FileSystemLoader
 
 

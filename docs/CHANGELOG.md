@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [改进] 将 BaoStock 当前运行 5 分钟 completed-bar 身份与会话聚合接入现有 MTF / canonical Product，并加固 traced Ledger 跨 manifest 历史读取与 R004 forensic/current Production 测试边界；5m 仅确定性派生 15/30/60 分钟上下文，intraday Price Structure / divergence / Pattern / legal 30m trigger 继续显式 NOT_ADMITTED，不新增第二 provider、数据库、renderer、scheduler、策略/模型权限，也不修改 V2.5 原件。
 - [改进] 在保持 public Production/schedule/模型/R2/普通分析全部 fail-closed 的前提下，仅允许 `dsa-market-research` 通过人工 `workflow_dispatch + baseline-transport` 复用既有 V2.5 原件运输步骤；private 仓库既有行为不变，且不修改 EmailSender、V2.5 HTML、行情/模型/研究状态逻辑或任何 Secret/Variable。
 - [修复] 保留 canonical Product 与 legacy complete-detail fallback 中全部不同且非空的材料风险：移除 factor summary 的固定三项上限、investor brief 的固定两项上限及 legacy fallback 的固定三项上限；full/compact 继续复用同一完整 risk facts，AUTO 4–10 总览仍只展示导航风险但同一完整报告保留逐资产全部详情。不修改 canonical action、策略/学习/标签、数据库、provider、workflow 或 V2.5 HTML/DOM/CSS。
 - [改进] B6A Pattern/K线证据改为完整 consumed-history provenance：PriceStructure 与 PatternTrigger 不再仅以最后60行证明来源，必须覆盖完整 normalized history 并绑定 source/span；新增日线 `CANDLESTICK` 薄 typed leaf，作为既有 `pattern_trigger_evidence.context.candlestick` 嵌套证据，仅提供确定性 OHLC 几何、确认结构位置与形成/确认/失败生命周期。首批只准入犹豫、上下影拒绝、吞没与 inside/outside；gap/window、三根命名反转及未独立准入的扩张/收缩方向标签继续 deferred。沿用现有 Pattern Product slots，不新增证据族、报告 section、canonical action、Strategy/Learning/Ledger、模型、provider、依赖或 V2.5 DOM/CSS；同一 swing/structure 保持相关组去重，未来确认不得回填历史。

@@ -9,6 +9,7 @@ Tests for Jinja2 report rendering and fallback behavior.
 
 import sys
 import unittest
+from copy import deepcopy
 from unittest.mock import MagicMock, patch
 
 try:
@@ -18,6 +19,11 @@ except ModuleNotFoundError:
 
 from src.analyzer import AnalysisResult
 from src.services.report_renderer import render
+from src.services.evidence_traceability_registry import build_runtime_trace
+from src.services.factor_decision_summary import (
+    apply_canonical_decision_to_result,
+    canonical_factor_binding,
+)
 
 
 def _make_result(
@@ -66,6 +72,58 @@ def _with_decision_signal_summary(result: AnalysisResult) -> AnalysisResult:
         "horizon": "1d",
         "reason": "技术面走弱",
     }
+    return result
+
+
+
+def _make_canonical_wait_result() -> AnalysisResult:
+    result = _make_result(
+        sentiment_score=99,
+        operation_advice="买入",
+        analysis_summary="LEGACY_ANALYSIS_SUMMARY_MUST_NOT_RENDER",
+    )
+    result.trend_prediction = "看多"
+    decision = {
+        "authority": "stock_trend_quality_pullback_v1",
+        "action": "WAIT",
+        "public_action": "watch",
+        "evidence_state": "PROVEN",
+        "hard_veto": False,
+        "reason_codes": ["WAIT_CONFIRMATION"],
+    }
+    factor = {
+        "strategy_id": "stock_trend_quality_pullback_v1",
+        "canonical_decision": deepcopy(decision),
+        "conclusion": "CANONICAL_WAIT_CONCLUSION",
+        "action_condition": "CANONICAL_TRIGGER",
+        "invalidation_condition": "CANONICAL_INVALIDATION",
+        "investor_brief": {
+            "schema_version": "investor-brief-v1",
+            "canonical": deepcopy(decision),
+            "one_line_conclusion": "CANONICAL_WAIT_CONCLUSION",
+            "fused_paragraph": "CANONICAL_FUSED_FACTS",
+            "coverage_text": "CANONICAL_COVERAGE",
+            "trigger": "CANONICAL_TRIGGER",
+            "invalidation": "CANONICAL_INVALIDATION",
+            "risk_notes": ["CANONICAL_RISK"],
+        },
+    }
+    factor["evidence_traceability"] = build_runtime_trace(factor)
+    factor["canonical_decision_identity"] = canonical_factor_binding(factor)
+    factor["investor_brief"]["canonical_binding"] = deepcopy(
+        factor["canonical_decision_identity"]
+    )
+    result.dashboard["factor_decision"] = factor
+    apply_canonical_decision_to_result(result, factor, scope="research")
+
+    # Deliberate post-canonical legacy contamination. Public canonical surfaces
+    # must ignore these values.
+    result.sentiment_score = 99
+    result.trend_prediction = "看多"
+    result.operation_advice = "买入"
+    result.analysis_summary = "LEGACY_ANALYSIS_SUMMARY_MUST_NOT_RENDER"
+    result.buy_reason = "LEGACY_BUY_REASON_MUST_NOT_RENDER"
+    result.trend_analysis = "LEGACY_TREND_ANALYSIS_MUST_NOT_RENDER"
     return result
 
 
@@ -125,6 +183,36 @@ class TestReportRenderer(unittest.TestCase):
         self.assertIn("**Alert Corp(ALERT)**: Alert | Score 85", out)
         self.assertNotIn("**Avoid Corp(AVOID)**: Buy", out)
         self.assertNotIn("**Alert Corp(ALERT)**: Buy", out)
+
+    def test_canonical_wait_ignores_legacy_score_trend_and_advice_across_templates(self) -> None:
+        result = _make_canonical_wait_result()
+
+        for platform in ("markdown", "brief", "wechat"):
+            out = render(platform, [result], report_date="2025-09-30")
+            self.assertIsNotNone(out)
+            self.assertIn("CANONICAL_WAIT_CONCLUSION", out)
+            self.assertIn("观望", out)
+            self.assertNotIn("评分 99", out)
+            self.assertNotIn("评分:99", out)
+            self.assertNotIn("看多", out)
+            self.assertNotIn("LEGACY_ANALYSIS_SUMMARY_MUST_NOT_RENDER", out)
+            self.assertNotIn("LEGACY_BUY_REASON_MUST_NOT_RENDER", out)
+            self.assertNotIn("LEGACY_TREND_ANALYSIS_MUST_NOT_RENDER", out)
+
+    def test_stale_canonical_brief_fails_closed_instead_of_falling_back_to_legacy(self) -> None:
+        result = _make_canonical_wait_result()
+        result.dashboard["factor_decision"]["investor_brief"]["canonical_binding"] = {
+            "stale": True
+        }
+
+        for platform in ("markdown", "brief", "wechat"):
+            out = render(platform, [result], report_date="2025-09-30")
+            self.assertIsNotNone(out)
+            self.assertIn("当前确定性证据摘要不可用，本次保持观望", out)
+            self.assertNotIn("评分 99", out)
+            self.assertNotIn("评分:99", out)
+            self.assertNotIn("看多", out)
+            self.assertNotIn("LEGACY_ANALYSIS_SUMMARY_MUST_NOT_RENDER", out)
 
     def test_render_markdown_full(self) -> None:
         """Markdown platform renders full report."""

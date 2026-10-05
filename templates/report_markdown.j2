@@ -9,7 +9,11 @@
 ## 📊 {{ labels.summary_heading }}
 
 {% for e in enriched %}
+{% if e.canonical_authority %}
+{{ e.signal_emoji }} **{{ e.stock_name }}({{ e.result.code }})**: {{ e.signal_text }}
+{% else %}
 {{ e.signal_emoji }} **{{ e.stock_name }}({{ e.result.code }})**: {{ e.signal_text }} | {{ labels.score_label }} {{ e.result.sentiment_score }} | {{ e.localized_trend_prediction }}
+{% endif %}
 {% endfor %}
 
 ---
@@ -22,11 +26,16 @@
 {% set battle = dashboard.get('battle_plan') or {} %}
 {% set data_persp = dashboard.get('data_perspective') or {} %}
 {% set factor_decision = dashboard.get('factor_decision') or {} %}
-{% set investor_brief = factor_decision.get('investor_brief') or {} %}
-{% set investor_brief_valid = report_language == 'zh' and investor_brief.get('schema_version') == 'investor-brief-v1' and investor_brief.get('one_line_conclusion') and investor_brief.get('fused_paragraph') %}
+{% set investor_brief = e.investor_brief or {} %}
+{% set investor_brief_valid = e.investor_brief_valid %}
 
 ## {{ e.signal_emoji }} {{ e.stock_name }} ({{ result.code }})
 
+{% if e.canonical_authority and not investor_brief_valid %}
+**综合结论**: 当前确定性证据摘要不可用，本次保持观望。
+
+{% endif %}
+{% if not e.canonical_authority or investor_brief_valid %}
 {% if investor_brief_valid %}
 ### 🧭 投资者简报
 
@@ -365,6 +374,7 @@
 {% for h in hist %}
 | {{ h.created_at[:16] if h.created_at else 'N/A' }} | {{ h.sentiment_score or 'N/A' }} | {{ h.action_label or localize_action_label(h.action, report_language) or localize_operation_advice(h.operation_advice or 'N/A', report_language) }} | {{ localize_trend_prediction(h.trend_prediction or 'N/A', report_language) }} |
 {% endfor %}
+{% endif %}
 {% endif %}
 
 ---

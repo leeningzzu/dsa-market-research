@@ -10,8 +10,13 @@ from data_provider.daily_data_identity import (
     attach_daily_data_identity,
     build_daily_data_identity,
 )
+from data_provider.intraday_data_identity import (
+    attach_intraday_data_identity,
+    build_intraday_data_identity,
+)
 
 from src.services.multi_timeframe_structure_service import (
+    ALGORITHM_VERSION,
     CROSS_RUN_PERSISTENCE_POLICY,
     MA_COMPRESSION_READY_BARS,
     MA_COMPRESSION_REFERENCE_WINDOW,
@@ -111,6 +116,129 @@ class _FakeTrendAnalyzer:
 
 def _daily_trend(_history: pd.DataFrame, _target_index: int):
     return _trend_result()
+
+
+def _intraday_fixture(timeframe: str, target, periods: int = 40) -> pd.DataFrame:
+    end = pd.Timestamp(target).tz_localize("Asia/Shanghai") + pd.Timedelta(hours=15)
+    ends = pd.date_range(end=end, periods=periods, freq="30min")
+    observed = end + pd.Timedelta(hours=1)
+    rows = []
+    for index, bar_end in enumerate(ends):
+        close = 100.0 + index * 0.2
+        rows.append(
+            {
+                "code": "600519",
+                "bar_end": bar_end,
+                "open": close - 0.1,
+                "high": close + 0.5,
+                "low": close - 0.5,
+                "close": close,
+                "volume": 1000.0 + index,
+                "session": f"{bar_end.date().isoformat()}:FIXTURE",
+                "available_at": observed,
+                "adjustflag": "2",
+                "data_source": "BaostockFetcher",
+            }
+        )
+    frame = pd.DataFrame(rows)
+    identity = build_intraday_data_identity(
+        frame,
+        provider_identity="BaostockFetcher",
+        provider_route="unit.intraday",
+        package_version="0.9.4",
+        query_identity={"code": "sh.600519", "frequency": timeframe, "adjustflag": "2"},
+        requested_adjustment_basis="qfq",
+        observed_adjustment_basis="qfq",
+        basis_evidence="unit-test",
+        timeframe=timeframe,
+        timezone_name="Asia/Shanghai",
+        session_calendar="XSHG",
+        currency="CNY",
+        volume_unit="UNKNOWN",
+        amount_unit="UNKNOWN",
+        requested_start=str(ends[0].date()),
+        requested_end=str(target),
+        identity_state="OBSERVED",
+        observed_at=observed.tz_convert("UTC").to_pydatetime(),
+        source_rows_sha256="f" * 64,
+    )
+    attach_intraday_data_identity(frame, identity)
+    frame["intraday_data_identity_hash"] = identity["identity_hash"]
+    return frame
+
+
+def test_canonical_intraday_bars_fill_partial_trend_ma_slots_without_claiming_structure() -> None:
+    history = _history()
+    target_index = len(history) - 1
+    target = history.iloc[target_index]["date"].date()
+    weekly_end = history.iloc[target_index - 4]["date"].date()
+    monthly_end = history.iloc[target_index - 20]["date"].date()
+
+    def _completed(_market, _target, timeframe):
+        return weekly_end if timeframe == "1w" else monthly_end if timeframe == "1mo" else None
+
+    intraday = {key: _intraday_fixture(key, target) for key in ("60m", "30m", "15m", "5m")}
+    snapshot = datetime.combine(target, datetime.max.time(), tzinfo=timezone.utc)
+    with patch(
+        "src.services.multi_timeframe_structure_service.resolve_completed_timeframe_bar_date",
+        side_effect=_completed,
+    ):
+        context = build_multi_timeframe_structure_context(
+            stock_code="600519",
+            history=history,
+            target_date=target,
+            market="cn",
+            trend_analyzer=_FakeTrendAnalyzer(),
+            daily_trend_result=_daily_trend(history, target_index),
+            daily_price_structure_context={"historical_replay_eligible": True},
+            snapshot_observed_at=snapshot,
+            intraday_timeframes=intraday,
+        )
+
+    for key in ("60m", "30m", "15m", "5m"):
+        item = context["timeframes"][key]
+        assert context["algorithm_version"] == "completed-daily-plus-intraday-context-v2"
+        assert ALGORITHM_VERSION == "completed-daily-plus-intraday-context-v2"
+        assert item["status"] == "PARTIAL"
+        assert item["reason"] == "INTRADAY_TREND_MA_PARTIAL_CURRENT"
+        assert item["trend"]["status"] == "READY"
+        assert item["ma_structure"]["status"] in {"READY", "PARTIAL"}
+        assert item["price_structure"]["status"] == "MISSING"
+        assert item["price_structure"]["reason"] == "INTRADAY_PRICE_STRUCTURE_NOT_ADMITTED"
+        assert item["pattern_trigger"]["status"] == "MISSING"
+        assert item["independent_action_authority"] is False
+        assert item["strategy_admitted"] is False
+        assert item["learning_admitted"] is False
+        assert item["historical_replay_eligible"] is False
+        assert "分钟价格结构/形态尚未准入" in item["summary"]
+
+
+def test_intraday_identity_timeframe_mismatch_is_unknown_not_ready() -> None:
+    history = _history()
+    target_index = len(history) - 1
+    target = history.iloc[target_index]["date"].date()
+    weekly_end = history.iloc[target_index - 4]["date"].date()
+    monthly_end = history.iloc[target_index - 20]["date"].date()
+
+    def _completed(_market, _target, timeframe):
+        return weekly_end if timeframe == "1w" else monthly_end if timeframe == "1mo" else None
+
+    with patch(
+        "src.services.multi_timeframe_structure_service.resolve_completed_timeframe_bar_date",
+        side_effect=_completed,
+    ):
+        context = build_multi_timeframe_structure_context(
+            stock_code="600519",
+            history=history,
+            target_date=target,
+            market="cn",
+            trend_analyzer=_FakeTrendAnalyzer(),
+            daily_trend_result=_daily_trend(history, target_index),
+            daily_price_structure_context={"historical_replay_eligible": True},
+            intraday_timeframes={"30m": _intraday_fixture("15m", target)},
+        )
+    assert context["timeframes"]["30m"]["status"] == "UNKNOWN"
+    assert context["timeframes"]["30m"]["reason"] == "INTRADAY_IDENTITY_TIMEFRAME_MISMATCH"
 
 
 def _startup_evidence(values, lengths=(40, 60, 80, 120)):

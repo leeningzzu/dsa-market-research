@@ -268,7 +268,20 @@ def test_method_window_policy_view_is_complete_manifest_bound_and_non_mutating()
         metric["id"] for metric in reg.METRIC_BINDINGS if metric["requirement_id"] == "MOMENTUM"
     }
 
-    assert reg.MANIFEST_HASH == "5818db4878f97f34c732a630ff1a5a41287b661ded299a3076473479123cefca"
+    current_manifest = reg.manifest_document()
+    assert current_manifest["method_contracts"]["MTF"] == {
+        "version": "completed-daily-plus-intraday-context-v2",
+        "warmup": 26,
+        "config_hash": "b6b2cfe28159ba691dcc6f7c42479210286d6cfb362c58b5b577bd772f735c25",
+    }
+    pre_intraday_manifest = deepcopy(current_manifest)
+    pre_intraday_manifest["method_contracts"]["MTF"] = {
+        "version": "completed-daily-resample-v1",
+        "warmup": 26,
+        "config_hash": "5ea82ff077b04d411d4f62b41800d07ebbd7a547726db2481e3aa07db61c5b0f",
+    }
+    assert reg.digest(pre_intraday_manifest) == "5818db4878f97f34c732a630ff1a5a41287b661ded299a3076473479123cefca"
+    assert reg.MANIFEST_HASH == "a88c20a84e0abe7d65c677ff4150102b005a1109d476e52c527d09e3bff88fa4"
     assert reg.MANIFEST_HASH == manifest_before == reg.digest(reg.manifest_document())
     assert reg.digest(reg.METRIC_BINDINGS) == metrics_before == "611d5c0657cc42de3f31ca9c911e65d8e2d84e4504fc6167a332de548705fde5"
     assert not any(

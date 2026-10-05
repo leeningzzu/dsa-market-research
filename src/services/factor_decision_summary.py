@@ -1493,19 +1493,25 @@ def _build_asset_research_brief_v1(trend_result, summary, *, asset_type: str = "
     monthly_thesis = _brief_timeframe_projection(mtf_context, "monthly", "LONG_TERM_CONTEXT")
     weekly_thesis = _brief_timeframe_projection(mtf_context, "weekly", "PRIMARY_TREND_CONTEXT")
     bridge_thesis = _brief_timeframe_projection(mtf_context, "60m", "OPTIONAL_BRIDGE")
+    short_30m = _brief_timeframe_projection(mtf_context, "30m", "PRIMARY_STRUCTURE")
+    short_15m = _brief_timeframe_projection(mtf_context, "15m", "TRIGGER_CONFIRMATION")
+    short_5m = _brief_timeframe_projection(mtf_context, "5m", "MICRO_TIMING")
     if not mtf_context:
         monthly_thesis = {"status": "MISSING", "role": "LONG_TERM_CONTEXT", "summary": None}
         weekly_thesis = {"status": "MISSING", "role": "PRIMARY_TREND_CONTEXT", "summary": None}
         bridge_thesis = {"status": "MISSING", "role": "OPTIONAL_BRIDGE", "summary": None}
+        short_30m = {"status": "MISSING", "role": "PRIMARY_STRUCTURE", "summary": None}
+        short_15m = {"status": "MISSING", "role": "TRIGGER_CONFIRMATION", "summary": None}
+        short_5m = {"status": "MISSING", "role": "MICRO_TIMING", "summary": None}
 
     coverage = {
         "monthly": monthly_thesis["status"],
         "weekly": weekly_thesis["status"],
         "daily": "PARTIAL_CURRENT",
         "60m": bridge_thesis["status"],
-        "30m": "MISSING",
-        "15m": "MISSING",
-        "5m": "MISSING",
+        "30m": short_30m["status"],
+        "15m": short_15m["status"],
+        "5m": short_5m["status"],
     }
     ready_labels = ["日线"]
     if monthly_thesis["status"] in {"READY", "PARTIAL_CURRENT"}:
@@ -1513,22 +1519,60 @@ def _build_asset_research_brief_v1(trend_result, summary, *, asset_type: str = "
     if weekly_thesis["status"] in {"READY", "PARTIAL_CURRENT"}:
         insert_at = 1 if "月线" in ready_labels else 0
         ready_labels.insert(insert_at, "周线")
-    if bridge_thesis["status"] in {"READY", "PARTIAL_CURRENT"}:
-        ready_labels.append("60分钟")
+    for label, item in (
+        ("60分钟", bridge_thesis),
+        ("30分钟", short_30m),
+        ("15分钟", short_15m),
+        ("5分钟", short_5m),
+    ):
+        if item["status"] in {"READY", "PARTIAL_CURRENT"}:
+            ready_labels.append(label)
     missing_labels = []
     for label, status in (
         ("月线", monthly_thesis["status"]),
         ("周线", weekly_thesis["status"]),
         ("60分钟", bridge_thesis["status"]),
-        ("30分钟", coverage["30m"]),
-        ("15分钟", coverage["15m"]),
-        ("5分钟", coverage["5m"]),
+        ("30分钟", short_30m["status"]),
+        ("15分钟", short_15m["status"]),
+        ("5分钟", short_5m["status"]),
     ):
         if status not in {"READY", "PARTIAL_CURRENT"}:
             missing_labels.append(label)
     coverage_text = f"本次可用周期：{'、'.join(ready_labels)}。"
     if missing_labels:
         coverage_text += f"{'、'.join(missing_labels)}本次暂无可用证据。"
+
+    short_items = {
+        "30m": short_30m,
+        "15m": short_15m,
+        "5m": short_5m,
+    }
+    short_sentences = [
+        sentence
+        for label, item in (
+            ("30分钟", short_30m),
+            ("15分钟", short_15m),
+            ("5分钟", short_5m),
+        )
+        if (sentence := _brief_timeframe_sentence(label, item))
+    ]
+    if short_sentences:
+        short_term_panel = {
+            "status": "READY",
+            "state": "CONTEXT_ONLY_NO_TRIGGER_AUTHORITY",
+            **short_items,
+            "summary": "；".join(short_sentences),
+            "independent_action_authority": False,
+        }
+    else:
+        short_term_panel = {
+            "status": "MISSING",
+            "state": "DATA_INSUFFICIENT",
+            "30m": {"status": "MISSING", "role": "PRIMARY_STRUCTURE"},
+            "15m": {"status": "MISSING", "role": "TRIGGER_CONFIRMATION"},
+            "5m": {"status": "MISSING", "role": "MICRO_TIMING"},
+            "summary": None,
+        }
 
     paragraph_parts: List[str] = []
     for label, item in (("月线", monthly_thesis), ("周线", weekly_thesis)):
@@ -1576,14 +1620,7 @@ def _build_asset_research_brief_v1(trend_result, summary, *, asset_type: str = "
             "60m": bridge_thesis,
         },
         "material_events": material_events,
-        "short_term_execution_panel": {
-            "status": "MISSING",
-            "state": "DATA_INSUFFICIENT",
-            "30m": {"status": "MISSING", "role": "PRIMARY_STRUCTURE"},
-            "15m": {"status": "MISSING", "role": "TRIGGER_CONFIRMATION"},
-            "5m": {"status": "MISSING", "role": "MICRO_TIMING"},
-            "summary": None,
-        },
+        "short_term_execution_panel": short_term_panel,
         "scenario": {
             "preferred": {
                 "status": "READY" if trigger else "MISSING",

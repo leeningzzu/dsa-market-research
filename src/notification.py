@@ -59,6 +59,7 @@ from src.schemas.decision_action import (
     display_action_fields_for_result,
     display_decision_type_for_result,
     display_operation_advice_for_result,
+    has_canonical_action_authority_for_result,
 )
 from src.services.factor_decision_summary import validate_investor_brief_binding
 from bot.models import BotMessage
@@ -150,6 +151,32 @@ def _get_valid_investor_brief(factor: Any, report_language: str) -> Optional[Dic
     except ValueError:
         return None
     return brief
+
+
+def _has_any_canonical_authority(results: List[AnalysisResult]) -> bool:
+    return any(has_canonical_action_authority_for_result(result) for result in results)
+
+
+def _ordered_results_for_display(results: List[AnalysisResult]) -> List[AnalysisResult]:
+    """Preserve Product-owned order once any canonical authority is present."""
+
+    if _has_any_canonical_authority(results):
+        return list(results)
+    return sorted(results, key=lambda item: item.sentiment_score, reverse=True)
+
+
+def _canonical_conclusion_for_result(
+    result: AnalysisResult,
+    report_language: str,
+) -> str:
+    dashboard = getattr(result, "dashboard", None)
+    if not isinstance(dashboard, dict):
+        return ""
+    factor = dashboard.get("factor_decision")
+    brief = _get_valid_investor_brief(factor, report_language)
+    if brief is None:
+        return ""
+    return str(brief.get("one_line_conclusion") or "").strip()
 
 def _format_etf_asset_specific_items(brief: Dict[str, Any]) -> List[str]:
     """Render only proven ETF-specific trading-quality facts without adding authority."""
@@ -1335,15 +1362,16 @@ class NotificationService(
         self._append_market_status_line(report_lines, results, report_language)
         report_lines.extend(["---", ""])
 
-        # 按评分排序（高分在前）
-        sorted_results = sorted(
-            results,
-            key=lambda x: x.sentiment_score,
-            reverse=True
-        )
+        sorted_results = _ordered_results_for_display(results)
+        canonical_mode = _has_any_canonical_authority(results)
 
         buy_count, sell_count, hold_count = self._count_display_decisions(results, report_language)
         avg_score = sum(r.sentiment_score for r in results) / len(results) if results else 0
+        avg_score_line = (
+            None
+            if canonical_mode
+            else f"| 📈 {labels['avg_score_label']} | **{avg_score:.1f}** |"
+        )
 
         report_lines.extend([
             f"## 📊 {labels['summary_heading']}",
@@ -1353,7 +1381,7 @@ class NotificationService(
             f"| 🟢 {labels['buy_label']} | **{buy_count}** {labels['stock_unit_compact']} |",
             f"| 🟡 {labels['watch_label']} | **{hold_count}** {labels['stock_unit_compact']} |",
             f"| 🔴 {labels['sell_label']} | **{sell_count}** {labels['stock_unit_compact']} |",
-            f"| 📈 {labels['avg_score_label']} | **{avg_score:.1f}** |",
+            *([avg_score_line] if avg_score_line else []),
             "",
             "---",
             "",
@@ -1364,12 +1392,18 @@ class NotificationService(
             report_lines.extend([f"## 📊 {labels['summary_heading']}", ""])
             for r in sorted_results:
                 signal_text, emoji, _ = self._get_signal_level(r)
-                report_lines.append(
-                    f"{emoji} **{self._get_display_name(r, report_language)}({r.code})**: "
-                    f"{signal_text} | "
-                    f"{labels['score_label']} {r.sentiment_score} | "
-                    f"{localize_trend_prediction(r.trend_prediction, report_language)}"
-                )
+                if has_canonical_action_authority_for_result(r):
+                    report_lines.append(
+                        f"{emoji} **{self._get_display_name(r, report_language)}({r.code})**: "
+                        f"{signal_text}"
+                    )
+                else:
+                    report_lines.append(
+                        f"{emoji} **{self._get_display_name(r, report_language)}({r.code})**: "
+                        f"{signal_text} | "
+                        f"{labels['score_label']} {r.sentiment_score} | "
+                        f"{localize_trend_prediction(r.trend_prediction, report_language)}"
+                    )
         else:
             report_lines.extend([f"## 📈 {labels['report_title']}", ""])
             # 逐个股票的详细分析
@@ -1377,16 +1411,38 @@ class NotificationService(
                 signal_text, emoji, _ = self._get_signal_level(result)
                 confidence_stars = result.get_confidence_stars() if hasattr(result, 'get_confidence_stars') else '⭐⭐'
 
+                header_detail = (
+                    f"**{labels['action_advice_label']}：{signal_text}**"
+                    if has_canonical_action_authority_for_result(result)
+                    else (
+                        f"**{labels['action_advice_label']}：{signal_text}** | "
+                        f"**{labels['score_label']}：{result.sentiment_score}** | "
+                        f"**{labels['trend_label']}：{localize_trend_prediction(result.trend_prediction, report_language)}** | "
+                        f"**Confidence：{confidence_stars}**"
+                    )
+                )
                 report_lines.extend([
                     f"### {emoji} {self._get_display_name(result, report_language)} ({result.code})",
                     "",
-                    f"**{labels['action_advice_label']}：{signal_text}** | "
-                    f"**{labels['score_label']}：{result.sentiment_score}** | "
-                    f"**{labels['trend_label']}：{localize_trend_prediction(result.trend_prediction, report_language)}** | "
-                    f"**Confidence：{confidence_stars}**",
+                    header_detail,
                     "",
                 ])
                 self._append_market_snapshot(report_lines, result)
+                dashboard = result.dashboard if isinstance(result.dashboard, dict) else {}
+                factor_decision = dashboard.get("factor_decision") or {}
+                if has_canonical_action_authority_for_result(result):
+                    if not _append_investor_brief_block(
+                        report_lines,
+                        factor_decision,
+                        report_language,
+                    ):
+                        report_lines.extend([
+                            "**综合结论**: 当前确定性证据摘要不可用，本次保持观望。",
+                            "",
+                        ])
+                    self._append_phase_decision_block(report_lines, dashboard, labels)
+                    report_lines.extend(["", "---", ""])
+                    continue
 
                 # 核心看点
                 if hasattr(result, 'key_points') and result.key_points:
@@ -1810,10 +1866,7 @@ class NotificationService(
                     if self._research_delivery(result).get("product_group") == group_key
                 ]
                 grouped.sort(
-                    key=lambda result: (
-                        self._research_delivery(result).get("group_rank") or 999,
-                        -float(getattr(result, "sentiment_score", 0) or 0),
-                    )
+                    key=lambda result: self._research_delivery(result).get("group_rank") or 999
                 )
                 if not grouped:
                     continue
@@ -1922,8 +1975,7 @@ class NotificationService(
         if report_date is None:
             report_date = datetime.now().strftime('%Y-%m-%d')
 
-        # 按评分排序（高分在前）
-        sorted_results = sorted(results, key=lambda x: x.sentiment_score, reverse=True)
+        sorted_results = _ordered_results_for_display(results)
 
         buy_count, sell_count, hold_count = self._count_display_decisions(results, report_language)
 
@@ -1946,12 +1998,17 @@ class NotificationService(
             for r in sorted_results:
                 signal_text, signal_emoji, _ = self._get_signal_level(r)
                 display_name = self._get_display_name(r, report_language)
-                report_lines.append(
-                    f"{signal_emoji} **{display_name}({r.code})**: "
-                    f"{signal_text} | "
-                    f"{labels['score_label']} {r.sentiment_score} | "
-                    f"{localize_trend_prediction(r.trend_prediction, report_language)}"
-                )
+                if has_canonical_action_authority_for_result(r):
+                    report_lines.append(
+                        f"{signal_emoji} **{display_name}({r.code})**: {signal_text}"
+                    )
+                else:
+                    report_lines.append(
+                        f"{signal_emoji} **{display_name}({r.code})**: "
+                        f"{signal_text} | "
+                        f"{labels['score_label']} {r.sentiment_score} | "
+                        f"{localize_trend_prediction(r.trend_prediction, report_language)}"
+                    )
             report_lines.extend([
                 "",
                 "---",
@@ -1981,6 +2038,17 @@ class NotificationService(
                     factor_decision,
                     report_language,
                 )
+                if (
+                    has_canonical_action_authority_for_result(result)
+                    and not has_investor_brief
+                ):
+                    report_lines.extend([
+                        "**综合结论**: 当前确定性证据摘要不可用，本次保持观望。",
+                        "",
+                        "---",
+                        "",
+                    ])
+                    continue
 
                 # ========== 舆情与基本面概览（放在最前面）==========
                 intel = dashboard.get('intelligence', {}) if dashboard else {}
@@ -2015,7 +2083,10 @@ class NotificationService(
                         report_lines.append(f"**📢 {labels['latest_news_label']}**: {intel['latest_news']}")
                     report_lines.append("")
 
-                if not has_investor_brief:
+                if (
+                    not has_investor_brief
+                    and not has_canonical_action_authority_for_result(result)
+                ):
                     # ========== 核心结论 ==========
                     core = dashboard.get('core_conclusion', {}) if dashboard else {}
                     one_sentence = core.get('one_sentence', result.analysis_summary)
@@ -2280,8 +2351,7 @@ class NotificationService(
 
         report_date = datetime.now().strftime('%Y-%m-%d')
 
-        # 按评分排序
-        sorted_results = sorted(results, key=lambda x: x.sentiment_score, reverse=True)
+        sorted_results = _ordered_results_for_display(results)
 
         buy_count, sell_count, hold_count = self._count_display_decisions(results, report_language)
 
@@ -2300,12 +2370,19 @@ class NotificationService(
             for r in sorted_results:
                 signal_text, signal_emoji, _ = self._get_signal_level(r)
                 stock_name = self._get_display_name(r, report_language)
-                lines.append(
-                    f"{signal_emoji} **{stock_name}({r.code})**: "
-                    f"{signal_text} | "
-                    f"{labels['score_label']} {r.sentiment_score} | "
-                    f"{localize_trend_prediction(r.trend_prediction, report_language)}"
-                )
+                if has_canonical_action_authority_for_result(r):
+                    conclusion = _canonical_conclusion_for_result(r, report_language)
+                    suffix = f" | {conclusion}" if conclusion else ""
+                    lines.append(
+                        f"{signal_emoji} **{stock_name}({r.code})**: {signal_text}{suffix}"
+                    )
+                else:
+                    lines.append(
+                        f"{signal_emoji} **{stock_name}({r.code})**: "
+                        f"{signal_text} | "
+                        f"{labels['score_label']} {r.sentiment_score} | "
+                        f"{localize_trend_prediction(r.trend_prediction, report_language)}"
+                    )
         else:
             for result in sorted_results:
                 signal_text, signal_emoji, _ = self._get_signal_level(result)
@@ -2320,6 +2397,20 @@ class NotificationService(
                 # 标题行：信号等级 + 股票名称
                 lines.append(f"### {signal_emoji} **{signal_text}** | {stock_name}({result.code})")
                 lines.append("")
+                factor_decision = dashboard.get("factor_decision") or {}
+                if has_canonical_action_authority_for_result(result):
+                    brief = _get_valid_investor_brief(factor_decision, report_language)
+                    if brief is not None:
+                        _append_investor_notification_block(
+                            lines,
+                            factor_decision,
+                            report_language,
+                            position_advice=core.get("position_advice") or {},
+                        )
+                    else:
+                        lines.append("📌 **当前确定性证据摘要不可用，本次保持观望。**")
+                    lines.extend(["", "---", ""])
+                    continue
 
                 # 核心决策（一句话）
                 one_sentence = core.get('one_sentence', result.analysis_summary) if core else result.analysis_summary
@@ -2452,18 +2543,19 @@ class NotificationService(
         report_language = self._get_report_language(results)
         labels = get_report_labels(report_language)
 
-        # 按评分排序
-        sorted_results = sorted(results, key=lambda x: x.sentiment_score, reverse=True)
+        sorted_results = _ordered_results_for_display(results)
+        canonical_mode = _has_any_canonical_authority(results)
 
         buy_count, sell_count, hold_count = self._count_display_decisions(results, report_language)
         avg_score = sum(r.sentiment_score for r in results) / len(results) if results else 0
+        score_suffix = "" if canonical_mode else f" | {labels['avg_score_label']}:{avg_score:.0f}"
 
         lines = [
             f"## 📅 {report_date} {labels['report_title']}",
             "",
             f"> {labels['analyzed_prefix']} **{len(results)}** {labels['stock_unit_compact']} | "
-            f"🟢{labels['buy_label']}:{buy_count} 🟡{labels['watch_label']}:{hold_count} 🔴{labels['sell_label']}:{sell_count} | "
-            f"{labels['avg_score_label']}:{avg_score:.0f}",
+            f"🟢{labels['buy_label']}:{buy_count} 🟡{labels['watch_label']}:{hold_count} 🔴{labels['sell_label']}:{sell_count}"
+            f"{score_suffix}",
         ]
         self._append_market_status_line(lines, results, report_language)
 
@@ -2473,26 +2565,59 @@ class NotificationService(
 
             # 核心信息行
             lines.append(f"### {emoji} {self._get_display_name(result, report_language)}({result.code})")
-            lines.append(
-                f"**{signal_text}** | "
-                f"{labels['score_label']}:{result.sentiment_score} | "
-                f"{localize_trend_prediction(result.trend_prediction, report_language)}"
-            )
+            if has_canonical_action_authority_for_result(result):
+                conclusion = _canonical_conclusion_for_result(result, report_language)
+                lines.append(
+                    f"**{signal_text}**" + (f" | {conclusion}" if conclusion else "")
+                )
+            else:
+                lines.append(
+                    f"**{signal_text}** | "
+                    f"{labels['score_label']}:{result.sentiment_score} | "
+                    f"{localize_trend_prediction(result.trend_prediction, report_language)}"
+                )
 
-            # 操作理由（截断）
-            if hasattr(result, 'buy_reason') and result.buy_reason:
-                reason = result.buy_reason[:80] + "..." if len(result.buy_reason) > 80 else result.buy_reason
-                lines.append(f"💡 {reason}")
+            if has_canonical_action_authority_for_result(result):
+                dashboard = result.dashboard if isinstance(result.dashboard, dict) else {}
+                factor = dashboard.get("factor_decision") or {}
+                brief = _get_valid_investor_brief(factor, report_language)
+                if brief is not None:
+                    fused = str(brief.get("fused_paragraph") or "").strip()
+                    if fused:
+                        reason = fused[:100] + "..." if len(fused) > 100 else fused
+                        lines.append(f"💡 {reason}")
+                    risks = brief.get("risk_notes") or []
+                    if isinstance(risks, list):
+                        first_risk = next(
+                            (
+                                str(item).strip()
+                                for item in risks
+                                if str(item or "").strip()
+                            ),
+                            "",
+                        )
+                        if first_risk:
+                            risk = (
+                                first_risk[:60] + "..."
+                                if len(first_risk) > 60
+                                else first_risk
+                            )
+                            lines.append(f"⚠️ {risk}")
+                else:
+                    lines.append("💡 当前确定性证据摘要不可用，本次保持观望。")
+            else:
+                # Legacy-only compatibility path.
+                if hasattr(result, 'buy_reason') and result.buy_reason:
+                    reason = result.buy_reason[:80] + "..." if len(result.buy_reason) > 80 else result.buy_reason
+                    lines.append(f"💡 {reason}")
 
-            # 核心看点
-            if hasattr(result, 'key_points') and result.key_points:
-                points = result.key_points[:60] + "..." if len(result.key_points) > 60 else result.key_points
-                lines.append(f"🎯 {points}")
+                if hasattr(result, 'key_points') and result.key_points:
+                    points = result.key_points[:60] + "..." if len(result.key_points) > 60 else result.key_points
+                    lines.append(f"🎯 {points}")
 
-            # 风险提示（截断）
-            if hasattr(result, 'risk_warning') and result.risk_warning:
-                risk = result.risk_warning[:50] + "..." if len(result.risk_warning) > 50 else result.risk_warning
-                lines.append(f"⚠️ {risk}")
+                if hasattr(result, 'risk_warning') and result.risk_warning:
+                    risk = result.risk_warning[:50] + "..." if len(result.risk_warning) > 50 else result.risk_warning
+                    lines.append(f"⚠️ {risk}")
 
             lines.append("")
 
@@ -2548,7 +2673,7 @@ class NotificationService(
         # Fallback: brief summary from dashboard report
         if not results:
             return f"# {report_date} {labels['brief_title']}\n\n{labels['no_results']}"
-        sorted_results = sorted(detail_results, key=lambda x: x.sentiment_score, reverse=True)
+        sorted_results = _ordered_results_for_display(detail_results)
         buy_count, sell_count, hold_count = self._count_display_decisions(results, report_language)
         lines = [
             f"# {report_date} {labels['brief_title']}",
@@ -2580,11 +2705,16 @@ class NotificationService(
                 continue
             core = dash.get('core_conclusion', {}) or {}
             one = (core.get('one_sentence') or r.analysis_summary or '')[:60]
-            lines.append(
-                f"**{name}({r.code})** {emoji} "
-                f"{signal_text} | "
-                f"{labels['score_label']} {r.sentiment_score} | {one}"
-            )
+            if has_canonical_action_authority_for_result(r):
+                canonical_one = _canonical_conclusion_for_result(r, report_language)
+                suffix = f" | {canonical_one}" if canonical_one else ""
+                lines.append(f"**{name}({r.code})** {emoji} {signal_text}{suffix}")
+            else:
+                lines.append(
+                    f"**{name}({r.code})** {emoji} "
+                    f"{signal_text} | "
+                    f"{labels['score_label']} {r.sentiment_score} | {one}"
+                )
         lines.append("")
         lines.append(f"*{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*")
         models = self._collect_models_used(results)
@@ -2615,6 +2745,28 @@ class NotificationService(
 
         # 股票名称（转义 *ST 等特殊字符）
         stock_name = self._get_display_name(result, report_language)
+
+        factor_decision = dashboard.get("factor_decision") or {}
+        if has_canonical_action_authority_for_result(result):
+            canonical_one = _canonical_conclusion_for_result(result, report_language)
+            lines = [
+                f"## {signal_emoji} {stock_name} ({result.code})",
+                "",
+                f"> {report_date} | **{signal_text}**"
+                + (f" | {canonical_one}" if canonical_one else ""),
+                "",
+            ]
+            brief = _get_valid_investor_brief(factor_decision, report_language)
+            if brief is not None:
+                _append_investor_notification_block(
+                    lines,
+                    factor_decision,
+                    report_language,
+                    position_advice=core.get("position_advice") or {},
+                )
+            else:
+                lines.append("**综合结论**: 当前确定性证据摘要不可用，本次保持观望。")
+            return "\n".join(lines)
 
         lines = [
             f"## {signal_emoji} {stock_name} ({result.code})",
@@ -3631,7 +3783,7 @@ class NotificationBuilder:
         labels = get_report_labels(report_language)
         lines = [f"📊 **{labels['summary_heading']}**", ""]
 
-        for r in sorted(results, key=lambda x: x.sentiment_score, reverse=True):
+        for r in _ordered_results_for_display(results):
             display_action = display_action_fields_for_result(
                 r,
                 report_language=report_language,
@@ -3656,10 +3808,15 @@ class NotificationBuilder:
                 report_language,
             )
             name = get_localized_stock_name(r.name, r.code, report_language)
-            lines.append(
-                f"{emoji} {name}({r.code}): {display_advice} | "
-                f"{labels['score_label']} {r.sentiment_score}"
-            )
+            if has_canonical_action_authority_for_result(r):
+                conclusion = _canonical_conclusion_for_result(r, report_language)
+                suffix = f" | {conclusion}" if conclusion else ""
+                lines.append(f"{emoji} {name}({r.code}): {display_advice}{suffix}")
+            else:
+                lines.append(
+                    f"{emoji} {name}({r.code}): {display_advice} | "
+                    f"{labels['score_label']} {r.sentiment_score}"
+                )
 
         return "\n".join(lines)
 

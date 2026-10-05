@@ -32,12 +32,16 @@ from src.services.pit_identity import (
     build_specified_codes_selection_context,
     sha256_payload,
 )
-from src.services.prediction_ledger_service import PREDICTION_LEDGER_SCHEMA_VERSION
+from src.services.prediction_ledger_service import (
+    PREDICTION_LEDGER_SCHEMA_VERSION,
+    TRACE_FEATURE_SCHEMA_VERSION,
+    traced_feature_schema_hash,
+)
 from src.services.research_state_projection import (
     STRATEGY_ELIGIBILITY_SCHEMA_VERSION,
     build_strategy_eligibility_identity,
 )
-from src.services.evidence_traceability_registry import MANIFEST_HASH, digest
+from src.services.evidence_traceability_registry import digest
 
 
 RECEIPT_SCHEMA_VERSION = "evidence-flywheel-runtime-receipt-v1"
@@ -543,13 +547,42 @@ def _ledger_identity_snapshot(db_manager: Any, prediction_hash: str) -> Dict[str
                     f"closed-world receipt found inconsistent {field}"
                 )
         trace_identity = None
-        if row.feature_schema_version == "stock-factor-numeric-evidence-v2":
-            payload = json.loads(row.evidence_json)
-            trace_identity = payload.get("trace_identity") if isinstance(payload, dict) else None
-            if (digest(payload) != row.evidence_hash or not isinstance(trace_identity, dict)
-                    or trace_identity.get("manifest_hash") != MANIFEST_HASH
-                    or not _SHA64_RE.fullmatch(str(trace_identity.get("runtime_trace_hash") or ""))):
-                raise EvidenceFlywheelRuntimeError("persisted trace/evidence identity mismatch")
+        if row.feature_schema_version == TRACE_FEATURE_SCHEMA_VERSION:
+            try:
+                payload = json.loads(row.evidence_json)
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise EvidenceFlywheelRuntimeError(
+                    "persisted trace/evidence identity mismatch"
+                ) from exc
+            if not isinstance(payload, dict):
+                raise EvidenceFlywheelRuntimeError(
+                    "persisted trace/evidence identity mismatch"
+                )
+            trace_identity = payload.get("trace_identity")
+            manifest_hash = str(payload.get("manifest_hash") or "").strip().lower()
+            trace_manifest_hash = (
+                str(trace_identity.get("manifest_hash") or "").strip().lower()
+                if isinstance(trace_identity, dict)
+                else ""
+            )
+            try:
+                expected_feature_schema_hash = traced_feature_schema_hash(manifest_hash)
+            except ValueError:
+                expected_feature_schema_hash = ""
+            if (
+                payload.get("schema_version") != TRACE_FEATURE_SCHEMA_VERSION
+                or digest(payload) != row.evidence_hash
+                or not isinstance(trace_identity, dict)
+                or not _SHA64_RE.fullmatch(manifest_hash)
+                or trace_manifest_hash != manifest_hash
+                or str(row.feature_schema_hash or "") != expected_feature_schema_hash
+                or not _SHA64_RE.fullmatch(
+                    str(trace_identity.get("runtime_trace_hash") or "")
+                )
+            ):
+                raise EvidenceFlywheelRuntimeError(
+                    "persisted trace/evidence identity mismatch"
+                )
         return {
             "id": row.id,
             "prediction_hash": row.prediction_hash,

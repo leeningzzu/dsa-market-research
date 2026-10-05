@@ -6,9 +6,16 @@ from __future__ import annotations
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date
+from datetime import date, datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+
+import pandas as pd
+
+from data_provider.intraday_data_identity import (
+    attach_intraday_data_identity,
+    build_intraday_data_identity,
+)
 
 from src.analyzer import GeminiAnalyzer
 from src.core.pipeline import StockAnalysisPipeline
@@ -310,6 +317,414 @@ def test_pipeline_uses_market_phase_effective_date_for_daily_market_context() ->
     )
 
 
+
+
+def _pipeline_intraday_sessions() -> list[date]:
+    return [
+        date(2026, 9, 14),
+        date(2026, 9, 15),
+        date(2026, 9, 16),
+        date(2026, 9, 17),
+        date(2026, 9, 18),
+        date(2026, 9, 21),
+        date(2026, 9, 22),
+        date(2026, 9, 23),
+        date(2026, 9, 24),
+        date(2026, 9, 25),
+    ]
+
+
+def _pipeline_canonical_5m(session_dates: list[date]) -> pd.DataFrame:
+    observed = pd.Timestamp("2026-09-25 16:00:00", tz="Asia/Shanghai")
+    rows = []
+    for session_date in session_dates:
+        labels = list(
+            pd.date_range(
+                f"{session_date.isoformat()} 09:35:00",
+                f"{session_date.isoformat()} 11:30:00",
+                freq="5min",
+                tz="Asia/Shanghai",
+            )
+        )
+        labels += list(
+            pd.date_range(
+                f"{session_date.isoformat()} 13:05:00",
+                f"{session_date.isoformat()} 15:00:00",
+                freq="5min",
+                tz="Asia/Shanghai",
+            )
+        )
+        for index, bar_end in enumerate(labels):
+            close = 100.0 + index * 0.01
+            rows.append(
+                {
+                    "code": "600519",
+                    "bar_end": bar_end,
+                    "open": close - 0.1,
+                    "high": close + 0.5,
+                    "low": close - 0.5,
+                    "close": close,
+                    "volume": 1000.0 + index,
+                    "session": (
+                        f"{session_date.isoformat()}:AM"
+                        if bar_end.hour < 12
+                        else f"{session_date.isoformat()}:PM"
+                    ),
+                    "available_at": observed,
+                    "adjustflag": "2",
+                    "data_source": "BaostockFetcher",
+                }
+            )
+    frame = pd.DataFrame(rows)
+    identity = build_intraday_data_identity(
+        frame,
+        provider_identity="BaostockFetcher",
+        provider_route="unit.pipeline",
+        package_version="0.9.4",
+        query_identity={"code": "sh.600519", "frequency": "5", "adjustflag": "2"},
+        requested_adjustment_basis="qfq",
+        observed_adjustment_basis="qfq",
+        basis_evidence="unit-test",
+        timeframe="5m",
+        timezone_name="Asia/Shanghai",
+        session_calendar="XSHG",
+        currency="CNY",
+        volume_unit="UNKNOWN",
+        amount_unit="UNKNOWN",
+        requested_start=session_dates[0].isoformat(),
+        requested_end=session_dates[-1].isoformat(),
+        identity_state="OBSERVED",
+        observed_at=observed.tz_convert("UTC").to_pydatetime(),
+        source_rows_sha256="7" * 64,
+    )
+    attach_intraday_data_identity(frame, identity)
+    frame["intraday_data_identity_hash"] = identity["identity_hash"]
+    return frame
+
+
+def _intraday_pipeline_for_helper(*, p0_bounded_trial: bool = False) -> StockAnalysisPipeline:
+    pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+    pipeline.p0_bounded_trial = p0_bounded_trial
+    pipeline.p0_receipt_only = p0_bounded_trial
+    pipeline.fetcher_manager = MagicMock()
+    pipeline.fetcher_manager._get_fetcher_by_name.return_value = object()
+    return pipeline
+
+
+def test_current_cn_stock_wiring_uses_named_baostock_and_exact_ten_sessions() -> None:
+    sessions = _pipeline_intraday_sessions()
+    target = sessions[-1]
+    frame = _pipeline_canonical_5m(sessions)
+    pipeline = _intraday_pipeline_for_helper()
+    pipeline.fetcher_manager._call_fetcher_method.return_value = frame
+    history = pd.DataFrame({"date": sessions})
+
+    with patch(
+        "src.core.pipeline.resolve_latest_completed_session_fail_closed",
+        return_value=target,
+    ), patch(
+        "src.core.pipeline.SearchService.is_index_or_etf",
+        return_value=False,
+    ):
+        intraday = pipeline._load_current_stock_intraday_timeframes(
+            code="600519",
+            stock_name="贵州茅台",
+            market="cn",
+            target_date=target,
+            completed_daily_history=history,
+        )
+
+    pipeline.fetcher_manager._get_fetcher_by_name.assert_called_once_with(
+        "BaostockFetcher",
+        capability="intraday_5m",
+    )
+    pipeline.fetcher_manager._call_fetcher_method.assert_called_once_with(
+        pipeline.fetcher_manager._get_fetcher_by_name.return_value,
+        "get_intraday_data",
+        "600519",
+        start_date=sessions[0].isoformat(),
+        end_date=sessions[-1].isoformat(),
+        frequency="5",
+    )
+    assert {key: len(value) for key, value in intraday.items()} == {
+        "5m": 480,
+        "15m": 160,
+        "30m": 80,
+        "60m": 40,
+    }
+
+
+def test_intraday_wiring_skips_bounded_replay_without_provider_call() -> None:
+    sessions = _pipeline_intraday_sessions()
+    pipeline = _intraday_pipeline_for_helper(p0_bounded_trial=True)
+    result = pipeline._load_current_stock_intraday_timeframes(
+        code="600519",
+        stock_name="贵州茅台",
+        market="cn",
+        target_date=sessions[-1],
+        completed_daily_history=pd.DataFrame({"date": sessions}),
+    )
+    assert result == {}
+    pipeline.fetcher_manager._get_fetcher_by_name.assert_not_called()
+    pipeline.fetcher_manager._call_fetcher_method.assert_not_called()
+
+
+def test_intraday_wiring_skips_backdated_target_and_etf_without_provider_call() -> None:
+    sessions = _pipeline_intraday_sessions()
+    pipeline = _intraday_pipeline_for_helper()
+    history = pd.DataFrame({"date": sessions})
+
+    with patch(
+        "src.core.pipeline.resolve_latest_completed_session_fail_closed",
+        return_value=date(2026, 9, 28),
+    ), patch(
+        "src.core.pipeline.SearchService.is_index_or_etf",
+        return_value=False,
+    ):
+        backdated = pipeline._load_current_stock_intraday_timeframes(
+            code="600519",
+            stock_name="贵州茅台",
+            market="cn",
+            target_date=sessions[-1],
+            completed_daily_history=history,
+        )
+    assert backdated == {}
+    pipeline.fetcher_manager._get_fetcher_by_name.assert_not_called()
+
+    with patch(
+        "src.core.pipeline.resolve_latest_completed_session_fail_closed",
+        return_value=sessions[-1],
+    ), patch(
+        "src.core.pipeline.SearchService.is_index_or_etf",
+        return_value=True,
+    ):
+        etf = pipeline._load_current_stock_intraday_timeframes(
+            code="588200",
+            stock_name="科创芯片ETF",
+            market="cn",
+            target_date=sessions[-1],
+            completed_daily_history=history,
+        )
+    assert etf == {}
+    pipeline.fetcher_manager._get_fetcher_by_name.assert_not_called()
+
+
+def test_intraday_wiring_skips_non_cn_and_unproven_calendar_without_provider_call() -> None:
+    sessions = _pipeline_intraday_sessions()
+    history = pd.DataFrame({"date": sessions})
+
+    non_cn = _intraday_pipeline_for_helper()
+    with patch(
+        "src.core.pipeline.SearchService.is_index_or_etf",
+        return_value=False,
+    ):
+        result = non_cn._load_current_stock_intraday_timeframes(
+            code="AAPL",
+            stock_name="Apple",
+            market="us",
+            target_date=sessions[-1],
+            completed_daily_history=history,
+        )
+    assert result == {}
+    non_cn.fetcher_manager._get_fetcher_by_name.assert_not_called()
+
+    unknown_calendar = _intraday_pipeline_for_helper()
+    with patch(
+        "src.core.pipeline.resolve_latest_completed_session_fail_closed",
+        return_value=None,
+    ), patch(
+        "src.core.pipeline.SearchService.is_index_or_etf",
+        return_value=False,
+    ):
+        result = unknown_calendar._load_current_stock_intraday_timeframes(
+            code="600519",
+            stock_name="贵州茅台",
+            market="cn",
+            target_date=sessions[-1],
+            completed_daily_history=history,
+        )
+    assert result == {}
+    unknown_calendar.fetcher_manager._get_fetcher_by_name.assert_not_called()
+
+
+def test_intraday_wiring_provider_error_returns_missing_without_fallback() -> None:
+    sessions = _pipeline_intraday_sessions()
+    pipeline = _intraday_pipeline_for_helper()
+    pipeline.fetcher_manager._call_fetcher_method.side_effect = RuntimeError(
+        "provider unavailable"
+    )
+    with patch(
+        "src.core.pipeline.resolve_latest_completed_session_fail_closed",
+        return_value=sessions[-1],
+    ), patch(
+        "src.core.pipeline.SearchService.is_index_or_etf",
+        return_value=False,
+    ):
+        result = pipeline._load_current_stock_intraday_timeframes(
+            code="600519",
+            stock_name="贵州茅台",
+            market="cn",
+            target_date=sessions[-1],
+            completed_daily_history=pd.DataFrame({"date": sessions}),
+        )
+    assert result == {}
+    pipeline.fetcher_manager._get_fetcher_by_name.assert_called_once_with(
+        "BaostockFetcher",
+        capability="intraday_5m",
+    )
+    assert pipeline.fetcher_manager._call_fetcher_method.call_count == 1
+    pipeline.fetcher_manager.get_daily_data.assert_not_called()
+    pipeline.fetcher_manager.get_realtime_quote.assert_not_called()
+
+
+def test_intraday_wiring_requires_ten_completed_daily_sessions_before_provider_call() -> None:
+    sessions = _pipeline_intraday_sessions()
+    pipeline = _intraday_pipeline_for_helper()
+    with patch(
+        "src.core.pipeline.resolve_latest_completed_session_fail_closed",
+        return_value=sessions[-1],
+    ), patch(
+        "src.core.pipeline.SearchService.is_index_or_etf",
+        return_value=False,
+    ):
+        result = pipeline._load_current_stock_intraday_timeframes(
+            code="600519",
+            stock_name="贵州茅台",
+            market="cn",
+            target_date=sessions[-1],
+            completed_daily_history=pd.DataFrame({"date": sessions[-9:]}),
+        )
+    assert result == {}
+    pipeline.fetcher_manager._get_fetcher_by_name.assert_not_called()
+    pipeline.fetcher_manager._call_fetcher_method.assert_not_called()
+
+
+def test_intraday_wiring_rejects_incomplete_5m_without_fallback() -> None:
+    sessions = _pipeline_intraday_sessions()
+    frame = _pipeline_canonical_5m(sessions).drop(index=[4]).reset_index(drop=True)
+    pipeline = _intraday_pipeline_for_helper()
+    pipeline.fetcher_manager._call_fetcher_method.return_value = frame
+    with patch(
+        "src.core.pipeline.resolve_latest_completed_session_fail_closed",
+        return_value=sessions[-1],
+    ), patch(
+        "src.core.pipeline.SearchService.is_index_or_etf",
+        return_value=False,
+    ):
+        result = pipeline._load_current_stock_intraday_timeframes(
+            code="600519",
+            stock_name="贵州茅台",
+            market="cn",
+            target_date=sessions[-1],
+            completed_daily_history=pd.DataFrame({"date": sessions}),
+        )
+    assert result == {}
+    assert pipeline.fetcher_manager._call_fetcher_method.call_count == 1
+    pipeline.fetcher_manager.get_daily_data.assert_not_called()
+    pipeline.fetcher_manager.get_realtime_quote.assert_not_called()
+
+
+def test_analyze_stock_passes_intraday_after_acquisition_and_before_snapshot_to_mtf() -> None:
+    pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+    phase_context = SimpleNamespace(
+        effective_daily_bar_date=date(2026, 9, 25),
+        to_dict=MagicMock(
+            return_value={
+                "market": "cn",
+                "phase": "postmarket",
+                "market_local_time": "2026-09-25T16:00:00+08:00",
+                "session_date": "2026-09-25",
+                "effective_daily_bar_date": "2026-09-25",
+                "is_trading_day": True,
+                "is_market_open_now": False,
+                "is_partial_bar": False,
+                "minutes_to_open": None,
+                "minutes_to_close": None,
+                "trigger_source": "system",
+                "analysis_intent": "auto",
+                "warnings": [],
+            }
+        ),
+    )
+    pipeline.config = SimpleNamespace(
+        enable_realtime_quote=False,
+        enable_chip_distribution=False,
+        market_review_enabled=True,
+        report_language="zh",
+        agent_mode=False,
+        save_context_snapshot=False,
+        report_integrity_enabled=False,
+        fundamental_stage_timeout_seconds=1,
+    )
+    pipeline.query_source = "system"
+    pipeline.analysis_phase = "auto"
+    pipeline.analysis_skills = None
+    pipeline.portfolio_context = None
+    pipeline.fetcher_manager = MagicMock()
+    pipeline.fetcher_manager.get_stock_name.return_value = "贵州茅台"
+    pipeline.fetcher_manager.get_chip_distribution.return_value = None
+    pipeline.fetcher_manager.get_fundamental_context.return_value = {}
+    pipeline.fetcher_manager.build_failed_fundamental_context.return_value = {}
+    pipeline.db = MagicMock()
+    pipeline.db.get_analysis_context.return_value = {
+        "code": "600519",
+        "stock_name": "贵州茅台",
+        "today": {},
+        "yesterday": {},
+    }
+    pipeline.db.get_data_range.return_value = []
+    pipeline.trend_analyzer = MagicMock()
+    pipeline.analyzer = MagicMock()
+    pipeline.analyzer.analyze.return_value = MagicMock(success=True)
+    pipeline.search_service = MagicMock()
+    pipeline.search_service.is_available = False
+    pipeline.search_service.news_window_days = 3
+    pipeline._emit_progress = MagicMock()
+    pipeline._load_daily_market_context = MagicMock(return_value=_market_context())
+    pipeline._build_market_structure_context = MagicMock(return_value=None)
+    observed = {}
+    intraday = {"5m": object(), "15m": object(), "30m": object(), "60m": object()}
+
+    def _load_intraday(**_kwargs):
+        observed["loaded_at"] = datetime.now(timezone.utc)
+        return intraday
+
+    pipeline._load_current_stock_intraday_timeframes = MagicMock(
+        side_effect=_load_intraday
+    )
+
+    with patch(
+        "src.core.pipeline.build_market_phase_context",
+        return_value=phase_context,
+    ), patch(
+        "src.core.pipeline.build_supply_demand_context",
+        return_value={},
+    ), patch(
+        "src.core.pipeline.build_cost_structure_context",
+        return_value={},
+    ), patch(
+        "src.core.pipeline.build_price_structure_context",
+        return_value={},
+    ), patch(
+        "src.core.pipeline.build_volatility_momentum_context",
+        return_value={},
+    ), patch(
+        "src.core.pipeline.build_pattern_trigger_context",
+        return_value={},
+    ), patch(
+        "src.core.pipeline.build_multi_timeframe_structure_context",
+        return_value={},
+    ) as mtf_builder:
+        pipeline.analyze_stock(
+            "600519",
+            ReportType.SIMPLE,
+            "q-intraday-ordering",
+        )
+
+    pipeline._load_current_stock_intraday_timeframes.assert_called_once()
+    kwargs = mtf_builder.call_args.kwargs
+    assert kwargs["intraday_timeframes"] is intraday
+    assert kwargs["snapshot_observed_at"] >= observed["loaded_at"]
 def test_pipeline_attaches_low_sensitive_market_context_to_enhanced_context() -> None:
     pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
     enhanced_context = {"code": "600519"}
