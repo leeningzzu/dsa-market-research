@@ -5,6 +5,7 @@ Unit tests for formatters.
 import os
 import sys
 import unittest
+from html.parser import HTMLParser
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -17,6 +18,7 @@ from src.formatters import (
     format_telegram_markdown,
     format_wechat_markdown,
     markdown_tables_to_key_value_rows,
+    markdown_to_html_document,
     slice_at_max_bytes,
     TRUNCATION_SUFFIX,
     MIN_MAX_WORDS,
@@ -25,6 +27,36 @@ from src.formatters import (
     _chunk_by_max_words,
     utf16_len,
 )
+
+
+class _VisibleTextParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.parts = []
+
+    def handle_data(self, data):
+        self.parts.append(data)
+
+
+class TestMarkdownToHtmlDocument(unittest.TestCase):
+    def test_preserves_inline_angle_comparisons_in_visible_text(self):
+        rendered = markdown_to_html_document(
+            "月线空头排列 MA5<MA10<MA20；周线多头排列 MA5>MA10>MA20。"
+        )
+        parser = _VisibleTextParser()
+        parser.feed(rendered)
+        visible = "".join(parser.parts)
+
+        self.assertIn("MA5<MA10<MA20", visible)
+        self.assertIn("MA5>MA10>MA20", visible)
+
+    def test_escapes_raw_html_without_breaking_markdown_links(self):
+        rendered = markdown_to_html_document(
+            '正文 <span>强调</span> [链接](https://example.com/path?a=1&b=2)'
+        )
+
+        self.assertIn("&lt;span&gt;强调&lt;/span&gt;", rendered)
+        self.assertIn('<a href="https://example.com/path?a=1&b=2">链接</a>', rendered)
 
 
 class TestChunkContentByMaxWords(unittest.TestCase):
