@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
-"""Coverage-aware multi-timeframe structure over canonical completed daily history.
+"""Coverage-aware multi-timeframe structure over canonical completed bars.
 
-V1 reuses the existing daily history owner, StockTrendAnalyzer and confirmed
-Pivot/Swing owner. It does not fetch data, create action authority or pretend
-that intraday bars exist. Weekly/monthly bars are deterministic OHLCV
-aggregates of already-completed daily bars; the current partial higher-timeframe
-period is excluded unless the exchange calendar proves it complete.
+The service reuses the existing daily history owner, StockTrendAnalyzer and
+confirmed daily Pivot/Swing owner. Weekly/monthly bars are deterministic OHLCV
+aggregates of completed daily bars. Optional canonical 5m/15m/30m/60m inputs
+may contribute descriptive Trend/MA/Volume/MACD/RSI context only; timestamp-aware
+intraday Price Structure/Pattern and independent action authority remain blocked.
 """
 
 from __future__ import annotations
@@ -22,6 +22,10 @@ from data_provider.daily_data_identity import (
     extract_daily_data_identity,
     rebind_daily_data_identity,
 )
+from data_provider.intraday_data_identity import (
+    IntradayDataIdentityError,
+    extract_intraday_data_identity,
+)
 
 from src.core.trading_calendar import resolve_completed_timeframe_bar_date
 from src.services.price_structure_service import build_price_structure_context
@@ -30,7 +34,7 @@ from src.services.evidence_traceability_registry import describe_macd_state
 
 
 SCHEMA_VERSION = "multi-timeframe-structure-v1"
-ALGORITHM_VERSION = "completed-daily-resample-v1"
+ALGORITHM_VERSION = "completed-daily-plus-intraday-context-v2"
 TREND_MIN_BARS = 26
 CROSS_RUN_PERSISTENCE_POLICY = "BLOCK_UNTIL_ADJUSTMENT_BASIS_PERSISTED"
 
@@ -40,7 +44,7 @@ _CONFIG = {
     "cross_run_persistence_policy": CROSS_RUN_PERSISTENCE_POLICY,
     "weekly_period": "W-FRI",
     "monthly_period": "M",
-    "intraday_policy": "MISSING_UNTIL_COMPLETED_BAR_CONTRACT",
+    "intraday_policy": "OPTIONAL_CANONICAL_PARTIAL_TREND_MA_ONLY",
 }
 CONFIG_HASH = sha256(
     json.dumps(_CONFIG, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -91,6 +95,175 @@ _ROLE = {
     "15m": "TRIGGER_CONFIRMATION",
     "5m": "MICRO_TIMING",
 }
+
+INTRADAY_EVIDENCE_SCHEMA_VERSION = "intraday-timeframe-evidence-v1"
+INTRADAY_EVIDENCE_ALGORITHM_VERSION = "canonical-intraday-trend-ma-v1"
+_INTRADAY_EVIDENCE_CONFIG = {
+    "schema_version": INTRADAY_EVIDENCE_SCHEMA_VERSION,
+    "algorithm_version": INTRADAY_EVIDENCE_ALGORITHM_VERSION,
+    "admitted_methods": ["TREND", "MA", "VOLUME", "MACD", "RSI"],
+    "price_structure": "NOT_ADMITTED",
+    "pattern_trigger": "NOT_ADMITTED",
+    "independent_action_authority": False,
+}
+INTRADAY_EVIDENCE_CONFIG_HASH = sha256(
+    json.dumps(_INTRADAY_EVIDENCE_CONFIG, sort_keys=True, separators=(",", ":")).encode("utf-8")
+).hexdigest()
+
+
+def _build_intraday_timeframe(
+    *,
+    key: str,
+    stock_code: str,
+    target_date: date,
+    bars: Any,
+    trend_analyzer: Any,
+    snapshot_observed_at: Optional[datetime],
+) -> Dict[str, Any]:
+    if not isinstance(bars, pd.DataFrame) or bars.empty:
+        return _empty_timeframe(
+            key,
+            status="MISSING",
+            reason="INTRADAY_COMPLETED_BAR_CONTRACT_NOT_READY",
+        )
+    try:
+        identity = extract_intraday_data_identity(bars, strict=True)
+    except IntradayDataIdentityError:
+        return _empty_timeframe(key, status="UNKNOWN", reason="INTRADAY_IDENTITY_INVALID")
+    if identity is None:
+        return _empty_timeframe(key, status="MISSING", reason="INTRADAY_IDENTITY_MISSING")
+    if str(identity.get("timeframe") or "") != key:
+        return _empty_timeframe(
+            key,
+            status="UNKNOWN",
+            reason="INTRADAY_IDENTITY_TIMEFRAME_MISMATCH",
+        )
+
+    required = {
+        "code",
+        "bar_end",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "available_at",
+        "data_source",
+    }
+    if not required.issubset(bars.columns):
+        return _empty_timeframe(key, status="UNKNOWN", reason="INTRADAY_COLUMNS_INVALID")
+
+    frame = bars.copy()
+    frame["bar_end"] = pd.to_datetime(frame["bar_end"], errors="coerce", utc=True)
+    frame["available_at"] = pd.to_datetime(frame["available_at"], errors="coerce", utc=True)
+    if frame["bar_end"].isna().any() or frame["available_at"].isna().any():
+        return _empty_timeframe(key, status="UNKNOWN", reason="INTRADAY_TIMESTAMP_INVALID")
+    if frame["bar_end"].duplicated().any():
+        return _empty_timeframe(key, status="UNKNOWN", reason="INTRADAY_TIMESTAMP_DUPLICATE")
+    frame = frame.sort_values("bar_end", kind="stable").reset_index(drop=True)
+    if any(a < b for a, b in zip(frame["available_at"], frame["bar_end"])):
+        return _empty_timeframe(key, status="UNKNOWN", reason="INTRADAY_AVAILABLE_AT_INVALID")
+    if snapshot_observed_at is not None:
+        observed = pd.Timestamp(snapshot_observed_at)
+        if observed.tzinfo is None:
+            observed = observed.tz_localize("UTC")
+        else:
+            observed = observed.tz_convert("UTC")
+        if bool((frame["available_at"] > observed).any()):
+            return _empty_timeframe(
+                key,
+                status="UNKNOWN",
+                reason="INTRADAY_AVAILABLE_AFTER_SNAPSHOT",
+            )
+
+    timezone_name = str(identity.get("timezone") or "Asia/Shanghai")
+    local_bar_end = frame["bar_end"].dt.tz_convert(timezone_name)
+    if bool((local_bar_end.dt.date > target_date).any()):
+        return _empty_timeframe(key, status="UNKNOWN", reason="INTRADAY_AFTER_TARGET_DATE")
+    if local_bar_end.iloc[-1].date() != target_date:
+        return _empty_timeframe(
+            key,
+            status="MISSING",
+            reason="INTRADAY_TARGET_DATE_BAR_MISSING",
+        )
+    if frame["code"].map(lambda value: str(value).strip()).nunique(dropna=False) != 1:
+        return _empty_timeframe(key, status="UNKNOWN", reason="INTRADAY_CODE_MIXED")
+    if str(frame.iloc[-1]["code"]).strip() != str(stock_code).strip():
+        return _empty_timeframe(key, status="UNKNOWN", reason="INTRADAY_CODE_MISMATCH")
+
+    analyzer_frame = frame[
+        ["bar_end", "open", "high", "low", "close", "volume", "data_source"]
+    ].copy()
+    analyzer_frame = analyzer_frame.rename(columns={"bar_end": "date"})
+    for column in ("open", "high", "low", "close", "volume"):
+        analyzer_frame[column] = pd.to_numeric(analyzer_frame[column], errors="coerce")
+    if analyzer_frame[["open", "high", "low", "close", "volume"]].isna().any().any():
+        return _empty_timeframe(key, status="UNKNOWN", reason="INTRADAY_OHLCV_INVALID")
+    if _invalid_ohlcv(analyzer_frame):
+        return _empty_timeframe(key, status="UNKNOWN", reason="INTRADAY_OHLCV_INVALID")
+
+    alignment = _source_alignment(analyzer_frame)
+    if alignment["status"] != "SINGLE_SOURCE":
+        return _empty_timeframe(key, status="UNKNOWN", reason="INTRADAY_SOURCE_ALIGNMENT_UNPROVEN")
+
+    trend_result = None
+    trend = None
+    if len(analyzer_frame) >= TREND_MIN_BARS:
+        trend_result = trend_analyzer.analyze(analyzer_frame.copy(), stock_code)
+        trend = _trend_projection(trend_result)
+    price_structure = {
+        "status": "MISSING",
+        "reason": "INTRADAY_PRICE_STRUCTURE_NOT_ADMITTED",
+        "summary": None,
+        "independent_action_authority": False,
+    }
+    ma_structure = build_ma_structure_evidence(
+        analyzer_frame,
+        timeframe=key,
+        trend_result=trend_result,
+        structure_context={},
+    )
+    has_partial = trend is not None or ma_structure.get("status") in {"READY", "PARTIAL"}
+    summary = _human_summary(trend, {}, ma_structure)
+    if isinstance(trend, dict):
+        rsi_signal = str(trend.get("rsi_signal") or "").strip()
+        if rsi_signal and rsi_signal != "数据不足":
+            summary = "；".join(item for item in (summary, rsi_signal) if item)
+    if summary:
+        summary += "；分钟价格结构/形态尚未准入"
+
+    return {
+        "schema_version": INTRADAY_EVIDENCE_SCHEMA_VERSION,
+        "algorithm_version": INTRADAY_EVIDENCE_ALGORITHM_VERSION,
+        "config_hash": INTRADAY_EVIDENCE_CONFIG_HASH,
+        "status": "PARTIAL" if has_partial else "MISSING",
+        "reason": (
+            "INTRADAY_TREND_MA_PARTIAL_CURRENT"
+            if has_partial
+            else "INTRADAY_WARMUP_INSUFFICIENT"
+        ),
+        "role": _ROLE[key],
+        "timeframe": key,
+        "completed_bar_only": True,
+        "latest_bar_end": local_bar_end.iloc[-1].isoformat(),
+        "observations": int(len(analyzer_frame)),
+        "source_alignment": alignment,
+        "intraday_identity_hash": identity["identity_hash"],
+        "trend": trend or {"status": "MISSING", "reason": "WARMUP_INSUFFICIENT"},
+        "ma_structure": ma_structure,
+        "price_structure": price_structure,
+        "pattern_trigger": {
+            "status": "MISSING",
+            "reason": "INTRADAY_PATTERN_NOT_ADMITTED",
+            "summary": None,
+        },
+        "summary": summary,
+        "admitted_methods": ["TREND", "MA", "VOLUME", "MACD", "RSI"],
+        "independent_action_authority": False,
+        "strategy_admitted": False,
+        "learning_admitted": False,
+        "historical_replay_eligible": False,
+    }
 
 
 def _normalize_daily_history(history: Any, *, target_date: date) -> pd.DataFrame:
@@ -933,8 +1106,9 @@ def build_multi_timeframe_structure_context(
     daily_trend_result: Any = None,
     daily_price_structure_context: Any = None,
     snapshot_observed_at: Optional[datetime] = None,
+    intraday_timeframes: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Build one coverage-aware M/W/D structure carrier from completed daily bars."""
+    """Build one coverage-aware M/W/D carrier plus optional canonical intraday context."""
     base = {
         "schema_version": SCHEMA_VERSION,
         "family": "multi_timeframe_structure",
@@ -1103,6 +1277,19 @@ def build_multi_timeframe_structure_context(
         trend_analyzer=trend_analyzer,
     )
 
+    intraday_inputs = intraday_timeframes if isinstance(intraday_timeframes, dict) else {}
+    intraday = {
+        key: _build_intraday_timeframe(
+            key=key,
+            stock_code=stock_code,
+            target_date=target_date,
+            bars=intraday_inputs.get(key),
+            trend_analyzer=trend_analyzer,
+            snapshot_observed_at=snapshot_observed_at,
+        )
+        for key in ("60m", "30m", "15m", "5m")
+    }
+
     directions = []
     for item in (monthly, weekly, daily):
         trend = item.get("trend") if isinstance(item, dict) else None
@@ -1136,7 +1323,7 @@ def build_multi_timeframe_structure_context(
             "monthly": monthly,
             "weekly": weekly,
             "daily": daily,
-            **missing_intraday,
+            **intraday,
         },
         "cross_timeframe": {
             "trend_alignment": alignment_state,

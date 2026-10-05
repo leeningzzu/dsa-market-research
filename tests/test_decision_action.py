@@ -431,3 +431,74 @@ def test_display_helpers_preserve_neutral_action_when_guardrail_was_applied() ->
     assert display_action_fields_for_result(result) == {"action": "hold", "action_label": "Hold"}
     assert display_operation_advice_for_result(result) == "Hold"
     assert display_decision_type_for_result(result) == "hold"
+
+
+
+def test_canonical_result_action_cannot_be_overridden_by_legacy_score_or_advice() -> None:
+    result = type(
+        "Result",
+        (),
+        {
+            "operation_advice": "Buy",
+            "action": "buy",
+            "action_label": "Buy",
+            "sentiment_score": 99,
+            "decision_type": "buy",
+            "report_language": "en",
+            "dashboard": {
+                "factor_decision": {
+                    "strategy_id": "stock_trend_quality_pullback_v1",
+                    "canonical_decision": {
+                        "authority": "stock_trend_quality_pullback_v1",
+                        "action": "WAIT",
+                        "public_action": "watch",
+                        "evidence_state": "PROVEN",
+                        "hard_veto": False,
+                        "reason_codes": ["WAIT_CONFIRMATION"],
+                    },
+                }
+            },
+        },
+    )()
+
+    assert display_action_fields_for_result(result) == {
+        "action": "watch",
+        "action_label": "Watch",
+    }
+    assert display_operation_advice_for_result(result) == "Watch"
+    assert display_decision_type_for_result(result) == "hold"
+
+
+def test_malformed_canonical_result_fails_closed_without_resurrecting_legacy_buy() -> None:
+    result = type(
+        "Result",
+        (),
+        {
+            "operation_advice": "Buy",
+            "action": "buy",
+            "action_label": "Buy",
+            "sentiment_score": 99,
+            "decision_type": "buy",
+            "report_language": "en",
+            "dashboard": {
+                "factor_decision": {
+                    "strategy_id": "stock_trend_quality_pullback_v1",
+                    "canonical_decision": {
+                        "authority": "stock_trend_quality_pullback_v1",
+                        "action": "WAIT",
+                        "public_action": "buy",
+                        "evidence_state": "PROVEN",
+                        "hard_veto": False,
+                        "reason_codes": [],
+                    },
+                }
+            },
+        },
+    )()
+
+    assert display_action_fields_for_result(result) == {
+        "action": "watch",
+        "action_label": "Watch",
+    }
+    assert display_operation_advice_for_result(result) == "Watch"
+    assert display_decision_type_for_result(result) == "hold"

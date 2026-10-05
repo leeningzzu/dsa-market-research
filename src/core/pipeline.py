@@ -82,6 +82,10 @@ from src.services.price_structure_service import build_price_structure_context
 from src.services.volatility_momentum_service import build_volatility_momentum_context
 from src.services.pattern_trigger_service import build_pattern_trigger_context
 from src.services.multi_timeframe_structure_service import build_multi_timeframe_structure_context
+from src.services.intraday_bar_service import (
+    aggregate_completed_intraday_bars,
+    validate_complete_cn_5m_sessions,
+)
 from src.services.evidence_traceability_registry import build_method_execution_receipt
 from src.services.pit_identity import (
     build_completed_history_identity,
@@ -119,6 +123,7 @@ from src.core.trading_calendar import (
     get_effective_trading_date,
     get_market_for_stock,
     get_market_now,
+    resolve_latest_completed_session_fail_closed,
     is_market_open,
 )
 from data_provider.us_index_mapping import is_us_stock_code
@@ -507,6 +512,109 @@ class StockAnalysisPipeline:
             logger.error(f"{stock_name}({code}) {error_msg}")
             return False, error_msg
     
+    def _load_current_stock_intraday_timeframes(
+        self,
+        *,
+        code: str,
+        stock_name: str,
+        market: Optional[str],
+        target_date: date,
+        completed_daily_history: Optional[pd.DataFrame],
+    ) -> Dict[str, pd.DataFrame]:
+        """Load current-only canonical CN stock intraday context, fail-open to missing."""
+        if bool(getattr(self, "p0_bounded_trial", False)) or bool(
+            getattr(self, "p0_receipt_only", False)
+        ):
+            return {}
+        if str(market or "").strip().lower() != "cn":
+            return {}
+        if SearchService.is_index_or_etf(code, stock_name):
+            return {}
+
+        latest_completed = resolve_latest_completed_session_fail_closed("cn")
+        if latest_completed is None or target_date != latest_completed:
+            return {}
+        if (
+            not isinstance(completed_daily_history, pd.DataFrame)
+            or completed_daily_history.empty
+            or "date" not in completed_daily_history.columns
+        ):
+            return {}
+
+        parsed_dates = pd.to_datetime(
+            completed_daily_history["date"],
+            errors="coerce",
+        )
+        if parsed_dates.isna().any():
+            return {}
+        available_sessions = sorted(
+            {
+                value.date()
+                for value in parsed_dates.tolist()
+                if value.date() <= target_date
+            }
+        )
+        if len(available_sessions) < 10:
+            return {}
+        expected_sessions = available_sessions[-10:]
+        if expected_sessions[-1] != target_date:
+            return {}
+
+        try:
+            fetcher = self.fetcher_manager._get_fetcher_by_name(
+                "BaostockFetcher",
+                capability="intraday_5m",
+            )
+            if fetcher is None:
+                return {}
+            five_minute = self.fetcher_manager._call_fetcher_method(
+                fetcher,
+                "get_intraday_data",
+                code,
+                start_date=expected_sessions[0].isoformat(),
+                end_date=expected_sessions[-1].isoformat(),
+                frequency="5",
+            )
+            validate_complete_cn_5m_sessions(
+                five_minute,
+                expected_session_dates=expected_sessions,
+            )
+            derived = {
+                "5m": five_minute,
+                "15m": aggregate_completed_intraday_bars(
+                    five_minute,
+                    target_timeframe="15m",
+                ),
+                "30m": aggregate_completed_intraday_bars(
+                    five_minute,
+                    target_timeframe="30m",
+                ),
+                "60m": aggregate_completed_intraday_bars(
+                    five_minute,
+                    target_timeframe="60m",
+                ),
+            }
+            expected_rows = {
+                "5m": 48 * len(expected_sessions),
+                "15m": 16 * len(expected_sessions),
+                "30m": 8 * len(expected_sessions),
+                "60m": 4 * len(expected_sessions),
+            }
+            if any(len(derived[key]) != count for key, count in expected_rows.items()):
+                raise ValueError(
+                    f"intraday aggregation cardinality mismatch: "
+                    f"{ {key: len(value) for key, value in derived.items()} }"
+                )
+            return derived
+        except Exception as exc:
+            logger.warning(
+                "%s(%s) current intraday context unavailable; keep intraday MISSING: %s",
+                stock_name,
+                code,
+                exc,
+            )
+            return {}
+
     def analyze_stock(
         self,
         code: str,
@@ -708,6 +816,13 @@ class StockAnalysisPipeline:
                 except Exception as e:
                     logger.warning(f"{stock_name}({code}) 相对强弱证据构建失败，按缺失处理: {e}")
 
+            intraday_timeframes = self._load_current_stock_intraday_timeframes(
+                code=code,
+                stock_name=stock_name,
+                market=market,
+                target_date=daily_market_target_date,
+                completed_daily_history=completed_daily_history,
+            )
             market_data_snapshot_observed_at = datetime.now(timezone.utc)
             completed_history_identity = (
                 build_completed_history_identity(
@@ -774,6 +889,7 @@ class StockAnalysisPipeline:
                 daily_trend_result=canonical_trend_result,
                 daily_price_structure_context=price_structure_context,
                 snapshot_observed_at=market_data_snapshot_observed_at,
+                intraday_timeframes=intraday_timeframes,
             )
             method_execution_receipts = self._build_direct_method_execution_receipts(
                 code=code,

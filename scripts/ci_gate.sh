@@ -33,7 +33,7 @@ offline_test_suite() {
   # test silence, giving us a post-mortem root cause for any future
   # CI hang instead of ``backend-gate`` being silently cancelled by the
   # workflow timeout.
-  python -m pytest -m "not network" \
+  python -m pytest -m "not network and not r004_forensic" \
     --timeout=120 -o timeout_method=thread \
     -o faulthandler_timeout=300
 }

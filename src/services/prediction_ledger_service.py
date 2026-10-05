@@ -31,11 +31,24 @@ _FACTOR_EVIDENCE_KEYS = ledger_evidence_keys()
 
 # New traced snapshots use a separate numeric schema, never silently redefine v1.
 TRACE_FEATURE_SCHEMA_VERSION = "stock-factor-numeric-evidence-v2"
-TRACE_FEATURE_SCHEMA_HASH = digest({
-    "schema_version": TRACE_FEATURE_SCHEMA_VERSION,
-    "manifest_hash": MANIFEST_HASH,
-    "metrics": METRIC_BINDINGS,
-})
+
+
+def traced_feature_schema_hash(manifest_hash: str) -> str:
+    """Bind one traced numeric schema to the manifest frozen with that record."""
+    normalized_manifest_hash = str(manifest_hash or "").strip().lower()
+    if (
+        len(normalized_manifest_hash) != 64
+        or any(ch not in "0123456789abcdef" for ch in normalized_manifest_hash)
+    ):
+        raise ValueError("manifest_hash must be exact 64-hex")
+    return digest({
+        "schema_version": TRACE_FEATURE_SCHEMA_VERSION,
+        "manifest_hash": normalized_manifest_hash,
+        "metrics": METRIC_BINDINGS,
+    })
+
+
+TRACE_FEATURE_SCHEMA_HASH = traced_feature_schema_hash(MANIFEST_HASH)
 
 PREDICTION_FEATURE_SCHEMA_HASH = hashlib.sha256(
     json.dumps(

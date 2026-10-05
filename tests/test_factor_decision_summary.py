@@ -934,6 +934,47 @@ def test_multi_timeframe_context_fills_existing_brief_seam_without_inventing_int
     assert "MISSING" not in brief["coverage_text"]
 
 
+
+
+def test_real_intraday_mtf_partial_context_fills_product_panel_without_trigger_authority():
+    trend = _AssetBriefPayloadNamespace(
+        current_price=10.5,
+        support_levels=[10.0],
+        resistance_levels=[11.0],
+    )
+    summary = {
+        "sections": {
+            "trend": "趋势：日线均线结构偏强",
+            "volume_price": "量价：量能正常",
+        },
+        "conclusion": "保持观察。",
+        "multi_timeframe_structure_context": {
+            "timeframes": {
+                "monthly": {"status": "MISSING", "role": "LONG_TERM_CONTEXT", "summary": None},
+                "weekly": {"status": "READY", "role": "PRIMARY_TREND_CONTEXT", "summary": "周线趋势偏强"},
+                "60m": {"status": "PARTIAL", "role": "OPTIONAL_BRIDGE", "summary": "均线多头；MACD偏强；分钟结构尚未准入"},
+                "30m": {"status": "PARTIAL", "role": "PRIMARY_STRUCTURE", "summary": "均线压缩；RSI中性；分钟结构尚未准入"},
+                "15m": {"status": "PARTIAL", "role": "TRIGGER_CONFIRMATION", "summary": "量能正常；MACD偏强；分钟结构尚未准入"},
+                "5m": {"status": "PARTIAL", "role": "MICRO_TIMING", "summary": "均线交叉；RSI中性；分钟结构尚未准入"},
+            }
+        },
+    }
+
+    brief = _asset_brief_payload_builder(trend, summary)
+
+    assert brief["coverage"]["60m"] == "PARTIAL_CURRENT"
+    assert brief["coverage"]["30m"] == "PARTIAL_CURRENT"
+    assert brief["coverage"]["15m"] == "PARTIAL_CURRENT"
+    assert brief["coverage"]["5m"] == "PARTIAL_CURRENT"
+    panel = brief["short_term_execution_panel"]
+    assert panel["status"] == "READY"
+    assert panel["state"] == "CONTEXT_ONLY_NO_TRIGGER_AUTHORITY"
+    assert panel["30m"]["status"] == "PARTIAL_CURRENT"
+    assert panel["15m"]["status"] == "PARTIAL_CURRENT"
+    assert panel["5m"]["status"] == "PARTIAL_CURRENT"
+    assert panel["independent_action_authority"] is False
+    assert "30分钟" in panel["summary"]
+    assert "5分钟" in panel["summary"]
 def test_material_daily_ma_structure_reaches_existing_investor_brief_without_template_authority():
     trend = _AssetBriefPayloadNamespace(
         current_price=10.5,

@@ -39,8 +39,10 @@ from src.schemas.decision_action import (
     display_action_fields_for_result,
     display_decision_type_for_result,
     display_operation_advice_for_result,
+    has_canonical_action_authority_for_result,
     localize_action_label,
 )
+from src.services.factor_decision_summary import validate_investor_brief_binding
 from src.utils.data_processing import (
     normalize_model_used,
     signal_attribution_has_content,
@@ -85,6 +87,19 @@ def _resolve_templates_dir() -> Path:
     if not templates_dir.is_absolute():
         return base / templates_dir
     return templates_dir
+
+
+def _bound_investor_brief(result: AnalysisResult) -> Optional[Dict[str, Any]]:
+    dashboard = getattr(result, "dashboard", None)
+    if not isinstance(dashboard, dict):
+        return None
+    factor = dashboard.get("factor_decision")
+    if not isinstance(factor, dict):
+        return None
+    try:
+        return validate_investor_brief_binding(factor)
+    except ValueError:
+        return None
 
 
 def render(
@@ -135,8 +150,16 @@ def render(
     )
     labels = get_report_labels(report_language)
 
-    # Build template context with pre-computed signal levels (sorted by score)
-    sorted_results = sorted(results, key=lambda x: x.sentiment_score, reverse=True)
+    # Canonical Product ordering is upstream/product-owned. Legacy-only reports
+    # retain the historical score sort for compatibility.
+    has_canonical_results = any(
+        has_canonical_action_authority_for_result(result) for result in results
+    )
+    sorted_results = (
+        list(results)
+        if has_canonical_results
+        else sorted(results, key=lambda x: x.sentiment_score, reverse=True)
+    )
     sorted_enriched = []
     for r in sorted_results:
         display_action = display_action_fields_for_result(
@@ -158,6 +181,8 @@ def render(
             "alert": "sell",
         }.get(display_action, display_action)
         _, se, _ = get_signal_level(signal_action or display_advice, r.sentiment_score, report_language)
+        bound_brief = _bound_investor_brief(r)
+        canonical_authority = has_canonical_action_authority_for_result(r)
         rn = get_localized_stock_name(r.name, r.code, report_language)
         sorted_enriched.append({
             "result": r,
@@ -166,6 +191,9 @@ def render(
             "stock_name": _escape_md(rn),
             "localized_operation_advice": display_advice,
             "localized_trend_prediction": localize_trend_prediction(r.trend_prediction, report_language),
+            "canonical_authority": canonical_authority,
+            "investor_brief_valid": bound_brief is not None,
+            "investor_brief": bound_brief or {},
         })
 
     display_buckets = [
@@ -212,7 +240,7 @@ def render(
         "report_date": report_date,
         "report_timestamp": report_timestamp,
         "results": sorted_results,
-        "enriched": sorted_enriched,  # Sorted by sentiment_score desc
+        "enriched": sorted_enriched,
         "summary_only": summary_only,
         "buy_count": buy_count,
         "sell_count": sell_count,

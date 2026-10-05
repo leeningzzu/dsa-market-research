@@ -19,11 +19,13 @@ from src.analyzer import GeminiAnalyzer
 from src.config import Config
 from src.core.pipeline import StockAnalysisPipeline
 from src.notification import NotificationService
+from src.repositories.prediction_ledger_repo import PredictionLedgerRepository
 from src.services.evidence_flywheel_runtime import (
     EvidenceFlywheelBoundaryError,
     EvidenceFlywheelRuntimeError,
     _build_parser,
     _database_file_identity,
+    _ledger_identity_snapshot,
     _require_fresh_sqlite_file,
     _write_receipt_file,
     build_pit_manifest_receipt,
@@ -32,8 +34,19 @@ from src.services.evidence_flywheel_runtime import (
     replay_specified_codes_daily_sessions,
 )
 from src.services.pit_dataset_service import PITDatasetService
-from src.services.evidence_traceability_registry import digest
-from src.storage import DatabaseManager, StockDaily
+from src.services.evidence_traceability_registry import MANIFEST_HASH, digest
+from src.services.prediction_ledger_service import (
+    TRACE_FEATURE_SCHEMA_VERSION,
+    traced_feature_schema_hash,
+)
+from src.services.research_state_projection import (
+    STRATEGY_ELIGIBILITY_SCHEMA_VERSION,
+    build_strategy_eligibility_identity,
+)
+from src.storage import DatabaseManager, PredictionLedgerRecord, StockDaily
+
+
+_PRE_INTRADAY_MANIFEST_HASH = "5818db4878f97f34c732a630ff1a5a41287b661ded299a3076473479123cefca"
 
 
 def test_pipeline_execution_receipts_exist_only_for_actual_returned_producers():
@@ -91,6 +104,122 @@ def isolated_db(tmp_path):
     finally:
         DatabaseManager.reset_instance()
         Config.reset_instance()
+
+
+def _insert_traced_ledger_row(
+    db: DatabaseManager,
+    *,
+    prediction_hash: str,
+    manifest_hash: str,
+    trace_manifest_hash: str | None = None,
+    feature_schema_hash: str | None = None,
+) -> None:
+    eligibility = build_strategy_eligibility_identity(
+        {
+            "schema_version": STRATEGY_ELIGIBILITY_SCHEMA_VERSION,
+            "strategy_id": "stock_trend_quality_pullback_v1",
+            "state": "UNKNOWN",
+            "required_evidence": {},
+            "reason_codes": ["STRATEGY_ELIGIBILITY_NOT_BOUND"],
+        },
+        strategy_id="stock_trend_quality_pullback_v1",
+    )
+    payload = {
+        "schema_version": TRACE_FEATURE_SCHEMA_VERSION,
+        "manifest_hash": manifest_hash,
+        "trace_identity": {
+            "manifest_version": "evidence-product-traceability-v1",
+            "manifest_hash": trace_manifest_hash or manifest_hash,
+            "runtime_trace_hash": "3" * 64,
+            "data_snapshot_identity": "4" * 64,
+        },
+        "values": {},
+        "training_admitted": False,
+    }
+    with db.session_scope() as session:
+        session.add(
+            PredictionLedgerRecord(
+                prediction_hash=prediction_hash,
+                schema_version="prediction-ledger-v6",
+                analysis_history_id=int(prediction_hash[-4:], 16) + 1,
+                market="cn",
+                stock_code="600519",
+                instrument_type="stock",
+                decision_time=datetime(2025, 9, 30, 10, 0),
+                decision_timezone="Asia/Shanghai",
+                decision_phase="postmarket",
+                session_date=date(2025, 9, 30),
+                data_as_of=date(2025, 9, 30),
+                strategy_id="stock_trend_quality_pullback_v1",
+                strategy_version="stock_trend_quality_pullback_v1",
+                canonical_action="WAIT",
+                horizon="3d",
+                feature_schema_version=TRACE_FEATURE_SCHEMA_VERSION,
+                feature_schema_hash=feature_schema_hash or traced_feature_schema_hash(manifest_hash),
+                evidence_hash=digest(payload),
+                evidence_json=json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                strategy_eligibility_version=eligibility["strategy_eligibility_version"],
+                strategy_eligibility_state=eligibility["strategy_eligibility_state"],
+                strategy_eligibility_hash=eligibility["strategy_eligibility_hash"],
+                strategy_eligibility_json=eligibility["strategy_eligibility_json"],
+                pit_eligible=False,
+                pit_ineligibility_json='["TEST_ONLY"]',
+                durability_state="LOCAL_DB_ONLY",
+            )
+        )
+
+
+def test_traced_ledger_readback_preserves_frozen_manifest_identity(isolated_db) -> None:
+    _insert_traced_ledger_row(isolated_db, prediction_hash="1" * 64, manifest_hash=_PRE_INTRADAY_MANIFEST_HASH)
+    _insert_traced_ledger_row(isolated_db, prediction_hash="2" * 64, manifest_hash=MANIFEST_HASH)
+
+    old_snapshot = _ledger_identity_snapshot(isolated_db, "1" * 64)
+    current_snapshot = _ledger_identity_snapshot(isolated_db, "2" * 64)
+
+    assert old_snapshot["evidence_traceability_identity"]["manifest_hash"] == _PRE_INTRADAY_MANIFEST_HASH
+    assert current_snapshot["evidence_traceability_identity"]["manifest_hash"] == MANIFEST_HASH
+
+
+def test_traced_ledger_readback_rejects_cross_identity_forgery(isolated_db) -> None:
+    _insert_traced_ledger_row(
+        isolated_db,
+        prediction_hash="3" * 64,
+        manifest_hash=_PRE_INTRADAY_MANIFEST_HASH,
+        feature_schema_hash=traced_feature_schema_hash(MANIFEST_HASH),
+    )
+    _insert_traced_ledger_row(
+        isolated_db,
+        prediction_hash="4" * 64,
+        manifest_hash=_PRE_INTRADAY_MANIFEST_HASH,
+        trace_manifest_hash=MANIFEST_HASH,
+    )
+
+    with pytest.raises(EvidenceFlywheelRuntimeError, match="persisted trace/evidence identity mismatch"):
+        _ledger_identity_snapshot(isolated_db, "3" * 64)
+    with pytest.raises(EvidenceFlywheelRuntimeError, match="persisted trace/evidence identity mismatch"):
+        _ledger_identity_snapshot(isolated_db, "4" * 64)
+
+
+def test_dataset_candidate_filter_keeps_manifest_feature_hash_cohorts_separate(isolated_db) -> None:
+    _insert_traced_ledger_row(isolated_db, prediction_hash="5" * 64, manifest_hash=_PRE_INTRADAY_MANIFEST_HASH)
+    _insert_traced_ledger_row(isolated_db, prediction_hash="6" * 64, manifest_hash=MANIFEST_HASH)
+    repo = PredictionLedgerRepository(isolated_db)
+
+    old_rows = repo.list_dataset_candidates(
+        strategy_id="stock_trend_quality_pullback_v1",
+        strategy_version="stock_trend_quality_pullback_v1",
+        feature_schema_version=TRACE_FEATURE_SCHEMA_VERSION,
+        feature_schema_hash=traced_feature_schema_hash(_PRE_INTRADAY_MANIFEST_HASH),
+    )
+    current_rows = repo.list_dataset_candidates(
+        strategy_id="stock_trend_quality_pullback_v1",
+        strategy_version="stock_trend_quality_pullback_v1",
+        feature_schema_version=TRACE_FEATURE_SCHEMA_VERSION,
+        feature_schema_hash=traced_feature_schema_hash(MANIFEST_HASH),
+    )
+
+    assert [row.prediction_hash for row in old_rows] == ["5" * 64]
+    assert [row.prediction_hash for row in current_rows] == ["6" * 64]
 
 
 def _config() -> SimpleNamespace:
