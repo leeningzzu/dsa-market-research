@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] 修复 Markdown 邮件/HTML 投影把 `MA5<MA10<MA20` 等技术比较表达式误解析为 HTML 标签而丢失可见文本的问题；共享 formatter 现在转义 raw HTML，同时保留 Markdown 链接、表格、代码块等既有格式语义，不改变 canonical、V2.5 原件或 SMTP 路由。
 - [改进] 将 BaoStock 当前运行 5 分钟 completed-bar 身份与会话聚合接入现有 MTF / canonical Product，并加固 traced Ledger 跨 manifest 历史读取与 R004 forensic/current Production 测试边界；5m 仅确定性派生 15/30/60 分钟上下文，intraday Price Structure / divergence / Pattern / legal 30m trigger 继续显式 NOT_ADMITTED，不新增第二 provider、数据库、renderer、scheduler、策略/模型权限，也不修改 V2.5 原件。
 - [改进] 在保持 public Production/schedule/模型/R2/普通分析全部 fail-closed 的前提下，仅允许 `dsa-market-research` 通过人工 `workflow_dispatch + baseline-transport` 复用既有 V2.5 原件运输步骤；private 仓库既有行为不变，且不修改 EmailSender、V2.5 HTML、行情/模型/研究状态逻辑或任何 Secret/Variable。
 - [修复] 保留 canonical Product 与 legacy complete-detail fallback 中全部不同且非空的材料风险：移除 factor summary 的固定三项上限、investor brief 的固定两项上限及 legacy fallback 的固定三项上限；full/compact 继续复用同一完整 risk facts，AUTO 4–10 总览仍只展示导航风险但同一完整报告保留逐资产全部详情。不修改 canonical action、策略/学习/标签、数据库、provider、workflow 或 V2.5 HTML/DOM/CSS。

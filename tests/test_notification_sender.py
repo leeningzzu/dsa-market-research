@@ -13,6 +13,7 @@ import os
 import sys
 import unittest
 from email.header import decode_header, make_header
+from html.parser import HTMLParser
 from email.utils import parseaddr
 from types import SimpleNamespace
 from unittest import mock
@@ -39,6 +40,20 @@ from src.notification_sender import (
     WechatSender,
     WECHAT_IMAGE_MAX_BYTES,
 )
+
+
+def _html_visible_text(html_text):
+    class _Parser(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.parts = []
+
+        def handle_data(self, data):
+            self.parts.append(data)
+
+    parser = _Parser()
+    parser.feed(html_text)
+    return "".join(parser.parts)
 
 
 def _config(**overrides):
@@ -1060,6 +1075,27 @@ class TestEmailSender(unittest.TestCase):
         payloads = msg.get_payload()
         self.assertNotIn("[dsa-market-region]", payloads[0].get_payload(decode=True).decode("utf-8"))
         self.assertNotIn("[dsa-market-region]", payloads[1].get_payload(decode=True).decode("utf-8"))
+
+    @mock.patch("smtplib.SMTP_SSL")
+    def test_send_to_email_preserves_inline_angle_comparisons_in_visible_html(self, mock_smtp_ssl):
+        cfg = _config(
+            email_sender="a@qq.com",
+            email_password="p",
+            email_receivers=["b@qq.com"],
+        )
+        sender = EmailSender(cfg)
+
+        result = sender.send_to_email(
+            "月线空头排列 MA5<MA10<MA20；周线多头排列 MA5>MA10>MA20。",
+            subject="历史重构验收",
+        )
+
+        self.assertTrue(result)
+        msg = mock_smtp_ssl.return_value.send_message.call_args[0][0]
+        html_part = msg.get_payload()[1].get_payload(decode=True).decode("utf-8")
+        visible = _html_visible_text(html_part)
+        self.assertIn("MA5<MA10<MA20", visible)
+        self.assertIn("MA5>MA10>MA20", visible)
 
     @mock.patch("smtplib.SMTP_SSL")
     def test_send_image_email_encodes_non_ascii_sender_name(self, mock_smtp_ssl):
