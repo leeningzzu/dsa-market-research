@@ -336,6 +336,23 @@ class TestDailyAnalysisStrictSchedule(unittest.TestCase):
         self.assertIn("cron: '0 11 * * 1-5'", self.text)
 
     def test_v25_baseline_transport_is_manual_only_and_bypasses_analysis(self):
+        expected_job_guard = (
+            "if: ${{ github.repository == 'leeningzzu/daily_stock_analysis-private' || "
+            "(github.repository == 'leeningzzu/dsa-market-research' && "
+            "github.event_name == 'workflow_dispatch' && "
+            "github.event.inputs.mode == 'baseline-transport') }}"
+        )
+        guard_lines = [
+            line.strip()
+            for line in self.text.splitlines()
+            if line.strip().startswith("if: ${{ github.repository ==")
+        ]
+        self.assertEqual(guard_lines, [expected_job_guard])
+        self.assertEqual(
+            self.text.count("github.repository == 'leeningzzu/dsa-market-research'"),
+            1,
+        )
+
         self.assertIn("- baseline-transport", self.text)
         self.assertIn(
             "github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'baseline-transport'",
@@ -348,7 +365,19 @@ class TestDailyAnalysisStrictSchedule(unittest.TestCase):
         block = self.text[start:end]
         for key in ("EMAIL_SENDER:", "EMAIL_PASSWORD:", "EMAIL_RECEIVERS:", "EMAIL_SENDER_NAME:"):
             self.assertIn(key, block)
-        for forbidden in ("GEMINI_API_KEY", "OPENAI_API_KEY", "TUSHARE_TOKEN", "BOCHA_API_KEYS"):
+        for forbidden in (
+            "GEMINI_API_KEY",
+            "GEMINI_API_KEYS",
+            "OPENAI_API_KEY",
+            "TAVILY_API_KEYS",
+            "TUSHARE_TOKEN",
+            "BOCHA_API_KEYS",
+            "R2_",
+            "NOTIFICATION_",
+            "python main.py",
+            "research_state_runtime",
+            "evidence_flywheel_runtime",
+        ):
             self.assertNotIn(forbidden, block)
 
         analysis_start = self.text.index("- name: 执行股票分析")
