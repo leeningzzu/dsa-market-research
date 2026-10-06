@@ -821,6 +821,7 @@ def _build_product_report_receipt(
     for field in (
         "canonical_decision",
         "investor_brief",
+        "evidence_traceability",
         "evidence_product_coverage",
     ):
         if runtime_factor.get(field) != persisted_factor.get(field):
@@ -873,6 +874,44 @@ def _build_product_report_receipt(
         raise EvidenceFlywheelRuntimeError(
             "product receipt requires V2.5 semantic slot coverage"
         )
+    trace = persisted_factor.get("evidence_traceability")
+    if not isinstance(trace, Mapping):
+        raise EvidenceFlywheelRuntimeError(
+            "product receipt requires persisted evidence traceability"
+        )
+    matrix = trace.get("timeframe_family_matrix")
+    if not isinstance(matrix, Mapping):
+        raise EvidenceFlywheelRuntimeError(
+            "product receipt requires persisted timeframe/family matrix"
+        )
+    cells = matrix.get("cells")
+    matrix_hash = str(matrix.get("matrix_hash") or "")
+    policy_hash = str(trace.get("method_window_policy_hash") or "")
+    if (
+        not isinstance(cells, list)
+        or len(cells) != 56
+        or len(matrix_hash) != 64
+        or str(trace.get("timeframe_family_matrix_hash") or "") != matrix_hash
+        or str(matrix.get("method_window_policy_hash") or "") != policy_hash
+        or str(coverage.get("timeframe_family_matrix_hash") or "") != matrix_hash
+        or str(coverage.get("method_window_policy_hash") or "") != policy_hash
+    ):
+        raise EvidenceFlywheelRuntimeError(
+            "product receipt found timeframe/family matrix identity drift"
+        )
+    ledger_identity = _ledger_identity_snapshot(db_manager, prediction_hash)
+    ledger_trace_identity = ledger_identity.get("evidence_traceability_identity")
+    if not isinstance(ledger_trace_identity, Mapping):
+        raise EvidenceFlywheelRuntimeError(
+            "product receipt requires Ledger trace identity"
+        )
+    if (
+        str(ledger_trace_identity.get("method_window_policy_hash") or "") != policy_hash
+        or str(ledger_trace_identity.get("timeframe_family_matrix_hash") or "") != matrix_hash
+    ):
+        raise EvidenceFlywheelRuntimeError(
+            "product receipt found Ledger matrix identity drift"
+        )
     slot_state_counts: Dict[str, int] = {}
     for slot in slots:
         if isinstance(slot, Mapping):
@@ -893,6 +932,11 @@ def _build_product_report_receipt(
         "report_anchor_paths": report_anchor_paths,
         "runtime_database_binding": "EXACT_FOR_CANONICAL_BRIEF_AND_COVERAGE",
         "missing_timeframes": missing_timeframes,
+        "timeframe_family_matrix": {
+            "cell_count": len(cells),
+            "matrix_hash": matrix_hash,
+            "method_window_policy_hash": policy_hash,
+        },
         "v25_semantic_coverage": {
             "schema_version": coverage.get("schema_version"),
             "receipt_hash": coverage.get("receipt_hash"),

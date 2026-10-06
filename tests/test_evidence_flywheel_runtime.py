@@ -958,6 +958,26 @@ def test_record_cli_closed_world_binds_receipt_only_and_plain_record_does_not(
     assert len(observed) == 3
 
 
+def _matrix_receipt_fixture():
+    cells = [
+        {
+            "timeframe": timeframe,
+            "family": family,
+            "state": "MISSING",
+            "reason": "TEST_FIXTURE",
+            "method_coverage": [],
+        }
+        for timeframe in ("monthly", "weekly", "daily", "60m", "30m", "15m", "5m")
+        for family in ("REGIME", "TREND_RS", "SUPPLY", "COST", "STRUCTURE", "MOMENTUM", "PATTERN", "MTF")
+    ]
+    return {
+        "schema_version": "timeframe-family-matrix-v1",
+        "method_window_policy_hash": "e" * 64,
+        "cells": cells,
+        "matrix_hash": "f" * 64,
+    }
+
+
 def test_product_report_receipt_reuses_existing_delivery_fact_identity(
     monkeypatch,
     tmp_path,
@@ -984,11 +1004,19 @@ def test_product_report_receipt_reuses_existing_delivery_fact_identity(
             "schema_version": "v25-product-coverage-v1",
             "receipt_hash": "b" * 64,
             "baseline_sha256": "c" * 64,
+            "method_window_policy_hash": "e" * 64,
+            "timeframe_family_matrix_hash": "f" * 64,
             "rendered": False,
             "slots": [
                 {"state": "EVIDENCE_AVAILABLE"},
                 {"state": "DATA_INSUFFICIENT"},
             ],
+        },
+        "evidence_traceability": {
+            "schema_version": "canonical-evidence-trace-v2",
+            "method_window_policy_hash": "e" * 64,
+            "timeframe_family_matrix_hash": "f" * 64,
+            "timeframe_family_matrix": _matrix_receipt_fixture(),
         },
     }
     report = tmp_path / "report_20261002.md"
@@ -1004,6 +1032,16 @@ def test_product_report_receipt_reuses_existing_delivery_fact_identity(
         runtime,
         "_persisted_factor_snapshot",
         lambda db_manager, pipeline, prediction_hash: (factor, 7),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_ledger_identity_snapshot",
+        lambda db_manager, prediction_hash: {
+            "evidence_traceability_identity": {
+                "method_window_policy_hash": "e" * 64,
+                "timeframe_family_matrix_hash": "f" * 64,
+            }
+        },
     )
 
     class FakePipeline:
@@ -1029,6 +1067,11 @@ def test_product_report_receipt_reuses_existing_delivery_fact_identity(
         "investor_brief.coverage_text",
     ]
     assert receipt["missing_timeframes"] == ["weekly", "60m", "30m", "15m", "5m"]
+    assert receipt["timeframe_family_matrix"] == {
+        "cell_count": 56,
+        "matrix_hash": "f" * 64,
+        "method_window_policy_hash": "e" * 64,
+    }
     assert receipt["report_bytes"] > 0
     assert len(receipt["report_sha256"]) == 64
     report.write_text("# broken report\n", encoding="utf-8")

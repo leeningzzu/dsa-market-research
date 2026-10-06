@@ -7,7 +7,7 @@ provider entitlement. Deferred methods cannot be enabled by a payload flag.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from functools import lru_cache
 from hashlib import sha256
 import ast
@@ -18,14 +18,14 @@ from pathlib import Path
 from typing import Any
 
 MANIFEST_VERSION = "evidence-product-traceability-v1"
-TRACE_VERSION = "canonical-evidence-trace-v1"
+TRACE_VERSION = "canonical-evidence-trace-v2"
 METHOD_EXECUTION_RECEIPT_VERSION = "method-execution-receipt-v1"
 STOCK_STRATEGY = "stock_trend_quality_pullback_v1"
 BASELINE_SHA256 = "039ca6394baf9cf39494cc29f512802b114c8227f8c965723197a8df4b9de823"
 BASELINE_BYTES = 125919
 TIMEFRAMES = ("monthly", "weekly", "daily", "60m", "30m", "15m", "5m")
 STATES = frozenset({"READY", "PARTIAL", "MISSING", "UNKNOWN", "NOT_APPLICABLE"})
-METHOD_WINDOW_POLICY_VERSION = "method-window-policy-view-v1"
+METHOD_WINDOW_POLICY_VERSION = "method-window-policy-view-v2"
 METHOD_WINDOW_CLASSES = frozenset({
     "FIXED_ROLLING",
     "RECURSIVE_WARMUP",
@@ -43,6 +43,13 @@ METHOD_WINDOW_STATES = frozenset({
 })
 METHOD_WINDOW_TIMEFRAMES = frozenset({"asset", *TIMEFRAMES})
 NON_DAILY_TECHNICAL_TIMEFRAMES = ("monthly", "weekly", "60m", "30m", "15m", "5m")
+TECHNICAL_EVIDENCE_FAMILIES = (
+    "REGIME", "TREND_RS", "SUPPLY", "COST", "STRUCTURE", "MOMENTUM", "PATTERN", "MTF",
+)
+METHOD_CONSUMER_SCOPES = frozenset({"TECHNICAL_MATRIX", "ASSET_LAYER", "RESEARCH_SHADOW", "MODEL_LAYER"})
+TIMEFRAME_FAMILY_MATRIX_STATES = frozenset({
+    "READY", "PARTIAL", "MISSING", "UNKNOWN", "NOT_APPLICABLE", "NOT_ADMITTED",
+})
 
 VALID_ASSET_ROUTES = frozenset({"STOCK", "ETF", "MARKET"})
 VALID_BINDING_TIMEFRAMES = frozenset({"asset", "daily", "multi", *TIMEFRAMES})
@@ -116,6 +123,8 @@ class MethodWindowProfile:
     target_timeframes: tuple[str, ...]
     current_execution_timeframes: tuple[str, ...] = ()
     implementation_state: str = "DEFERRED_WITH_OWNER_AND_REENTRY"
+    consumer_scope: str = ""
+    family_targets: tuple[str, ...] = ()
 
 
 # References name existing formula/config owners; no copied thresholds or formulas.
@@ -418,6 +427,79 @@ METHOD_WINDOW_PROFILES = (
 )
 
 
+_METHOD_CONSUMER_CLASSIFICATION = {
+    "MARKET_SECTOR_REGIME": ("ASSET_LAYER", ("REGIME",)),
+    "RELATIVE_STRENGTH": ("TECHNICAL_MATRIX", ("TREND_RS",)),
+    "MA_LEVEL_ALIGNMENT_DAILY": ("TECHNICAL_MATRIX", ("TREND_RS",)),
+    "SUPPLY_RELATIVE_VOLUME": ("TECHNICAL_MATRIX", ("SUPPLY",)),
+    "SUPPLY_DIRECTIONAL_VOLUME": ("TECHNICAL_MATRIX", ("SUPPLY",)),
+    "SUPPLY_CMF": ("TECHNICAL_MATRIX", ("SUPPLY",)),
+    "COST_ROLLING_REFERENCE": ("TECHNICAL_MATRIX", ("COST",)),
+    "PRICE_PIVOT_SWING": ("TECHNICAL_MATRIX", ("STRUCTURE",)),
+    "BREAKOUT_RETEST_FAILED": ("TECHNICAL_MATRIX", ("STRUCTURE",)),
+    "MACD": ("TECHNICAL_MATRIX", ("MOMENTUM",)),
+    "RSI": ("TECHNICAL_MATRIX", ("MOMENTUM",)),
+    "ROC": ("TECHNICAL_MATRIX", ("MOMENTUM",)),
+    "VOLATILITY_TR_SMA": ("TECHNICAL_MATRIX", ("MOMENTUM",)),
+    "CONFIRMED_DIVERGENCE": ("TECHNICAL_MATRIX", ("MOMENTUM",)),
+    "CUP_HANDLE": ("TECHNICAL_MATRIX", ("PATTERN",)),
+    "DOUBLE_BOTTOM": ("TECHNICAL_MATRIX", ("PATTERN",)),
+    "VCP": ("TECHNICAL_MATRIX", ("PATTERN",)),
+    "FLAT_BASE": ("TECHNICAL_MATRIX", ("PATTERN",)),
+    "TIGHT_CONSOLIDATION": ("TECHNICAL_MATRIX", ("PATTERN",)),
+    "MTF_MA_LEVEL_ALIGNMENT": ("TECHNICAL_MATRIX", ("TREND_RS", "MTF")),
+    "MTF_MOMENTUM_CONTEXT": ("TECHNICAL_MATRIX", ("SUPPLY", "MOMENTUM", "MTF")),
+    "MTF_PRICE_STRUCTURE": ("TECHNICAL_MATRIX", ("STRUCTURE", "MTF")),
+    "MA_SLOPE_CROSS": ("TECHNICAL_MATRIX", ("TREND_RS", "MTF")),
+    "MA_COMPRESSION_RELEASE": ("TECHNICAL_MATRIX", ("MTF",)),
+    "QUALITY": ("ASSET_LAYER", ()),
+    "VALUATION": ("ASSET_LAYER", ()),
+    "DISTRIBUTION": ("ASSET_LAYER", ("SUPPLY", "STRUCTURE", "PATTERN")),
+    "RISK_REWARD": ("ASSET_LAYER", ()),
+    "CANDLESTICK": ("TECHNICAL_MATRIX", ("PATTERN",)),
+    "ATR_WILDER": ("TECHNICAL_MATRIX", ("MOMENTUM",)),
+    "ADX_DMI": ("TECHNICAL_MATRIX", ("MOMENTUM",)),
+    "BOLLINGER": ("TECHNICAL_MATRIX", ("PATTERN",)),
+    "KDJ": ("TECHNICAL_MATRIX", ("MOMENTUM",)),
+    "OBV_ADL": ("TECHNICAL_MATRIX", ("SUPPLY",)),
+    "MFI": ("TECHNICAL_MATRIX", ("SUPPLY",)),
+    "VWAP": ("TECHNICAL_MATRIX", ("COST",)),
+    "AVWAP_VOLUME_PROFILE": ("TECHNICAL_MATRIX", ("COST",)),
+    "CHAN": ("RESEARCH_SHADOW", ("STRUCTURE", "PATTERN", "MTF")),
+    "WAVE": ("RESEARCH_SHADOW", ("STRUCTURE", "PATTERN", "MTF")),
+    "ETF_SPECIFIC": ("ASSET_LAYER", ()),
+    "GLOBAL": ("ASSET_LAYER", ("REGIME",)),
+    "BREADTH": ("ASSET_LAYER", ("REGIME",)),
+    "PROBABILITY": ("MODEL_LAYER", ()),
+}
+if frozenset(_METHOD_CONSUMER_CLASSIFICATION) != ACCEPTED_METHOD_WINDOW_IDS:
+    raise TraceabilityError("METHOD_CONSUMER_CLASSIFICATION_SET_MISMATCH")
+INTRADAY_CONTEXT_METHOD_IDS = frozenset({
+    "MTF_MA_LEVEL_ALIGNMENT",
+    "MTF_MOMENTUM_CONTEXT",
+    "MA_SLOPE_CROSS",
+    "MA_COMPRESSION_RELEASE",
+})
+_METHOD_CURRENT_EXECUTION_OVERRIDES = {
+    "MTF_MA_LEVEL_ALIGNMENT": ("monthly", "weekly", "60m", "30m", "15m", "5m"),
+    "MTF_MOMENTUM_CONTEXT": ("monthly", "weekly", "60m", "30m", "15m", "5m"),
+    "MA_SLOPE_CROSS": TIMEFRAMES,
+    "MA_COMPRESSION_RELEASE": TIMEFRAMES,
+}
+METHOD_WINDOW_PROFILES = tuple(
+    replace(
+        profile,
+        current_execution_timeframes=_METHOD_CURRENT_EXECUTION_OVERRIDES.get(
+            profile.method_id,
+            profile.current_execution_timeframes,
+        ),
+        consumer_scope=_METHOD_CONSUMER_CLASSIFICATION[profile.method_id][0],
+        family_targets=_METHOD_CONSUMER_CLASSIFICATION[profile.method_id][1],
+    )
+    for profile in METHOD_WINDOW_PROFILES
+)
+
+
 @dataclass(frozen=True)
 class StrategyBinding:
     clause: str
@@ -612,6 +694,12 @@ def _validate_method_window_profiles(
             raise TraceabilityError("INVALID_METHOD_TARGET_TIMEFRAME:" + profile.method_id)
         if len(profile.target_timeframes) != len(set(profile.target_timeframes)):
             raise TraceabilityError("DUPLICATE_METHOD_TARGET_TIMEFRAME:" + profile.method_id)
+        if profile.consumer_scope not in METHOD_CONSUMER_SCOPES:
+            raise TraceabilityError("INVALID_METHOD_CONSUMER_SCOPE:" + profile.method_id)
+        if len(profile.family_targets) != len(set(profile.family_targets)) or not set(profile.family_targets) <= set(TECHNICAL_EVIDENCE_FAMILIES):
+            raise TraceabilityError("INVALID_METHOD_FAMILY_TARGET:" + profile.method_id)
+        if profile.consumer_scope == "TECHNICAL_MATRIX" and not profile.family_targets:
+            raise TraceabilityError("TECHNICAL_METHOD_FAMILY_TARGET_MISSING:" + profile.method_id)
         if "asset" in profile.target_timeframes and profile.target_timeframes != ("asset",):
             raise TraceabilityError("ASSET_METHOD_TIMEFRAME_MIXED:" + profile.method_id)
         if not set(profile.current_execution_timeframes) <= set(profile.target_timeframes):
@@ -627,7 +715,10 @@ def _validate_method_window_profiles(
         for timeframe in profile.current_execution_timeframes:
             gate = intraday_gates.get(timeframe)
             if gate is not None and gate.implementation_state != "EXISTING_REUSED":
-                raise TraceabilityError("CURRENT_EXECUTION_INTRADAY_GATE_DEFERRED:" + profile.method_id)
+                if profile.method_id not in INTRADAY_CONTEXT_METHOD_IDS:
+                    raise TraceabilityError("CURRENT_EXECUTION_INTRADAY_GATE_DEFERRED:" + profile.method_id)
+                if profile.requirement_id != "MTF":
+                    raise TraceabilityError("INTRADAY_CONTEXT_METHOD_PARENT_MISMATCH:" + profile.method_id)
         covered_requirements.add(profile.requirement_id)
 
     if covered_requirements != expected_requirements:
@@ -685,6 +776,8 @@ def compile_method_window_policy_view(profiles=None) -> dict:
                 "method_id": profile.method_id,
                 "requirement_id": profile.requirement_id,
                 "canonical_path": binding.path,
+                "consumer_scope": profile.consumer_scope,
+                "family_targets": profile.family_targets,
                 "owner": binding.owner,
                 "parent_callable": binding.callable_name,
                 "correlation_group": binding.correlation_group,
@@ -719,6 +812,9 @@ def compile_method_window_policy_view(profiles=None) -> dict:
         "source_manifest_hash": MANIFEST_HASH,
         "window_classes": tuple(sorted(METHOD_WINDOW_CLASSES)),
         "timeframes": TIMEFRAMES,
+        "consumer_scopes": tuple(sorted(METHOD_CONSUMER_SCOPES)),
+        "technical_families": TECHNICAL_EVIDENCE_FAMILIES,
+        "accepted_method_ids": tuple(sorted(ACCEPTED_METHOD_WINDOW_IDS)),
         "methods": methods,
         "timeframe_gates": timeframe_gates,
         "decision_authority": {
@@ -1139,14 +1235,7 @@ def build_strategy_eligibility(factor: Mapping, *, schema_version: str) -> dict:
             "state": state, "required_evidence": required, "reason_codes": reasons}
 
 
-def build_runtime_trace(factor: Mapping) -> dict:
-    validate_registry()
-    known_paths = {b.path for b in EVIDENCE_BINDINGS + DEFERRED_BINDINGS + (DECISION_BINDING,)}
-    if digest(manifest_document()) != MANIFEST_HASH:
-        raise TraceabilityError("MANIFEST_CHANGED_DURING_PROCESS")
-    for key, value in factor.items():
-        if (key.endswith("_evidence") or (isinstance(value, Mapping) and "family" in value)) and key not in known_paths:
-            raise TraceabilityError("ORPHAN_CANONICAL_EVIDENCE:" + key)
+def _runtime_observations(factor: Mapping) -> list[dict]:
     observations = []
     for binding in EVIDENCE_BINDINGS + DEFERRED_BINDINGS + (DECISION_BINDING,):
         value = at(factor, binding.path)
@@ -1164,9 +1253,234 @@ def build_runtime_trace(factor: Mapping) -> dict:
                              "output_hash": digest(value) if value is not None else None,
                              "correlation_group": binding.correlation_group,
                              "reason": binding.reentry if deferred else admission_reason})
+    return observations
+
+
+def _mtf_method_matrix_state(method_id: str, factor: Mapping, timeframe: str) -> tuple[str, str]:
+    frame = at(factor, f"multi_timeframe_structure_context.timeframes.{timeframe}")
+    if not isinstance(frame, Mapping):
+        return "MISSING", "MTF_FRAME_MISSING"
+    frame_state = _state(frame)
+    if frame_state not in {"READY", "PARTIAL"}:
+        return frame_state if frame_state in TIMEFRAME_FAMILY_MATRIX_STATES else "UNKNOWN", str(frame.get("reason") or "MTF_FRAME_NOT_READY")
+    if method_id == "MTF_MA_LEVEL_ALIGNMENT":
+        trend = frame.get("trend")
+        trend_state = _state(trend)
+        if trend_state == "READY" and isinstance(trend, Mapping) and str(trend.get("ma_alignment") or "").strip():
+            return "READY", "MTF_MA_ALIGNMENT_READY"
+        return ("PARTIAL", "MTF_TREND_PARTIAL") if trend_state == "PARTIAL" else ("MISSING", "MTF_MA_ALIGNMENT_MISSING")
+    if method_id == "MTF_MOMENTUM_CONTEXT":
+        trend = frame.get("trend")
+        if not isinstance(trend, Mapping) or _state(trend) not in {"READY", "PARTIAL"}:
+            return "MISSING", "MTF_MOMENTUM_CONTEXT_MISSING"
+        fields = [str(trend.get(key) or "").strip() for key in ("volume_status", "macd_status", "rsi_status")]
+        ready = sum(bool(value) for value in fields)
+        if ready == len(fields):
+            return "READY", "MTF_MOMENTUM_CONTEXT_READY"
+        if ready:
+            return "PARTIAL", "MTF_MOMENTUM_CONTEXT_PARTIAL"
+        return "MISSING", "MTF_MOMENTUM_CONTEXT_MISSING"
+    if method_id == "MTF_PRICE_STRUCTURE":
+        structure = frame.get("price_structure")
+        state = _state(structure)
+        return (state, "MTF_PRICE_STRUCTURE_" + state) if state in TIMEFRAME_FAMILY_MATRIX_STATES else ("UNKNOWN", "MTF_PRICE_STRUCTURE_UNKNOWN")
+    ma_structure = frame.get("ma_structure")
+    if not isinstance(ma_structure, Mapping):
+        return "MISSING", "MTF_MA_STRUCTURE_MISSING"
+    readiness = ma_structure.get("readiness") if isinstance(ma_structure.get("readiness"), Mapping) else {}
+    if method_id == "MA_SLOPE_CROSS":
+        state = str((readiness.get("slope_cross") or {}).get("status") or "MISSING")
+        return ("READY", "MA_SLOPE_CROSS_READY") if state == "READY" else ("MISSING", "MA_SLOPE_CROSS_NOT_READY")
+    if method_id == "MA_COMPRESSION_RELEASE":
+        compression = str((readiness.get("compression_context") or {}).get("status") or "MISSING")
+        lifecycle = str((readiness.get("event_lifecycle") or {}).get("status") or "MISSING")
+        if compression == "READY" and lifecycle == "READY" and ma_structure.get("status") == "READY":
+            return "READY", "MA_COMPRESSION_RELEASE_READY"
+        return "MISSING", "MA_COMPRESSION_RELEASE_NOT_READY"
+    return frame_state, "MTF_METHOD_FRAME_STATE"
+
+
+def _matrix_method_observation(
+    profile: MethodWindowProfile,
+    factor: Mapping,
+    timeframe: str,
+    family: str,
+    observations: Mapping[str, Mapping],
+) -> dict:
+    binding = next(
+        binding
+        for binding in EVIDENCE_BINDINGS + DEFERRED_BINDINGS
+        if binding.requirement_id == profile.requirement_id
+    )
+    canonical_path = binding.path
+    if profile.requirement_id == "MTF":
+        canonical_path = f"{binding.path}.timeframes.{timeframe}"
+    if profile.implementation_state != "EXISTING_REUSED":
+        state, reason = "NOT_ADMITTED", binding.reentry
+    elif timeframe not in profile.current_execution_timeframes:
+        state, reason = "NOT_ADMITTED", "METHOD_TIMEFRAME_NOT_ADMITTED"
+    elif profile.requirement_id == "MTF":
+        state, reason = _mtf_method_matrix_state(profile.method_id, factor, timeframe)
+    else:
+        observation = observations.get(profile.requirement_id, {})
+        state = str(observation.get("state") or "UNKNOWN")
+        state = state if state in TIMEFRAME_FAMILY_MATRIX_STATES else "UNKNOWN"
+        reason = str(observation.get("reason") or "RUNTIME_OBSERVATION_UNKNOWN")
+    if state == "READY" and family == "TREND_RS" and profile.method_id in {
+        "MTF_MA_LEVEL_ALIGNMENT", "MA_SLOPE_CROSS",
+    } and timeframe != "daily":
+        state, reason = "PARTIAL", "TREND_MA_CONTEXT_ONLY_NO_RELATIVE_STRENGTH"
+    if state == "READY" and family == "SUPPLY" and profile.method_id == "MTF_MOMENTUM_CONTEXT":
+        state, reason = "PARTIAL", "VOLUME_CONTEXT_ONLY_NO_FULL_SUPPLY_ALGORITHM"
+    if state == "READY" and family == "MOMENTUM" and profile.method_id == "MTF_MOMENTUM_CONTEXT":
+        state, reason = "PARTIAL", "MACD_RSI_CONTEXT_ONLY_NO_FULL_MOMENTUM_FAMILY"
+    return {
+        "method_id": profile.method_id,
+        "requirement_id": profile.requirement_id,
+        "consumer_scope": profile.consumer_scope,
+        "family_targets": profile.family_targets,
+        "canonical_path": canonical_path,
+        "target_timeframes": profile.target_timeframes,
+        "current_execution_timeframes": profile.current_execution_timeframes,
+        "leaf_implementation_state": profile.implementation_state,
+        "state": state,
+        "reason": reason,
+        "correlation_group": binding.correlation_group,
+        "independent_action_authority": False,
+        "strategy_authority": "EXISTING_STRATEGY_MATRIX_ONLY",
+    }
+
+
+def _aggregate_family_state(method_coverage: list[dict]) -> tuple[str, str]:
+    if not method_coverage:
+        return "NOT_APPLICABLE", "NO_APPLICABLE_TECHNICAL_METHOD"
+    current = [item for item in method_coverage if item["state"] != "NOT_ADMITTED"]
+    if not current:
+        return "NOT_ADMITTED", "NO_METHOD_ADMITTED_FOR_TIMEFRAME"
+    if any(item["state"] in {"READY", "PARTIAL"} for item in current):
+        if all(item["state"] == "READY" for item in current):
+            return "READY", "ALL_CURRENT_METHODS_READY"
+        return "PARTIAL", "PARTIAL_CURRENT_METHOD_COVERAGE"
+    if any(item["state"] == "UNKNOWN" for item in current):
+        return "UNKNOWN", "CURRENT_METHOD_STATE_UNKNOWN"
+    if all(item["state"] == "NOT_APPLICABLE" for item in current):
+        return "NOT_APPLICABLE", "CURRENT_METHOD_NOT_APPLICABLE"
+    return "MISSING", "CURRENT_METHODS_MISSING"
+
+
+def compile_timeframe_family_matrix(factor: Mapping, *, observations=None, policy_view=None) -> dict:
+    """Derive one closed-world 7x8 Product coverage matrix from current method execution."""
+    validate_registry()
+    policy_view = compile_method_window_policy_view() if policy_view is None else policy_view
+    if policy_view.get("schema_version") != METHOD_WINDOW_POLICY_VERSION:
+        raise TraceabilityError("METHOD_WINDOW_POLICY_VERSION_MISMATCH")
+    if digest({key: value for key, value in policy_view.items() if key != "view_hash"}) != policy_view.get("view_hash"):
+        raise TraceabilityError("METHOD_WINDOW_POLICY_HASH_MISMATCH")
+    observations = _runtime_observations(factor) if observations is None else list(observations)
+    observation_lookup = {item["requirement_id"]: item for item in observations}
+    profile_lookup = {profile.method_id: profile for profile in validate_method_window_profiles()}
+    cells = []
+    matrix_method_ids = set()
+    for timeframe in TIMEFRAMES:
+        for family in TECHNICAL_EVIDENCE_FAMILIES:
+            method_coverage = []
+            for row in policy_view["methods"]:
+                if row["consumer_scope"] != "TECHNICAL_MATRIX" or family not in row["family_targets"] or timeframe not in row["target_timeframes"]:
+                    continue
+                profile = profile_lookup[row["method_id"]]
+                method_coverage.append(
+                    _matrix_method_observation(
+                        profile,
+                        factor,
+                        timeframe,
+                        family,
+                        observation_lookup,
+                    )
+                )
+                matrix_method_ids.add(profile.method_id)
+            state, reason = _aggregate_family_state(method_coverage)
+            if family == "MTF":
+                frame = at(factor, f"multi_timeframe_structure_context.timeframes.{timeframe}")
+                if isinstance(frame, Mapping):
+                    frame_state = _state(frame)
+                    if frame_state in {"READY", "PARTIAL", "MISSING", "UNKNOWN"}:
+                        state, reason = frame_state, "MTF_FRAME_" + frame_state
+            cells.append({
+                "timeframe": timeframe,
+                "family": family,
+                "state": state,
+                "reason": reason,
+                "canonical_paths": tuple(dict.fromkeys(item["canonical_path"] for item in method_coverage)),
+                "available_paths": tuple(dict.fromkeys(item["canonical_path"] for item in method_coverage if item["state"] in {"READY", "PARTIAL"})),
+                "applicable_method_ids": tuple(item["method_id"] for item in method_coverage),
+                "current_method_ids": tuple(item["method_id"] for item in method_coverage if item["state"] in {"READY", "PARTIAL"}),
+                "deferred_method_ids": tuple(item["method_id"] for item in method_coverage if item["state"] == "NOT_ADMITTED"),
+                "method_coverage": method_coverage,
+                "correlation_groups": tuple(dict.fromkeys(item["correlation_group"] for item in method_coverage)),
+                "independent_action_authority": False,
+                "strategy_authority": "EXISTING_STRATEGY_MATRIX_ONLY",
+            })
+    non_matrix_methods = []
+    for profile in validate_method_window_profiles():
+        if profile.consumer_scope == "TECHNICAL_MATRIX":
+            continue
+        binding = next(binding for binding in EVIDENCE_BINDINGS + DEFERRED_BINDINGS if binding.requirement_id == profile.requirement_id)
+        observation = observation_lookup.get(profile.requirement_id, {})
+        state = "NOT_ADMITTED" if profile.implementation_state != "EXISTING_REUSED" else str(observation.get("state") or "UNKNOWN")
+        if state not in TIMEFRAME_FAMILY_MATRIX_STATES:
+            state = "UNKNOWN"
+        non_matrix_methods.append({
+            "method_id": profile.method_id,
+            "requirement_id": profile.requirement_id,
+            "consumer_scope": profile.consumer_scope,
+            "family_targets": profile.family_targets,
+            "state": state,
+            "reason": binding.reentry if state == "NOT_ADMITTED" else str(observation.get("reason") or "RUNTIME_OBSERVATION_UNKNOWN"),
+            "canonical_path": binding.path,
+            "correlation_group": binding.correlation_group,
+            "independent_action_authority": False,
+            "strategy_authority": "EXISTING_STRATEGY_MATRIX_ONLY",
+        })
+    if matrix_method_ids | {item["method_id"] for item in non_matrix_methods} != ACCEPTED_METHOD_WINDOW_IDS:
+        raise TraceabilityError("METHOD_MATRIX_CLOSED_WORLD_MISMATCH")
+    document = {
+        "schema_version": "timeframe-family-matrix-v1",
+        "manifest_hash": MANIFEST_HASH,
+        "method_window_policy_version": METHOD_WINDOW_POLICY_VERSION,
+        "method_window_policy_hash": policy_view["view_hash"],
+        "timeframes": TIMEFRAMES,
+        "families": TECHNICAL_EVIDENCE_FAMILIES,
+        "cells": cells,
+        "non_matrix_methods": non_matrix_methods,
+        "policy": {
+            "cell_state_is_family_availability_not_vote_count": True,
+            "deferred_optional_methods_do_not_downgrade_admitted_family": True,
+            "asset_research_model_methods_remain_closed_world_outside_matrix": True,
+            "strategy_authority_remains_existing_strategy_matrix": True,
+        },
+    }
+    document["matrix_hash"] = digest(document)
+    return document
+
+
+def build_runtime_trace(factor: Mapping) -> dict:
+    validate_registry()
+    known_paths = {b.path for b in EVIDENCE_BINDINGS + DEFERRED_BINDINGS + (DECISION_BINDING,)}
+    if digest(manifest_document()) != MANIFEST_HASH:
+        raise TraceabilityError("MANIFEST_CHANGED_DURING_PROCESS")
+    for key, value in factor.items():
+        if (key.endswith("_evidence") or (isinstance(value, Mapping) and "family" in value)) and key not in known_paths:
+            raise TraceabilityError("ORPHAN_CANONICAL_EVIDENCE:" + key)
+    observations = _runtime_observations(factor)
+    policy_view = compile_method_window_policy_view()
+    matrix = compile_timeframe_family_matrix(factor, observations=observations, policy_view=policy_view)
     mtf = at(factor, "multi_timeframe_structure_context") or {}
     document = {"schema_version": TRACE_VERSION, "manifest_version": MANIFEST_VERSION,
                 "manifest_hash": MANIFEST_HASH, "strategy_id": factor.get("strategy_id"),
+                "method_window_policy_version": METHOD_WINDOW_POLICY_VERSION,
+                "method_window_policy_hash": policy_view["view_hash"],
+                "timeframe_family_matrix_hash": matrix["matrix_hash"],
+                "timeframe_family_matrix": matrix,
                 "data_snapshot_identity": mtf.get("data_snapshot_identity"),
                 "data_identity": {key: mtf.get(key) for key in ("provider_identity", "adjustment_basis", "available_at_max", "target_date", "algorithm_version", "config_hash")},
                 "observations": observations,
@@ -1257,7 +1571,10 @@ def describe_macd_state(result: Any) -> str:
 
 
 def trace_identity(trace: Mapping) -> dict:
-    return {key: trace.get(key) for key in ("manifest_version", "manifest_hash", "runtime_trace_hash", "data_snapshot_identity")}
+    return {key: trace.get(key) for key in (
+        "manifest_version", "manifest_hash", "runtime_trace_hash", "data_snapshot_identity",
+        "method_window_policy_hash", "timeframe_family_matrix_hash",
+    )}
 
 
 validate_registry()

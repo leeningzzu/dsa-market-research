@@ -19,6 +19,19 @@ from src.services.evidence_traceability_registry import (
     digest, load_slot_map, timeframe_ready, validate_runtime_trace,
 )
 
+_TIMEFRAME_SLOT_FAMILY = {
+    "detail.timeframe.price_position": "STRUCTURE",
+    "detail.timeframe.trend_ma": "MTF",
+    "detail.timeframe.volume_price": "SUPPLY",
+    "detail.timeframe.cost_structure": "COST",
+    "detail.timeframe.price_structure": "STRUCTURE",
+    "detail.timeframe.momentum_divergence": "MOMENTUM",
+    "detail.timeframe.pattern_trigger": "PATTERN",
+    "detail.timeframe.support_resistance": "STRUCTURE",
+    "detail.timeframe.confirmation_invalidation": "STRUCTURE",
+}
+_MATRIX_AVAILABLE_STATES = frozenset({"READY", "PARTIAL"})
+
 
 def verify_original_mapping(original: bytes) -> dict:
     """Verify independently supplied original bytes, without EOL normalization."""
@@ -73,27 +86,60 @@ def compile_product_coverage(factor: Mapping) -> dict:
     """Semantic reachability only. A runtime payload cannot authorize rendering."""
     trace = validate_runtime_trace(factor)
     observed = {item["requirement_id"]: item for item in trace["observations"]}
+    matrix = trace.get("timeframe_family_matrix")
+    if not isinstance(matrix, Mapping):
+        raise TraceabilityError("TIMEFRAME_FAMILY_MATRIX_MISSING")
+    matrix_hash = str(matrix.get("matrix_hash") or "")
+    matrix_body = {key: value for key, value in matrix.items() if key != "matrix_hash"}
+    if len(matrix_hash) != 64 or digest(matrix_body) != matrix_hash:
+        raise TraceabilityError("TIMEFRAME_FAMILY_MATRIX_HASH_MISMATCH")
+    cells = matrix.get("cells")
+    if not isinstance(cells, list) or len(cells) != 56:
+        raise TraceabilityError("TIMEFRAME_FAMILY_MATRIX_CELL_COUNT")
+    matrix_lookup = {}
+    for cell in cells:
+        if not isinstance(cell, Mapping):
+            raise TraceabilityError("TIMEFRAME_FAMILY_MATRIX_CELL_INVALID")
+        key = (str(cell.get("timeframe") or ""), str(cell.get("family") or ""))
+        if key in matrix_lookup:
+            raise TraceabilityError("TIMEFRAME_FAMILY_MATRIX_CELL_DUPLICATE")
+        matrix_lookup[key] = cell
+    if len(matrix_lookup) != 56:
+        raise TraceabilityError("TIMEFRAME_FAMILY_MATRIX_CELL_COUNT")
+
     rows = []
-    for slot in load_slot_map()["slots"]:
+    slot_map = load_slot_map()
+    for slot in slot_map["slots"]:
         states = [observed[rid]["state"] for rid in slot["requirements"]]
         available = all(s == "READY" for s in states) and all(at(factor, p) is not None for p in slot["paths"])
         timeframe_states = {}
-        if slot["id"].startswith("detail.timeframe."):
-            for tf in load_slot_map()["timeframes"]:
-                tf_state = "DATA_INSUFFICIENT"
-                if tf == "daily" and "MTF" not in slot["requirements"] and available:
-                    tf_state = "EVIDENCE_AVAILABLE"
-                elif slot["id"] == "detail.timeframe.trend_ma" and tf in {"monthly", "weekly", "daily"}:
-                    if timeframe_ready(factor, tf):
-                        tf_state = "EVIDENCE_AVAILABLE"
-                timeframe_states[tf] = tf_state
+        timeframe_canonical_paths = {}
+        family = _TIMEFRAME_SLOT_FAMILY.get(slot["id"])
+        if family is not None:
+            for tf in slot_map["timeframes"]:
+                cell = matrix_lookup.get((tf, family))
+                if cell is None:
+                    raise TraceabilityError("TIMEFRAME_FAMILY_MATRIX_CELL_MISSING")
+                state = str(cell.get("state") or "UNKNOWN")
+                has_available_path = bool(cell.get("available_paths"))
+                timeframe_states[tf] = (
+                    "EVIDENCE_AVAILABLE"
+                    if state in _MATRIX_AVAILABLE_STATES and has_available_path
+                    else "DATA_INSUFFICIENT"
+                )
+                timeframe_canonical_paths[tf] = tuple(cell.get("available_paths") or ())
             available = any(s == "EVIDENCE_AVAILABLE" for s in timeframe_states.values())
         rows.append({"slot_id": slot["id"], "requirements": slot["requirements"],
                      "canonical_paths": slot["paths"], "state": "EVIDENCE_AVAILABLE" if available else "DATA_INSUFFICIENT",
                      "timeframe_states": timeframe_states,
+                     "timeframe_canonical_paths": timeframe_canonical_paths,
                      "projection_state": "NOT_RENDERED", "reason": "DYNAMIC_PRODUCT_NOT_AUTHORIZED"})
     document = {"schema_version": "v25-product-coverage-v1", "manifest_hash": MANIFEST_HASH,
-                "runtime_trace_hash": trace["runtime_trace_hash"], "baseline_sha256": BASELINE_SHA256,
+                "runtime_trace_hash": trace["runtime_trace_hash"],
+                "method_window_policy_hash": trace.get("method_window_policy_hash"),
+                "timeframe_family_matrix_hash": matrix_hash,
+                "timeframe_family_matrix_schema_version": matrix.get("schema_version"),
+                "baseline_sha256": BASELINE_SHA256,
                 "slots": rows, "rendered": False}
     document["receipt_hash"] = digest(document)
     return document

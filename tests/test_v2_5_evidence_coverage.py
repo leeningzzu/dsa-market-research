@@ -11,7 +11,11 @@ from src.services import evidence_traceability_registry as reg
 from src.services.v2_5_evidence_coverage import (
     compile_input_coverage, compile_product_coverage, verify_original_mapping,
 )
-from tests.test_evidence_traceability_registry import native_summary, explicit_native_config  # noqa: F401
+from tests.test_evidence_traceability_registry import (  # noqa: F401
+    explicit_native_config,
+    native_summary,
+    native_summary_with_mtf,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -129,3 +133,37 @@ def test_daily_cmf_does_not_fill_weekly_monthly_or_intraday_slots():
     assert states["daily"] == "EVIDENCE_AVAILABLE"
     assert all(states[tf] == "DATA_INSUFFICIENT" for tf in ("weekly", "monthly", "60m", "30m", "15m", "5m"))
     assert all(row["projection_state"] == "NOT_RENDERED" for row in rows.values())
+
+
+def test_product_coverage_consumes_the_trace_matrix_for_actual_weekly_structure_and_momentum():
+    factor = native_summary_with_mtf()
+    coverage = compile_product_coverage(factor)
+    rows = {row["slot_id"]: row for row in coverage["slots"]}
+    trace_matrix = factor["evidence_traceability"]["timeframe_family_matrix"]
+
+    assert coverage["timeframe_family_matrix_hash"] == trace_matrix["matrix_hash"]
+    assert coverage["method_window_policy_hash"] == factor["evidence_traceability"]["method_window_policy_hash"]
+    assert len(trace_matrix["cells"]) == 56
+    assert rows["detail.timeframe.price_structure"]["timeframe_states"]["weekly"] == "EVIDENCE_AVAILABLE"
+    assert rows["detail.timeframe.momentum_divergence"]["timeframe_states"]["weekly"] == "EVIDENCE_AVAILABLE"
+    assert any(
+        path.startswith("multi_timeframe_structure_context.timeframes.weekly")
+        for path in rows["detail.timeframe.momentum_divergence"]["timeframe_canonical_paths"]["weekly"]
+    )
+    assert rows["detail.timeframe.trend_ma"]["timeframe_states"]["weekly"] == "EVIDENCE_AVAILABLE"
+    assert rows["detail.timeframe.volume_price"]["timeframe_states"]["weekly"] == "EVIDENCE_AVAILABLE"
+    assert rows["detail.timeframe.cost_structure"]["timeframe_states"]["weekly"] == "DATA_INSUFFICIENT"
+    assert all(row["projection_state"] == "NOT_RENDERED" for row in rows.values())
+
+
+def test_product_coverage_exposes_only_current_intraday_context_families():
+    factor = native_summary_with_mtf(intraday=True)
+    rows = {row["slot_id"]: row for row in compile_product_coverage(factor)["slots"]}
+
+    for timeframe in ("60m", "30m", "15m", "5m"):
+        assert rows["detail.timeframe.trend_ma"]["timeframe_states"][timeframe] == "EVIDENCE_AVAILABLE"
+        assert rows["detail.timeframe.volume_price"]["timeframe_states"][timeframe] == "EVIDENCE_AVAILABLE"
+        assert rows["detail.timeframe.momentum_divergence"]["timeframe_states"][timeframe] == "EVIDENCE_AVAILABLE"
+        assert rows["detail.timeframe.cost_structure"]["timeframe_states"][timeframe] == "DATA_INSUFFICIENT"
+        assert rows["detail.timeframe.price_structure"]["timeframe_states"][timeframe] == "DATA_INSUFFICIENT"
+        assert rows["detail.timeframe.pattern_trigger"]["timeframe_states"][timeframe] == "DATA_INSUFFICIENT"
