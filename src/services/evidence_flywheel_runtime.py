@@ -907,6 +907,24 @@ def _build_product_report_receipt(
         raise EvidenceFlywheelRuntimeError(
             "product receipt found timeframe/family matrix identity drift"
         )
+    universe = trace.get("complete_research_universe")
+    if not isinstance(universe, Mapping):
+        raise EvidenceFlywheelRuntimeError(
+            "product receipt requires complete research universe"
+        )
+    universe_hash = str(universe.get("universe_hash") or "")
+    universe_body = {key: value for key, value in universe.items() if key != "universe_hash"}
+    universe_counts = universe.get("counts")
+    if (
+        len(universe_hash) != 64
+        or digest(universe_body) != universe_hash
+        or str(trace.get("complete_research_universe_hash") or "") != universe_hash
+        or str(coverage.get("complete_research_universe_hash") or "") != universe_hash
+        or not isinstance(universe_counts, Mapping)
+    ):
+        raise EvidenceFlywheelRuntimeError(
+            "product receipt found complete research universe identity drift"
+        )
     ledger_identity = _ledger_identity_snapshot(db_manager, prediction_hash)
     ledger_trace_identity = ledger_identity.get("evidence_traceability_identity")
     if not isinstance(ledger_trace_identity, Mapping):
@@ -916,6 +934,7 @@ def _build_product_report_receipt(
     if (
         str(ledger_trace_identity.get("method_window_policy_hash") or "") != policy_hash
         or str(ledger_trace_identity.get("timeframe_family_matrix_hash") or "") != matrix_hash
+        or str(ledger_trace_identity.get("complete_research_universe_hash") or "") != universe_hash
     ):
         raise EvidenceFlywheelRuntimeError(
             "product receipt found Ledger matrix identity drift"
@@ -944,6 +963,13 @@ def _build_product_report_receipt(
             "cell_count": len(cells),
             "matrix_hash": matrix_hash,
             "method_window_policy_hash": policy_hash,
+        },
+        "complete_research_universe": {
+            "schema_version": universe.get("schema_version"),
+            "universe_hash": universe_hash,
+            "requirement_count": universe_counts.get("requirements"),
+            "method_count": universe_counts.get("methods"),
+            "strategy_binding_count": universe_counts.get("strategy_bindings"),
         },
         "v25_semantic_coverage": {
             "schema_version": coverage.get("schema_version"),
