@@ -983,12 +983,15 @@ def test_output_stat_error_is_structured_and_kills_process_group(
     monkeypatch,
 ) -> None:
     pid_file = tmp_path / "child-stat-error.pid"
+    ready_file = tmp_path / "child-stat-error.ready"
     backend = _backend(
         tmp_path,
         f"""
 import subprocess, sys, time
 child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
-open({str(pid_file)!r}, "w", encoding="utf-8").write(str(child.pid))
+with open({str(pid_file)!r}, "w", encoding="utf-8") as handle:
+    handle.write(str(child.pid))
+open({str(ready_file)!r}, "w", encoding="utf-8").close()
 sys.stdout.write("started")
 sys.stdout.flush()
 time.sleep(30)
@@ -997,7 +1000,7 @@ time.sleep(30)
 
     def _raise_stat_error(*_paths):
         deadline = time.time() + 3
-        while not pid_file.exists() and time.time() < deadline:
+        while not ready_file.exists() and time.time() < deadline:
             time.sleep(0.01)
         raise OSError("mock stat failure sk-secretsecretsecret")
 
