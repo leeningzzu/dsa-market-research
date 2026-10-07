@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ast
+import json
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
@@ -16,6 +17,7 @@ from src.config import Config
 from src.services import evidence_traceability_registry as reg
 from src.services.cost_structure_service import build_cost_structure_context
 from src.services.factor_decision_summary import build_stock_factor_decision_summary
+from src.services.multi_timeframe_structure_service import build_multi_timeframe_structure_context
 from src.services.pattern_trigger_service import build_pattern_trigger_context, _dedupe_patterns
 from src.services.price_structure_service import build_price_structure_context
 from src.services.research_state_projection import (
@@ -155,6 +157,44 @@ def native_summary(frame=None, target=None):
     )
 
 
+def native_summary_with_mtf(*, intraday=False):
+    frame = bars(520)
+    target = frame["date"].iloc[-1]
+    completed = frame[frame["date"] <= target].copy()
+    trend_analyzer = StockTrendAnalyzer()
+    trend = trend_analyzer.analyze(completed, "600519")
+    price = build_price_structure_context(
+        stock_code="600519", history=frame, target_date=target, market="cn",
+    )
+    factor = native_summary(frame=frame, target=target)
+    intraday_timeframes = None
+    snapshot_observed_at = None
+    if intraday:
+        from tests.test_multi_timeframe_structure_service import _intraday_fixture
+
+        intraday_timeframes = {
+            timeframe: _intraday_fixture(timeframe, target)
+            for timeframe in ("60m", "30m", "15m", "5m")
+        }
+        snapshot_observed_at = (
+            pd.Timestamp(target).tz_localize("Asia/Shanghai")
+            + pd.Timedelta(hours=17)
+        ).tz_convert("UTC").to_pydatetime()
+    factor["multi_timeframe_structure_context"] = build_multi_timeframe_structure_context(
+        stock_code="600519",
+        history=frame,
+        target_date=target,
+        market="cn",
+        trend_analyzer=trend_analyzer,
+        daily_trend_result=trend,
+        daily_price_structure_context=price,
+        snapshot_observed_at=snapshot_observed_at,
+        intraday_timeframes=intraday_timeframes,
+    )
+    factor["evidence_traceability"] = reg.build_runtime_trace(factor)
+    return factor
+
+
 def test_registry_owners_and_strategy_are_source_bound():
     reg.validate_registry()
     owners = reg.validate_source_bindings(ROOT)
@@ -218,7 +258,7 @@ def test_method_window_policy_view_is_complete_manifest_bound_and_non_mutating()
     view = reg.compile_method_window_policy_view()
     methods = {row["method_id"]: row for row in view["methods"]}
 
-    assert view["schema_version"] == "method-window-policy-view-v1"
+    assert view["schema_version"] == "method-window-policy-view-v2"
     assert view["source_manifest_hash"] == manifest_before
     assert set(view["window_classes"]) == EXPECTED_METHOD_WINDOW_CLASSES
     assert set(methods) == EXPECTED_METHOD_WINDOW_IDS
@@ -231,15 +271,20 @@ def test_method_window_policy_view_is_complete_manifest_bound_and_non_mutating()
     assert methods["MACD"]["current_execution_timeframes"] == ("daily",)
     assert methods["MACD"]["target_timeframes"] == reg.TIMEFRAMES
     assert methods["MA_SLOPE_CROSS"]["leaf_implementation_state"] == "EXISTING_REUSED"
-    assert methods["MA_SLOPE_CROSS"]["current_execution_timeframes"] == ("monthly", "weekly", "daily")
+    assert methods["MA_SLOPE_CROSS"]["current_execution_timeframes"] == reg.TIMEFRAMES
     assert methods["MA_COMPRESSION_RELEASE"]["leaf_implementation_state"] == "EXISTING_REUSED"
-    assert methods["MA_COMPRESSION_RELEASE"]["current_execution_timeframes"] == ("monthly", "weekly", "daily")
+    assert methods["MA_COMPRESSION_RELEASE"]["current_execution_timeframes"] == reg.TIMEFRAMES
     assert set(methods["MA_COMPRESSION_RELEASE"]["window_classes"]) == {
         "FIXED_ROLLING",
         "ADAPTIVE_CONTEXT",
         "INCREMENTAL_STATE_MACHINE",
     }
-    assert methods["MTF_MA_LEVEL_ALIGNMENT"]["current_execution_timeframes"] == ("monthly", "weekly")
+    assert methods["MTF_MA_LEVEL_ALIGNMENT"]["current_execution_timeframes"] == (
+        "monthly", "weekly", "60m", "30m", "15m", "5m",
+    )
+    assert methods["MTF_MOMENTUM_CONTEXT"]["current_execution_timeframes"] == (
+        "monthly", "weekly", "60m", "30m", "15m", "5m",
+    )
     assert methods["MTF_MA_LEVEL_ALIGNMENT"]["target_timeframes"] == reg.NON_DAILY_TECHNICAL_TIMEFRAMES
     assert methods["CUP_HANDLE"]["window_classes"] == ("VARIABLE_STRUCTURE",)
     assert methods["CUP_HANDLE"]["current_execution_timeframes"] == ("daily",)
@@ -296,6 +341,124 @@ def test_method_window_policy_view_is_complete_manifest_bound_and_non_mutating()
     assert reg.learning_projection(factor) == learning_before
 
 
+def test_method_policy_classifies_all_accepted_methods_without_broadening_manifest_or_learning():
+    factor = native_summary()
+    learning_before = reg.learning_projection(factor)
+    manifest_before = reg.MANIFEST_HASH
+    metrics_before = reg.digest(reg.METRIC_BINDINGS)
+
+    view = reg.compile_method_window_policy_view()
+    methods = {row["method_id"]: row for row in view["methods"]}
+
+    assert view["schema_version"] == "method-window-policy-view-v2"
+    assert set(methods) == EXPECTED_METHOD_WINDOW_IDS
+    assert len(methods) == 43
+    assert {row["consumer_scope"] for row in methods.values()} == {
+        "TECHNICAL_MATRIX", "ASSET_LAYER", "RESEARCH_SHADOW", "MODEL_LAYER",
+    }
+    assert methods["MACD"]["family_targets"] == ("MOMENTUM",)
+    assert methods["ATR_WILDER"]["family_targets"] == ("MOMENTUM",)
+    assert methods["OBV_ADL"]["family_targets"] == ("SUPPLY",)
+    assert methods["MFI"]["family_targets"] == ("SUPPLY",)
+    assert methods["VWAP"]["family_targets"] == ("COST",)
+    assert methods["AVWAP_VOLUME_PROFILE"]["family_targets"] == ("COST",)
+    assert methods["BOLLINGER"]["family_targets"] == ("PATTERN",)
+    assert methods["CANDLESTICK"]["family_targets"] == ("PATTERN",)
+    assert methods["DISTRIBUTION"]["consumer_scope"] == "ASSET_LAYER"
+    assert set(methods["DISTRIBUTION"]["family_targets"]) == {"SUPPLY", "STRUCTURE", "PATTERN"}
+    assert methods["CHAN"]["consumer_scope"] == "RESEARCH_SHADOW"
+    assert set(methods["CHAN"]["family_targets"]) == {"STRUCTURE", "PATTERN", "MTF"}
+    assert methods["WAVE"]["consumer_scope"] == "RESEARCH_SHADOW"
+    assert methods["PROBABILITY"]["consumer_scope"] == "MODEL_LAYER"
+    assert methods["QUALITY"]["consumer_scope"] == "ASSET_LAYER"
+    assert methods["GLOBAL"]["consumer_scope"] == "ASSET_LAYER"
+    assert methods["GLOBAL"]["family_targets"] == ("REGIME",)
+    assert view["source_manifest_hash"] == manifest_before
+    assert reg.MANIFEST_HASH == manifest_before == reg.digest(reg.manifest_document())
+    assert reg.digest(reg.METRIC_BINDINGS) == metrics_before
+    after = reg.learning_projection(factor)
+    assert after["values"] == learning_before["values"]
+    assert after["training_admitted"] is False
+
+
+def test_timeframe_family_matrix_is_exact_56_cells_and_keeps_deferred_methods_visible_without_downgrade():
+    factor = native_summary()
+    matrix = reg.compile_timeframe_family_matrix(factor)
+    cells = {(row["timeframe"], row["family"]): row for row in matrix["cells"]}
+
+    assert len(matrix["cells"]) == 56
+    assert len(cells) == 56
+    assert set(matrix["timeframes"]) == set(reg.TIMEFRAMES)
+    assert set(matrix["families"]) == set(reg.TECHNICAL_EVIDENCE_FAMILIES)
+    daily_supply = cells[("daily", "SUPPLY")]
+    assert daily_supply["state"] == "READY"
+    assert {item["method_id"] for item in daily_supply["method_coverage"] if item["state"] == "READY"} >= {
+        "SUPPLY_RELATIVE_VOLUME", "SUPPLY_DIRECTIONAL_VOLUME", "SUPPLY_CMF",
+    }
+    weekly_supply = cells[("weekly", "SUPPLY")]
+    assert weekly_supply["state"] == "MISSING"
+    daily_momentum = cells[("daily", "MOMENTUM")]
+    assert daily_momentum["state"] == "READY"
+    method_states = {item["method_id"]: item["state"] for item in daily_momentum["method_coverage"]}
+    assert method_states["MACD"] == "READY"
+    assert method_states["ATR_WILDER"] == "NOT_ADMITTED"
+    assert method_states["ADX_DMI"] == "NOT_ADMITTED"
+    assert method_states["KDJ"] == "NOT_ADMITTED"
+    assert cells[("daily", "REGIME")]["state"] == "NOT_APPLICABLE"
+
+    matrix_method_ids = {
+        item["method_id"]
+        for cell in matrix["cells"]
+        for item in cell["method_coverage"]
+    }
+    non_matrix_ids = {item["method_id"] for item in matrix["non_matrix_methods"]}
+    assert matrix_method_ids | non_matrix_ids == EXPECTED_METHOD_WINDOW_IDS
+    assert {item["method_id"] for item in matrix["non_matrix_methods"]} >= {
+        "MARKET_SECTOR_REGIME", "QUALITY", "VALUATION", "DISTRIBUTION", "RISK_REWARD",
+        "CHAN", "WAVE", "ETF_SPECIFIC", "GLOBAL", "BREADTH", "PROBABILITY",
+    }
+    assert len(matrix["matrix_hash"]) == 64
+
+
+def test_mtf_execution_populates_only_its_admitted_family_context_and_not_supply_or_cost():
+    factor = native_summary_with_mtf()
+    trace = factor["evidence_traceability"]
+    matrix = trace["timeframe_family_matrix"]
+    cells = {(row["timeframe"], row["family"]): row for row in matrix["cells"]}
+
+    assert cells[("weekly", "STRUCTURE")]["state"] == "READY"
+    assert cells[("weekly", "MOMENTUM")]["state"] == "PARTIAL"
+    assert cells[("weekly", "TREND_RS")]["state"] == "PARTIAL"
+    assert cells[("weekly", "MTF")]["state"] == "READY"
+    assert cells[("weekly", "SUPPLY")]["state"] == "PARTIAL"
+    assert cells[("weekly", "COST")]["state"] == "NOT_ADMITTED"
+    assert cells[("weekly", "PATTERN")]["state"] == "NOT_ADMITTED"
+    assert cells[("60m", "MTF")]["state"] == "MISSING"
+    assert trace["method_window_policy_hash"] == reg.compile_method_window_policy_view()["view_hash"]
+    assert trace["timeframe_family_matrix_hash"] == matrix["matrix_hash"]
+    assert factor["strategy_eligibility"]["required_evidence"]["thirty_minute_trigger"] == "UNKNOWN"
+
+
+def test_current_intraday_context_is_visible_without_admitting_structure_pattern_cost_or_30m_trigger():
+    factor = native_summary_with_mtf(intraday=True)
+    trace = factor["evidence_traceability"]
+    cells = {
+        (row["timeframe"], row["family"]): row
+        for row in trace["timeframe_family_matrix"]["cells"]
+    }
+
+    for timeframe in ("60m", "30m", "15m", "5m"):
+        assert cells[(timeframe, "TREND_RS")]["state"] == "PARTIAL"
+        assert cells[(timeframe, "SUPPLY")]["state"] == "PARTIAL"
+        assert cells[(timeframe, "MOMENTUM")]["state"] == "PARTIAL"
+        assert cells[(timeframe, "MTF")]["state"] == "PARTIAL"
+        assert cells[(timeframe, "COST")]["state"] == "NOT_ADMITTED"
+        assert cells[(timeframe, "STRUCTURE")]["state"] == "NOT_ADMITTED"
+        assert cells[(timeframe, "PATTERN")]["state"] == "NOT_ADMITTED"
+        assert cells[(timeframe, "REGIME")]["state"] == "NOT_APPLICABLE"
+    assert factor["strategy_eligibility"]["required_evidence"]["thirty_minute_trigger"] == "UNKNOWN"
+
+
 def test_method_window_policy_rejects_deletion_invalid_class_or_overclaim():
     profiles = list(reg.METHOD_WINDOW_PROFILES)
 
@@ -308,6 +471,24 @@ def test_method_window_policy_rejects_deletion_invalid_class_or_overclaim():
     invalid_class[index] = replace(invalid_class[index], window_classes=("MAGIC_WINDOW",))
     with pytest.raises(reg.TraceabilityError, match="INVALID_METHOD_WINDOW_CLASS"):
         reg.validate_method_window_profiles(invalid_class)
+
+    invalid_scope = list(profiles)
+    index = next(i for i, profile in enumerate(invalid_scope) if profile.method_id == "ATR_WILDER")
+    invalid_scope[index] = replace(invalid_scope[index], consumer_scope="MAGIC_SCOPE")
+    with pytest.raises(reg.TraceabilityError, match="INVALID_METHOD_CONSUMER_SCOPE"):
+        reg.validate_method_window_profiles(invalid_scope)
+
+    invalid_family = list(profiles)
+    index = next(i for i, profile in enumerate(invalid_family) if profile.method_id == "ATR_WILDER")
+    invalid_family[index] = replace(invalid_family[index], family_targets=("MAGIC_FAMILY",))
+    with pytest.raises(reg.TraceabilityError, match="INVALID_METHOD_FAMILY_TARGET"):
+        reg.validate_method_window_profiles(invalid_family)
+
+    missing_family = list(profiles)
+    index = next(i for i, profile in enumerate(missing_family) if profile.method_id == "MACD")
+    missing_family[index] = replace(missing_family[index], family_targets=())
+    with pytest.raises(reg.TraceabilityError, match="TECHNICAL_METHOD_FAMILY_TARGET_MISSING"):
+        reg.validate_method_window_profiles(missing_family)
 
     orphan = list(profiles)
     index = next(i for i, profile in enumerate(orphan) if profile.method_id == "VALUATION")
@@ -355,6 +536,36 @@ def test_method_window_policy_keeps_asset_only_valuation_as_legal_nontrigger():
     assert valuation.target_timeframes == ("asset",)
     assert valuation.current_execution_timeframes == ()
     assert valuation.implementation_state == "DEFERRED_WITH_OWNER_AND_REENTRY"
+
+
+def test_runtime_trace_accepts_exact_json_wire_roundtrip_but_rejects_content_drift():
+    factor = native_summary()
+    stored = json.loads(reg.canonical_json(factor))
+    assert reg.validate_runtime_trace(factor)["runtime_trace_hash"] == factor["evidence_traceability"]["runtime_trace_hash"]
+    trace = reg.validate_runtime_trace(stored)
+    assert trace["runtime_trace_hash"] == factor["evidence_traceability"]["runtime_trace_hash"]
+    assert len(trace["timeframe_family_matrix"]["cells"]) == 56
+
+    mutators = {
+        "cell_state_forged": lambda t: t["timeframe_family_matrix"]["cells"][0].update(state="FORGED_READY"),
+        "cell_deleted": lambda t: t["timeframe_family_matrix"]["cells"].pop(),
+        "cell_order_changed": lambda t: t["timeframe_family_matrix"]["cells"].reverse(),
+        "matrix_hash_forged": lambda t: t.update(timeframe_family_matrix_hash="0" * 64),
+        "nested_matrix_hash_forged": lambda t: t["timeframe_family_matrix"].update(matrix_hash="0" * 64),
+        "runtime_trace_hash_forged": lambda t: t.update(runtime_trace_hash="0" * 64),
+        "matrix_missing": lambda t: t.pop("timeframe_family_matrix"),
+        "method_coverage_removed": lambda t: next(
+            cell for cell in t["timeframe_family_matrix"]["cells"] if cell["method_coverage"]
+        )["method_coverage"].clear(),
+        "observation_removed": lambda t: t["observations"].pop(),
+        "manifest_missing": lambda t: t.pop("manifest_hash"),
+    }
+    for name, mutate in mutators.items():
+        forged = deepcopy(stored)
+        mutate(forged["evidence_traceability"])
+        assert forged != stored, name
+        with pytest.raises(reg.TraceabilityError, match="RUNTIME_TRACE"):
+            reg.validate_runtime_trace(forged)
 
 
 def test_native_services_reach_strategy_trace_product_and_learning():

@@ -17,6 +17,7 @@ from src.services.evidence_traceability_registry import (
     build_strategy_eligibility,
     describe_macd_state,
     digest,
+    json_wire_equal,
 )
 from src.services.research_state_projection import (
     STRATEGY_ELIGIBILITY_SCHEMA_VERSION,
@@ -899,7 +900,7 @@ def canonical_factor_binding(summary: Any) -> Dict[str, Any]:
     if not isinstance(trace, dict):
         raise ValueError("evidence traceability is required for canonical binding")
     expected_trace = build_runtime_trace(summary)
-    if trace != expected_trace:
+    if not json_wire_equal(trace, expected_trace):
         raise ValueError("evidence traceability is stale for canonical binding")
     runtime_trace_hash = str(trace.get("runtime_trace_hash") or "").strip()
     manifest_hash = str(trace.get("manifest_hash") or "").strip()

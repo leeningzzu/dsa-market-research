@@ -958,6 +958,26 @@ def test_record_cli_closed_world_binds_receipt_only_and_plain_record_does_not(
     assert len(observed) == 3
 
 
+def _matrix_receipt_fixture():
+    cells = [
+        {
+            "timeframe": timeframe,
+            "family": family,
+            "state": "MISSING",
+            "reason": "TEST_FIXTURE",
+            "method_coverage": [],
+        }
+        for timeframe in ("monthly", "weekly", "daily", "60m", "30m", "15m", "5m")
+        for family in ("REGIME", "TREND_RS", "SUPPLY", "COST", "STRUCTURE", "MOMENTUM", "PATTERN", "MTF")
+    ]
+    return {
+        "schema_version": "timeframe-family-matrix-v1",
+        "method_window_policy_hash": "e" * 64,
+        "cells": cells,
+        "matrix_hash": "f" * 64,
+    }
+
+
 def test_product_report_receipt_reuses_existing_delivery_fact_identity(
     monkeypatch,
     tmp_path,
@@ -984,13 +1004,29 @@ def test_product_report_receipt_reuses_existing_delivery_fact_identity(
             "schema_version": "v25-product-coverage-v1",
             "receipt_hash": "b" * 64,
             "baseline_sha256": "c" * 64,
+            "method_window_policy_hash": "e" * 64,
+            "timeframe_family_matrix_hash": "f" * 64,
             "rendered": False,
             "slots": [
                 {"state": "EVIDENCE_AVAILABLE"},
                 {"state": "DATA_INSUFFICIENT"},
             ],
         },
+        "evidence_traceability": {
+            "schema_version": "canonical-evidence-trace-v2",
+            "method_window_policy_hash": "e" * 64,
+            "timeframe_family_matrix_hash": "f" * 64,
+            "timeframe_family_matrix": _matrix_receipt_fixture(),
+        },
     }
+    factor["evidence_traceability"]["timeframe_family_matrix"]["cells"][0]["canonical_paths"] = (
+        "market_sector_regime",
+    )
+    factor["evidence_product_coverage"]["slots"][0]["canonical_paths"] = (
+        "market_sector_regime",
+    )
+    persisted_factor = json.loads(json.dumps(factor, ensure_ascii=False))
+
     report = tmp_path / "report_20261002.md"
     report.write_text(
         "# actual local report\n"
@@ -1003,13 +1039,23 @@ def test_product_report_receipt_reuses_existing_delivery_fact_identity(
     monkeypatch.setattr(
         runtime,
         "_persisted_factor_snapshot",
-        lambda db_manager, pipeline, prediction_hash: (factor, 7),
+        lambda db_manager, pipeline, prediction_hash: (persisted_factor, 7),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_ledger_identity_snapshot",
+        lambda db_manager, prediction_hash: {
+            "evidence_traceability_identity": {
+                "method_window_policy_hash": "e" * 64,
+                "timeframe_family_matrix_hash": "f" * 64,
+            }
+        },
     )
 
     class FakePipeline:
         @staticmethod
         def _delivery_fact_hash(value):
-            return "a" * 64 if value == factor else None
+            return digest(value)
 
     result = SimpleNamespace(dashboard={"factor_decision": factor})
     receipt = runtime._build_product_report_receipt(
@@ -1021,7 +1067,7 @@ def test_product_report_receipt_reuses_existing_delivery_fact_identity(
 
     assert receipt["status"] == "PASS"
     assert receipt["analysis_history_id"] == 7
-    assert receipt["delivery_fact_hash"] == "a" * 64
+    assert receipt["delivery_fact_hash"] == digest(factor)
     assert receipt["runtime_database_binding"] == "EXACT_FOR_CANONICAL_BRIEF_AND_COVERAGE"
     assert receipt["report_anchor_paths"] == [
         "investor_brief.one_line_conclusion",
@@ -1029,8 +1075,26 @@ def test_product_report_receipt_reuses_existing_delivery_fact_identity(
         "investor_brief.coverage_text",
     ]
     assert receipt["missing_timeframes"] == ["weekly", "60m", "30m", "15m", "5m"]
+    assert receipt["timeframe_family_matrix"] == {
+        "cell_count": 56,
+        "matrix_hash": "f" * 64,
+        "method_window_policy_hash": "e" * 64,
+    }
     assert receipt["report_bytes"] > 0
     assert len(receipt["report_sha256"]) == 64
+    persisted_factor["canonical_decision"]["action"] = "FORGED_BUY"
+    with pytest.raises(
+        EvidenceFlywheelRuntimeError,
+        match="runtime/database drift in canonical_decision",
+    ):
+        runtime._build_product_report_receipt(
+            db_manager=object(),
+            pipeline=FakePipeline(),
+            result=result,
+            prediction_hash="d" * 64,
+        )
+    persisted_factor["canonical_decision"]["action"] = "WAIT"
+
     report.write_text("# broken report\n", encoding="utf-8")
     with pytest.raises(
         EvidenceFlywheelRuntimeError,
