@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ast
+import json
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
@@ -535,6 +536,36 @@ def test_method_window_policy_keeps_asset_only_valuation_as_legal_nontrigger():
     assert valuation.target_timeframes == ("asset",)
     assert valuation.current_execution_timeframes == ()
     assert valuation.implementation_state == "DEFERRED_WITH_OWNER_AND_REENTRY"
+
+
+def test_runtime_trace_accepts_exact_json_wire_roundtrip_but_rejects_content_drift():
+    factor = native_summary()
+    stored = json.loads(reg.canonical_json(factor))
+    assert reg.validate_runtime_trace(factor)["runtime_trace_hash"] == factor["evidence_traceability"]["runtime_trace_hash"]
+    trace = reg.validate_runtime_trace(stored)
+    assert trace["runtime_trace_hash"] == factor["evidence_traceability"]["runtime_trace_hash"]
+    assert len(trace["timeframe_family_matrix"]["cells"]) == 56
+
+    mutators = {
+        "cell_state_forged": lambda t: t["timeframe_family_matrix"]["cells"][0].update(state="FORGED_READY"),
+        "cell_deleted": lambda t: t["timeframe_family_matrix"]["cells"].pop(),
+        "cell_order_changed": lambda t: t["timeframe_family_matrix"]["cells"].reverse(),
+        "matrix_hash_forged": lambda t: t.update(timeframe_family_matrix_hash="0" * 64),
+        "nested_matrix_hash_forged": lambda t: t["timeframe_family_matrix"].update(matrix_hash="0" * 64),
+        "runtime_trace_hash_forged": lambda t: t.update(runtime_trace_hash="0" * 64),
+        "matrix_missing": lambda t: t.pop("timeframe_family_matrix"),
+        "method_coverage_removed": lambda t: next(
+            cell for cell in t["timeframe_family_matrix"]["cells"] if cell["method_coverage"]
+        )["method_coverage"].clear(),
+        "observation_removed": lambda t: t["observations"].pop(),
+        "manifest_missing": lambda t: t.pop("manifest_hash"),
+    }
+    for name, mutate in mutators.items():
+        forged = deepcopy(stored)
+        mutate(forged["evidence_traceability"])
+        assert forged != stored, name
+        with pytest.raises(reg.TraceabilityError, match="RUNTIME_TRACE"):
+            reg.validate_runtime_trace(forged)
 
 
 def test_native_services_reach_strategy_trace_product_and_learning():

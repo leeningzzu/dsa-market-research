@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] 修复 exact7 evidence trace / Product coverage 经 JSON 持久化后 Python tuple 变为 list 时被 History canonical binding 与 Evidence Flywheel 误判为 stale/drift 的问题；统一复用 canonical JSON-wire 等价校验，仅容忍 JSON 本身无法区分的序列表示差异，56-cell 内容/顺序、matrix/runtime hash、canonical action、缺失字段和伪造证据仍 fail-closed，不回填历史数据库、不改变策略/学习/模型/V2.5/通知权限。
 - [改进] 将现有 43 个 method-window profile 按 closed-world consumer scope 与证据族目标显式分类，并由现有 evidence traceability owner 派生唯一 7×8 timeframe-family matrix；V2.5 semantic Product coverage 与 Evidence Flywheel 复用同一 matrix/hash，月周及已合法进入当前 MTF 的分钟 Trend/MA/Volume/MACD/RSI context 只按实际执行状态投影，分钟 Cost/Price Structure/Pattern 与 legal 30m trigger 继续 NOT_ADMITTED，未准入 Extra Classic/Chan/资产层方法不压低已 READY family；不改变 manifest、数值 Learning allowlist、策略准入、V2.5 原件、provider、SMTP 或训练权限。
 
 - [修复] 修复 Markdown 邮件/HTML 投影把 `MA5<MA10<MA20` 等技术比较表达式误解析为 HTML 标签而丢失可见文本的问题；共享 formatter 现在转义 raw HTML，同时保留 Markdown 链接、表格、代码块等既有格式语义，不改变 canonical、V2.5 原件或 SMTP 路由。

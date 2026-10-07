@@ -84,6 +84,14 @@ def canonical_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
+def json_wire_equal(left: Any, right: Any) -> bool:
+    """Compare exact persisted/runtime JSON semantics without Python sequence-shape drift."""
+    try:
+        return canonical_json(left) == canonical_json(right)
+    except (TypeError, ValueError):
+        return False
+
+
 def digest(value: Any) -> str:
     return sha256(canonical_json(value).encode("utf-8")).hexdigest()
 
@@ -1496,7 +1504,7 @@ def build_runtime_trace(factor: Mapping) -> dict:
 def validate_runtime_trace(factor: Mapping) -> dict:
     actual = factor.get("evidence_traceability")
     expected = build_runtime_trace(factor)
-    if actual != expected:
+    if not isinstance(actual, Mapping) or not json_wire_equal(actual, expected):
         raise TraceabilityError("RUNTIME_TRACE_MISSING_OR_STALE")
     return expected
 

@@ -41,7 +41,7 @@ from src.services.research_state_projection import (
     STRATEGY_ELIGIBILITY_SCHEMA_VERSION,
     build_strategy_eligibility_identity,
 )
-from src.services.evidence_traceability_registry import digest
+from src.services.evidence_traceability_registry import digest, json_wire_equal
 
 
 RECEIPT_SCHEMA_VERSION = "evidence-flywheel-runtime-receipt-v1"
@@ -818,13 +818,21 @@ def _build_product_report_receipt(
         raise EvidenceFlywheelRuntimeError(
             "product receipt requires runtime factor_decision"
         )
+    json_wire_fields = {"evidence_traceability", "evidence_product_coverage"}
     for field in (
         "canonical_decision",
         "investor_brief",
         "evidence_traceability",
         "evidence_product_coverage",
     ):
-        if runtime_factor.get(field) != persisted_factor.get(field):
+        runtime_value = runtime_factor.get(field)
+        persisted_value = persisted_factor.get(field)
+        matches = (
+            json_wire_equal(runtime_value, persisted_value)
+            if field in json_wire_fields
+            else runtime_value == persisted_value
+        )
+        if not matches:
             raise EvidenceFlywheelRuntimeError(
                 f"product receipt found runtime/database drift in {field}"
             )

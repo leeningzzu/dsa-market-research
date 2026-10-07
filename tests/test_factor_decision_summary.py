@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import pandas as pd
@@ -9,6 +10,7 @@ from src.services.factor_decision_summary import (
     assert_canonical_consumer_consistency,
     build_stock_factor_decision_summary,
     canonical_explanation_degradation_eligible,
+    validate_canonical_factor_binding,
     validate_investor_brief_binding,
 )
 from src.stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult, VolumeStatus
@@ -837,6 +839,19 @@ def test_asset_research_brief_payload_v1_missing_values_are_not_invented():
     assert brief["current_probability"]["available"] is False
     assert brief["current_probability"].get("value") is None
 
+
+
+def test_canonical_binding_accepts_exact_json_wire_roundtrip_but_rejects_stale_action():
+    summary = build_stock_factor_decision_summary(_trend(), include_canonical=True)
+    stored = json.loads(json.dumps(summary, ensure_ascii=False))
+    identity = validate_canonical_factor_binding(stored)
+    assert identity["schema_version"] == "canonical-decision-binding-v1"
+    assert identity["runtime_trace_hash"] == summary["evidence_traceability"]["runtime_trace_hash"]
+
+    stale = json.loads(json.dumps(stored, ensure_ascii=False))
+    stale["canonical_decision"]["public_action"] = "avoid"
+    with pytest.raises(ValueError):
+        validate_canonical_factor_binding(stale)
 
 
 def test_explanation_degradation_requires_proven_canonical_evidence_and_valid_brief():

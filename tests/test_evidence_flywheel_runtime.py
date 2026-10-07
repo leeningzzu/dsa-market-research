@@ -1019,6 +1019,14 @@ def test_product_report_receipt_reuses_existing_delivery_fact_identity(
             "timeframe_family_matrix": _matrix_receipt_fixture(),
         },
     }
+    factor["evidence_traceability"]["timeframe_family_matrix"]["cells"][0]["canonical_paths"] = (
+        "market_sector_regime",
+    )
+    factor["evidence_product_coverage"]["slots"][0]["canonical_paths"] = (
+        "market_sector_regime",
+    )
+    persisted_factor = json.loads(json.dumps(factor, ensure_ascii=False))
+
     report = tmp_path / "report_20261002.md"
     report.write_text(
         "# actual local report\n"
@@ -1031,7 +1039,7 @@ def test_product_report_receipt_reuses_existing_delivery_fact_identity(
     monkeypatch.setattr(
         runtime,
         "_persisted_factor_snapshot",
-        lambda db_manager, pipeline, prediction_hash: (factor, 7),
+        lambda db_manager, pipeline, prediction_hash: (persisted_factor, 7),
     )
     monkeypatch.setattr(
         runtime,
@@ -1047,7 +1055,7 @@ def test_product_report_receipt_reuses_existing_delivery_fact_identity(
     class FakePipeline:
         @staticmethod
         def _delivery_fact_hash(value):
-            return "a" * 64 if value == factor else None
+            return digest(value)
 
     result = SimpleNamespace(dashboard={"factor_decision": factor})
     receipt = runtime._build_product_report_receipt(
@@ -1059,7 +1067,7 @@ def test_product_report_receipt_reuses_existing_delivery_fact_identity(
 
     assert receipt["status"] == "PASS"
     assert receipt["analysis_history_id"] == 7
-    assert receipt["delivery_fact_hash"] == "a" * 64
+    assert receipt["delivery_fact_hash"] == digest(factor)
     assert receipt["runtime_database_binding"] == "EXACT_FOR_CANONICAL_BRIEF_AND_COVERAGE"
     assert receipt["report_anchor_paths"] == [
         "investor_brief.one_line_conclusion",
@@ -1074,6 +1082,19 @@ def test_product_report_receipt_reuses_existing_delivery_fact_identity(
     }
     assert receipt["report_bytes"] > 0
     assert len(receipt["report_sha256"]) == 64
+    persisted_factor["canonical_decision"]["action"] = "FORGED_BUY"
+    with pytest.raises(
+        EvidenceFlywheelRuntimeError,
+        match="runtime/database drift in canonical_decision",
+    ):
+        runtime._build_product_report_receipt(
+            db_manager=object(),
+            pipeline=FakePipeline(),
+            result=result,
+            prediction_hash="d" * 64,
+        )
+    persisted_factor["canonical_decision"]["action"] = "WAIT"
+
     report.write_text("# broken report\n", encoding="utf-8")
     with pytest.raises(
         EvidenceFlywheelRuntimeError,
