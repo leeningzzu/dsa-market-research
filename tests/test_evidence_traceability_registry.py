@@ -81,6 +81,12 @@ EXPECTED_METHOD_WINDOW_IDS = {
     "BREADTH",
     "PROBABILITY",
 }
+EXPECTED_RESEARCH_UNIVERSE_REQUIREMENTS = {
+    "REGIME", "TREND_RS", "SUPPLY", "COST", "STRUCTURE", "MOMENTUM", "PATTERN", "MTF",
+    "QUALITY", "VALUATION", "DISTRIBUTION", "RISK_REWARD", "CANDLESTICK",
+    "EXTRA_INDICATORS", "AVWAP_PROFILE", "CHAN", "WAVE", "ETF_SPECIFIC", "GLOBAL", "BREADTH",
+    "PROBABILITY", "INTRADAY_60m", "INTRADAY_30m", "INTRADAY_15m", "INTRADAY_5m", "DECISION",
+}
 EXPECTED_METHOD_WINDOW_CLASSES = {
     "FIXED_ROLLING",
     "RECURSIVE_WARMUP",
@@ -420,6 +426,43 @@ def test_timeframe_family_matrix_is_exact_56_cells_and_keeps_deferred_methods_vi
     assert len(matrix["matrix_hash"]) == 64
 
 
+def test_complete_research_universe_view_prevents_scope_collapse_beyond_7x8():
+    factor = native_summary()
+    trace = reg.validate_runtime_trace(factor)
+    universe = trace["complete_research_universe"]
+    requirements = {row["requirement_id"]: row for row in universe["requirements"]}
+    methods = {row["method_id"]: row for row in universe["methods"]}
+
+    assert universe["schema_version"] == "complete-research-universe-view-v1"
+    assert set(requirements) == EXPECTED_RESEARCH_UNIVERSE_REQUIREMENTS
+    assert set(methods) == EXPECTED_METHOD_WINDOW_IDS
+    assert universe["counts"] == {
+        "requirements": len(EXPECTED_RESEARCH_UNIVERSE_REQUIREMENTS),
+        "methods": len(EXPECTED_METHOD_WINDOW_IDS),
+        "strategy_bindings": 13,
+        "technical_matrix_cells": 56,
+    }
+    assert {row["plane"] for row in universe["planes"]} == {
+        "TECHNICAL_EVIDENCE", "FUNDAMENTAL_AND_STRATEGY", "MARKET_AND_ASSET",
+        "RESEARCH_SHADOW", "MODEL_LAYER", "DECISION",
+    }
+    assert requirements["VALUATION"]["plane"] == "FUNDAMENTAL_AND_STRATEGY"
+    assert requirements["GLOBAL"]["plane"] == "MARKET_AND_ASSET"
+    assert requirements["BREADTH"]["plane"] == "MARKET_AND_ASSET"
+    assert requirements["ETF_SPECIFIC"]["plane"] == "MARKET_AND_ASSET"
+    assert requirements["CHAN"]["plane"] == "RESEARCH_SHADOW"
+    assert requirements["WAVE"]["plane"] == "RESEARCH_SHADOW"
+    assert methods["MA_LEVEL_ALIGNMENT_DAILY"]["consumer_scope"] == "TECHNICAL_MATRIX"
+    assert methods["MA_SLOPE_CROSS"]["family_targets"] == ("TREND_RS", "MTF")
+    assert methods["MA_COMPRESSION_RELEASE"]["family_targets"] == ("MTF",)
+    assert methods["CANDLESTICK"]["family_targets"] == ("PATTERN",)
+    assert universe["timeframe_family_matrix_hash"] == trace["timeframe_family_matrix_hash"]
+    body = dict(universe)
+    body.pop("universe_hash")
+    assert reg.digest(body) == universe["universe_hash"]
+    assert trace["complete_research_universe_hash"] == universe["universe_hash"]
+
+
 def test_mtf_execution_populates_only_its_admitted_family_context_and_not_supply_or_cost():
     factor = native_summary_with_mtf()
     trace = factor["evidence_traceability"]
@@ -554,6 +597,23 @@ def test_runtime_trace_accepts_exact_json_wire_roundtrip_but_rejects_content_dri
         "nested_matrix_hash_forged": lambda t: t["timeframe_family_matrix"].update(matrix_hash="0" * 64),
         "runtime_trace_hash_forged": lambda t: t.update(runtime_trace_hash="0" * 64),
         "matrix_missing": lambda t: t.pop("timeframe_family_matrix"),
+        "research_universe_missing": lambda t: t.pop("complete_research_universe"),
+        "research_universe_hash_forged": lambda t: t.update(complete_research_universe_hash="0" * 64),
+        "valuation_requirement_removed": lambda t: t["complete_research_universe"]["requirements"].pop(
+            next(i for i, row in enumerate(t["complete_research_universe"]["requirements"]) if row["requirement_id"] == "VALUATION")
+        ),
+        "global_requirement_removed": lambda t: t["complete_research_universe"]["requirements"].pop(
+            next(i for i, row in enumerate(t["complete_research_universe"]["requirements"]) if row["requirement_id"] == "GLOBAL")
+        ),
+        "chan_method_removed": lambda t: t["complete_research_universe"]["methods"].pop(
+            next(i for i, row in enumerate(t["complete_research_universe"]["methods"]) if row["method_id"] == "CHAN")
+        ),
+        "ma_method_removed": lambda t: t["complete_research_universe"]["methods"].pop(
+            next(i for i, row in enumerate(t["complete_research_universe"]["methods"]) if row["method_id"] == "MA_LEVEL_ALIGNMENT_DAILY")
+        ),
+        "candlestick_method_removed": lambda t: t["complete_research_universe"]["methods"].pop(
+            next(i for i, row in enumerate(t["complete_research_universe"]["methods"]) if row["method_id"] == "CANDLESTICK")
+        ),
         "method_coverage_removed": lambda t: next(
             cell for cell in t["timeframe_family_matrix"]["cells"] if cell["method_coverage"]
         )["method_coverage"].clear(),

@@ -978,11 +978,42 @@ def _matrix_receipt_fixture():
     }
 
 
+def _research_universe_receipt_fixture():
+    document = {
+        "schema_version": "complete-research-universe-view-v1",
+        "requirements": [
+            {"requirement_id": "VALUATION"},
+            {"requirement_id": "GLOBAL"},
+            {"requirement_id": "CHAN"},
+        ],
+        "methods": [
+            {"method_id": "MA_LEVEL_ALIGNMENT_DAILY"},
+            {"method_id": "CANDLESTICK"},
+        ],
+        "planes": [
+            {"plane": "FUNDAMENTAL_AND_STRATEGY"},
+            {"plane": "MARKET_AND_ASSET"},
+            {"plane": "RESEARCH_SHADOW"},
+            {"plane": "TECHNICAL_EVIDENCE"},
+        ],
+        "counts": {
+            "requirements": 26,
+            "methods": 43,
+            "strategy_bindings": 13,
+            "technical_matrix_cells": 56,
+        },
+    }
+    document["universe_hash"] = digest(document)
+    return document
+
+
 def test_product_report_receipt_reuses_existing_delivery_fact_identity(
     monkeypatch,
     tmp_path,
 ) -> None:
     from src.services import evidence_flywheel_runtime as runtime
+
+    universe = _research_universe_receipt_fixture()
 
     factor = {
         "canonical_decision": {"action": "WAIT"},
@@ -1006,6 +1037,9 @@ def test_product_report_receipt_reuses_existing_delivery_fact_identity(
             "baseline_sha256": "c" * 64,
             "method_window_policy_hash": "e" * 64,
             "timeframe_family_matrix_hash": "f" * 64,
+            "complete_research_universe_hash": universe["universe_hash"],
+            "complete_research_universe_schema_version": universe["schema_version"],
+            "complete_research_universe_counts": universe["counts"],
             "rendered": False,
             "slots": [
                 {"state": "EVIDENCE_AVAILABLE"},
@@ -1017,6 +1051,8 @@ def test_product_report_receipt_reuses_existing_delivery_fact_identity(
             "method_window_policy_hash": "e" * 64,
             "timeframe_family_matrix_hash": "f" * 64,
             "timeframe_family_matrix": _matrix_receipt_fixture(),
+            "complete_research_universe_hash": universe["universe_hash"],
+            "complete_research_universe": universe,
         },
     }
     factor["evidence_traceability"]["timeframe_family_matrix"]["cells"][0]["canonical_paths"] = (
@@ -1048,6 +1084,7 @@ def test_product_report_receipt_reuses_existing_delivery_fact_identity(
             "evidence_traceability_identity": {
                 "method_window_policy_hash": "e" * 64,
                 "timeframe_family_matrix_hash": "f" * 64,
+                "complete_research_universe_hash": universe["universe_hash"],
             }
         },
     )
@@ -1079,6 +1116,13 @@ def test_product_report_receipt_reuses_existing_delivery_fact_identity(
         "cell_count": 56,
         "matrix_hash": "f" * 64,
         "method_window_policy_hash": "e" * 64,
+    }
+    assert receipt["complete_research_universe"] == {
+        "schema_version": "complete-research-universe-view-v1",
+        "universe_hash": universe["universe_hash"],
+        "requirement_count": 26,
+        "method_count": 43,
+        "strategy_binding_count": 13,
     }
     assert receipt["report_bytes"] > 0
     assert len(receipt["report_sha256"]) == 64

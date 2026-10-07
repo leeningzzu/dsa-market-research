@@ -144,6 +144,15 @@ def test_product_coverage_consumes_the_trace_matrix_for_actual_weekly_structure_
     assert coverage["timeframe_family_matrix_hash"] == trace_matrix["matrix_hash"]
     assert coverage["method_window_policy_hash"] == factor["evidence_traceability"]["method_window_policy_hash"]
     assert len(trace_matrix["cells"]) == 56
+    trace_universe = factor["evidence_traceability"]["complete_research_universe"]
+    assert coverage["complete_research_universe_hash"] == trace_universe["universe_hash"]
+    assert coverage["complete_research_universe_schema_version"] == "complete-research-universe-view-v1"
+    assert coverage["complete_research_universe_counts"] == {
+        "requirements": 26,
+        "methods": 43,
+        "strategy_bindings": 13,
+        "technical_matrix_cells": 56,
+    }
     assert rows["detail.timeframe.price_structure"]["timeframe_states"]["weekly"] == "EVIDENCE_AVAILABLE"
     assert rows["detail.timeframe.momentum_divergence"]["timeframe_states"]["weekly"] == "EVIDENCE_AVAILABLE"
     assert any(

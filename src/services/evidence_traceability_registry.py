@@ -76,6 +76,24 @@ ACCEPTED_REQUIREMENT_ROLES = frozenset({
 })
 
 
+COMPLETE_RESEARCH_UNIVERSE_SCHEMA_VERSION = "complete-research-universe-view-v1"
+COMPLETE_RESEARCH_UNIVERSE_PLANES = (
+    (
+        "TECHNICAL_EVIDENCE",
+        (
+            "REGIME", "TREND_RS", "SUPPLY", "COST", "STRUCTURE", "MOMENTUM",
+            "PATTERN", "MTF", "CANDLESTICK", "EXTRA_INDICATORS", "AVWAP_PROFILE",
+            "INTRADAY_60m", "INTRADAY_30m", "INTRADAY_15m", "INTRADAY_5m",
+        ),
+    ),
+    ("FUNDAMENTAL_AND_STRATEGY", ("QUALITY", "VALUATION", "DISTRIBUTION", "RISK_REWARD")),
+    ("MARKET_AND_ASSET", ("GLOBAL", "BREADTH", "ETF_SPECIFIC")),
+    ("RESEARCH_SHADOW", ("CHAN", "WAVE")),
+    ("MODEL_LAYER", ("PROBABILITY",)),
+    ("DECISION", ("DECISION",)),
+)
+
+
 class TraceabilityError(ValueError):
     """A binding or claimed observation exceeds its actual proof."""
 
@@ -868,6 +886,17 @@ def validate_registry(bindings=None, strategy=None, metrics=None) -> None:
     )
     if observed_roles != ACCEPTED_REQUIREMENT_ROLES:
         raise TraceabilityError("ACCEPTED_REQUIREMENT_SET_MISMATCH")
+    plane_requirement_ids = [
+        requirement_id
+        for _, requirement_ids in COMPLETE_RESEARCH_UNIVERSE_PLANES
+        for requirement_id in requirement_ids
+    ]
+    accepted_requirement_ids = frozenset(requirement_id for requirement_id, _ in ACCEPTED_REQUIREMENT_ROLES)
+    if (
+        len(plane_requirement_ids) != len(set(plane_requirement_ids))
+        or frozenset(plane_requirement_ids) != accepted_requirement_ids
+    ):
+        raise TraceabilityError("COMPLETE_RESEARCH_UNIVERSE_REQUIREMENT_SET_MISMATCH")
     for binding in bindings:
         if not binding.owner or not binding.fields or not binding.reentry or not binding.correlation_group:
             raise TraceabilityError("INCOMPLETE_BINDING")
@@ -1471,6 +1500,144 @@ def compile_timeframe_family_matrix(factor: Mapping, *, observations=None, polic
     return document
 
 
+def compile_complete_research_universe_view(
+    factor: Mapping,
+    *,
+    observations=None,
+    policy_view=None,
+    matrix=None,
+) -> dict:
+    """Compile the full research universe; the 7x8 matrix is only its technical subset."""
+    validate_registry()
+    observations = _runtime_observations(factor) if observations is None else list(observations)
+    observation_lookup = {item["requirement_id"]: item for item in observations}
+    policy_view = compile_method_window_policy_view() if policy_view is None else policy_view
+    matrix = (
+        compile_timeframe_family_matrix(
+            factor,
+            observations=observations,
+            policy_view=policy_view,
+        )
+        if matrix is None
+        else matrix
+    )
+    method_rows = tuple(dict(item) for item in policy_view.get("methods", ()))
+    method_ids = tuple(item.get("method_id") for item in method_rows)
+    if frozenset(method_ids) != ACCEPTED_METHOD_WINDOW_IDS or len(method_ids) != len(ACCEPTED_METHOD_WINDOW_IDS):
+        raise TraceabilityError("COMPLETE_RESEARCH_UNIVERSE_METHOD_SET_MISMATCH")
+
+    bindings = EVIDENCE_BINDINGS + DEFERRED_BINDINGS + (DECISION_BINDING,)
+    binding_lookup = {binding.requirement_id: binding for binding in bindings}
+    role_lookup = dict(ACCEPTED_REQUIREMENT_ROLES)
+    strategy_rows = tuple(asdict(binding) for binding in STRATEGY_BINDINGS)
+    requirements = []
+    planes = []
+    seen_requirements = set()
+
+    for plane_name, requirement_ids in COMPLETE_RESEARCH_UNIVERSE_PLANES:
+        plane_method_ids = []
+        for requirement_id in requirement_ids:
+            if requirement_id in seen_requirements:
+                raise TraceabilityError("COMPLETE_RESEARCH_UNIVERSE_REQUIREMENT_DUPLICATE:" + requirement_id)
+            seen_requirements.add(requirement_id)
+            binding = binding_lookup.get(requirement_id)
+            if binding is None:
+                raise TraceabilityError("COMPLETE_RESEARCH_UNIVERSE_REQUIREMENT_MISSING:" + requirement_id)
+
+            if requirement_id == "DECISION":
+                decision = factor.get("canonical_decision")
+                state = "READY" if isinstance(decision, Mapping) else "UNKNOWN"
+                reason = "CANONICAL_DECISION_PRESENT" if state == "READY" else "CANONICAL_DECISION_MISSING"
+            else:
+                observation = observation_lookup.get(requirement_id, {})
+                state = str(observation.get("state") or "UNKNOWN")
+                if state not in TIMEFRAME_FAMILY_MATRIX_STATES:
+                    state = "UNKNOWN"
+                reason = str(observation.get("reason") or "RUNTIME_OBSERVATION_UNKNOWN")
+
+            requirement_methods = tuple(
+                item["method_id"]
+                for item in method_rows
+                if item.get("requirement_id") == requirement_id
+            )
+            plane_method_ids.extend(requirement_methods)
+            requirement_scopes = tuple(dict.fromkeys(
+                str(item.get("consumer_scope") or "")
+                for item in method_rows
+                if item.get("requirement_id") == requirement_id
+            ))
+            family_targets = tuple(dict.fromkeys(
+                family
+                for item in method_rows
+                if item.get("requirement_id") == requirement_id
+                for family in item.get("family_targets", ())
+            ))
+            requirements.append({
+                "plane": plane_name,
+                "requirement_id": requirement_id,
+                "contract_role": role_lookup[requirement_id],
+                "state": state,
+                "reason": reason,
+                "owner": binding.owner,
+                "canonical_path": binding.path,
+                "timeframe": binding.timeframe,
+                "asset_routes": binding.asset_routes,
+                "correlation_group": binding.correlation_group,
+                "reentry": binding.reentry,
+                "method_ids": requirement_methods,
+                "consumer_scopes": requirement_scopes,
+                "family_targets": family_targets,
+                "strategy_clauses": tuple(
+                    row["clause"] for row in strategy_rows
+                    if row["requirement_id"] == requirement_id
+                ),
+            })
+        planes.append({
+            "plane": plane_name,
+            "requirement_ids": requirement_ids,
+            "method_ids": tuple(dict.fromkeys(plane_method_ids)),
+        })
+
+    accepted_requirement_ids = frozenset(requirement_id for requirement_id, _ in ACCEPTED_REQUIREMENT_ROLES)
+    if frozenset(seen_requirements) != accepted_requirement_ids:
+        raise TraceabilityError("COMPLETE_RESEARCH_UNIVERSE_REQUIREMENT_SET_MISMATCH")
+
+    cells = matrix.get("cells")
+    if not isinstance(cells, list) or len(cells) != 56:
+        raise TraceabilityError("COMPLETE_RESEARCH_UNIVERSE_TECHNICAL_MATRIX_INVALID")
+
+    document = {
+        "schema_version": COMPLETE_RESEARCH_UNIVERSE_SCHEMA_VERSION,
+        "manifest_hash": MANIFEST_HASH,
+        "method_window_policy_hash": policy_view["view_hash"],
+        "timeframe_family_matrix_hash": matrix["matrix_hash"],
+        "technical_matrix": {
+            "cell_count": len(cells),
+            "timeframes": matrix.get("timeframes"),
+            "families": matrix.get("families"),
+        },
+        "planes": planes,
+        "requirements": requirements,
+        "methods": method_rows,
+        "strategy_bindings": strategy_rows,
+        "counts": {
+            "requirements": len(requirements),
+            "methods": len(method_rows),
+            "strategy_bindings": len(strategy_rows),
+            "technical_matrix_cells": len(cells),
+        },
+        "policy": {
+            "timeframe_family_matrix_is_technical_subset_only": True,
+            "deferred_requirements_remain_named_obligations": True,
+            "asset_research_model_layers_remain_in_same_closed_world": True,
+            "same_source_same_swing_methods_are_not_independent_votes": True,
+            "email_llm_are_projection_consumers_not_evidence_producers": True,
+        },
+    }
+    document["universe_hash"] = digest(document)
+    return document
+
+
 def build_runtime_trace(factor: Mapping) -> dict:
     validate_registry()
     known_paths = {b.path for b in EVIDENCE_BINDINGS + DEFERRED_BINDINGS + (DECISION_BINDING,)}
@@ -1482,6 +1649,12 @@ def build_runtime_trace(factor: Mapping) -> dict:
     observations = _runtime_observations(factor)
     policy_view = compile_method_window_policy_view()
     matrix = compile_timeframe_family_matrix(factor, observations=observations, policy_view=policy_view)
+    universe = compile_complete_research_universe_view(
+        factor,
+        observations=observations,
+        policy_view=policy_view,
+        matrix=matrix,
+    )
     mtf = at(factor, "multi_timeframe_structure_context") or {}
     document = {"schema_version": TRACE_VERSION, "manifest_version": MANIFEST_VERSION,
                 "manifest_hash": MANIFEST_HASH, "strategy_id": factor.get("strategy_id"),
@@ -1489,6 +1662,8 @@ def build_runtime_trace(factor: Mapping) -> dict:
                 "method_window_policy_hash": policy_view["view_hash"],
                 "timeframe_family_matrix_hash": matrix["matrix_hash"],
                 "timeframe_family_matrix": matrix,
+                "complete_research_universe_hash": universe["universe_hash"],
+                "complete_research_universe": universe,
                 "data_snapshot_identity": mtf.get("data_snapshot_identity"),
                 "data_identity": {key: mtf.get(key) for key in ("provider_identity", "adjustment_basis", "available_at_max", "target_date", "algorithm_version", "config_hash")},
                 "observations": observations,
@@ -1581,7 +1756,7 @@ def describe_macd_state(result: Any) -> str:
 def trace_identity(trace: Mapping) -> dict:
     return {key: trace.get(key) for key in (
         "manifest_version", "manifest_hash", "runtime_trace_hash", "data_snapshot_identity",
-        "method_window_policy_hash", "timeframe_family_matrix_hash",
+        "method_window_policy_hash", "timeframe_family_matrix_hash", "complete_research_universe_hash",
     )}
 
 

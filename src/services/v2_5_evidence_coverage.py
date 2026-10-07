@@ -107,6 +107,20 @@ def compile_product_coverage(factor: Mapping) -> dict:
     if len(matrix_lookup) != 56:
         raise TraceabilityError("TIMEFRAME_FAMILY_MATRIX_CELL_COUNT")
 
+    universe = trace.get("complete_research_universe")
+    if not isinstance(universe, Mapping):
+        raise TraceabilityError("COMPLETE_RESEARCH_UNIVERSE_MISSING")
+    universe_hash = str(universe.get("universe_hash") or "")
+    universe_body = {key: value for key, value in universe.items() if key != "universe_hash"}
+    universe_counts = universe.get("counts")
+    if (
+        len(universe_hash) != 64
+        or digest(universe_body) != universe_hash
+        or str(trace.get("complete_research_universe_hash") or "") != universe_hash
+        or not isinstance(universe_counts, Mapping)
+    ):
+        raise TraceabilityError("COMPLETE_RESEARCH_UNIVERSE_HASH_MISMATCH")
+
     rows = []
     slot_map = load_slot_map()
     for slot in slot_map["slots"]:
@@ -139,6 +153,9 @@ def compile_product_coverage(factor: Mapping) -> dict:
                 "method_window_policy_hash": trace.get("method_window_policy_hash"),
                 "timeframe_family_matrix_hash": matrix_hash,
                 "timeframe_family_matrix_schema_version": matrix.get("schema_version"),
+                "complete_research_universe_hash": universe_hash,
+                "complete_research_universe_schema_version": universe.get("schema_version"),
+                "complete_research_universe_counts": dict(universe_counts),
                 "baseline_sha256": BASELINE_SHA256,
                 "slots": rows, "rendered": False}
     document["receipt_hash"] = digest(document)
