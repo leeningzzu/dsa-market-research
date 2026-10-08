@@ -671,7 +671,7 @@ def _append_factor_decision_block(lines: List[str], factor: Any, report_language
 
     if why:
         lines.append("**为什么**:")
-        for item in why[:4]:
+        for item in why:
             text = str(item or "").strip()
             if text:
                 lines.append(f"- {text}")
@@ -729,7 +729,7 @@ def _append_strategy_synthesis_block(lines: List[str], strategy_synthesis: Any, 
         invalid_label = labels.get("strategy_invalid_opinions_label", "")
         if invalid_label:
             lines.append(f"- {invalid_label.format(count=invalid_opinion_count)}")
-    for conflict in (strategy_synthesis.get("conflicts") or [])[:3]:
+    for conflict in (strategy_synthesis.get("conflicts") or []):
         if isinstance(conflict, dict) and conflict.get("conflict_type"):
             participants = conflict.get("participants") or []
             participant_text = "、".join(localize_strategy_skill(participant, report_language) for participant in participants)
@@ -2818,7 +2818,7 @@ class NotificationService(
                 )
                 continue
             core = dash.get('core_conclusion', {}) or {}
-            one = (core.get('one_sentence') or r.analysis_summary or '')[:60]
+            one = str(core.get('one_sentence') or r.analysis_summary or '')
             if has_canonical_action_authority_for_result(r):
                 canonical_one = _canonical_conclusion_for_result(r, report_language)
                 suffix = f" | {canonical_one}" if canonical_one else ""
@@ -2913,14 +2913,14 @@ class NotificationService(
                     lines.append(f"### 📰 {labels['info_heading']}")
                     lines.append("")
                     info_added = True
-                lines.append(f"📊 **{labels['earnings_outlook_label']}**: {str(intel['earnings_outlook'])[:100]}")
+                lines.append(f"📊 **{labels['earnings_outlook_label']}**: {str(intel['earnings_outlook'])}")
 
             if intel.get('sentiment_summary'):
                 if not info_added:
                     lines.append(f"### 📰 {labels['info_heading']}")
                     lines.append("")
                     info_added = True
-                lines.append(f"💭 **{labels['sentiment_summary_label']}**: {str(intel['sentiment_summary'])[:80]}")
+                lines.append(f"💭 **{labels['sentiment_summary_label']}**: {str(intel['sentiment_summary'])}")
 
             # 风险警报
             risks = intel.get('risk_alerts', [])
@@ -2931,16 +2931,16 @@ class NotificationService(
                     info_added = True
                 lines.append("")
                 lines.append(f"🚨 **{labels['risk_alerts_label']}**:")
-                for risk in risks[:3]:
-                    lines.append(f"- {str(risk)[:60]}")
+                for risk in risks:
+                    lines.append(f"- {str(risk)}")
 
             # 利好催化
             catalysts = intel.get('positive_catalysts', [])
             if catalysts:
                 lines.append("")
                 lines.append(f"✨ **{labels['positive_catalysts_label']}**:")
-                for cat in catalysts[:3]:
-                    lines.append(f"- {str(cat)[:60]}")
+                for cat in catalysts:
+                    lines.append(f"- {str(cat)}")
 
         if info_added:
             lines.append("")

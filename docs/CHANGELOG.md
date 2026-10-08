@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] 移除既有报告/Email兼容消费者对材料理由、策略冲突、单股结论、业绩/情绪上下文、风险与催化的固定4/3项及60/80/100字符裁剪；简报仍可结论先行，但不再把内容预算当删除依据。新增五条理由、四个独立冲突、四条长风险/催化和长结论负例，完整保留而不改V2.5原件、canonical action、数据库、provider、SMTP路由或模型权限；企业微信平台专用分段/完整性另按实际通道边界验收，不以本修复冒充通过。
 - [修复] 投资者简报的既有完整/精简报告消费者现在按同一已验证 canonical `complete_research_universe` 派生六证据层的逐项方法/数据准入附录，显示 Quality/Valuation、Global/A股宽度、ETF不适用、Chan/Wave、经典指标及30m等未准入义务，不把 7×8 技术格当全研究、不编造指标/价位/概率；本地 MIME HTML 沿用 EmailSender，既有结论、全部风险/条件/周期和不可变 V2.5 HTML 不改变，也不启用真实 SMTP、provider 或 Learning/Promotion。
 - [修复] 增加 derived-only `complete-research-universe-view-v1` 顶层闭世界机器图：在既有 registry/trace 上同时绑定 56-cell 技术矩阵、全部 accepted/deferred research requirements、43 个 method-window profiles 与策略 clauses，并把 universe hash 贯通 Product coverage、Ledger identity 和 Evidence Flywheel receipt；删除/遗漏 Valuation、Global/Breadth、ETF、Chan/Wave、MA、K线或其他已接受 obligation 均 fail-closed。该修复不新增第二数据库/renderer/decision authority，不准入尚 deferred 的指标，不改变 V2.5 原件、provider、SMTP、训练或 Promotion 权限。
 - [修复] 修复 exact7 evidence trace / Product coverage 经 JSON 持久化后 Python tuple 变为 list 时被 History canonical binding 与 Evidence Flywheel 误判为 stale/drift 的问题；统一复用 canonical JSON-wire 等价校验，仅容忍 JSON 本身无法区分的序列表示差异，56-cell 内容/顺序、matrix/runtime hash、canonical action、缺失字段和伪造证据仍 fail-closed，不回填历史数据库、不改变策略/学习/模型/V2.5/通知权限。
