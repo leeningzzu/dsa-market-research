@@ -40,7 +40,7 @@ _TREND_RELATIVE_STRENGTH_VERSION = "trend-relative-strength-v1"
 _SUPPLY_DEMAND_VOLUME_PRICE_VERSION = "supply-demand-volume-price-v1"
 _COST_STRUCTURE_VERSION = "cost-structure-v1"
 _PRICE_STRUCTURE_VERSION = "price-structure-v1"
-_VOLATILITY_MOMENTUM_VERSION = "volatility-momentum-v1"
+_VOLATILITY_MOMENTUM_VERSION = "volatility-momentum-v2"
 _PATTERN_TRIGGER_VERSION = "pattern-trigger-v1"
 _CANONICAL_BINDING_VERSION = "canonical-decision-binding-v1"
 
@@ -400,8 +400,11 @@ def _volatility_momentum_summary(evidence: Dict[str, Any], trend_result: Any) ->
     parts: List[str] = []
     realized = _safe_float(volatility.get("realized_volatility_20d_annualized_pct"))
     tr_sma = _safe_float(volatility.get("true_range_sma_20_pct"))
+    atr_wilder = _safe_float(volatility.get("atr_wilder_14_pct"))
     if realized is not None:
         parts.append(f"20日实现波动率年化 {realized:.1f}%")
+    if atr_wilder is not None:
+        parts.append(f"Wilder ATR14/现价 {atr_wilder:.1f}%")
     if tr_sma is not None:
         parts.append(f"20日真实波幅简单均值/现价 {tr_sma:.1f}%")
     roc20 = _safe_float(momentum.get("roc_20_pct"))
@@ -424,7 +427,7 @@ def _volatility_momentum_summary(evidence: Dict[str, Any], trend_result: Any) ->
     if not parts:
         return _momentum_summary(trend_result)
     prefix = "波动/动量："
-    return prefix + "；".join(parts[:7]) + "。"
+    return prefix + "；".join(parts) + "。"
 
 
 def _build_pattern_trigger_evidence(context_value: Any) -> Dict[str, Any]:

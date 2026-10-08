@@ -301,6 +301,10 @@ def test_method_window_policy_view_is_complete_manifest_bound_and_non_mutating()
     assert set(methods["ADX_DMI"]["window_classes"]) == {"FIXED_ROLLING", "RECURSIVE_WARMUP"}
     assert set(methods["KDJ"]["window_classes"]) == {"FIXED_ROLLING", "RECURSIVE_WARMUP"}
     assert methods["ATR_WILDER"]["window_classes"] == ("RECURSIVE_WARMUP",)
+    assert methods["ATR_WILDER"]["requirement_id"] == "MOMENTUM"
+    assert methods["ATR_WILDER"]["leaf_implementation_state"] == "EXISTING_REUSED"
+    assert methods["ATR_WILDER"]["current_execution_timeframes"] == ("daily",)
+    assert methods["ATR_WILDER"]["canonical_path"] == "volatility_momentum_evidence"
     assert methods["CHAN"]["window_classes"] == ("INCREMENTAL_STATE_MACHINE",)
     assert methods["CHAN"]["current_execution_timeframes"] == ()
     assert methods["VALUATION"]["target_timeframes"] == ("asset",)
@@ -318,8 +322,18 @@ def test_method_window_policy_view_is_complete_manifest_bound_and_non_mutating()
     assert set(methods["MACD"]["parent_learning_metric_ids"]) == {
         metric["id"] for metric in reg.METRIC_BINDINGS if metric["requirement_id"] == "MOMENTUM"
     }
+    assert set(methods["ATR_WILDER"]["parent_learning_metric_ids"]) == {
+        metric["id"] for metric in reg.METRIC_BINDINGS if metric["requirement_id"] == "MOMENTUM"
+    }
+    metric_ids = {metric["id"] for metric in reg.METRIC_BINDINGS}
+    assert {"daily.atr_wilder14", "daily.atr_wilder14_pct"} <= metric_ids
 
     current_manifest = reg.manifest_document()
+    assert current_manifest["method_contracts"]["MOMENTUM"] == {
+        "version": "volatility-momentum-v2",
+        "warmup": 61,
+        "config_hash": "9cf1fb3f0cdd64752e6a589c480a16fc88b3daeb4a88c4b7a897a4e36d9706c9",
+    }
     assert current_manifest["method_contracts"]["MTF"] == {
         "version": "completed-daily-plus-intraday-context-v2",
         "warmup": 26,
@@ -331,10 +345,10 @@ def test_method_window_policy_view_is_complete_manifest_bound_and_non_mutating()
         "warmup": 26,
         "config_hash": "5ea82ff077b04d411d4f62b41800d07ebbd7a547726db2481e3aa07db61c5b0f",
     }
-    assert reg.digest(pre_intraday_manifest) == "5818db4878f97f34c732a630ff1a5a41287b661ded299a3076473479123cefca"
-    assert reg.MANIFEST_HASH == "a88c20a84e0abe7d65c677ff4150102b005a1109d476e52c527d09e3bff88fa4"
+    assert reg.digest(pre_intraday_manifest) == "f5e3a015bcdcfae5f74f91008f037414a234c2bb4c2eb9c51297006b5109fa19"
+    assert reg.MANIFEST_HASH == "3e3fbf1160cedf84f326b2a4183c306c4b58b78e83001f70e865575f5bbd9375"
     assert reg.MANIFEST_HASH == manifest_before == reg.digest(reg.manifest_document())
-    assert reg.digest(reg.METRIC_BINDINGS) == metrics_before == "611d5c0657cc42de3f31ca9c911e65d8e2d84e4504fc6167a332de548705fde5"
+    assert reg.digest(reg.METRIC_BINDINGS) == metrics_before == "ac2e214238229453592464d99ed6341651f7d232c9339da66d2fec7fc4d6729a"
     assert not any(
         any(token in metric["id"] for token in ("slope", "compression", "release", "cross"))
         for metric in reg.METRIC_BINDINGS
@@ -407,9 +421,12 @@ def test_timeframe_family_matrix_is_exact_56_cells_and_keeps_deferred_methods_vi
     assert daily_momentum["state"] == "READY"
     method_states = {item["method_id"]: item["state"] for item in daily_momentum["method_coverage"]}
     assert method_states["MACD"] == "READY"
-    assert method_states["ATR_WILDER"] == "NOT_ADMITTED"
+    assert method_states["ATR_WILDER"] == "READY"
     assert method_states["ADX_DMI"] == "NOT_ADMITTED"
     assert method_states["KDJ"] == "NOT_ADMITTED"
+    weekly_momentum = cells[("weekly", "MOMENTUM")]
+    weekly_states = {item["method_id"]: item["state"] for item in weekly_momentum["method_coverage"]}
+    assert weekly_states["ATR_WILDER"] == "NOT_ADMITTED"
     assert cells[("daily", "REGIME")]["state"] == "NOT_APPLICABLE"
 
     matrix_method_ids = {
