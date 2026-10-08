@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [测试] CI 忙端口测试仅替换 API 启动入口导入的 socket/threading 对象，保留一次端口探测及禁止建线程的精确断言，避免全局 socket mock 误计后台连接；LLM usage 异常测试显式模拟数据库获取失败，不再重置单例后误写默认业务库。生产代码、V2.5 原件、报告与策略均不变。
 - [修复] CN AkShare 基本面适配器保留业绩预告和业绩快报字段完整文本，不再在数据进入 Research/Report 前固定截取前200字；既有 source-chain、missingness、canonical、Quality/Valuation NOT_ADMITTED、数据库、V2.5 原件、SMTP、provider 调用数及模型权限均保持不变；新增独立长材料负例，不能以字符预算充当数据准入或保真证明。
 - [修复] 移除既有报告/Email兼容消费者对材料理由、策略冲突、单股结论、业绩/情绪上下文、风险与催化的固定4/3项及60/80/100字符裁剪；简报仍可结论先行，但不再把内容预算当删除依据。新增五条理由、四个独立冲突、四条长风险/催化和长结论负例，完整保留而不改V2.5原件、canonical action、数据库、provider、SMTP路由或模型权限；企业微信平台专用分段/完整性另按实际通道边界验收，不以本修复冒充通过。
 - [修复] 投资者简报的既有完整/精简报告消费者现在按同一已验证 canonical `complete_research_universe` 派生六证据层的逐项方法/数据准入附录，显示 Quality/Valuation、Global/A股宽度、ETF不适用、Chan/Wave、经典指标及30m等未准入义务，不把 7×8 技术格当全研究、不编造指标/价位/概率；本地 MIME HTML 沿用 EmailSender，既有结论、全部风险/条件/周期和不可变 V2.5 HTML 不改变，也不启用真实 SMTP、provider 或 Learning/Promotion。

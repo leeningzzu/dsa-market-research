@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from datetime import date, datetime, timezone
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from tests.litellm_stub import ensure_litellm_stub
@@ -280,8 +280,22 @@ class MainScheduleModeTestCase(unittest.TestCase):
             def close(self):
                 pass
 
-        with patch("socket.socket", return_value=BusySocket()) as socket_factory, \
-             patch("threading.Thread") as thread_cls:
+        # Stub only the modules imported by this API probe. A global patch of
+        # socket.socket counts unrelated requests made by concurrent test threads.
+        socket_factory = MagicMock(return_value=BusySocket())
+        thread_cls = MagicMock()
+        probe_socket = ModuleType("socket")
+        probe_socket.AF_INET = socket.AF_INET
+        probe_socket.AF_INET6 = socket.AF_INET6
+        probe_socket.SOCK_STREAM = socket.SOCK_STREAM
+        probe_socket.socket = socket_factory
+        probe_threading = ModuleType("threading")
+        probe_threading.Thread = thread_cls
+
+        with patch.dict(
+            "sys.modules",
+            {"socket": probe_socket, "threading": probe_threading, "uvicorn": ModuleType("uvicorn")},
+        ):
             with self.assertRaises(RuntimeError) as caught:
                 main.start_api_server("127.0.0.1", 8000, config)
 
