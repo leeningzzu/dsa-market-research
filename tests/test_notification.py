@@ -38,6 +38,7 @@ from src.notification import (
     NotificationChannel,
     NotificationService,
     _append_factor_decision_block,
+    _append_strategy_synthesis_block,
     _get_valid_investor_brief,
 )
 from src.notification_noise import reset_notification_noise_state
@@ -49,6 +50,7 @@ from src.services.factor_decision_summary import (
     canonical_factor_binding,
 )
 from src.services.evidence_traceability_registry import build_runtime_trace
+from src.report_language import get_report_labels, localize_strategy_conflict_description
 from src.share_image import build_share_image_html
 from bot.models import BotMessage, ChatType
 import requests
@@ -1313,7 +1315,8 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
                     self.assertIn(risk, full)
                     self.assertIn(risk, compact)
 
-    def test_legacy_factor_fallback_preserves_all_material_risks(self):
+    def test_legacy_factor_fallback_preserves_all_material_reasons_risks_and_conflicts(self):
+        reasons = [f"WHY_MATERIAL_{index}_DISTINCT" for index in range(1, 6)]
         risks = [
             "RISK_LIQUIDITY_DISTINCT",
             "RISK_FINANCIAL_VINTAGE_DISTINCT",
@@ -1327,7 +1330,7 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
                 "conclusion": "fixture",
                 "historical_reference": {},
                 "current_probability": {},
-                "why": [],
+                "why": reasons,
                 "action_condition": "",
                 "invalidation_condition": "",
                 "valuation": "",
@@ -1337,8 +1340,86 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
             "zh",
         )
         output = "\n".join(lines)
-        for risk in risks:
-            self.assertIn(risk, output)
+        for item in reasons + risks:
+            self.assertIn(item, output)
+
+        conflict_types = [
+            "directional_opposition",
+            "wide_score_dispersion",
+            "high_confidence_dissent",
+            "adjustment_contradiction",
+        ]
+        conflict_lines = []
+        _append_strategy_synthesis_block(
+            conflict_lines,
+            {
+                "final_signal": "hold",
+                "consensus_level": "mixed",
+                "conflict_severity": "high",
+                "conflict_count": len(conflict_types),
+                "confidence": 0.42,
+                "supporting_skills": [],
+                "opposing_skills": [],
+                "conflicts": [
+                    {
+                        "conflict_type": conflict_type,
+                        "severity": "high",
+                        "participants": [f"SKILL_{index}_A", f"SKILL_{index}_B"],
+                    }
+                    for index, conflict_type in enumerate(conflict_types, start=1)
+                ],
+            },
+            get_report_labels("zh"),
+            "zh",
+        )
+        conflict_output = "\n".join(conflict_lines)
+        for conflict_type in conflict_types:
+            self.assertIn(
+                localize_strategy_conflict_description(conflict_type, "zh"),
+                conflict_output,
+            )
+
+    @mock.patch("src.notification.get_config")
+    def test_legacy_single_stock_and_brief_preserve_material_text_without_fixed_budgets(
+        self, mock_get_config: mock.MagicMock
+    ):
+        mock_get_config.return_value = _make_config(report_renderer_enabled=False)
+        one_sentence = "ONE_SENTENCE_FULL_" + "完整结论不能按字符预算删减" * 8
+        earnings = "EARNINGS_FULL_" + "公告事实和不确定性必须全部保留" * 8
+        sentiment = "SENTIMENT_FULL_" + "情绪材料仅作上下文但不能静默截断" * 8
+        risks = [
+            f"RISK_{index}_FULL_" + "不同风险有独立条件和影响，不能只保留前三项" * 7
+            for index in range(1, 5)
+        ]
+        catalysts = [
+            f"CATALYST_{index}_FULL_" + "不同事件有独立日期和条件，不能只保留前三项" * 7
+            for index in range(1, 5)
+        ]
+        result = AnalysisResult(
+            code="600519",
+            name="贵州茅台",
+            sentiment_score=42,
+            trend_prediction="偏弱",
+            operation_advice="观望",
+            analysis_summary=one_sentence,
+            dashboard={
+                "core_conclusion": {"one_sentence": one_sentence},
+                "intelligence": {
+                    "earnings_outlook": earnings,
+                    "sentiment_summary": sentiment,
+                    "risk_alerts": risks,
+                    "positive_catalysts": catalysts,
+                },
+            },
+        )
+
+        service = NotificationService()
+        brief = service.generate_brief_report([result], report_date="2026-10-08")
+        single = service.generate_single_stock_report(result)
+
+        self.assertIn(one_sentence, brief)
+        for material in [earnings, sentiment, *risks, *catalysts]:
+            self.assertIn(material, single)
 
     @mock.patch("src.notification.get_config")
     def test_asset_investor_brief_template_matches_fallback_semantics(
