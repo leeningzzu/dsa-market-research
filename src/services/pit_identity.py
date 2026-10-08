@@ -136,7 +136,14 @@ def build_completed_history_identity(
         "daily_data_identity": _identity_semantics(identity),
         "rows": rows,
     }
-    observed_utc = _aware_utc_naive(observed_at) or _identity_observed_utc(identity)
+    # Never allow a caller's historical replay clock to backdate a later
+    # provider observation; both timestamps are normalized to naive UTC.
+    runtime_observed = _aware_utc_naive(observed_at)
+    source_observed = _identity_observed_utc(identity)
+    observed_utc = max(
+        (value for value in (runtime_observed, source_observed) if value is not None),
+        default=None,
+    )
     result = {
         "data_snapshot_identity": sha256_payload(payload),
         "data_snapshot_schema_version": DATA_SNAPSHOT_IDENTITY_VERSION,
