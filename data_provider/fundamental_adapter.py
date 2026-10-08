@@ -352,7 +352,7 @@ class AkshareFundamentalAdapter:
             if row is not None:
                 result["earnings"]["forecast_summary"] = _safe_str(
                     _pick_by_keywords(row, ["预告", "业绩变动", "内容", "摘要", "公告"])
-                )[:200]
+                )
                 result["source_chain"].append(f"earnings_forecast:{forecast_source}")
 
         # Earnings quick report
@@ -366,7 +366,7 @@ class AkshareFundamentalAdapter:
             if row is not None:
                 result["earnings"]["quick_report_summary"] = _safe_str(
                     _pick_by_keywords(row, ["快报", "摘要", "公告", "说明"])
-                )[:200]
+                )
                 result["source_chain"].append(f"earnings_quick:{quick_source}")
 
         # Dividend details (cash dividend, pre-tax)
