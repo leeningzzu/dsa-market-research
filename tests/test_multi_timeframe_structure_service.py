@@ -658,6 +658,46 @@ def test_completed_history_identity_binds_observed_price_basis_into_snapshot_has
     assert hfq["data_snapshot_identity"] != qfq["data_snapshot_identity"]
 
 
+def test_completed_history_availability_never_backdates_typed_source_observation():
+    # The data source first observed this snapshot in September 2026; a caller
+    # replaying a 2025 session must not replace its actual availability clock.
+    frame = _with_observed_identity(_history(periods=150), provider="AkshareFetcher")
+    target = frame.iloc[-1]["date"].date()
+    replay_time = datetime(2025, 9, 30, 12, 0, tzinfo=timezone.utc)
+    source_time = "2026-09-17T10:00:00"
+
+    earlier = build_completed_history_identity(
+        frame, stock_code="600519", market="cn",
+        target_date=target, observed_at=replay_time,
+    )
+    assert earlier["adjustment_basis"] == "qfq"
+    assert earlier["daily_data_identity_state"] == "OBSERVED"
+    assert earlier["available_at_max"] == source_time
+    assert earlier["snapshot_observed_at"] == source_time
+
+    # A genuinely later runtime observation is still the conservative maximum.
+    later = build_completed_history_identity(
+        frame, stock_code="600519", market="cn", target_date=target,
+        observed_at=datetime(2026, 9, 18, 8, 0, tzinfo=timezone.utc),
+    )
+    assert later["available_at_max"] == "2026-09-18T08:00:00"
+    assert later["data_snapshot_identity"] == earlier["data_snapshot_identity"]
+
+    # Prove the existing MTF consumer forwards the same fail-closed clock.
+    with patch(
+        "src.services.multi_timeframe_structure_service.resolve_completed_timeframe_bar_date",
+        return_value=None,
+    ):
+        mtf = build_multi_timeframe_structure_context(
+            stock_code="600519", history=frame, target_date=target,
+            market="cn", trend_analyzer=_FakeTrendAnalyzer(),
+            daily_trend_result=_trend_result(),
+            daily_price_structure_context={"historical_replay_eligible": False},
+            snapshot_observed_at=replay_time,
+        )
+    assert mtf["available_at_max"] == source_time
+
+
 def test_provider_name_alone_never_proves_qfq():
     assert proven_adjustment_basis("TencentFetcher") is None
     frame = _with_observed_identity(_history(periods=5), provider="TencentFetcher")
