@@ -387,8 +387,8 @@ METHOD_WINDOW_PROFILES = (
         ("ADAPTIVE_CONTEXT", "EVENT_ANCHORED"), TIMEFRAMES, ("daily",), "EXISTING_REUSED",
     ),
     MethodWindowProfile(
-        "ATR_WILDER", "EXTRA_INDICATORS",
-        ("RECURSIVE_WARMUP",), TIMEFRAMES, (), "DEFERRED_WITH_OWNER_AND_REENTRY",
+        "ATR_WILDER", "MOMENTUM",
+        ("RECURSIVE_WARMUP",), TIMEFRAMES, ("daily",), "EXISTING_REUSED",
     ),
     MethodWindowProfile(
         "ADX_DMI", "EXTRA_INDICATORS",
@@ -583,6 +583,8 @@ METRIC_BINDINGS = tuple(
         ("daily.roc60", "MOMENTUM", "volatility_momentum_evidence.context.momentum.roc_60_pct", "pct", "daily"),
         ("daily.realized_volatility20", "MOMENTUM", "volatility_momentum_evidence.context.volatility.realized_volatility_20d_annualized_pct", "annualized_pct", "daily"),
         ("daily.tr_sma20_not_wilder_atr", "MOMENTUM", "volatility_momentum_evidence.context.volatility.true_range_sma_20_pct", "pct", "daily"),
+        ("daily.atr_wilder14", "MOMENTUM", "volatility_momentum_evidence.context.volatility.atr_wilder_14", "PRICE_BASIS_CURRENCY", "daily"),
+        ("daily.atr_wilder14_pct", "MOMENTUM", "volatility_momentum_evidence.context.volatility.atr_wilder_14_pct", "pct", "daily"),
     )
 ) + tuple(
     {"id": tf + "." + ma, "requirement_id": "MTF", "path": "multi_timeframe_structure_context.timeframes." + tf + ".trend." + ma,

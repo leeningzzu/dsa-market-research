@@ -17,13 +17,14 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 
 
-VOLATILITY_MOMENTUM_SCHEMA_VERSION = "volatility-momentum-v1"
-ALGORITHM_VERSION = "volatility-momentum-v1"
+VOLATILITY_MOMENTUM_SCHEMA_VERSION = "volatility-momentum-v2"
+ALGORITHM_VERSION = "volatility-momentum-v2"
 MIN_OBSERVATIONS = 21
 READY_OBSERVATIONS = 61
 SOURCE_ALIGNMENT_WINDOW = 61
 DIAGNOSTIC_RETURN_WINDOW = 60
 VARIANCE_SCALE = 5
+WILDER_ATR_PERIOD = 14
 
 _CONFIG = {
     "algorithm_version": ALGORITHM_VERSION,
@@ -35,6 +36,7 @@ _CONFIG = {
     "roc_windows": [20, 60],
     "realized_volatility_window": 20,
     "true_range_sma_window": 20,
+    "wilder_atr_period": WILDER_ATR_PERIOD,
     "divergence_oscillators": ["MACD_DIF", "RSI_12"],
 }
 CONFIG_HASH = sha256(
@@ -141,6 +143,39 @@ def _true_range_sma_20_pct(frame: pd.DataFrame) -> Optional[float]:
     if pd.isna(tr_sma) or last_close is None or last_close <= 0:
         return None
     return float(tr_sma) / last_close * 100.0
+
+
+def _wilder_atr(frame: pd.DataFrame, period: int = WILDER_ATR_PERIOD) -> tuple[Optional[float], Optional[float]]:
+    """Return Wilder ATR and ATR/close over completed bars only.
+
+    The first row has no previous-close transition and is excluded from the
+    seed.  The next ``period`` true ranges seed the recursive RMA; every later
+    value uses ``(previous * (period - 1) + current) / period``.
+    """
+    if period <= 0 or len(frame) <= period:
+        return None, None
+    high = pd.to_numeric(frame["high"], errors="coerce")
+    low = pd.to_numeric(frame["low"], errors="coerce")
+    close = pd.to_numeric(frame["close"], errors="coerce")
+    previous_close = close.shift(1)
+    true_range = pd.concat(
+        [high - low, (high - previous_close).abs(), (low - previous_close).abs()], axis=1
+    ).max(axis=1)
+    seed = true_range.iloc[1 : period + 1].dropna()
+    if len(seed) != period:
+        return None, None
+    atr = _safe_float(seed.mean())
+    if atr is None:
+        return None, None
+    for value in true_range.iloc[period + 1 :]:
+        current = _safe_float(value)
+        if current is None:
+            return None, None
+        atr = (atr * (period - 1) + current) / period
+    last_close = _safe_float(close.dropna().iloc[-1]) if not close.dropna().empty else None
+    if last_close is None or last_close <= 0:
+        return None, None
+    return atr, atr / last_close * 100.0
 
 
 def _lag1_corr(series: pd.Series) -> Optional[float]:
@@ -360,6 +395,7 @@ def build_volatility_momentum_context(
     close = indicators["close"]
     realized_vol = _realized_volatility_20d_pct(close)
     tr_sma_pct = _true_range_sma_20_pct(indicators)
+    atr_wilder, atr_wilder_pct = _wilder_atr(indicators)
     roc20 = _roc_pct(close, 20)
     roc60 = _roc_pct(close, 60)
 
@@ -386,10 +422,16 @@ def build_volatility_momentum_context(
         },
     }
     volatility = {
-        "status": "READY" if realized_vol is not None and tr_sma_pct is not None else "PARTIAL",
+        "status": "READY" if all(
+            value is not None for value in (realized_vol, tr_sma_pct, atr_wilder, atr_wilder_pct)
+        ) else "PARTIAL",
         "realized_volatility_20d_annualized_pct": realized_vol,
         "true_range_sma_20_pct": tr_sma_pct,
         "true_range_semantics": "SIMPLE_MEAN_TRUE_RANGE_20_NOT_WILDER_ATR",
+        "atr_wilder_14": atr_wilder,
+        "atr_wilder_14_pct": atr_wilder_pct,
+        "atr_wilder_period": WILDER_ATR_PERIOD,
+        "atr_wilder_semantics": "TR_TRANSITIONS_1_TO_14_MEAN_THEN_WILDER_RMA_ALPHA_1_OVER_14",
         "legacy_screening_alias_note": "screening atr_20_pct uses the same TR-SMA/close formula",
     }
     process = _process_diagnostics(close)

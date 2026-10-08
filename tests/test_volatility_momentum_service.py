@@ -73,6 +73,66 @@ def test_ready_context_reuses_existing_formulas_and_keeps_process_diagnostics_ob
     assert "GARCH" in diagnostics["deferred_models"]
 
 
+def test_wilder_atr14_is_recursive_distinct_from_tr_sma_and_future_safe():
+    history = _history(periods=90)
+    target_index = 70
+    target = history.iloc[target_index]["date"].date()
+    prefix = history.iloc[: target_index + 1].copy()
+
+    context = build_volatility_momentum_context(
+        stock_code="600519",
+        history=history,
+        target_date=target,
+        market="cn",
+        trend_result=_trend_projection(),
+        price_structure_context={"pivots": []},
+    )
+    volatility = context["volatility"]
+
+    high = prefix["high"].astype(float)
+    low = prefix["low"].astype(float)
+    close = prefix["close"].astype(float)
+    previous_close = close.shift(1)
+    true_range = pd.concat(
+        [high - low, (high - previous_close).abs(), (low - previous_close).abs()],
+        axis=1,
+    ).max(axis=1)
+    expected = float(true_range.iloc[1:15].mean())
+    for value in true_range.iloc[15:]:
+        expected = (expected * 13.0 + float(value)) / 14.0
+    expected_pct = expected / float(close.iloc[-1]) * 100.0
+
+    assert abs(volatility["atr_wilder_14"] - expected) < 1e-12
+    assert abs(volatility["atr_wilder_14_pct"] - expected_pct) < 1e-12
+    assert volatility["atr_wilder_period"] == 14
+    assert volatility["atr_wilder_semantics"] == (
+        "TR_TRANSITIONS_1_TO_14_MEAN_THEN_WILDER_RMA_ALPHA_1_OVER_14"
+    )
+    tr_sma_value = volatility["true_range_sma_20_pct"] * float(close.iloc[-1]) / 100.0
+    assert abs(volatility["atr_wilder_14"] - tr_sma_value) > 1e-9
+
+    future = history.copy()
+    future.loc[len(future)] = {
+        "date": pd.Timestamp(target) + pd.Timedelta(days=1),
+        "open": 1000.0,
+        "high": 1500.0,
+        "low": 500.0,
+        "close": 1200.0,
+        "volume": 99_999_999,
+        "data_source": "UNRELATED_FUTURE_TEST",
+    }
+    future_context = build_volatility_momentum_context(
+        stock_code="600519",
+        history=future,
+        target_date=target,
+        market="cn",
+        trend_result=_trend_projection(),
+        price_structure_context={"pivots": []},
+    )
+    assert future_context["volatility"]["atr_wilder_14"] == volatility["atr_wilder_14"]
+    assert future_context["volatility"]["atr_wilder_14_pct"] == volatility["atr_wilder_14_pct"]
+
+
 def test_missing_mixed_source_and_target_date_fail_closed():
     missing_source = _history(source=None)
     target = missing_source.iloc[-1]["date"].date()

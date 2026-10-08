@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [指标] 在既有 VolatilityMomentum owner 内新增日线 Wilder ATR(14)：首个收盘价不充当跨日 TR，随后 14 个真实波幅取种子并按 Wilder RMA 递推；同时保留原 TR-SMA20 且明确两者不可混称。ATR 进入日线 MOMENTUM 方法与 Ledger 指标投影，但不新增独立投票、硬否决、策略切换或历史 PIT 资格；非日线周期和其余经典指标继续 NOT_ADMITTED。
 - [修复] PIT/MultiTimeframe 日线快照可用时点不得被历史回放参数倒填：在已有 typed daily 数据源 observed_at 与运行观察时间之间取较晚者，保持 Ledger 的 DATA_AVAILABLE_AFTER_DECISION 严格拒绝；新增独立 RED→GREEN 与较晚合法时点非触发测试，不改原始行情、canonical、模型、V2.5 邮件原件或数据库。
 - [测试] CI 忙端口测试仅替换 API 启动入口导入的 socket/threading 对象，保留一次端口探测及禁止建线程的精确断言，避免全局 socket mock 误计后台连接；LLM usage 异常测试显式模拟数据库获取失败，不再重置单例后误写默认业务库。生产代码、V2.5 原件、报告与策略均不变。
 - [修复] CN AkShare 基本面适配器保留业绩预告和业绩快报字段完整文本，不再在数据进入 Research/Report 前固定截取前200字；既有 source-chain、missingness、canonical、Quality/Valuation NOT_ADMITTED、数据库、V2.5 原件、SMTP、provider 调用数及模型权限均保持不变；新增独立长材料负例，不能以字符预算充当数据准入或保真证明。

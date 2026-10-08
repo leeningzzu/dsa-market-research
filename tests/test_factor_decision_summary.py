@@ -614,6 +614,10 @@ def test_volatility_momentum_is_first_class_observational_evidence_without_actio
                 "realized_volatility_20d_annualized_pct": 22.5,
                 "true_range_sma_20_pct": 2.3,
                 "true_range_semantics": "SIMPLE_MEAN_TRUE_RANGE_20_NOT_WILDER_ATR",
+                "atr_wilder_14": 2.1,
+                "atr_wilder_14_pct": 1.7,
+                "atr_wilder_period": 14,
+                "atr_wilder_semantics": "TR_TRANSITIONS_1_TO_14_MEAN_THEN_WILDER_RMA_ALPHA_1_OVER_14",
             },
             "momentum": {
                 "status": "READY",
@@ -649,7 +653,12 @@ def test_volatility_momentum_is_first_class_observational_evidence_without_actio
     assert evidence["automatic_strategy_switching"] is False
     assert summary["canonical_decision"]["action"] == "WAIT"
     assert "20日实现波动率年化 22.5%" in summary["sections"]["momentum"]
+    assert "Wilder ATR14/现价 1.7%" in summary["sections"]["momentum"]
+    assert "20日真实波幅简单均值/现价 2.3%" in summary["sections"]["momentum"]
     assert "顶背离" in summary["sections"]["momentum"]
+    assert "MACD 多头" in summary["sections"]["momentum"]
+    assert "RSI 中性" in summary["sections"]["momentum"]
+    assert evidence["version"] == "volatility-momentum-v2"
     assert "不自动切换策略" not in summary["sections"]["momentum"]
     assert evidence["automatic_strategy_switching"] is False
 
