@@ -128,6 +128,30 @@ class TestFundamentalAdapter(unittest.TestCase):
         self.assertEqual(dividend_payload.get("ttm_event_count"), 1)
         self.assertAlmostEqual(dividend_payload.get("ttm_cash_dividend_per_share"), 0.3, places=6)
 
+    def test_long_forecast_and_quick_report_text_survive_fundamental_adapter(self):
+        adapter = AkshareFundamentalAdapter()
+        forecast = "预测信息各项风险与失效条件均须保留" * 23
+        quick = "业绩快报的完整披露信息不得按字符数删减" * 23
+        forecast_df = pd.DataFrame({"股票代码": ["600519"], "预告": [forecast]})
+        quick_df = pd.DataFrame({"股票代码": ["600519"], "快报": [quick]})
+
+        with patch.object(
+            adapter,
+            "_call_df_candidates",
+            side_effect=[
+                (None, None, []),
+                (forecast_df, "stock_yjyg_em", []),
+                (quick_df, "stock_yjkb_em", []),
+                (None, None, []),
+                (None, None, []),
+                (None, None, []),
+            ],
+        ):
+            result = adapter.get_fundamental_bundle("600519")
+
+        self.assertEqual(result["earnings"]["forecast_summary"], forecast)
+        self.assertEqual(result["earnings"]["quick_report_summary"], quick)
+
     def test_build_dividend_payload_returns_empty_when_code_not_matched(self) -> None:
         now = datetime.now().strftime("%Y-%m-%d")
         df = pd.DataFrame(
