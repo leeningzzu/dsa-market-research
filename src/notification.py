@@ -204,6 +204,105 @@ def _format_etf_asset_specific_items(brief: Dict[str, Any]) -> List[str]:
 
 
 
+def _append_complete_research_universe_appendix(
+    lines: List[str], factor: Any, brief: Dict[str, Any],
+) -> None:
+    """Reuse the validated universe in all existing report projections, never as new facts."""
+    # This appendix is derived from the already-bound current canonical trace.
+    # The 7x8 technical matrix must never stand for the whole research universe.
+    trace = factor.get("evidence_traceability") if isinstance(factor, dict) else None
+    universe = trace.get("complete_research_universe") if isinstance(trace, dict) else None
+    if (
+        isinstance(universe, dict)
+        and universe.get("schema_version") == "complete-research-universe-view-v1"
+    ):
+        roles = {
+            str(item.get("requirement_id")): item
+            for item in universe.get("requirements", ())
+            if isinstance(item, dict)
+        }
+        plane_labels = {
+            "TECHNICAL_EVIDENCE": "技术证据（7周期×8族仅为技术子集）",
+            "FUNDAMENTAL_AND_STRATEGY": "基本面、估值和策略硬约束",
+            "MARKET_AND_ASSET": "全球、大盘与资产专属研究",
+            "RESEARCH_SHADOW": "结构研究与影子方法",
+            "MODEL_LAYER": "结果、PIT与概率模型",
+            "DECISION": "唯一确定性决策",
+        }
+        state_labels = {
+            "READY": "证据可用",
+            "PARTIAL": "部分证据可用",
+            "MISSING": "证据不足",
+            "UNKNOWN": "尚未证实",
+            "NOT_APPLICABLE": "不适用",
+            "NOT_ADMITTED": "未准入",
+        }
+        asset_type = str(brief.get("asset_type") or "stock").lower()
+        lines.extend([
+            "",
+            "**完整研究范围与实际证据准入（未准入≠已计算；不是独立投票）**:",
+        ])
+        for plane in universe.get("planes", ()):
+            if not isinstance(plane, dict):
+                continue
+            plane_id = str(plane.get("plane") or "")
+            lines.append(f"- **{plane_labels.get(plane_id, plane_id)}**")
+            for requirement_id in plane.get("requirement_ids", ()):
+                item = roles.get(str(requirement_id))
+                if item is None:
+                    continue
+                contract_role = str(item.get("contract_role") or "")
+                if requirement_id == "ETF_SPECIFIC" and asset_type == "stock":
+                    state_text = "股票路径不适用"
+                elif contract_role == "DEFERRED":
+                    state_text = "未准入"
+                elif contract_role == "DECISION":
+                    state_text = (
+                        "已绑定" if item.get("state") == "READY" else "尚未证实"
+                    )
+                else:
+                    state_text = state_labels.get(
+                        str(item.get("state") or ""), "尚未证实"
+                    )
+                method_ids = tuple(
+                    str(value) for value in item.get("method_ids", ()) if value
+                )
+                method_text = (
+                    "（方法登记：" + "、".join(f"`{method}`" for method in method_ids) + "）"
+                    if method_ids else ""
+                )
+                lines.append(f"  - `{requirement_id}：{state_text}`{method_text}")
+        lines.append(
+            "以上是范围、方法与数据准入状态，不以标题或文字替代未完成的指标计算；"
+            "缺少时点/财务版本/分钟数据不会升级策略，研究/模型不参与重复计票。"
+        )
+
+
+
+def _render_complete_research_universe_appendix_for_results(
+    results: List[Any], report_language: str,
+) -> str:
+    """Project the same validated universe for optional Jinja report consumers."""
+    if report_language != "zh":
+        return ""
+    blocks: List[str] = []
+    for result in results:
+        dashboard = getattr(result, "dashboard", None)
+        factor = dashboard.get("factor_decision") if isinstance(dashboard, dict) else None
+        brief = _get_valid_investor_brief(factor, report_language)
+        if brief is None:
+            continue
+        lines: List[str] = []
+        _append_complete_research_universe_appendix(lines, factor, brief)
+        if not lines:
+            continue
+        if len(results) > 1:
+            blocks.append(f"**{getattr(result, 'code', '')} 研究范围**")
+        blocks.extend(lines)
+        blocks.append("")
+    return "\n".join(blocks).strip()
+
+
 def _append_investor_brief_block(lines: List[str], factor: Any, report_language: str) -> bool:
     """Render the DAILY-FIRST investor brief without deriving new evidence or actions."""
     brief = _get_valid_investor_brief(factor, report_language)
@@ -367,6 +466,8 @@ def _append_investor_brief_block(lines: List[str], factor: Any, report_language:
             short_summary = str(short_term.get("summary") or "").strip()
             if short_summary:
                 lines.append(f"**短线波段 30/15/5m**: {short_summary}")
+
+    _append_complete_research_universe_appendix(lines, factor, brief)
 
     lines.append("")
     return True
@@ -533,6 +634,8 @@ def _append_investor_notification_block(
     if rendered_risks:
         lines.append("**主要风险**:")
         lines.extend(f"- {item}" for item in rendered_risks)
+
+    _append_complete_research_universe_appendix(lines, factor, brief)
 
     lines.append("")
     return True
@@ -1970,6 +2073,12 @@ class NotificationService(
                 },
             )
             if out:
+                if not self._report_summary_only:
+                    appendix = _render_complete_research_universe_appendix_for_results(
+                        results, report_language,
+                    )
+                    if appendix:
+                        out += f"\n\n{appendix}"
                 return f"{product_overview}\n\n{out}" if product_overview else out
 
         if report_date is None:
@@ -2669,6 +2778,11 @@ class NotificationService(
                 extra_context={"report_language": report_language},
             )
             if out:
+                appendix = _render_complete_research_universe_appendix_for_results(
+                    detail_results, report_language,
+                )
+                if appendix:
+                    out += f"\n\n{appendix}"
                 return f"{product_overview}\n\n{out}" if product_overview else out
         # Fallback: brief summary from dashboard report
         if not results:

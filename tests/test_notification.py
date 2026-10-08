@@ -1238,6 +1238,52 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         self.assertNotIn("### 🧭 综合评估", out)
 
     @mock.patch("src.notification.get_config")
+    def test_full_research_universe_deferred_obligations_visible_without_admitting_them(
+        self, mock_get_config: mock.MagicMock
+    ):
+        # Independent accepted Source/Factor obligations: a 7x8 technical matrix
+        # must not certify omission of asset, classic-method or research planes.
+        result = _make_investor_brief_result()
+        required = (
+            "QUALITY：未准入", "VALUATION：未准入",
+            "GLOBAL：未准入", "BREADTH：未准入",
+            "CHAN：未准入", "WAVE：未准入",
+            "EXTRA_INDICATORS：未准入", "ATR_WILDER", "ADX_DMI",
+            "BOLLINGER", "KDJ", "OBV_ADL", "MFI",
+            "AVWAP_PROFILE：未准入", "VWAP", "AVWAP_VOLUME_PROFILE",
+            "INTRADAY_30m：未准入", "RISK_REWARD：未准入",
+            "PROBABILITY：未准入", "ETF_SPECIFIC：股票路径不适用",
+        )
+        from html.parser import HTMLParser
+        from src.formatters import markdown_to_html_document
+
+        class VisibleText(HTMLParser):
+            def __init__(self):
+                super().__init__(convert_charrefs=True)
+                self.parts = []
+
+            def handle_data(self, value):
+                self.parts.append(value)
+
+        for renderer_enabled in (False, True):
+            mock_get_config.return_value = _make_config(
+                report_renderer_enabled=renderer_enabled
+            )
+            service = NotificationService()
+            full = service.generate_dashboard_report([result], report_date="2025-09-30")
+            compact = service.generate_brief_report([result], report_date="2025-09-30")
+            visible = VisibleText()
+            visible.feed(markdown_to_html_document(full))
+            for token in required:
+                for name, output in (
+                    ("full", full), ("compact", compact), ("decoded_html", "".join(visible.parts))
+                ):
+                    self.assertIn(token, output, msg=f"{name}: {token}")
+            self.assertEqual(full.count("当前偏弱，暂不追高，等待趋势重新转强。"), 1)
+            self.assertNotIn("MISSING", full)
+            self.assertNotIn("**ETF专属交易质量**", full)
+
+    @mock.patch("src.notification.get_config")
     def test_builder_material_risks_survive_full_and_compact_complete_outputs(
         self, mock_get_config: mock.MagicMock
     ):
