@@ -11,12 +11,14 @@
 {% set delivery = dash.get('research_delivery') or {} %}
 {% set brief = e.investor_brief or {} %}
 {% set brief_valid = e.investor_brief_valid %}
-{% if brief_valid %}
+{% if brief_valid and e.product_data_current %}
 ## {{ e.signal_emoji }} {{ e.stock_name }} ({{ e.result.code }})｜{{ e.signal_text }}
 
 {% if delivery.get('asset_identity_text') %}**身份**: {{ delivery.get('asset_identity_text') }}
 
-{% endif %}**综合结论**: {{ brief.get('one_line_conclusion') }}
+{% endif %}**数据时点**: {{ e.data_clock_text }}
+
+**综合结论**: {{ brief.get('one_line_conclusion') }}
 
 {{ brief.get('fused_paragraph') }}
 
@@ -98,7 +100,11 @@
 {% endif %}
 {% else %}
 {% if e.canonical_authority %}
-**{{ e.stock_name }}({{ e.result.code }})** {{ e.signal_emoji }} {{ e.signal_text }} | 当前确定性证据摘要不可用，本次保持观望。
+**{{ e.stock_name }}({{ e.result.code }})** {{ e.signal_emoji }} {{ e.signal_text }}
+
+**数据时点**: {{ e.data_clock_text }}
+
+**综合结论**: {% if brief_valid %}本次数据未证明为最新已完成交易日，当前邮件不输出价格、指标、价位或操作条件。{% else %}当前确定性证据摘要不可用，本次保持观望。{% endif %}
 {% else %}
 {% set core = (dash.get('core_conclusion') or {}) if dash else {} %}
 {% set one = (core.get('one_sentence') or e.result.analysis_summary or '')[:60] %}

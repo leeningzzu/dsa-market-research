@@ -31,13 +31,20 @@
 
 ## {{ e.signal_emoji }} {{ e.stock_name }} ({{ result.code }})
 
-{% if e.canonical_authority and not investor_brief_valid %}
+{% if e.canonical_authority and investor_brief_valid and not e.product_data_current %}
+**数据时点**: {{ e.data_clock_text }}
+
+**综合结论**: 本次数据未证明为最新已完成交易日，当前邮件不输出价格、指标、价位或操作条件。
+
+{% elif e.canonical_authority and not investor_brief_valid %}
 **综合结论**: 当前确定性证据摘要不可用，本次保持观望。
 
 {% endif %}
-{% if not e.canonical_authority or investor_brief_valid %}
+{% if not e.canonical_authority or (investor_brief_valid and e.product_data_current) %}
 {% if investor_brief_valid %}
 ### 🧭 投资者简报
+
+**数据时点**: {{ e.data_clock_text }}
 
 **综合结论**: {{ investor_brief.get('one_line_conclusion') }}
 

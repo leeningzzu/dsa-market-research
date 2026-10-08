@@ -113,6 +113,7 @@ from src.services.factor_decision_summary import (
     assert_canonical_consumer_consistency,
     build_stock_factor_decision_summary,
     canonical_explanation_degradation_eligible,
+    normalize_product_data_usage_mode,
     validate_canonical_factor_binding,
     validate_investor_brief_binding,
 )
@@ -275,6 +276,7 @@ class StockAnalysisPipeline:
         p0_model_request_budget: Optional[int] = None,
         research_selection_context: Optional[Dict[str, Any]] = None,
         research_code_sha: Optional[str] = None,
+        data_usage_mode: str = "PRODUCTION_LATEST",
     ):
         """
         初始化调度器
@@ -296,6 +298,7 @@ class StockAnalysisPipeline:
             research_selection_context
         )
         self.research_code_sha = str(research_code_sha or "").strip() or None
+        self.data_usage_mode = normalize_product_data_usage_mode(data_usage_mode)
         if self.p0_acceptance_context and not (
             self.p0_bounded_trial and self.p0_suppress_notification
         ):
@@ -2723,6 +2726,11 @@ class StockAnalysisPipeline:
                 multi_timeframe_structure_context=multi_timeframe_structure_context,
                 include_canonical=True,
                 asset_type=asset_type,
+                data_usage_mode=getattr(
+                    self,
+                    "data_usage_mode",
+                    "PRODUCTION_LATEST",
+                ),
             )
         except Exception as exc:
             if self.p0_bounded_trial:
@@ -2978,6 +2986,11 @@ class StockAnalysisPipeline:
         )
         delivery = {
             "schema_version": "research-delivery-v1",
+            "data_usage_mode": getattr(
+                self,
+                "data_usage_mode",
+                "PRODUCTION_LATEST",
+            ),
             "selection_source": selection_source,
             "delivery_envelope": envelope or None,
             "asset_type": asset_type,

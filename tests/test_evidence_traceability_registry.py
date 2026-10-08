@@ -451,8 +451,18 @@ def test_complete_research_universe_view_prevents_scope_collapse_beyond_7x8():
     methods = {row["method_id"]: row for row in universe["methods"]}
 
     assert universe["schema_version"] == "complete-research-universe-view-v1"
+    assert universe["policy"]["timeframe_family_matrix_is_technical_subset_only"] is True
     assert set(requirements) == EXPECTED_RESEARCH_UNIVERSE_REQUIREMENTS
     assert set(methods) == EXPECTED_METHOD_WINDOW_IDS
+    assert len(requirements) > len(reg.TECHNICAL_EVIDENCE_FAMILIES)
+    assert {
+        "QUALITY", "VALUATION", "DISTRIBUTION", "RISK_REWARD", "GLOBAL",
+        "BREADTH", "ETF_SPECIFIC", "CHAN", "WAVE", "PROBABILITY",
+    } <= set(requirements) - set(reg.TECHNICAL_EVIDENCE_FAMILIES)
+    assert {
+        "ATR_WILDER", "ADX_DMI", "BOLLINGER", "KDJ", "OBV_ADL", "MFI",
+        "VWAP", "AVWAP_VOLUME_PROFILE", "CHAN", "WAVE", "PROBABILITY",
+    } <= set(methods)
     assert universe["counts"] == {
         "requirements": len(EXPECTED_RESEARCH_UNIVERSE_REQUIREMENTS),
         "methods": len(EXPECTED_METHOD_WINDOW_IDS),

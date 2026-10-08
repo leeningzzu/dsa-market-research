@@ -93,12 +93,42 @@ def _make_canonical_wait_result() -> AnalysisResult:
     }
     factor = {
         "strategy_id": "stock_trend_quality_pullback_v1",
+        "data_usage_mode": "PRODUCTION_LATEST",
+        "multi_timeframe_structure_context": {
+            "target_date": "2025-09-30",
+            "available_at_max": "2025-09-30T10:00:00",
+            "provider_identity": "AkshareFetcher",
+            "adjustment_basis": "qfq",
+            "data_snapshot_identity": "renderer-current-snapshot",
+            "timeframes": {
+                "daily": {
+                    "status": "READY",
+                    "completed_bar_only": True,
+                    "latest_bar_date": "2025-09-30",
+                    "completed_through": "2025-09-30",
+                }
+            },
+        },
         "canonical_decision": deepcopy(decision),
         "conclusion": "CANONICAL_WAIT_CONCLUSION",
         "action_condition": "CANONICAL_TRIGGER",
         "invalidation_condition": "CANONICAL_INVALIDATION",
         "investor_brief": {
             "schema_version": "investor-brief-v1",
+            "data_clock": {
+                "schema_version": "product-data-clock-v1",
+                "data_usage_mode": "PRODUCTION_LATEST",
+                "state": "LATEST_COMPLETED",
+                "product_current": True,
+                "target_date": "2025-09-30",
+                "data_as_of": "2025-09-30",
+                "completed_through": "2025-09-30",
+                "available_at_max": "2025-09-30T10:00:00",
+                "provider_identity": "AkshareFetcher",
+                "adjustment_basis": "qfq",
+                "data_snapshot_identity": "renderer-current-snapshot",
+                "reason": "TARGET_COMPLETED_BAR_READY",
+            },
             "canonical": deepcopy(decision),
             "one_line_conclusion": "CANONICAL_WAIT_CONCLUSION",
             "fused_paragraph": "CANONICAL_FUSED_FACTS",
@@ -213,6 +243,29 @@ class TestReportRenderer(unittest.TestCase):
             self.assertNotIn("评分:99", out)
             self.assertNotIn("看多", out)
             self.assertNotIn("LEGACY_ANALYSIS_SUMMARY_MUST_NOT_RENDER", out)
+
+    def test_historical_or_stale_data_clock_cannot_render_as_current_email_fact(self) -> None:
+        result = _make_canonical_wait_result()
+        brief = result.dashboard["factor_decision"]["investor_brief"]
+        result.dashboard["factor_decision"]["data_usage_mode"] = (
+            "HISTORICAL_RESEARCH_ONLY"
+        )
+        brief["data_clock"].update(
+            {
+                "data_usage_mode": "HISTORICAL_RESEARCH_ONLY",
+                "state": "HISTORICAL_RESEARCH_ONLY",
+                "product_current": False,
+                "reason": "HISTORICAL_REPLAY_NEVER_CURRENT_PRODUCT_FACT",
+            }
+        )
+
+        for platform in ("markdown", "brief", "wechat"):
+            out = render(platform, [result], report_date="2026-10-08")
+            self.assertIsNotNone(out)
+            self.assertIn("不得作为当前邮件事实", out)
+            self.assertIn("当前邮件不输出价格、指标、价位或操作条件", out)
+            self.assertNotIn("CANONICAL_FUSED_FACTS", out)
+            self.assertNotIn("CANONICAL_TRIGGER", out)
 
     def test_render_markdown_full(self) -> None:
         """Markdown platform renders full report."""

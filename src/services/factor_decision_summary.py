@@ -43,6 +43,18 @@ _PRICE_STRUCTURE_VERSION = "price-structure-v1"
 _VOLATILITY_MOMENTUM_VERSION = "volatility-momentum-v2"
 _PATTERN_TRIGGER_VERSION = "pattern-trigger-v1"
 _CANONICAL_BINDING_VERSION = "canonical-decision-binding-v1"
+_PRODUCT_DATA_CLOCK_VERSION = "product-data-clock-v1"
+_PRODUCT_DATA_USAGE_MODES = frozenset({"PRODUCTION_LATEST", "HISTORICAL_RESEARCH_ONLY"})
+_PRODUCT_DATA_CLOCK_STATES = frozenset(
+    {"LATEST_COMPLETED", "HISTORICAL_RESEARCH_ONLY", "DATA_INSUFFICIENT"}
+)
+
+
+def normalize_product_data_usage_mode(value: Any) -> str:
+    mode = str(value or "").strip().upper()
+    if mode not in _PRODUCT_DATA_USAGE_MODES:
+        raise ValueError("product data usage mode is invalid")
+    return mode
 
 
 def _enum_value(value: Any) -> str:
@@ -942,6 +954,15 @@ def validate_investor_brief_binding(
     expected = validate_canonical_factor_binding(summary)
     if candidate.get("canonical_binding") != expected:
         raise ValueError("investor brief canonical binding is missing or stale")
+    validated_clock = validate_product_data_clock(candidate.get("data_clock"))
+    expected_clock = build_product_data_clock(
+        summary,
+        data_usage_mode=str(
+            _mapping(summary).get("data_usage_mode") or "PRODUCTION_LATEST"
+        ),
+    )
+    if validated_clock != expected_clock:
+        raise ValueError("investor brief data clock is missing or stale")
     return candidate
 
 
@@ -1373,7 +1394,148 @@ def _material_event_sentences(summary: Dict[str, Any]) -> List[str]:
     return list(dict.fromkeys(events))
 
 
-def _build_asset_research_brief_v1(trend_result, summary, *, asset_type: str = "stock"):
+def _clock_text(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if hasattr(value, "isoformat"):
+        return str(value.isoformat())
+    text = str(value).strip()
+    return text or None
+
+
+def build_product_data_clock(
+    summary: Any,
+    *,
+    data_usage_mode: str = "PRODUCTION_LATEST",
+) -> Dict[str, Any]:
+    """Bind Product freshness to the already-consumed completed daily snapshot.
+
+    Historical replay may calculate the same evidence for research and dataset
+    construction, but it is never presented as current Production Email fact.
+    """
+
+    mode = normalize_product_data_usage_mode(data_usage_mode)
+    summary_map = _mapping(summary)
+    mtf = _mapping(summary_map.get("multi_timeframe_structure_context"))
+    daily = _mapping(_mapping(mtf.get("timeframes")).get("daily"))
+    target_date = _clock_text(mtf.get("target_date"))
+    data_as_of = _clock_text(daily.get("latest_bar_date"))
+    completed_through = _clock_text(daily.get("completed_through"))
+    available_at_max = _clock_text(mtf.get("available_at_max"))
+    provider_identity = _clock_text(mtf.get("provider_identity"))
+    adjustment_basis = _clock_text(mtf.get("adjustment_basis"))
+    data_snapshot_identity = _clock_text(mtf.get("data_snapshot_identity"))
+    daily_status = str(daily.get("status") or "").strip().upper()
+
+    if mode == "HISTORICAL_RESEARCH_ONLY":
+        state = "HISTORICAL_RESEARCH_ONLY"
+        reason = "HISTORICAL_REPLAY_NEVER_CURRENT_PRODUCT_FACT"
+    elif not target_date:
+        state, reason = "DATA_INSUFFICIENT", "TARGET_DATE_NOT_BOUND"
+    elif not (
+        daily.get("completed_bar_only") is True
+        and daily_status in {"READY", "PARTIAL"}
+        and data_as_of == target_date
+        and completed_through == target_date
+    ):
+        state, reason = "DATA_INSUFFICIENT", "LATEST_COMPLETED_DAILY_BAR_NOT_PROVEN"
+    elif not data_snapshot_identity:
+        state, reason = "DATA_INSUFFICIENT", "DATA_SNAPSHOT_IDENTITY_NOT_BOUND"
+    elif not provider_identity:
+        state, reason = "DATA_INSUFFICIENT", "PROVIDER_IDENTITY_NOT_BOUND"
+    elif not adjustment_basis:
+        state, reason = "DATA_INSUFFICIENT", "ADJUSTMENT_BASIS_NOT_BOUND"
+    elif not available_at_max:
+        state, reason = "DATA_INSUFFICIENT", "AVAILABLE_AT_NOT_BOUND"
+    else:
+        state, reason = "LATEST_COMPLETED", "TARGET_COMPLETED_BAR_READY"
+
+    return {
+        "schema_version": _PRODUCT_DATA_CLOCK_VERSION,
+        "data_usage_mode": mode,
+        "state": state,
+        "product_current": state == "LATEST_COMPLETED" and mode == "PRODUCTION_LATEST",
+        "target_date": target_date,
+        "data_as_of": data_as_of,
+        "completed_through": completed_through,
+        "available_at_max": available_at_max,
+        "provider_identity": provider_identity,
+        "adjustment_basis": adjustment_basis,
+        "data_snapshot_identity": data_snapshot_identity,
+        "reason": reason,
+    }
+
+
+def validate_product_data_clock(value: Any) -> Dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError("investor brief data clock is required")
+    clock = dict(value)
+    if clock.get("schema_version") != _PRODUCT_DATA_CLOCK_VERSION:
+        raise ValueError("investor brief data clock version is invalid")
+    mode = str(clock.get("data_usage_mode") or "").strip().upper()
+    state = str(clock.get("state") or "").strip().upper()
+    if mode not in _PRODUCT_DATA_USAGE_MODES or state not in _PRODUCT_DATA_CLOCK_STATES:
+        raise ValueError("investor brief data clock state is invalid")
+    expected_current = mode == "PRODUCTION_LATEST" and state == "LATEST_COMPLETED"
+    if clock.get("product_current") is not expected_current:
+        raise ValueError("investor brief data clock currentness is inconsistent")
+    if expected_current:
+        target = _clock_text(clock.get("target_date"))
+        if not target or target != _clock_text(clock.get("data_as_of")) or target != _clock_text(
+            clock.get("completed_through")
+        ):
+            raise ValueError("current Product clock requires one matching completed session")
+        for key in (
+            "available_at_max",
+            "provider_identity",
+            "adjustment_basis",
+            "data_snapshot_identity",
+        ):
+            if not _clock_text(clock.get(key)):
+                raise ValueError("current Product clock is missing " + key)
+    return clock
+
+
+def product_data_clock_is_current(value: Any) -> bool:
+    try:
+        return validate_product_data_clock(value).get("product_current") is True
+    except ValueError:
+        return False
+
+
+def format_product_data_clock(value: Any, *, report_language: str = "zh") -> str:
+    clock = value if isinstance(value, dict) else {}
+    state = str(clock.get("state") or "").strip().upper()
+    mode = str(clock.get("data_usage_mode") or "").strip().upper()
+    data_as_of = _clock_text(clock.get("data_as_of") or clock.get("target_date"))
+    basis = _clock_text(clock.get("adjustment_basis"))
+    available = _clock_text(clock.get("available_at_max"))
+    if str(report_language or "zh").lower() != "zh":
+        if state == "LATEST_COMPLETED" and mode == "PRODUCTION_LATEST":
+            return f"Data as of {data_as_of or 'unknown'} (latest completed session)."
+        if state == "HISTORICAL_RESEARCH_ONLY":
+            return "Historical research data only; not a current Product fact."
+        return "Latest completed-session data is not proven; current Product facts are suppressed."
+    if state == "LATEST_COMPLETED" and mode == "PRODUCTION_LATEST":
+        details = ["最新已完成交易日"]
+        if basis:
+            details.append(f"价格口径 {basis}")
+        if available:
+            details.append(f"可用时点 {available}")
+        return f"数据截至：{data_as_of or '未知'}（{'；'.join(details)}）"
+    if state == "HISTORICAL_RESEARCH_ONLY":
+        suffix = f"（历史截止 {data_as_of}）" if data_as_of else ""
+        return f"数据用途：历史回放/训练数据集研究{suffix}；不得作为当前邮件事实。"
+    return "数据截至：未证明为本次最新已完成交易日；历史或缓存数据仅用于研究，不作为当前邮件事实。"
+
+
+def _build_asset_research_brief_v1(
+    trend_result,
+    summary,
+    *,
+    asset_type: str = "stock",
+    data_usage_mode: str = "PRODUCTION_LATEST",
+):
     summary = summary if isinstance(summary, dict) else {}
     sections = summary.get("sections")
     sections = sections if isinstance(sections, dict) else {}
@@ -1611,6 +1773,10 @@ def _build_asset_research_brief_v1(trend_result, summary, *, asset_type: str = "
         "report_mode": "ASSET_RESEARCH_BRIEF",
         "report_version": "asset-research-brief-v1",
         "asset_type": asset_type,
+        "data_clock": build_product_data_clock(
+            summary,
+            data_usage_mode=data_usage_mode,
+        ),
         "coverage": coverage,
         "coverage_text": coverage_text,
         "timeframe_thesis": {
@@ -1644,6 +1810,7 @@ def _build_asset_research_brief_v1(trend_result, summary, *, asset_type: str = "
             "legacy_signal_score_role": "REFERENCE_ONLY_NOT_CANONICAL_VOTE_COUNT",
             "correlation_rule": "SAME_UNDERLYING_SWING_ONE_FAMILY_CONFIRMATION_OR_CONFLICT",
             "timeframe_rule": "CROSS_TIMEFRAME_CONFIRMATION_NOT_INDEPENDENT_VOTES",
+            "research_universe_rule": "SEVEN_TIMEFRAMES_BY_EIGHT_FAMILIES_IS_TECHNICAL_SUBSET_NOT_INDICATOR_CAP",
         },
         "canonical": canonical,
         "canonical_binding": canonical_binding,
@@ -1718,6 +1885,7 @@ def build_stock_factor_decision_summary(
     method_execution_receipts: Optional[Dict[str, Any]] = None,
     include_canonical: bool = False,
     asset_type: str = "stock",
+    data_usage_mode: str = "PRODUCTION_LATEST",
 ) -> Dict[str, Any]:
     """Build a deterministic, human-readable stock summary for report rendering.
 
@@ -1948,6 +2116,7 @@ def build_stock_factor_decision_summary(
     summary = {
         "strategy_id": authority,
         "asset_type": asset_type,
+        "data_usage_mode": normalize_product_data_usage_mode(data_usage_mode),
         "contract_version": "1.0",
         "composite_score": score,
         "score_note": (
@@ -2003,5 +2172,6 @@ def build_stock_factor_decision_summary(
         trend_result,
         summary,
         asset_type=asset_type,
+        data_usage_mode=data_usage_mode,
     )
     return summary

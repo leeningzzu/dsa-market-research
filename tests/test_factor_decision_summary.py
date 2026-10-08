@@ -8,8 +8,11 @@ from src.analyzer import AnalysisResult
 from src.services.factor_decision_summary import (
     apply_canonical_decision_to_result,
     assert_canonical_consumer_consistency,
+    build_product_data_clock,
     build_stock_factor_decision_summary,
     canonical_explanation_degradation_eligible,
+    format_product_data_clock,
+    product_data_clock_is_current,
     validate_canonical_factor_binding,
     validate_investor_brief_binding,
 )
@@ -811,6 +814,97 @@ def test_asset_research_brief_payload_v1_is_daily_first_and_fail_closed():
         brief["evidence_policy"]["correlation_rule"]
         == "SAME_UNDERLYING_SWING_ONE_FAMILY_CONFIRMATION_OR_CONFLICT"
     )
+    assert brief["evidence_policy"]["research_universe_rule"] == (
+        "SEVEN_TIMEFRAMES_BY_EIGHT_FAMILIES_IS_TECHNICAL_SUBSET_NOT_INDICATOR_CAP"
+    )
+    assert brief["data_clock"]["state"] == "DATA_INSUFFICIENT"
+
+
+def test_product_data_clock_separates_latest_production_from_historical_research():
+    summary = {
+        "multi_timeframe_structure_context": {
+            "target_date": "2026-10-08",
+            "available_at_max": "2026-10-08T10:00:00",
+            "provider_identity": "AkshareFetcher",
+            "adjustment_basis": "qfq",
+            "data_snapshot_identity": "snapshot-current",
+            "timeframes": {
+                "daily": {
+                    "status": "READY",
+                    "completed_bar_only": True,
+                    "latest_bar_date": "2026-10-08",
+                    "completed_through": "2026-10-08",
+                }
+            },
+        }
+    }
+
+    current = build_product_data_clock(summary, data_usage_mode="PRODUCTION_LATEST")
+    historical = build_product_data_clock(
+        summary,
+        data_usage_mode="HISTORICAL_RESEARCH_ONLY",
+    )
+
+    assert current["state"] == "LATEST_COMPLETED"
+    assert product_data_clock_is_current(current) is True
+    assert "数据截至：2026-10-08" in format_product_data_clock(current)
+    assert historical["state"] == "HISTORICAL_RESEARCH_ONLY"
+    assert product_data_clock_is_current(historical) is False
+    assert "不得作为当前邮件事实" in format_product_data_clock(historical)
+
+
+def test_product_data_clock_fails_closed_when_target_exceeds_consumed_bar():
+    summary = {
+        "multi_timeframe_structure_context": {
+            "target_date": "2026-10-08",
+            "available_at_max": "2026-10-08T10:00:00",
+            "provider_identity": "AkshareFetcher",
+            "adjustment_basis": "qfq",
+            "data_snapshot_identity": "snapshot-stale",
+            "timeframes": {
+                "daily": {
+                    "status": "READY",
+                    "completed_bar_only": True,
+                    "latest_bar_date": "2025-09-30",
+                    "completed_through": "2025-09-30",
+                }
+            },
+        }
+    }
+
+    clock = build_product_data_clock(summary, data_usage_mode="PRODUCTION_LATEST")
+
+    assert clock["state"] == "DATA_INSUFFICIENT"
+    assert clock["reason"] == "LATEST_COMPLETED_DAILY_BAR_NOT_PROVEN"
+    assert clock["product_current"] is False
+    assert product_data_clock_is_current(clock) is False
+
+
+def test_investor_brief_rejects_forged_current_clock_not_bound_to_summary_snapshot():
+    mtf = {
+        "target_date": "2026-10-08",
+        "available_at_max": "2026-10-08T10:00:00",
+        "provider_identity": "AkshareFetcher",
+        "adjustment_basis": "qfq",
+        "data_snapshot_identity": "snapshot-current",
+        "timeframes": {
+            "daily": {
+                "status": "READY",
+                "completed_bar_only": True,
+                "latest_bar_date": "2026-10-08",
+                "completed_through": "2026-10-08",
+            }
+        },
+    }
+    summary = build_stock_factor_decision_summary(
+        _trend(signal_score=68),
+        include_canonical=True,
+        multi_timeframe_structure_context=mtf,
+    )
+    summary["investor_brief"]["data_clock"]["provider_identity"] = "FORGED_PROVIDER"
+
+    with pytest.raises(ValueError, match="data clock is missing or stale"):
+        validate_investor_brief_binding(summary)
 
 
 def test_asset_research_brief_payload_v1_missing_values_are_not_invented():

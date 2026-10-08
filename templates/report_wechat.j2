@@ -9,7 +9,7 @@
 **📊 {{ labels.summary_heading }}**
 {% for e in enriched %}
 {% if e.canonical_authority %}
-{{ e.signal_emoji }} **{{ e.stock_name }}({{ e.result.code }})**: {{ e.signal_text }}{% if e.investor_brief_valid and e.investor_brief.get('one_line_conclusion') %} | {{ e.investor_brief.get('one_line_conclusion') }}{% endif %}
+{{ e.signal_emoji }} **{{ e.stock_name }}({{ e.result.code }})**: {{ e.signal_text }}{% if e.investor_brief_valid and e.product_data_current and e.investor_brief.get('one_line_conclusion') %} | {{ e.investor_brief.get('one_line_conclusion') }}{% elif e.investor_brief_valid and not e.product_data_current %} | 数据未证明为最新，当前事实已抑制{% endif %}
 {% else %}
 {{ e.signal_emoji }} **{{ e.stock_name }}({{ e.result.code }})**: {{ e.signal_text }} | {{ labels.score_label }} {{ e.result.sentiment_score }} | {{ e.localized_trend_prediction }}
 {% endif %}
@@ -25,7 +25,9 @@
 {% if e.canonical_authority %}
 ### {{ e.signal_emoji }} **{{ e.signal_text }}** | {{ e.stock_name }}({{ result.code }})
 
-{% if e.investor_brief_valid %}
+{% if e.investor_brief_valid and e.product_data_current %}
+**数据时点**: {{ e.data_clock_text }}
+
 📌 **{{ e.investor_brief.get('one_line_conclusion') }}**
 {{ e.investor_brief.get('fused_paragraph') }}
 {% if e.investor_brief.get('coverage_text') %}
@@ -43,7 +45,9 @@
 {% endfor %}
 {% endif %}
 {% else %}
-📌 **当前确定性证据摘要不可用，本次保持观望。**
+**数据时点**: {{ e.data_clock_text }}
+
+📌 **{% if e.investor_brief_valid %}本次数据未证明为最新已完成交易日，当前邮件不输出价格、指标、价位或操作条件。{% else %}当前确定性证据摘要不可用，本次保持观望。{% endif %}**
 {% endif %}
 {% else %}
 ### {{ e.signal_emoji }} **{{ e.signal_text }}** | {{ e.stock_name }}({{ result.code }})

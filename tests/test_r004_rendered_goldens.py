@@ -29,6 +29,20 @@ def _brief() -> dict:
     return {
         "schema_version": "investor-brief-v1",
         "asset_type": "stock",
+        "data_clock": {
+            "schema_version": "product-data-clock-v1",
+            "data_usage_mode": "PRODUCTION_LATEST",
+            "state": "LATEST_COMPLETED",
+            "product_current": True,
+            "target_date": "2026-09-22",
+            "data_as_of": "2026-09-22",
+            "completed_through": "2026-09-22",
+            "available_at_max": "2026-09-22T10:00:00",
+            "provider_identity": "FORENSIC_FIXTURE",
+            "adjustment_basis": "qfq",
+            "data_snapshot_identity": "r004-forensic-snapshot",
+            "reason": "TARGET_COMPLETED_BAR_READY",
+        },
         "one_line_conclusion": "高周期结构仍可，但等待量价确认，不因短线信号直接升级。",
         "fused_paragraph": "周线结构仍偏强；日线缩量回踩，等待量价重新确认。",
         "coverage_text": (
@@ -108,6 +122,11 @@ def _render_asset(
         signal_text="观察",
         localized_trend_prediction="震荡",
         localized_operation_advice="观察",
+        canonical_authority=True,
+        investor_brief_valid=True,
+        investor_brief=brief,
+        product_data_current=True,
+        data_clock_text="数据截至：2026-09-22（最新已完成交易日；价格口径 qfq）",
     )
     template = _BRIEF_TEMPLATE if compact else _REPORT_TEMPLATE
     return template.render(

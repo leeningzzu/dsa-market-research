@@ -61,7 +61,11 @@ from src.schemas.decision_action import (
     display_operation_advice_for_result,
     has_canonical_action_authority_for_result,
 )
-from src.services.factor_decision_summary import validate_investor_brief_binding
+from src.services.factor_decision_summary import (
+    format_product_data_clock,
+    product_data_clock_is_current,
+    validate_investor_brief_binding,
+)
 from bot.models import BotMessage
 from src.utils.sanitize import sanitize_diagnostic_text
 from src.formatters import strip_hidden_markdown_metadata
@@ -176,6 +180,12 @@ def _canonical_conclusion_for_result(
     brief = _get_valid_investor_brief(factor, report_language)
     if brief is None:
         return ""
+    if not product_data_clock_is_current(brief.get("data_clock")):
+        if report_language == "en":
+            return "Latest completed-session data is not proven; current facts are suppressed."
+        if report_language == "ko":
+            return "최신 완료 거래일 데이터가 입증되지 않아 현재 사실을 표시하지 않습니다."
+        return "数据未证明为最新已完成交易日，当前事实已抑制"
     return str(brief.get("one_line_conclusion") or "").strip()
 
 def _format_etf_asset_specific_items(brief: Dict[str, Any]) -> List[str]:
@@ -309,11 +319,22 @@ def _append_investor_brief_block(lines: List[str], factor: Any, report_language:
     if brief is None:
         return False
 
+    data_clock = brief.get("data_clock")
+    data_clock_text = format_product_data_clock(
+        data_clock,
+        report_language=report_language,
+    )
+    lines.extend(["### 🧭 投资者简报", "", f"**数据时点**: {data_clock_text}", ""])
+    if not product_data_clock_is_current(data_clock):
+        lines.extend([
+            "**综合结论**: 本次数据未证明为最新已完成交易日，当前邮件不输出价格、指标、价位或操作条件。",
+            "",
+        ])
+        return True
+
     one_line = str(brief.get("one_line_conclusion") or "").strip()
     fused = str(brief.get("fused_paragraph") or "").strip()
     lines.extend([
-        "### 🧭 投资者简报",
-        "",
         f"**综合结论**: {one_line}",
         "",
         fused,
@@ -484,6 +505,19 @@ def _append_investor_notification_block(
     brief = _get_valid_investor_brief(factor, report_language)
     if brief is None:
         return False
+
+    data_clock = brief.get("data_clock")
+    data_clock_text = format_product_data_clock(
+        data_clock,
+        report_language=report_language,
+    )
+    lines.extend([f"**数据时点**: {data_clock_text}", ""])
+    if not product_data_clock_is_current(data_clock):
+        lines.extend([
+            "**综合结论**: 本次数据未证明为最新已完成交易日，当前邮件不输出价格、指标、价位或操作条件。",
+            "",
+        ])
+        return True
 
     one_line = str(brief.get("one_line_conclusion") or "").strip()
     fused = str(brief.get("fused_paragraph") or "").strip()
@@ -1534,6 +1568,7 @@ class NotificationService(
                 dashboard = result.dashboard if isinstance(result.dashboard, dict) else {}
                 factor_decision = dashboard.get("factor_decision") or {}
                 if has_canonical_action_authority_for_result(result):
+                    brief = _get_valid_investor_brief(factor_decision, report_language)
                     if not _append_investor_brief_block(
                         report_lines,
                         factor_decision,
@@ -1543,6 +1578,12 @@ class NotificationService(
                             "**综合结论**: 当前确定性证据摘要不可用，本次保持观望。",
                             "",
                         ])
+                    if (
+                        brief is not None
+                        and not product_data_clock_is_current(brief.get("data_clock"))
+                    ):
+                        report_lines.extend(["", "---", ""])
+                        continue
                     self._append_phase_decision_block(report_lines, dashboard, labels)
                     report_lines.extend(["", "---", ""])
                     continue
@@ -1777,10 +1818,22 @@ class NotificationService(
         report_language: Optional[str] = None,
     ) -> Tuple[int, int, int]:
         language = report_language or self._get_report_language(results)
-        buckets = [
-            display_decision_type_for_result(result, report_language=language)
-            for result in results
-        ]
+        buckets = []
+        for result in results:
+            dashboard = getattr(result, "dashboard", None)
+            dashboard = dashboard if isinstance(dashboard, dict) else {}
+            factor = dashboard.get("factor_decision")
+            brief = _get_valid_investor_brief(factor, language)
+            if (
+                has_canonical_action_authority_for_result(result)
+                and brief is not None
+                and not product_data_clock_is_current(brief.get("data_clock"))
+            ):
+                buckets.append("hold")
+            else:
+                buckets.append(
+                    display_decision_type_for_result(result, report_language=language)
+                )
         buy_count = sum(1 for bucket in buckets if bucket == "buy")
         sell_count = sum(1 for bucket in buckets if bucket == "sell")
         hold_count = len(buckets) - buy_count - sell_count
@@ -1789,6 +1842,20 @@ class NotificationService(
     def _get_signal_level(self, result: AnalysisResult) -> tuple:
         """Get display text and signal metadata from the resolved action."""
         report_language = self._get_report_language(result)
+        dashboard = getattr(result, "dashboard", None)
+        dashboard = dashboard if isinstance(dashboard, dict) else {}
+        factor = dashboard.get("factor_decision")
+        brief = _get_valid_investor_brief(factor, report_language)
+        if (
+            has_canonical_action_authority_for_result(result)
+            and brief is not None
+            and not product_data_clock_is_current(brief.get("data_clock"))
+        ):
+            if report_language == "en":
+                return "Data insufficient", "⚪", "data_insufficient"
+            if report_language == "ko":
+                return "데이터 부족", "⚪", "data_insufficient"
+            return "数据不足", "⚪", "data_insufficient"
         display_fields = display_action_fields_for_result(
             result,
             report_language=report_language,
@@ -1833,6 +1900,8 @@ class NotificationService(
                 brief = validate_investor_brief_binding(factor)
             except ValueError:
                 return ""
+            if not product_data_clock_is_current(brief.get("data_clock")):
+                return "数据未证明为最新已完成交易日，当前事实已抑制"
             conclusion = str(brief.get("one_line_conclusion") or "").strip()
             if conclusion:
                 return conclusion
@@ -1858,6 +1927,8 @@ class NotificationService(
         factor = factor if isinstance(factor, dict) else {}
         brief = _get_valid_investor_brief(factor, report_language)
         if brief is None:
+            return []
+        if not product_data_clock_is_current(brief.get("data_clock")):
             return []
 
         detail_lines: List[str] = []
@@ -2142,6 +2213,7 @@ class NotificationService(
                 if identity_text:
                     report_lines.extend([f"**身份**: {identity_text}", ""])
                 factor_decision = dashboard.get("factor_decision") if dashboard else None
+                brief = _get_valid_investor_brief(factor_decision, report_language)
                 has_investor_brief = _append_investor_brief_block(
                     report_lines,
                     factor_decision,
@@ -2157,6 +2229,13 @@ class NotificationService(
                         "---",
                         "",
                     ])
+                    continue
+                if (
+                    has_canonical_action_authority_for_result(result)
+                    and brief is not None
+                    and not product_data_clock_is_current(brief.get("data_clock"))
+                ):
+                    report_lines.extend(["---", ""])
                     continue
 
                 # ========== 舆情与基本面概览（放在最前面）==========
@@ -2691,27 +2770,37 @@ class NotificationService(
                 factor = dashboard.get("factor_decision") or {}
                 brief = _get_valid_investor_brief(factor, report_language)
                 if brief is not None:
-                    fused = str(brief.get("fused_paragraph") or "").strip()
-                    if fused:
-                        reason = fused[:100] + "..." if len(fused) > 100 else fused
-                        lines.append(f"💡 {reason}")
-                    risks = brief.get("risk_notes") or []
-                    if isinstance(risks, list):
-                        first_risk = next(
-                            (
-                                str(item).strip()
-                                for item in risks
-                                if str(item or "").strip()
-                            ),
-                            "",
-                        )
-                        if first_risk:
-                            risk = (
-                                first_risk[:60] + "..."
-                                if len(first_risk) > 60
-                                else first_risk
+                    if not product_data_clock_is_current(brief.get("data_clock")):
+                        lines.append(
+                            "💡 "
+                            + format_product_data_clock(
+                                brief.get("data_clock"),
+                                report_language=report_language,
                             )
-                            lines.append(f"⚠️ {risk}")
+                        )
+                        lines.append("⚪ 当前价格、指标、价位和操作条件已抑制。")
+                    else:
+                        fused = str(brief.get("fused_paragraph") or "").strip()
+                        if fused:
+                            reason = fused[:100] + "..." if len(fused) > 100 else fused
+                            lines.append(f"💡 {reason}")
+                        risks = brief.get("risk_notes") or []
+                        if isinstance(risks, list):
+                            first_risk = next(
+                                (
+                                    str(item).strip()
+                                    for item in risks
+                                    if str(item or "").strip()
+                                ),
+                                "",
+                            )
+                            if first_risk:
+                                risk = (
+                                    first_risk[:60] + "..."
+                                    if len(first_risk) > 60
+                                    else first_risk
+                                )
+                                lines.append(f"⚠️ {risk}")
                 else:
                     lines.append("💡 当前确定性证据摘要不可用，本次保持观望。")
             else:
