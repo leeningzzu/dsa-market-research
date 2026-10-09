@@ -81,7 +81,13 @@ from src.services.cost_structure_service import build_cost_structure_context
 from src.services.price_structure_service import build_price_structure_context
 from src.services.volatility_momentum_service import build_volatility_momentum_context
 from src.services.pattern_trigger_service import build_pattern_trigger_context
-from src.services.multi_timeframe_structure_service import build_multi_timeframe_structure_context
+from src.services.multi_timeframe_structure_service import (
+    MA_COMPRESSION_READY_BARS,
+    MA_LEVEL_READY_BARS,
+    MA_SLOPE_CROSS_READY_BARS,
+    TREND_MIN_BARS,
+    build_multi_timeframe_structure_context,
+)
 from src.services.intraday_bar_service import (
     aggregate_completed_intraday_bars,
     validate_complete_cn_5m_sessions,
@@ -123,6 +129,7 @@ from src.core.trading_calendar import (
     get_effective_trading_date,
     get_market_for_stock,
     get_market_now,
+    resolve_forward_sessions_fail_closed,
     resolve_latest_completed_session_fail_closed,
     is_market_open,
 )
@@ -136,6 +143,62 @@ logger = logging.getLogger(__name__)
 # at least 26 completed monthly bars with a calendar buffer.  This remains
 # on-demand data loading; it is not a durable market-data store.
 DEEP_HISTORY_LOOKBACK_CALENDAR_DAYS = 1100
+
+# Canonical 5m remains the single intraday source.  The fetch horizon is
+# compiled from the currently admitted minute consumers, rather than treating
+# ten sessions as a universal pattern/indicator window.  Dynamic price
+# structure/pattern and recursive-stability admissions remain separate gates.
+_INTRADAY_BARS_PER_SESSION = {
+    "5m": 48,
+    "15m": 16,
+    "30m": 8,
+    "60m": 4,
+}
+
+
+def _current_intraday_window_plan() -> Dict[str, Any]:
+    """Compile the minimum current-minute acquisition horizon from owners.
+
+    This is only the input/warm-up contract for methods already consumed by
+    ``_build_intraday_timeframe``.  It is not the evaluation window for every
+    future structure/pattern method and cannot admit those deferred methods.
+    """
+
+    method_required_bars = {
+        "TREND": TREND_MIN_BARS,
+        "MA_LEVEL_ALIGNMENT": MA_LEVEL_READY_BARS,
+        "MA_SLOPE_CROSS": MA_SLOPE_CROSS_READY_BARS,
+        "MA_COMPRESSION_RELEASE": MA_COMPRESSION_READY_BARS,
+        "VOLUME": 5,
+        "MACD_FORMULA_MINIMUM": (
+            StockTrendAnalyzer.MACD_SLOW + StockTrendAnalyzer.MACD_SIGNAL
+        ),
+        "RSI_FORMULA_MINIMUM": StockTrendAnalyzer.RSI_LONG,
+    }
+    required_bars = max(method_required_bars.values())
+    sessions_by_timeframe = {
+        timeframe: (required_bars + bars_per_session - 1) // bars_per_session
+        for timeframe, bars_per_session in _INTRADAY_BARS_PER_SESSION.items()
+    }
+    required_sessions = max(sessions_by_timeframe.values())
+    limiting_timeframes = tuple(
+        timeframe
+        for timeframe, sessions in sessions_by_timeframe.items()
+        if sessions == required_sessions
+    )
+    return {
+        "required_bars": required_bars,
+        "required_sessions": required_sessions,
+        "method_required_bars": method_required_bars,
+        "bars_per_session": dict(_INTRADAY_BARS_PER_SESSION),
+        "sessions_by_timeframe": sessions_by_timeframe,
+        "limiting_timeframes": limiting_timeframes,
+        "deferred_window_classes": (
+            "VARIABLE_STRUCTURE",
+            "EVENT_ANCHORED",
+            "RECURSIVE_SENSITIVITY",
+        ),
+    }
 
 
 class P0BoundedTrialError(RuntimeError):
@@ -554,10 +617,28 @@ class StockAnalysisPipeline:
                 if value.date() <= target_date
             }
         )
-        if len(available_sessions) < 10:
+        window_plan = _current_intraday_window_plan()
+        required_session_count = int(window_plan["required_sessions"])
+        if len(available_sessions) < required_session_count:
             return {}
-        expected_sessions = available_sessions[-10:]
+        expected_sessions = available_sessions[-required_session_count:]
         if expected_sessions[-1] != target_date:
+            return {}
+
+        # Do not derive a method-demand minute query from a gapped or
+        # holiday-filled daily history. The exchange calendar independently owns
+        # the exact session set; the method owners own the required bar count.
+        exact_sessions = resolve_forward_sessions_fail_closed(
+            "cn", expected_sessions[0] - timedelta(days=1), len(expected_sessions),
+        )
+        if exact_sessions != expected_sessions:
+            logger.warning(
+                "%s(%s) intraday context blocked: daily dates are not the exact "
+                "%s consecutive XSHG sessions required by current minute methods",
+                stock_name,
+                code,
+                required_session_count,
+            )
             return {}
 
         try:

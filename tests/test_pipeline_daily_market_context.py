@@ -330,12 +330,15 @@ def _pipeline_intraday_sessions() -> list[date]:
         date(2026, 9, 22),
         date(2026, 9, 23),
         date(2026, 9, 24),
-        date(2026, 9, 25),
+        date(2026, 9, 28),  # XSHG 2026-09-25 Mid-Autumn holiday
     ]
 
 
 def _pipeline_canonical_5m(session_dates: list[date]) -> pd.DataFrame:
-    observed = pd.Timestamp("2026-09-25 16:00:00", tz="Asia/Shanghai")
+    observed = pd.Timestamp(
+        f"{session_dates[-1].isoformat()} 16:00:00",
+        tz="Asia/Shanghai",
+    )
     rows = []
     for session_date in session_dates:
         labels = list(
@@ -411,7 +414,167 @@ def _intraday_pipeline_for_helper(*, p0_bounded_trial: bool = False) -> StockAna
     return pipeline
 
 
-def test_current_cn_stock_wiring_uses_named_baostock_and_exact_ten_sessions() -> None:
+
+def test_intraday_window_plan_is_method_driven_not_magic_ten() -> None:
+    from src.core import pipeline as pipeline_module
+
+    current = pipeline_module._current_intraday_window_plan()
+    assert current["required_bars"] == 40
+    assert current["required_sessions"] == 10
+    assert current["limiting_timeframes"] == ("60m",)
+    assert current["method_required_bars"]["MA_COMPRESSION_RELEASE"] == 40
+    assert "VARIABLE_STRUCTURE" in current["deferred_window_classes"]
+
+    # A future owner warm-up change must expand the data request instead of
+    # silently preserving the old ten-session literal.
+    with patch.object(pipeline_module, "MA_COMPRESSION_READY_BARS", 61):
+        expanded = pipeline_module._current_intraday_window_plan()
+    assert expanded["required_bars"] == 61
+    assert expanded["required_sessions"] == 16
+    assert expanded["sessions_by_timeframe"]["60m"] == 16
+
+
+def test_intraday_wiring_refuses_unverified_exchange_sessions_before_provider() -> None:
+    """Missing one real XSHG session must never be hidden by 10 available daily rows."""
+    from src.core.trading_calendar import resolve_forward_sessions_fail_closed
+
+    true_sessions = resolve_forward_sessions_fail_closed(
+        "cn", date(2026, 9, 11), 11,
+    )
+    assert true_sessions is not None and len(true_sessions) == 11
+    assert true_sessions[-1] == date(2026, 9, 29)
+    missing_history = [d for d in true_sessions if d != date(2026, 9, 23)]
+    assert len(missing_history) == 10 and missing_history[-1] == true_sessions[-1]
+    pipeline = _intraday_pipeline_for_helper()
+
+    with patch(
+        "src.core.pipeline.resolve_latest_completed_session_fail_closed",
+        return_value=true_sessions[-1],
+    ), patch(
+        "src.core.pipeline.SearchService.is_index_or_etf",
+        return_value=False,
+    ):
+        context = pipeline._load_current_stock_intraday_timeframes(
+            code="600519",
+            stock_name="贵州茅台",
+            market="cn",
+            target_date=true_sessions[-1],
+            completed_daily_history=pd.DataFrame({"date": missing_history}),
+        )
+
+    assert context == {}
+    pipeline.fetcher_manager._get_fetcher_by_name.assert_not_called()
+    pipeline.fetcher_manager._call_fetcher_method.assert_not_called()
+
+
+def test_intraday_wiring_refuses_holiday_row_before_provider() -> None:
+    """A ten-row frame with 2026-09-25 (XSHG holiday) must not pass as ten sessions."""
+    from src.core.trading_calendar import resolve_forward_sessions_fail_closed
+
+    true_sessions = resolve_forward_sessions_fail_closed(
+        "cn", date(2026, 9, 11), 10,
+    )
+    assert true_sessions is not None and true_sessions[-1] == date(2026, 9, 28)
+    holiday_history = sorted(
+        d for d in true_sessions if d != date(2026, 9, 23)
+    ) + [date(2026, 9, 25)]
+    holiday_history = sorted(holiday_history)
+    assert len(holiday_history) == 10 and holiday_history[-1] == true_sessions[-1]
+    pipeline = _intraday_pipeline_for_helper()
+
+    with patch(
+        "src.core.pipeline.resolve_latest_completed_session_fail_closed",
+        return_value=true_sessions[-1],
+    ), patch(
+        "src.core.pipeline.SearchService.is_index_or_etf",
+        return_value=False,
+    ):
+        context = pipeline._load_current_stock_intraday_timeframes(
+            code="600519",
+            stock_name="贵州茅台",
+            market="cn",
+            target_date=true_sessions[-1],
+            completed_daily_history=pd.DataFrame({"date": holiday_history}),
+        )
+
+    assert context == {}
+    pipeline.fetcher_manager._get_fetcher_by_name.assert_not_called()
+    pipeline.fetcher_manager._call_fetcher_method.assert_not_called()
+
+
+
+def test_intraday_wiring_refuses_unavailable_exchange_calendar_before_provider() -> None:
+    """Even a legal looking ten-row daily history cannot bypass missing calendar."""
+    pipeline = _intraday_pipeline_for_helper()
+    sessions = _pipeline_intraday_sessions()
+    with patch(
+        "src.core.pipeline.resolve_latest_completed_session_fail_closed",
+        return_value=sessions[-1],
+    ), patch(
+        "src.core.pipeline.resolve_forward_sessions_fail_closed",
+        return_value=None,
+    ), patch(
+        "src.core.pipeline.SearchService.is_index_or_etf",
+        return_value=False,
+    ):
+        context = pipeline._load_current_stock_intraday_timeframes(
+            code="600519",
+            stock_name="贵州茅台",
+            market="cn",
+            target_date=sessions[-1],
+            completed_daily_history=pd.DataFrame({"date": sessions}),
+        )
+    assert context == {}
+    pipeline.fetcher_manager._get_fetcher_by_name.assert_not_called()
+    pipeline.fetcher_manager._call_fetcher_method.assert_not_called()
+
+
+def test_intraday_wiring_expands_actual_query_when_owner_warmup_grows() -> None:
+    from src.core import pipeline as pipeline_module
+    from src.core.trading_calendar import resolve_forward_sessions_fail_closed
+
+    sessions = resolve_forward_sessions_fail_closed(
+        "cn", date(2026, 9, 8), 16,
+    )
+    assert sessions is not None and sessions[-1] == date(2026, 10, 8)
+    frame = _pipeline_canonical_5m(sessions)
+    pipeline = _intraday_pipeline_for_helper()
+    pipeline.fetcher_manager._call_fetcher_method.return_value = frame
+
+    with patch.object(
+        pipeline_module, "MA_COMPRESSION_READY_BARS", 61,
+    ), patch(
+        "src.core.pipeline.resolve_latest_completed_session_fail_closed",
+        return_value=sessions[-1],
+    ), patch(
+        "src.core.pipeline.SearchService.is_index_or_etf",
+        return_value=False,
+    ):
+        context = pipeline._load_current_stock_intraday_timeframes(
+            code="600519",
+            stock_name="贵州茅台",
+            market="cn",
+            target_date=sessions[-1],
+            completed_daily_history=pd.DataFrame({"date": sessions}),
+        )
+
+    pipeline.fetcher_manager._call_fetcher_method.assert_called_once_with(
+        pipeline.fetcher_manager._get_fetcher_by_name.return_value,
+        "get_intraday_data",
+        "600519",
+        start_date=sessions[0].isoformat(),
+        end_date=sessions[-1].isoformat(),
+        frequency="5",
+    )
+    assert {key: len(value) for key, value in context.items()} == {
+        "5m": 768,
+        "15m": 256,
+        "30m": 128,
+        "60m": 64,
+    }
+
+
+def test_current_cn_stock_wiring_uses_named_baostock_and_method_window_sessions() -> None:
     sessions = _pipeline_intraday_sessions()
     target = sessions[-1]
     frame = _pipeline_canonical_5m(sessions)
@@ -476,7 +639,7 @@ def test_intraday_wiring_skips_backdated_target_and_etf_without_provider_call() 
 
     with patch(
         "src.core.pipeline.resolve_latest_completed_session_fail_closed",
-        return_value=date(2026, 9, 28),
+        return_value=date(2026, 9, 29),
     ), patch(
         "src.core.pipeline.SearchService.is_index_or_etf",
         return_value=False,
