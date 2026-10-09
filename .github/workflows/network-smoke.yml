@@ -4,6 +4,15 @@ on:
   schedule:
     - cron: '0 2 * * 1-5'
   workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Legacy smoke or strictly bounded public CN daily source probe'
+        type: choice
+        required: true
+        default: legacy
+        options:
+          - legacy
+          - cn-daily-readonly-probe
 
 concurrency:
   group: network-smoke-${{ github.ref }}
@@ -52,3 +61,34 @@ jobs:
             pytest-network.log
             quick-smoke.log
           if-no-files-found: ignore
+
+  cn-daily-readonly-probe:
+    # Public-only, explicit one-off dispatch. No schedule, Environment, Secrets,
+    # report, database, model, SMTP, Telegram, uploads or artifact persistence.
+    if: ${{ github.repository == 'leeningzzu/dsa-market-research' && github.event_name == 'workflow_dispatch' && inputs.mode == 'cn-daily-readonly-probe' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout existing DSA source
+        uses: actions/checkout@v5
+
+      - name: Use existing DSA Python runtime
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install existing requirements only
+        shell: bash
+        run: |
+          set -euo pipefail
+          unset HTTP_PROXY HTTPS_PROXY ALL_PROXY FTP_PROXY SOCKS_PROXY http_proxy https_proxy all_proxy ftp_proxy socks_proxy
+          python -m pip install -r requirements.txt
+
+      - name: Inspect one completed CN daily source without a proxy
+        shell: bash
+        run: |
+          set -euo pipefail
+          unset HTTP_PROXY HTTPS_PROXY ALL_PROXY FTP_PROXY SOCKS_PROXY http_proxy https_proxy all_proxy ftp_proxy socks_proxy
+          python -m src.services.cloud_cn_daily_probe
