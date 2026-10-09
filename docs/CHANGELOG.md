@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] 在当前 main 的多周期分钟证据消费者阻断无单位量价误报：当 typed 5m/15m/30m/60m `volume_unit` 不为已支持的 `share`，或前5根量比参考均量为零/不可用时，StockTrendAnalyzer 的量能状态/量比和 MA 释放确认上下文不得投影为真实量价证据，`admitted_methods` 不得包含 `VOLUME`；保持价格趋势、MA、MACD、RSI、PARTIAL 与独立策略/学习阻断，合法已确认 share 单位非触发仍保留。此轮仅隔离本地代码/测试候选，不表示 BaoStock 官方单位、复权历史版本、版权、PIT、完整邮件或正式生产已获准入，不改变 V2.5 原件或发送权限。
+
 - [修复] B8D 云端分钟只读诊断独立 RED 复现请求元数据伪装 600519 而实际已绑定 5m 原始行代码是 000001 时可误过验收；同一诊断消费者重新核实际 frame 每行代码与请求一致才准标记 OBSERVED，保留合法十日源非触发测试。此修复不改变 BaoStock 底层 API、不放宽 5m→15/30/60m 完整性断言，不宣称行情版权、PIT/模型/正式邮件准入。
 
 - [测试] B8D 为既有 Network Smoke 添加单独且显式的 public-only `cn-intraday-readonly-probe` 手动选项，复用 BaoStock 5m/XSHG/方法驱动预热及既有15/30/60m聚合器，先检查零代理 TCP 来源和实际完整时段、QFQ/资产身份及来源哈希，只输出无行情数值的只读元数据。保留原Tencent日线与private smoke不变；量额单位和源使用/存储权仍为UNKNOWN，PIT/训练/策略/正式报告/通知不准入。此记录仅描述候选能力与离线mock测试；不代表已完成GitHub发布、云端真实分钟数据、持久化或Email验收，外部效果仍需独立按授权及实际消费者收据判定。

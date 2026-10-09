@@ -29,6 +29,7 @@ from src.services.multi_timeframe_structure_service import (
     build_ma_structure_evidence,
     build_multi_timeframe_structure_context,
 )
+from src.stock_analyzer import StockTrendAnalyzer
 from src.services.pit_identity import (
     build_completed_history_identity,
     proven_adjustment_basis,
@@ -118,7 +119,9 @@ def _daily_trend(_history: pd.DataFrame, _target_index: int):
     return _trend_result()
 
 
-def _intraday_fixture(timeframe: str, target, periods: int = 40) -> pd.DataFrame:
+def _intraday_fixture(
+    timeframe: str, target, periods: int = 40, *, volume_unit: str = "UNKNOWN", zero_reference_volume: bool = False,
+) -> pd.DataFrame:
     end = pd.Timestamp(target).tz_localize("Asia/Shanghai") + pd.Timedelta(hours=15)
     ends = pd.date_range(end=end, periods=periods, freq="30min")
     observed = end + pd.Timedelta(hours=1)
@@ -133,7 +136,7 @@ def _intraday_fixture(timeframe: str, target, periods: int = 40) -> pd.DataFrame
                 "high": close + 0.5,
                 "low": close - 0.5,
                 "close": close,
-                "volume": 1000.0 + index,
+                "volume": 0.0 if zero_reference_volume else 1000.0 + index,
                 "session": f"{bar_end.date().isoformat()}:FIXTURE",
                 "available_at": observed,
                 "adjustflag": "2",
@@ -154,7 +157,7 @@ def _intraday_fixture(timeframe: str, target, periods: int = 40) -> pd.DataFrame
         timezone_name="Asia/Shanghai",
         session_calendar="XSHG",
         currency="CNY",
-        volume_unit="UNKNOWN",
+        volume_unit=volume_unit,
         amount_unit="UNKNOWN",
         requested_start=str(ends[0].date()),
         requested_end=str(target),
@@ -211,6 +214,105 @@ def test_canonical_intraday_bars_fill_partial_trend_ma_slots_without_claiming_st
         assert item["learning_admitted"] is False
         assert item["historical_replay_eligible"] is False
         assert "分钟价格结构/形态尚未准入" in item["summary"]
+
+
+def test_intraday_unknown_volume_unit_does_not_reach_volume_evidence_consumer() -> None:
+    item = _volume_unit_intraday_context("UNKNOWN")
+    assert item["status"] == "PARTIAL"
+    assert item["trend"]["status"] == "READY"
+    assert item["trend"]["ma_alignment"]
+    assert item["trend"]["macd_status"] == "多头"
+    assert item["trend"]["rsi_signal"]
+    assert item["trend"]["volume_status"] is None
+    assert item["trend"]["volume_ratio_5bar"] is None
+    assert item["ma_structure"].get("volume_price_context") is None
+    assert "量能正常" not in (item["summary"] or "")
+    assert "VOLUME" not in item["admitted_methods"]
+    assert item["strategy_admitted"] is False
+    assert item["learning_admitted"] is False
+
+
+def test_intraday_known_share_volume_unit_keeps_legitimate_projection() -> None:
+    item = _volume_unit_intraday_context("share")
+    assert item["status"] == "PARTIAL"
+    assert item["trend"]["status"] == "READY"
+    assert item["trend"]["volume_status"] == "量能正常"
+    assert item["trend"]["volume_ratio_5bar"] == 1.0
+    assert item["ma_structure"].get("volume_price_context") == "量能正常"
+    assert "量能正常" in (item["summary"] or "")
+    assert "VOLUME" in item["admitted_methods"]
+    assert item["strategy_admitted"] is False
+    assert item["learning_admitted"] is False
+
+
+def test_intraday_unsupported_volume_unit_is_not_a_ready_volume_method() -> None:
+    item = _volume_unit_intraday_context("unverified-lot")
+    assert item["status"] == "PARTIAL"
+    assert item["trend"]["volume_status"] is None
+    assert item["trend"]["volume_ratio_5bar"] is None
+    assert item["ma_structure"].get("volume_price_context") is None
+    assert "VOLUME" not in item["admitted_methods"]
+    assert item["strategy_admitted"] is False
+
+
+def test_intraday_real_trend_analyzer_cannot_resurrect_unknown_volume() -> None:
+    item = _volume_unit_intraday_context("UNKNOWN", analyzer=StockTrendAnalyzer())
+    assert item["status"] == "PARTIAL"
+    assert item["trend"]["status"] == "READY"
+    assert item["trend"]["ma_alignment"]
+    assert item["trend"]["macd_status"]
+    assert item["trend"]["rsi_status"]
+    assert item["trend"]["volume_status"] is None
+    assert item["trend"]["volume_ratio_5bar"] is None
+    assert item["ma_structure"].get("volume_price_context") is None
+    assert "VOLUME" not in item["admitted_methods"]
+    assert item["strategy_admitted"] is False
+    assert item["learning_admitted"] is False
+
+
+def test_intraday_known_unit_without_prior_volume_denominator_is_not_ready() -> None:
+    item = _volume_unit_intraday_context(
+        "share", analyzer=StockTrendAnalyzer(), zero_reference_volume=True,
+    )
+    assert item["status"] == "PARTIAL"
+    assert item["trend"]["status"] == "READY"
+    assert item["trend"]["ma_alignment"]
+    assert item["trend"]["volume_status"] is None
+    assert item["trend"]["volume_ratio_5bar"] is None
+    assert item["ma_structure"].get("volume_price_context") is None
+    assert "VOLUME" not in item["admitted_methods"]
+    assert item["strategy_admitted"] is False
+
+
+def _volume_unit_intraday_context(
+    volume_unit: str, *, analyzer=None, zero_reference_volume: bool = False,
+) -> dict:
+    history = _history()
+    target = history.iloc[-1]["date"].date()
+    weekly_end = history.iloc[-5]["date"].date()
+    monthly_end = history.iloc[-21]["date"].date()
+
+    def _completed(_market, _target, timeframe):
+        return weekly_end if timeframe == "1w" else monthly_end if timeframe == "1mo" else None
+
+    with patch(
+        "src.services.multi_timeframe_structure_service.resolve_completed_timeframe_bar_date",
+        side_effect=_completed,
+    ):
+        context = build_multi_timeframe_structure_context(
+            stock_code="600519",
+            history=history,
+            target_date=target,
+            market="cn",
+            trend_analyzer=analyzer or _FakeTrendAnalyzer(),
+            daily_trend_result=_daily_trend(history, len(history) - 1),
+            daily_price_structure_context={"historical_replay_eligible": True},
+            snapshot_observed_at=datetime.combine(target, datetime.max.time(), tzinfo=timezone.utc),
+            intraday_timeframes={
+                "30m": _intraday_fixture("30m", target, volume_unit=volume_unit, zero_reference_volume=zero_reference_volume),
+            },
+        )
+    return context["timeframes"]["30m"]
 
 
 def test_intraday_identity_timeframe_mismatch_is_unknown_not_ready() -> None:

@@ -206,11 +206,23 @@ def _build_intraday_timeframe(
     if alignment["status"] != "SINGLE_SOURCE":
         return _empty_timeframe(key, status="UNKNOWN", reason="INTRADAY_SOURCE_ALIGNMENT_UNPROVEN")
 
+    # The price-only methods remain available without a volume unit, but the
+    # legacy analyzer's volume labels are not evidence until the source unit is typed.
+    recent_reference_volume = analyzer_frame["volume"].iloc[-6:-1]
+    volume_evidence_ready = (
+        identity["volume_unit"] == "share"
+        and len(analyzer_frame) >= TREND_MIN_BARS
+        and len(recent_reference_volume) == 5
+        and float(recent_reference_volume.mean()) > 0
+    )
     trend_result = None
     trend = None
     if len(analyzer_frame) >= TREND_MIN_BARS:
         trend_result = trend_analyzer.analyze(analyzer_frame.copy(), stock_code)
         trend = _trend_projection(trend_result)
+        if not volume_evidence_ready:
+            trend["volume_status"] = None
+            trend["volume_ratio_5bar"] = None
     price_structure = {
         "status": "MISSING",
         "reason": "INTRADAY_PRICE_STRUCTURE_NOT_ADMITTED",
@@ -220,7 +232,7 @@ def _build_intraday_timeframe(
     ma_structure = build_ma_structure_evidence(
         analyzer_frame,
         timeframe=key,
-        trend_result=trend_result,
+        trend_result=trend_result if volume_evidence_ready else None,
         structure_context={},
     )
     has_partial = trend is not None or ma_structure.get("status") in {"READY", "PARTIAL"}
@@ -258,7 +270,9 @@ def _build_intraday_timeframe(
             "summary": None,
         },
         "summary": summary,
-        "admitted_methods": ["TREND", "MA", "VOLUME", "MACD", "RSI"],
+        "admitted_methods": [
+            "TREND", "MA", *(["VOLUME"] if volume_evidence_ready else []), "MACD", "RSI",
+        ],
         "independent_action_authority": False,
         "strategy_admitted": False,
         "learning_admitted": False,
