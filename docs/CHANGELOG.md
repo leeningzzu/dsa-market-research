@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] B8D 云端分钟只读诊断独立 RED 复现请求元数据伪装 600519 而实际已绑定 5m 原始行代码是 000001 时可误过验收；同一诊断消费者重新核实际 frame 每行代码与请求一致才准标记 OBSERVED，保留合法十日源非触发测试。此修复不改变 BaoStock 底层 API、不放宽 5m→15/30/60m 完整性断言，不宣称行情版权、PIT/模型/正式邮件准入。
+
+- [测试] B8D 为既有 Network Smoke 添加单独且显式的 public-only `cn-intraday-readonly-probe` 手动选项，复用 BaoStock 5m/XSHG/方法驱动预热及既有15/30/60m聚合器，先检查零代理 TCP 来源和实际完整时段、QFQ/资产身份及来源哈希，只输出无行情数值的只读元数据。保留原Tencent日线与private smoke不变；量额单位和源使用/存储权仍为UNKNOWN，PIT/训练/策略/正式报告/通知不准入。此记录仅描述候选能力与离线mock测试；不代表已完成GitHub发布、云端真实分钟数据、持久化或Email验收，外部效果仍需独立按授权及实际消费者收据判定。
+
 - [修复] B8C 复用现有 Pipeline/XSHG fail-closed 日历，在调用 BaoStock 5m 前核对当前分钟方法所需的完整连续交易日。当前 10 日不是形态/指标的通用固定窗口，而是由既有 Trend/MA/Volume/MACD/RSI owner 的最低 bar 需求动态编译：最慢 60m 需要 40 bars，因此为 10 个交易日；若 owner warm-up 增大，查询期自动扩展。拒绝日线历史缺口、假日混入或日历不可用导致的伪完整融合，并修正历史测试夹具对 2026-09-25 休市日的误认。可变结构、事件锚定、递归敏感性及尚未准入的分钟形态/价格结构仍独立 fail-closed；不触发真实行情、SMTP、数据库、模型或 Git 远端效果。
 
 - [测试] 本地新增 public 手动限定的腾讯日线零代理云端候选，复用现有 Network Smoke workflow 与 TencentFetcher/日线来源身份/XSHG 最新完成交易日；严格验收实际存在的 OHLCV、复权、当前性与内容哈希；腾讯仅六字段时显式标记成交额 MISSING 且量额方法不准入，不伪造零成交额，部分错误成交额拒绝；旧日期、错标的请求和 day 分支 fail-closed（额外复现 000001 实测请求冒充 600519，改用同一 native 调用的短期请求代码绑定）。云端依赖安装和行情查询均清除代理变量，避免在数据请求前已通过代理联网；无新工作流、调度、DB、Secrets、模型、通知或原件 HTML 修改；仅本地代码与 mock 回归，未 commit/push/dispatch/真实云端数据，数据权利/PIT/生产发送仍独立 STOP。
