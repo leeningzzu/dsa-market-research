@@ -166,7 +166,8 @@ def test_product_coverage_consumes_the_trace_matrix_for_actual_weekly_structure_
 
 
 def test_product_coverage_exposes_only_current_intraday_context_families():
-    factor = native_summary_with_mtf(intraday=True)
+    # The existing EVIDENCE_AVAILABLE assertions require a lawful synthetic share unit.
+    factor = native_summary_with_mtf(intraday=True, volume_unit="share")
     rows = {row["slot_id"]: row for row in compile_product_coverage(factor)["slots"]}
 
     for timeframe in ("60m", "30m", "15m", "5m"):
@@ -176,3 +177,30 @@ def test_product_coverage_exposes_only_current_intraday_context_families():
         assert rows["detail.timeframe.cost_structure"]["timeframe_states"][timeframe] == "DATA_INSUFFICIENT"
         assert rows["detail.timeframe.price_structure"]["timeframe_states"][timeframe] == "DATA_INSUFFICIENT"
         assert rows["detail.timeframe.pattern_trigger"]["timeframe_states"][timeframe] == "DATA_INSUFFICIENT"
+
+
+def test_product_coverage_rejects_unknown_intraday_volume_without_erasing_price_momentum():
+    # Same deterministic MTF producer, but without an admitted source volume unit.
+    factor = native_summary_with_mtf(intraday=True, volume_unit="UNKNOWN")
+    coverage = compile_product_coverage(factor)
+    rows = {row["slot_id"]: row for row in coverage["slots"]}
+    matrix = factor["evidence_traceability"]["timeframe_family_matrix"]
+    assert len(matrix["cells"]) == 56
+    assert coverage["timeframe_family_matrix_hash"] == matrix["matrix_hash"]
+
+    for timeframe in ("60m", "30m", "15m", "5m"):
+        produced = factor["multi_timeframe_structure_context"]["timeframes"][timeframe]
+        assert produced["status"] == "PARTIAL"
+        assert "VOLUME" not in produced["admitted_methods"]
+        assert produced["trend"]["volume_status"] is None
+        assert produced["strategy_admitted"] is False
+        assert produced["learning_admitted"] is False
+
+        assert rows["detail.timeframe.volume_price"]["timeframe_states"][timeframe] == "DATA_INSUFFICIENT"
+        assert rows["detail.timeframe.trend_ma"]["timeframe_states"][timeframe] == "EVIDENCE_AVAILABLE"
+        assert rows["detail.timeframe.momentum_divergence"]["timeframe_states"][timeframe] == "EVIDENCE_AVAILABLE"
+        assert rows["detail.timeframe.cost_structure"]["timeframe_states"][timeframe] == "DATA_INSUFFICIENT"
+        assert rows["detail.timeframe.price_structure"]["timeframe_states"][timeframe] == "DATA_INSUFFICIENT"
+        assert rows["detail.timeframe.pattern_trigger"]["timeframe_states"][timeframe] == "DATA_INSUFFICIENT"
+
+    assert all(row["projection_state"] == "NOT_RENDERED" for row in rows.values())
