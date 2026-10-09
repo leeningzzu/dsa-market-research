@@ -163,7 +163,7 @@ def native_summary(frame=None, target=None):
     )
 
 
-def native_summary_with_mtf(*, intraday=False):
+def native_summary_with_mtf(*, intraday=False, volume_unit="UNKNOWN"):
     frame = bars(520)
     target = frame["date"].iloc[-1]
     completed = frame[frame["date"] <= target].copy()
@@ -179,7 +179,7 @@ def native_summary_with_mtf(*, intraday=False):
         from tests.test_multi_timeframe_structure_service import _intraday_fixture
 
         intraday_timeframes = {
-            timeframe: _intraday_fixture(timeframe, target)
+            timeframe: _intraday_fixture(timeframe, target, volume_unit=volume_unit)
             for timeframe in ("60m", "30m", "15m", "5m")
         }
         snapshot_observed_at = (
@@ -443,6 +443,62 @@ def test_timeframe_family_matrix_is_exact_56_cells_and_keeps_deferred_methods_vi
     assert len(matrix["matrix_hash"]) == 64
 
 
+def _minute_matrix_volume_context(*, volume_status=None, admitted_volume=False, price_momentum=True):
+    # Independent accepted family evidence: price momentum is not supply/volume.
+    frame = {
+        "status": "PARTIAL",
+        "admitted_methods": ["TREND", "MA", "MACD", "RSI"] + (["VOLUME"] if admitted_volume else []),
+        "trend": {
+            "status": "READY",
+            "ma_alignment": "MA5>MA10>MA20",
+            "volume_status": volume_status,
+            "volume_ratio_5bar": 1.25 if volume_status else None,
+            "macd_status": "BULLISH" if price_momentum else None,
+            "rsi_status": "NEUTRAL" if price_momentum else None,
+        },
+        "ma_structure": {"status": "READY"},
+        "price_structure": {"status": "MISSING"},
+        "strategy_admitted": False,
+    }
+    matrix = reg.compile_timeframe_family_matrix({
+        "multi_timeframe_structure_context": {"timeframes": {"30m": frame}},
+    })
+    assert len(matrix["cells"]) == 56
+    return {(x["timeframe"], x["family"]): x for x in matrix["cells"]}
+
+
+def test_30m_supply_missing_when_only_macd_rsi_but_volume_not_admitted():
+    cells = _minute_matrix_volume_context(volume_status=None, admitted_volume=False)
+    supply = cells[("30m", "SUPPLY")]
+    assert supply["state"] == "MISSING"
+    volume_method = next(x for x in supply["method_coverage"] if x["method_id"] == "MTF_MOMENTUM_CONTEXT")
+    assert volume_method["state"] == "MISSING"
+    assert cells[("30m", "MOMENTUM")]["state"] == "PARTIAL"
+    assert cells[("30m", "MTF")]["state"] == "PARTIAL"
+    assert all(not x["independent_action_authority"] for x in supply["method_coverage"])
+
+
+def test_30m_supply_keeps_legitimate_volume_and_rejects_forged_label():
+    permitted = _minute_matrix_volume_context(volume_status="量能正常", admitted_volume=True)
+    assert permitted[("30m", "SUPPLY")]["state"] == "PARTIAL"
+    assert permitted[("30m", "MOMENTUM")]["state"] == "PARTIAL"
+
+    unlabeled = _minute_matrix_volume_context(volume_status=None, admitted_volume=True)
+    assert unlabeled[("30m", "SUPPLY")]["state"] == "MISSING"
+
+    forged = _minute_matrix_volume_context(volume_status="量能正常", admitted_volume=False)
+    assert forged[("30m", "SUPPLY")]["state"] == "MISSING"
+
+
+def test_30m_momentum_missing_when_only_volume_without_macd_rsi():
+    cells = _minute_matrix_volume_context(
+        volume_status="量能正常", admitted_volume=True, price_momentum=False,
+    )
+    assert cells[("30m", "SUPPLY")]["state"] == "PARTIAL"
+    assert cells[("30m", "MOMENTUM")]["state"] == "MISSING"
+    assert cells[("30m", "MTF")]["state"] == "PARTIAL"
+
+
 def test_complete_research_universe_view_prevents_scope_collapse_beyond_7x8():
     factor = native_summary()
     trace = reg.validate_runtime_trace(factor)
@@ -500,7 +556,8 @@ def test_mtf_execution_populates_only_its_admitted_family_context_and_not_supply
 
 
 def test_current_intraday_context_is_visible_without_admitting_structure_pattern_cost_or_30m_trigger():
-    factor = native_summary_with_mtf(intraday=True)
+    # A valid typed volume unit is required for the existing SUPPLY PARTIAL positive.
+    factor = native_summary_with_mtf(intraday=True, volume_unit="share")
     trace = factor["evidence_traceability"]
     cells = {
         (row["timeframe"], row["family"]): row
@@ -517,6 +574,23 @@ def test_current_intraday_context_is_visible_without_admitting_structure_pattern
         assert cells[(timeframe, "PATTERN")]["state"] == "NOT_ADMITTED"
         assert cells[(timeframe, "REGIME")]["state"] == "NOT_APPLICABLE"
     assert factor["strategy_eligibility"]["required_evidence"]["thirty_minute_trigger"] == "UNKNOWN"
+
+
+def test_native_intraday_unknown_volume_keeps_momentum_but_supply_missing():
+    factor = native_summary_with_mtf(intraday=True)
+    matrix = factor["evidence_traceability"]["timeframe_family_matrix"]
+    cells = {(row["timeframe"], row["family"]): row for row in matrix["cells"]}
+    assert len(cells) == 56
+    for timeframe in ("60m", "30m", "15m", "5m"):
+        frame = factor["multi_timeframe_structure_context"]["timeframes"][timeframe]
+        assert frame["status"] == "PARTIAL"
+        assert "VOLUME" not in frame["admitted_methods"]
+        assert frame["trend"]["volume_status"] is None
+        assert cells[(timeframe, "SUPPLY")]["state"] == "MISSING"
+        assert cells[(timeframe, "MOMENTUM")]["state"] == "PARTIAL"
+        assert cells[(timeframe, "MTF")]["state"] == "PARTIAL"
+        assert frame["strategy_admitted"] is False
+        assert frame["learning_admitted"] is False
 
 
 def test_method_window_policy_rejects_deletion_invalid_class_or_overclaim():
