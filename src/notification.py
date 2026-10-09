@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional, Tuple, TYPE_CHECKING
 from enum import Enum
 
@@ -91,6 +91,70 @@ from src.notification_sender import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+
+def _delivery_time_utc() -> datetime:
+    """Clock the actual egress, independently from the analysis run."""
+    return datetime.now(timezone.utc)
+
+
+def _require_current_asset_data_at_send(asset_results: List[Any]) -> None:
+    """Fail closed on unbound or expired native canonical asset snapshots."""
+    if not isinstance(asset_results, (list, tuple)) or not asset_results:
+        raise ValueError("asset reports require nonempty canonical results")
+    now = _delivery_time_utc()
+    if not isinstance(now, datetime) or now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("delivery time must be timezone aware")
+    from src.core.trading_calendar import resolve_latest_completed_session_fail_closed
+
+    for result in asset_results:
+        dashboard = getattr(result, "dashboard", None)
+        factor = dashboard.get("factor_decision") if isinstance(dashboard, dict) else None
+        try:
+            brief = validate_investor_brief_binding(factor)
+        except ValueError as exc:
+            raise ValueError("canonical asset evidence is not bound") from exc
+        mtf = factor.get("multi_timeframe_structure_context")
+        if not isinstance(mtf, dict):
+            raise ValueError("asset source context is missing")
+        tf = mtf.get("timeframes")
+        daily = tf.get("daily") if isinstance(tf, dict) else None
+        if not isinstance(daily, dict):
+            raise ValueError("completed daily source is missing")
+        market = str(mtf.get("market") or "").strip().lower()
+        target = str(mtf.get("target_date") or "").strip()
+        snapshot = str(mtf.get("data_snapshot_identity") or "").strip()
+        source_alignment = mtf.get("source_alignment")
+        if (
+            not market or not target or not snapshot
+            or mtf.get("completed_bar_only") is not True
+            or not isinstance(source_alignment, dict)
+            or source_alignment.get("status") != "SINGLE_SOURCE"
+            or not str(mtf.get("provider_identity") or "").strip()
+            or not str(mtf.get("adjustment_basis") or "").strip()
+            or str(brief.get("canonical_binding", {}).get("data_snapshot_identity") or "") != snapshot
+            or daily.get("completed_bar_only") is not True
+            or str(daily.get("status") or "").upper() not in {"READY", "PARTIAL"}
+            or str(daily.get("latest_bar_date") or "") != target
+            or str(daily.get("completed_through") or "") != target
+        ):
+            raise ValueError("daily source provenance or completed bar is not bound")
+
+        completed = resolve_latest_completed_session_fail_closed(market, current_time=now)
+        if completed is None or completed.isoformat() != target:
+            raise ValueError("asset source not latest completed exchange session")
+        try:
+            available = datetime.fromisoformat(
+                str(mtf.get("available_at_max") or "").replace("Z", "+00:00")
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError("provider availability timestamp is invalid") from exc
+        if (
+            available.tzinfo is None or available.utcoffset() is None
+            or available.astimezone(timezone.utc) > now.astimezone(timezone.utc)
+        ):
+            raise ValueError("provider source was unavailable at delivery")
 
 
 def _safe_float(value: Any) -> Optional[float]:
@@ -3542,6 +3606,10 @@ class NotificationService(
         logger.warning(f"不支持的通知渠道: {channel}")
         return False
 
+    def require_current_asset_data_for_send(self, asset_results: List[Any]) -> None:
+        """Reuse the canonical source clock at the outbound seam."""
+        _require_current_asset_data_at_send(asset_results)
+
     def send_with_results(
         self,
         content: str,
@@ -3553,6 +3621,7 @@ class NotificationService(
         cooldown_key: Optional[str] = None,
         structured_payload: Optional[Dict[str, Any]] = None,
         email_subject: Optional[str] = None,
+        asset_results: Optional[List[Any]] = None,
     ) -> NotificationDispatchResult:
         """
         Send a notification and return per-channel diagnostics.
@@ -3579,6 +3648,16 @@ class NotificationService(
         Returns:
             Structured dispatch diagnostics.
         """
+        if route_type not in {"alert", "system_error"} and asset_results is not None:
+            try:
+                self.require_current_asset_data_for_send(asset_results)
+            except ValueError as exc:
+                logger.warning("Asset report blocked at delivery: %s", exc)
+                return NotificationDispatchResult(
+                    dispatched=False, success=False, status="data_stale",
+                    message="asset report is not current at delivery time",
+                )
+
         context_success = self.send_to_context(content)
         if not self.should_broadcast_static_channels():
             if context_success:
@@ -3698,10 +3777,23 @@ class NotificationService(
         success_count = 0
         fail_count = 0
         channel_results: List[ChannelAttemptResult] = []
+        stale_during_fanout = False
 
         for channel in target_channels:
             channel_name = ChannelDetector.get_channel_name(channel)
             started_at = time.monotonic()
+            if asset_results is not None and route_type not in {"alert", "system_error"}:
+                try:
+                    self.require_current_asset_data_for_send(asset_results)
+                except ValueError as exc:
+                    logger.warning("Asset report became stale during fanout: %s", exc)
+                    stale_during_fanout = True
+                    fail_count += 1
+                    channel_results.append(ChannelAttemptResult(
+                        channel=channel.value, success=False, error_code="data_stale",
+                        retryable=False, latency_ms=int((time.monotonic() - started_at) * 1000),
+                    ))
+                    break
             try:
                 result = self._send_to_static_channel(
                     channel,
@@ -3748,7 +3840,9 @@ class NotificationService(
         else:
             self.release_noise_control(noise_decision)
         success = success_count > 0 or context_success
-        if success_count > 0 and fail_count > 0:
+        if stale_during_fanout:
+            status = "partial_failed" if (success_count or context_success) else "data_stale"
+        elif success_count > 0 and fail_count > 0:
             status = "partial_failed"
         elif success_count > 0 or context_success:
             status = "sent"
@@ -3757,7 +3851,7 @@ class NotificationService(
         if context_success:
             channel_results.insert(0, ChannelAttemptResult(channel="__context__", success=True))
         return NotificationDispatchResult(
-            dispatched=True,
+            dispatched=not stale_during_fanout or bool(success_count or context_success),
             success=success,
             status=status,
             channel_results=channel_results,
@@ -3774,6 +3868,7 @@ class NotificationService(
         cooldown_key: Optional[str] = None,
         structured_payload: Optional[Dict[str, Any]] = None,
         email_subject: Optional[str] = None,
+        asset_results: Optional[List[Any]] = None,
     ) -> bool:
         """
         统一发送接口 - 向所有已配置的渠道发送。
@@ -3791,6 +3886,7 @@ class NotificationService(
             cooldown_key=cooldown_key,
             structured_payload=structured_payload,
             email_subject=email_subject,
+            asset_results=asset_results,
         )
         return bool(result.success)
 
@@ -3956,7 +4052,7 @@ def send_daily_report(results: List[AnalysisResult]) -> bool:
     service.save_report_to_file(report)
 
     # 推送到配置的渠道（自动识别）
-    return service.send(report)
+    return service.send(report, asset_results=results)
 
 
 if __name__ == "__main__":

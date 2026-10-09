@@ -4703,6 +4703,14 @@ class StockAnalysisPipeline:
         if not isinstance(notification_report, str) or not notification_report.strip():
             raise P0BoundedTrialError("P0 investor notification report is empty")
         self.notifier.save_report_to_file(audit_report)
+        guard = getattr(self.notifier, "require_current_asset_data_for_send", None)
+        if callable(guard):
+            try:
+                guard(results)
+            except ValueError as exc:
+                raise P0BoundedTrialError(
+                    "P0 asset data is not current for investor Email"
+                ) from exc
         if not self.notifier.send_to_email(notification_report):
             raise P0BoundedTrialError("P0 investor Email send failed")
         return audit_report
@@ -4767,6 +4775,8 @@ class StockAnalysisPipeline:
                 }
                 if _supports_explicit_keyword(self.notifier.send, "structured_payload"):
                     send_kwargs["structured_payload"] = _share_image_payload(result)
+                if _supports_explicit_keyword(self.notifier.send, "asset_results"):
+                    send_kwargs["asset_results"] = [result]
                 sent = self.notifier.send(report_content, **send_kwargs)
                 notification_run = self._build_notification_run_snapshot(
                     channel="report",
@@ -4872,6 +4882,11 @@ class StockAnalysisPipeline:
             
             # 推送通知
             if self.notifier.is_available():
+                freshness_guard = getattr(
+                    self.notifier, "require_current_asset_data_for_send", None,
+                )
+                if results and callable(freshness_guard):
+                    freshness_guard(results)
                 channels = self.notifier.get_available_channels()
                 channels = self.notifier.get_channels_for_route("report", channels=channels)
 
@@ -4903,10 +4918,22 @@ class StockAnalysisPipeline:
                     else None
                 )
 
+                stale_during_fanout = False
+
                 def _send_channel_safely(
                     channel_label: str,
                     send_func: Callable[[], bool],
                 ) -> tuple[bool, Optional[Exception]]:
+                    nonlocal stale_during_fanout
+                    if stale_during_fanout:
+                        return False, ValueError("asset report expired before outbound channel")
+                    if results and callable(freshness_guard):
+                        try:
+                            freshness_guard(results)
+                        except ValueError as exc:
+                            stale_during_fanout = True
+                            logger.warning("Aggregate asset report expired before %s: %s", channel_label, exc)
+                            return False, exc
                     try:
                         return bool(send_func()), None
                     except Exception as e:
