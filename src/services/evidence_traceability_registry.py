@@ -1295,7 +1295,7 @@ def _runtime_observations(factor: Mapping) -> list[dict]:
     return observations
 
 
-def _mtf_method_matrix_state(method_id: str, factor: Mapping, timeframe: str) -> tuple[str, str]:
+def _mtf_method_matrix_state(method_id: str, factor: Mapping, timeframe: str, family: str) -> tuple[str, str]:
     frame = at(factor, f"multi_timeframe_structure_context.timeframes.{timeframe}")
     if not isinstance(frame, Mapping):
         return "MISSING", "MTF_FRAME_MISSING"
@@ -1312,6 +1312,26 @@ def _mtf_method_matrix_state(method_id: str, factor: Mapping, timeframe: str) ->
         trend = frame.get("trend")
         if not isinstance(trend, Mapping) or _state(trend) not in {"READY", "PARTIAL"}:
             return "MISSING", "MTF_MOMENTUM_CONTEXT_MISSING"
+        if timeframe in {"60m", "30m", "15m", "5m"}:
+            if family == "SUPPLY":
+                admitted = frame.get("admitted_methods")
+                volume_ready = (
+                    isinstance(admitted, (list, tuple))
+                    and "VOLUME" in admitted
+                    and str(trend.get("volume_status") or "").strip()
+                )
+                return (
+                    ("PARTIAL", "MTF_VERIFIED_VOLUME_CONTEXT_ONLY")
+                    if volume_ready else ("MISSING", "MTF_VOLUME_CONTEXT_NOT_ADMITTED")
+                )
+            if family == "MOMENTUM":
+                price_momentum = any(
+                    str(trend.get(key) or "").strip() for key in ("macd_status", "rsi_status")
+                )
+                return (
+                    ("PARTIAL", "MTF_MACD_RSI_CONTEXT_ONLY")
+                    if price_momentum else ("MISSING", "MTF_MACD_RSI_CONTEXT_MISSING")
+                )
         fields = [str(trend.get(key) or "").strip() for key in ("volume_status", "macd_status", "rsi_status")]
         ready = sum(bool(value) for value in fields)
         if ready == len(fields):
@@ -1359,7 +1379,7 @@ def _matrix_method_observation(
     elif timeframe not in profile.current_execution_timeframes:
         state, reason = "NOT_ADMITTED", "METHOD_TIMEFRAME_NOT_ADMITTED"
     elif profile.requirement_id == "MTF":
-        state, reason = _mtf_method_matrix_state(profile.method_id, factor, timeframe)
+        state, reason = _mtf_method_matrix_state(profile.method_id, factor, timeframe, family)
     else:
         observation = observations.get(profile.requirement_id, {})
         state = str(observation.get("state") or "UNKNOWN")

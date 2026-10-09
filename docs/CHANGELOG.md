@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] 对已承认的分钟 `MTF_MOMENTUM_CONTEXT` 在唯一7×8 Evidence Registry消费端按证据族区分归属：SUPPLY 只消费已准入的VOLUME与有效量能状态，MACD/RSI只支撑MOMENTUM；不允许只有MACD/RSI就把30m量价族写成PARTIAL，反向也不允许只有成交量冒充动量。已有分钟MTF周期上下文及合法volume/price-momentum非触发保持PARTIAL，不新增第二套方法、投票、schema、模型或数据权利准入。本地现有main一致Git Tree内进行独立RED→GREEN，当前无需新的Git远端效果；V2.5静态原件及其他Lane不变。
+
 - [修复] 在当前 main 的多周期分钟证据消费者阻断无单位量价误报：当 typed 5m/15m/30m/60m `volume_unit` 不为已支持的 `share`，或前5根量比参考均量为零/不可用时，StockTrendAnalyzer 的量能状态/量比和 MA 释放确认上下文不得投影为真实量价证据，`admitted_methods` 不得包含 `VOLUME`；保持价格趋势、MA、MACD、RSI、PARTIAL 与独立策略/学习阻断，合法已确认 share 单位非触发仍保留。此轮仅隔离本地代码/测试候选，不表示 BaoStock 官方单位、复权历史版本、版权、PIT、完整邮件或正式生产已获准入，不改变 V2.5 原件或发送权限。
 
 - [修复] B8D 云端分钟只读诊断独立 RED 复现请求元数据伪装 600519 而实际已绑定 5m 原始行代码是 000001 时可误过验收；同一诊断消费者重新核实际 frame 每行代码与请求一致才准标记 OBSERVED，保留合法十日源非触发测试。此修复不改变 BaoStock 底层 API、不放宽 5m→15/30/60m 完整性断言，不宣称行情版权、PIT/模型/正式邮件准入。
