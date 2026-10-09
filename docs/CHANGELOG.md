@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [修复] 在现有NotificationService的可选结构化asset_results报告出站入口，使用canonical绑定、同源完整日K、source可用时间及真实交易所当前已完成交易日阻断陈旧/未来/空批次资产消息；合法纯市场/告警/系统消息保持原路由。仅当前main隔离本地候选，单股Pipeline已经向统一通知入口传递canonical资产结果；批量Pipeline在发送上下文与每个静态通道出站前复用同一校验；P0直达Email、主入口个股/大盘合并通知和每日简报快捷入口已在本地复用同一数据新鲜度保护；真实SMTP收件、合法数据使用权和完整7周期最新快照仍需独立验收；不改V2.5原件、数据/模型/调度。
 
 - [修复] 对已承认的分钟 `MTF_MOMENTUM_CONTEXT` 在唯一7×8 Evidence Registry消费端按证据族区分归属：SUPPLY 只消费已准入的VOLUME与有效量能状态，MACD/RSI只支撑MOMENTUM；不允许只有MACD/RSI就把30m量价族写成PARTIAL，反向也不允许只有成交量冒充动量。已有分钟MTF周期上下文及合法volume/price-momentum非触发保持PARTIAL，不新增第二套方法、投票、schema、模型或数据权利准入。本地现有main一致Git Tree内进行独立RED→GREEN，当前无需新的Git远端效果；V2.5静态原件及其他Lane不变。
 

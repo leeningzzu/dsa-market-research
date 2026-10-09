@@ -907,7 +907,7 @@ def run_full_analysis(
         render_market_review_region_projection,
         run_market_review,
     )
-    from src.core.pipeline import StockAnalysisPipeline
+    from src.core.pipeline import StockAnalysisPipeline, _supports_explicit_keyword
 
     try:
         if not p0_bounded_trial:
@@ -1234,6 +1234,18 @@ def run_full_analysis(
                             "region": market_review_region,
                         }
                     )
+                if results:
+                    if _supports_explicit_keyword(
+                        pipeline.notifier.send, "asset_results",
+                    ):
+                        send_kwargs["asset_results"] = results
+                    else:
+                        guard = getattr(
+                            pipeline.notifier, "require_current_asset_data_for_send", None,
+                        )
+                        if not callable(guard):
+                            raise ValueError("merged asset notification has no source freshness guard")
+                        guard(results)
                 if pipeline.notifier.send(combined_content, **send_kwargs):
                     logger.info("已合并推送（个股+大盘复盘）")
                 else:
