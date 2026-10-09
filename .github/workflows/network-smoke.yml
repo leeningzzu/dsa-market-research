@@ -6,13 +6,14 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'Legacy smoke or strictly bounded public CN daily source probe'
+        description: 'Legacy smoke or explicitly bounded public CN daily/5m source probes'
         type: choice
         required: true
         default: legacy
         options:
           - legacy
           - cn-daily-readonly-probe
+          - cn-intraday-readonly-probe
 
 concurrency:
   group: network-smoke-${{ github.ref }}
@@ -92,3 +93,31 @@ jobs:
           set -euo pipefail
           unset HTTP_PROXY HTTPS_PROXY ALL_PROXY FTP_PROXY SOCKS_PROXY http_proxy https_proxy all_proxy ftp_proxy socks_proxy
           python -m src.services.cloud_cn_daily_probe
+
+  cn-intraday-readonly-probe:
+    # One-stock, explicit manual read-only 5m diagnostic, independent of old
+    # private smoke and accepted Tencent 1d behavior; no scheduler or mailbox.
+    if: ${{ github.repository == 'leeningzzu/dsa-market-research' && github.event_name == 'workflow_dispatch' && inputs.mode == 'cn-intraday-readonly-probe' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout existing DSA source
+        uses: actions/checkout@v5
+      - name: Use existing DSA Python runtime
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Install existing requirements only
+        shell: bash
+        run: |
+          set -euo pipefail
+          unset HTTP_PROXY HTTPS_PROXY ALL_PROXY FTP_PROXY SOCKS_PROXY http_proxy https_proxy all_proxy ftp_proxy socks_proxy
+          python -m pip install -r requirements.txt
+      - name: Inspect one completed CN 5m source without a proxy
+        shell: bash
+        run: |
+          set -euo pipefail
+          unset HTTP_PROXY HTTPS_PROXY ALL_PROXY FTP_PROXY SOCKS_PROXY http_proxy https_proxy all_proxy ftp_proxy socks_proxy
+          python -m src.services.cloud_cn_intraday_probe
