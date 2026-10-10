@@ -2115,7 +2115,7 @@ class StockAnalysisPipeline:
                     volatility_momentum_context=volatility_momentum_context,
                     pattern_trigger_context=pattern_trigger_context,
                     multi_timeframe_structure_context=multi_timeframe_structure_context,
-                method_execution_receipts=method_execution_receipts,
+                    method_execution_receipts=method_execution_receipts,
                 )
 
             resolved_stock_name = result.name if result and result.name else stock_name
@@ -2802,6 +2802,7 @@ class StockAnalysisPipeline:
                 volatility_momentum_context=volatility_momentum_context,
                 pattern_trigger_context=pattern_trigger_context,
                 multi_timeframe_structure_context=multi_timeframe_structure_context,
+                method_execution_receipts=method_execution_receipts,
                 include_canonical=True,
                 asset_type=asset_type,
             )

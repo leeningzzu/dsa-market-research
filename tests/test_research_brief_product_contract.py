@@ -354,3 +354,45 @@ def test_phase_a_pipeline_wiring_keeps_etf_p0_boundary_and_normal_canonical_cons
     assert "if is_market_index" in rendered
     assert "if is_index_or_etf and self.p0_bounded_trial" in rendered
     assert "asset_type = 'etf' if is_index_or_etf else 'stock'" in rendered
+    receipt_keyword = builder_keywords["method_execution_receipts"]
+    assert isinstance(receipt_keyword, ast.Name)
+    assert receipt_keyword.id == "method_execution_receipts"
+
+    attach_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_attach_factor_decision_summary"
+    ]
+    assert len(attach_calls) >= 2
+    for call in attach_calls:
+        keywords = {item.arg: item.value for item in call.keywords if item.arg}
+        forwarded = keywords["method_execution_receipts"]
+        assert isinstance(forwarded, ast.Name)
+        assert forwarded.id == "method_execution_receipts"
+
+
+def test_phase_a_pipeline_forwards_upstream_method_receipts_into_strict_builder():
+    pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+    pipeline.p0_bounded_trial = False
+    pipeline.config = SimpleNamespace(report_language="zh")
+    result = _result()
+    result.code = "600519"
+    result.name = "贵州茅台"
+    result.report_language = "zh"
+    upstream = {"SUPPLY": {"sentinel": "actual-pipeline-upstream-receipt"}}
+
+    pipeline._attach_factor_decision_summary(
+        result,
+        code="600519",
+        trend_result=_trend(),
+        fundamental_context=None,
+        chip_data=None,
+        method_execution_receipts=upstream,
+    )
+
+    factor = result.dashboard["factor_decision"]
+    assert factor["method_execution_receipt_policy"] == "REQUIRED"
+    assert factor["method_execution_receipts"]["SUPPLY"] == upstream["SUPPLY"]
+    assert_canonical_consumer_consistency(result, scope="production")

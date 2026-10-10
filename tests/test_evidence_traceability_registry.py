@@ -1135,6 +1135,155 @@ def test_learning_projection_preserves_finite_signed_macd_values(dif, dea, bar):
         assert metric["unit"] == "PRICE_BASIS_CURRENCY"
 
 
+def test_strict_mtf_parent_rejection_blocks_all_dependent_children_and_product_slots():
+    from src.services.v2_5_evidence_coverage import compile_product_coverage
+
+    factor = native_summary_with_mtf()
+    factor["method_execution_receipt_policy"] = "REQUIRED"
+    factor["method_execution_receipts"] = {}
+    factor["evidence_traceability"] = reg.build_runtime_trace(factor)
+    trace = reg.validate_runtime_trace(factor)
+
+    parent = next(
+        item for item in trace["observations"] if item["requirement_id"] == "MTF"
+    )
+    assert parent["state"] == "UNKNOWN"
+    assert parent["reason"] == "METHOD_INVOCATION_RECEIPT_MISSING"
+
+    weekly_cells = [
+        cell
+        for cell in trace["timeframe_family_matrix"]["cells"]
+        if cell["timeframe"] == "weekly"
+    ]
+    assert len(weekly_cells) == len(reg.TECHNICAL_EVIDENCE_FAMILIES)
+    assert all(cell["state"] not in {"READY", "PARTIAL"} for cell in weekly_cells)
+    assert all(not cell["available_paths"] for cell in weekly_cells)
+    mtf_children = [
+        method
+        for cell in weekly_cells
+        for method in cell["method_coverage"]
+        if method["requirement_id"] == "MTF"
+        and method["leaf_implementation_state"] == "EXISTING_REUSED"
+        and "weekly" in method["current_execution_timeframes"]
+    ]
+    assert mtf_children
+    assert all(child["state"] == "UNKNOWN" for child in mtf_children)
+    assert all(
+        child["reason"] == "METHOD_INVOCATION_RECEIPT_MISSING"
+        for child in mtf_children
+    )
+
+    coverage = compile_product_coverage(factor)
+    assert all(
+        slot["timeframe_states"].get("weekly") != "EVIDENCE_AVAILABLE"
+        for slot in coverage["slots"]
+    )
+    learning = reg.learning_projection(factor)
+    for metric_id in ("weekly.ma5", "weekly.ma10", "weekly.ma20"):
+        assert learning["values"][metric_id] == {
+            "value": None,
+            "state": "MISSING_OR_UNADMITTED",
+        }
+
+
+def test_verified_mtf_parent_receipt_preserves_legal_child_and_product_nontrigger():
+    from src.services.v2_5_evidence_coverage import compile_product_coverage
+
+    factor = native_summary_with_mtf()
+    context = factor["multi_timeframe_structure_context"]
+    target = pd.to_datetime(context["target_date"]).date()
+    identity = _strict_daily_identity(target)
+    identity["data_snapshot_identity"] = context["data_snapshot_identity"]
+    receipt = reg.build_method_execution_receipt(
+        "MTF",
+        output=context,
+        asset_route="STOCK",
+        stock_code="600519",
+        market="cn",
+        target_date=target,
+        timeframe="multi",
+        input_identity=identity,
+    )
+    factor["method_execution_receipt_policy"] = "REQUIRED"
+    factor["method_execution_receipts"] = {"MTF": receipt}
+    factor["evidence_traceability"] = reg.build_runtime_trace(factor)
+    trace = reg.validate_runtime_trace(factor)
+
+    parent = next(
+        item for item in trace["observations"] if item["requirement_id"] == "MTF"
+    )
+    assert parent["state"] in {"READY", "PARTIAL"}
+    assert parent["reason"] == "METHOD_INVOCATION_VERIFIED"
+    weekly_trend = next(
+        cell
+        for cell in trace["timeframe_family_matrix"]["cells"]
+        if cell["timeframe"] == "weekly" and cell["family"] == "TREND_RS"
+    )
+    assert weekly_trend["state"] in {"READY", "PARTIAL"}
+    assert weekly_trend["available_paths"]
+
+    coverage = compile_product_coverage(factor)
+    trend_slot = next(
+        slot for slot in coverage["slots"] if slot["slot_id"] == "detail.timeframe.trend_ma"
+    )
+    assert trend_slot["timeframe_states"]["weekly"] == "EVIDENCE_AVAILABLE"
+    learning = reg.learning_projection(factor)
+    for metric_id in ("weekly.ma5", "weekly.ma10", "weekly.ma20"):
+        assert learning["values"][metric_id]["state"] == "READY"
+        assert learning["values"][metric_id]["value"] is not None
+
+
+def test_invalid_mtf_parent_receipt_blocks_dependent_product_and_learning():
+    from src.services.v2_5_evidence_coverage import compile_product_coverage
+
+    factor = native_summary_with_mtf()
+    context = factor["multi_timeframe_structure_context"]
+    target = pd.to_datetime(context["target_date"]).date()
+    identity = _strict_daily_identity(target)
+    identity["data_snapshot_identity"] = context["data_snapshot_identity"]
+    receipt = reg.build_method_execution_receipt(
+        "MTF",
+        output=context,
+        asset_route="STOCK",
+        stock_code="600519",
+        market="cn",
+        target_date=target,
+        timeframe="multi",
+        input_identity=identity,
+    )
+    receipt["output_hash"] = "0" * 64
+    receipt = _rehash_receipt(receipt)
+    factor["method_execution_receipt_policy"] = "REQUIRED"
+    factor["method_execution_receipts"] = {"MTF": receipt}
+    factor["evidence_traceability"] = reg.build_runtime_trace(factor)
+    trace = reg.validate_runtime_trace(factor)
+
+    parent = next(
+        item for item in trace["observations"] if item["requirement_id"] == "MTF"
+    )
+    assert parent["state"] == "UNKNOWN"
+    assert parent["reason"] == "METHOD_RECEIPT_OUTPUT_MISMATCH"
+    weekly_cells = [
+        cell
+        for cell in trace["timeframe_family_matrix"]["cells"]
+        if cell["timeframe"] == "weekly"
+    ]
+    assert all(cell["state"] not in {"READY", "PARTIAL"} for cell in weekly_cells)
+    assert all(not cell["available_paths"] for cell in weekly_cells)
+
+    coverage = compile_product_coverage(factor)
+    assert all(
+        slot["timeframe_states"].get("weekly") != "EVIDENCE_AVAILABLE"
+        for slot in coverage["slots"]
+    )
+    learning = reg.learning_projection(factor)
+    for metric_id in ("weekly.ma5", "weekly.ma10", "weekly.ma20"):
+        assert learning["values"][metric_id] == {
+            "value": None,
+            "state": "MISSING_OR_UNADMITTED",
+        }
+
+
 def test_noncanonical_legacy_call_does_not_trigger_new_product_or_learning():
     result = TrendAnalysisResult(code="600519")
     factor = build_stock_factor_decision_summary(result)
