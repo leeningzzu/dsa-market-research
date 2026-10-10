@@ -34,7 +34,7 @@ from src.services.evidence_flywheel_runtime import (
     replay_specified_codes_daily_sessions,
 )
 from src.services.pit_dataset_service import PITDatasetService
-from src.services.evidence_traceability_registry import MANIFEST_HASH, digest
+from src.services.evidence_traceability_registry import MANIFEST_HASH, METRIC_BINDINGS, digest
 from src.services.prediction_ledger_service import (
     TRACE_FEATURE_SCHEMA_VERSION,
     traced_feature_schema_hash,
@@ -198,6 +198,49 @@ def test_traced_ledger_readback_rejects_cross_identity_forgery(isolated_db) -> N
         _ledger_identity_snapshot(isolated_db, "3" * 64)
     with pytest.raises(EvidenceFlywheelRuntimeError, match="persisted trace/evidence identity mismatch"):
         _ledger_identity_snapshot(isolated_db, "4" * 64)
+
+
+def test_archived_20261005_trace_metric_hash_is_frozen_before_wilder_atr() -> None:
+    # Independently recovered from Git df2f0e29 and the untouched 600519 Ledger.
+    historical_manifest = "a88c20a84e0abe7d65c677ff4150102b005a1109d476e52c527d09e3bff88fa4"
+    historical_schema = "d4ec2a286f4ef153d96b0cd3777a8fd540adc715df164427459aab55a9c757df"
+    assert traced_feature_schema_hash(historical_manifest) == historical_schema
+    assert traced_feature_schema_hash(MANIFEST_HASH) != historical_schema
+
+
+def test_archived_20261005_trace_ledger_receipt_is_readable_without_rewrite(isolated_db) -> None:
+    historical_manifest = "a88c20a84e0abe7d65c677ff4150102b005a1109d476e52c527d09e3bff88fa4"
+    historical_schema = "d4ec2a286f4ef153d96b0cd3777a8fd540adc715df164427459aab55a9c757df"
+    _insert_traced_ledger_row(
+        isolated_db,
+        prediction_hash="7" * 64,
+        manifest_hash=historical_manifest,
+        feature_schema_hash=historical_schema,
+    )
+    snapshot = _ledger_identity_snapshot(isolated_db, "7" * 64)
+    assert snapshot["evidence_traceability_identity"]["manifest_hash"] == historical_manifest
+    assert snapshot["feature_schema_hash"] == historical_schema
+    assert snapshot["pit_eligible"] is False
+    assert snapshot["pit_ineligibility_reasons"] == ["TEST_ONLY"]
+
+
+def test_archived_20261005_manifest_rejects_modern_metric_schema_forgery(isolated_db) -> None:
+    historical_manifest = "a88c20a84e0abe7d65c677ff4150102b005a1109d476e52c527d09e3bff88fa4"
+    # Compute the independently wrong 35-metric hash, not the method being fixed.
+    wrong_modern_metric_schema = digest({
+        "schema_version": TRACE_FEATURE_SCHEMA_VERSION,
+        "manifest_hash": historical_manifest,
+        "metrics": METRIC_BINDINGS,
+    })
+    assert wrong_modern_metric_schema != "d4ec2a286f4ef153d96b0cd3777a8fd540adc715df164427459aab55a9c757df"
+    _insert_traced_ledger_row(
+        isolated_db,
+        prediction_hash="8" * 64,
+        manifest_hash=historical_manifest,
+        feature_schema_hash=wrong_modern_metric_schema,
+    )
+    with pytest.raises(EvidenceFlywheelRuntimeError, match="persisted trace/evidence identity mismatch"):
+        _ledger_identity_snapshot(isolated_db, "8" * 64)
 
 
 def test_dataset_candidate_filter_keeps_manifest_feature_hash_cohorts_separate(isolated_db) -> None:
