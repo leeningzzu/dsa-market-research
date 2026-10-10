@@ -32,20 +32,50 @@ _FACTOR_EVIDENCE_KEYS = ledger_evidence_keys()
 # New traced snapshots use a separate numeric schema, never silently redefine v1.
 TRACE_FEATURE_SCHEMA_VERSION = "stock-factor-numeric-evidence-v2"
 
+# One independently recovered immutable historical manifest, produced by
+# df2f0e29 (2026-10-05) before the two daily Wilder ATR metrics were added.
+# Preserve its original 33 bindings rather than recomputing with today's 35.
+_HISTORICAL_PRE_WILDER_MANIFEST_HASH = (
+    "a88c20a84e0abe7d65c677ff4150102b005a1109d476e52c527d09e3bff88fa4"
+)
+_HISTORICAL_PRE_WILDER_FEATURE_HASH = (
+    "d4ec2a286f4ef153d96b0cd3777a8fd540adc715df164427459aab55a9c757df"
+)
+_HISTORICAL_ADDED_WILDER_METRICS = frozenset({
+    "daily.atr_wilder14",
+    "daily.atr_wilder14_pct",
+})
+
 
 def traced_feature_schema_hash(manifest_hash: str) -> str:
-    """Bind one traced numeric schema to the manifest frozen with that record."""
+    """Bind each archived numeric schema to its own verified frozen manifest."""
     normalized_manifest_hash = str(manifest_hash or "").strip().lower()
     if (
         len(normalized_manifest_hash) != 64
         or any(ch not in "0123456789abcdef" for ch in normalized_manifest_hash)
     ):
         raise ValueError("manifest_hash must be exact 64-hex")
-    return digest({
+
+    bindings = METRIC_BINDINGS
+    if normalized_manifest_hash == _HISTORICAL_PRE_WILDER_MANIFEST_HASH:
+        bindings = tuple(
+            metric for metric in METRIC_BINDINGS
+            if metric["id"] not in _HISTORICAL_ADDED_WILDER_METRICS
+        )
+        if len(bindings) != 33:
+            raise ValueError("frozen historical metric binding count drift")
+
+    result = digest({
         "schema_version": TRACE_FEATURE_SCHEMA_VERSION,
         "manifest_hash": normalized_manifest_hash,
-        "metrics": METRIC_BINDINGS,
+        "metrics": bindings,
     })
+    if (
+        normalized_manifest_hash == _HISTORICAL_PRE_WILDER_MANIFEST_HASH
+        and result != _HISTORICAL_PRE_WILDER_FEATURE_HASH
+    ):
+        raise ValueError("frozen historical feature schema identity drift")
+    return result
 
 
 TRACE_FEATURE_SCHEMA_HASH = traced_feature_schema_hash(MANIFEST_HASH)
