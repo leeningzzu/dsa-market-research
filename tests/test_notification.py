@@ -107,12 +107,42 @@ def _make_investor_brief_result() -> AnalysisResult:
                 "asset_identity_text": "A股｜主板",
             },
             "factor_decision": {
+                "data_usage_mode": "PRODUCTION_LATEST",
+                "multi_timeframe_structure_context": {
+                    "target_date": "2026-09-24",
+                    "available_at_max": "2026-09-24T10:00:00",
+                    "provider_identity": "AkshareFetcher",
+                    "adjustment_basis": "qfq",
+                    "data_snapshot_identity": "notification-current-snapshot",
+                    "timeframes": {
+                        "daily": {
+                            "status": "READY",
+                            "completed_bar_only": True,
+                            "latest_bar_date": "2026-09-24",
+                            "completed_through": "2026-09-24",
+                        }
+                    },
+                },
                 "conclusion": "旧因子结论（不得重复）",
                 "composite_score": 43,
                 "historical_reference": {"display": "样本不足，暂不展示"},
                 "current_probability": {"display": "暂不提供（尚未完成独立校准）"},
                 "investor_brief": {
                     "schema_version": "investor-brief-v1",
+                    "data_clock": {
+                        "schema_version": "product-data-clock-v1",
+                        "data_usage_mode": "PRODUCTION_LATEST",
+                        "state": "LATEST_COMPLETED",
+                        "product_current": True,
+                        "target_date": "2026-09-24",
+                        "data_as_of": "2026-09-24",
+                        "completed_through": "2026-09-24",
+                        "available_at_max": "2026-09-24T10:00:00",
+                        "provider_identity": "AkshareFetcher",
+                        "adjustment_basis": "qfq",
+                        "data_snapshot_identity": "notification-current-snapshot",
+                        "reason": "TARGET_COMPLETED_BAR_READY",
+                    },
                     "coverage": {
                         "monthly": "MISSING",
                         "weekly": "MISSING",
@@ -249,7 +279,25 @@ def _make_builder_risk_factor(risks):
         rsi_signal="RSI中性偏强",
         risk_factors=list(risks),
     )
-    return build_stock_factor_decision_summary(trend, include_canonical=True)
+    return build_stock_factor_decision_summary(
+        trend,
+        include_canonical=True,
+        multi_timeframe_structure_context={
+            "target_date": "2026-09-14",
+            "available_at_max": "2026-09-14T10:00:00",
+            "provider_identity": "TEST_CURRENT_PROVIDER",
+            "adjustment_basis": "qfq",
+            "data_snapshot_identity": "builder-risk-current-snapshot",
+            "timeframes": {
+                "daily": {
+                    "status": "READY",
+                    "completed_bar_only": True,
+                    "latest_bar_date": "2026-09-14",
+                    "completed_through": "2026-09-14",
+                }
+            },
+        },
+    )
 
 def _make_feishu_message() -> BotMessage:
     return BotMessage(
@@ -958,6 +1006,40 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
             self.assertNotIn("LEGACY_ANALYSIS_SUMMARY_MUST_NOT_RENDER", rendered)
             self.assertNotIn("评分 99", rendered)
             self.assertNotIn("评分:99", rendered)
+
+    @mock.patch("src.notification.get_config")
+    def test_historical_research_clock_is_visible_but_current_facts_are_suppressed(
+        self, mock_get_config: mock.MagicMock
+    ):
+        result = _make_canonical_wait_contaminated_result()
+        result.dashboard["factor_decision"]["data_usage_mode"] = (
+            "HISTORICAL_RESEARCH_ONLY"
+        )
+        brief = result.dashboard["factor_decision"]["investor_brief"]
+        brief["data_clock"].update(
+            {
+                "data_usage_mode": "HISTORICAL_RESEARCH_ONLY",
+                "state": "HISTORICAL_RESEARCH_ONLY",
+                "product_current": False,
+                "reason": "HISTORICAL_REPLAY_NEVER_CURRENT_PRODUCT_FACT",
+            }
+        )
+
+        for renderer_enabled in (False, True):
+            mock_get_config.return_value = _make_config(
+                report_renderer_enabled=renderer_enabled
+            )
+            service = NotificationService()
+            for rendered in (
+                service.generate_dashboard_report([result], report_date="2026-10-08"),
+                service.generate_brief_report([result], report_date="2026-10-08"),
+                service.generate_single_stock_report(result),
+            ):
+                self.assertIn("不得作为当前邮件事实", rendered)
+                self.assertIn("当前邮件不输出价格、指标、价位或操作条件", rendered)
+                self.assertNotIn("CANONICAL_FUSED_FACTS", rendered)
+                self.assertNotIn("CANONICAL_TRIGGER", rendered)
+                self.assertNotIn("**当前价格**: 1450.0", rendered)
 
     def test_investor_brief_requires_current_canonical_trace_binding(self):
         result = _make_investor_brief_result()

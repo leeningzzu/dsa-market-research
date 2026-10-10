@@ -165,6 +165,7 @@ def test_p0_pipeline_does_not_initialize_search_social_or_agent_router():
         )
 
     assert pipeline.max_workers == 1
+    assert pipeline.data_usage_mode == "PRODUCTION_LATEST"
     assert pipeline.search_service is None
     assert pipeline.social_sentiment_service is None
     search_cls.assert_not_called()
@@ -175,6 +176,25 @@ def test_p0_pipeline_does_not_initialize_search_social_or_agent_router():
         skills=None,
         p0_bounded_trial=True,
     )
+
+
+def test_pipeline_rejects_unknown_product_data_usage_mode():
+    config = SimpleNamespace(
+        max_workers=1,
+        save_context_snapshot=False,
+        daily_market_context_enabled=False,
+        enable_realtime_quote=False,
+        realtime_source_priority=[],
+        enable_chip_distribution=False,
+    )
+    with patch("src.core.pipeline.get_db", return_value=MagicMock()), \
+         patch("src.core.pipeline.DataFetcherManager", return_value=MagicMock()), \
+         patch("src.core.pipeline.StockTrendAnalyzer", return_value=MagicMock()), \
+         patch("src.core.pipeline.GeminiAnalyzer", return_value=MagicMock()), \
+         patch("src.core.pipeline.NotificationService", return_value=MagicMock()), \
+         patch("src.core.pipeline.MarketStructureService", return_value=MagicMock()):
+        with pytest.raises(ValueError, match="data usage mode"):
+            StockAnalysisPipeline(config=config, data_usage_mode="UNKNOWN_CLOCK")
 
 
 def test_p0_analyzer_initialization_does_not_construct_router_or_fallbacks():

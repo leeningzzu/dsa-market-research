@@ -42,6 +42,7 @@ from src.services.research_state_projection import (
     build_strategy_eligibility_identity,
 )
 from src.services.evidence_traceability_registry import digest, json_wire_equal
+from src.services.factor_decision_summary import normalize_product_data_usage_mode
 
 
 RECEIPT_SCHEMA_VERSION = "evidence-flywheel-runtime-receipt-v1"
@@ -1052,6 +1053,7 @@ def record_canonical_run(
     receipt_only: bool = False,
     product_report_receipt: bool = False,
     intended_cohort_id: Optional[str] = None,
+    data_usage_mode: str = "PRODUCTION_LATEST",
 ) -> Dict[str, Any]:
     """Run one bounded, notification-suppressed canonical analysis into Ledger."""
     codes = _validated_codes(
@@ -1059,6 +1061,10 @@ def record_canonical_run(
         require_single_stock=require_single_stock,
     )
     bound_code_sha = _require_sha(code_sha, length=40, field="code_sha")
+    try:
+        bound_data_usage_mode = normalize_product_data_usage_mode(data_usage_mode)
+    except ValueError as exc:
+        raise EvidenceFlywheelBoundaryError(str(exc)) from exc
     bound_intended_cohort_id = (
         _require_sha(
             intended_cohort_id,
@@ -1107,6 +1113,7 @@ def record_canonical_run(
             p0_model_request_budget=ZERO_EXTERNAL_MODEL_REQUEST_BUDGET,
             research_selection_context=selection_context,
             research_code_sha=bound_code_sha,
+            data_usage_mode=bound_data_usage_mode,
         )
         if bound_intended_cohort_id is not None:
             setattr(
@@ -1215,6 +1222,7 @@ def record_canonical_run(
         "notification_suppressed": True,
         "external_durability": "NOT_REQUESTED",
         "training_requested": False,
+        "data_usage_mode": bound_data_usage_mode,
         "model_request_budget": observed_model_request_budget,
         "model_request_count": observed_model_request_count,
         "ledger_receipts": receipts,
@@ -1327,6 +1335,7 @@ def replay_specified_codes_daily_sessions(
             closed_world_database_receipt=False,
             receipt_only=True,
             intended_cohort_id=replay_cohort_id,
+            data_usage_mode="HISTORICAL_RESEARCH_ONLY",
         )
         if not isinstance(receipt, Mapping):
             raise EvidenceFlywheelRuntimeError("historical replay record returned no receipt")
@@ -1422,6 +1431,7 @@ def replay_specified_codes_daily_sessions(
         "model_request_budget": ZERO_EXTERNAL_MODEL_REQUEST_BUDGET,
         "model_request_count": 0,
         "training_requested": False,
+        "data_usage_mode": "HISTORICAL_RESEARCH_ONLY",
         "outcome_requested": False,
         "pit_manifest_requested": False,
         "artifact_policy": {

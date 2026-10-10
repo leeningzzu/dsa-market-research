@@ -1016,6 +1016,7 @@ def run_full_analysis(
                 else None
             ),
             research_selection_context=research_selection_context,
+            data_usage_mode="PRODUCTION_LATEST",
         )
         if should_use_daily_market_context:
             # Prompt-side context can reuse historical summaries, while full-merge

@@ -42,7 +42,11 @@ from src.schemas.decision_action import (
     has_canonical_action_authority_for_result,
     localize_action_label,
 )
-from src.services.factor_decision_summary import validate_investor_brief_binding
+from src.services.factor_decision_summary import (
+    format_product_data_clock,
+    product_data_clock_is_current,
+    validate_investor_brief_binding,
+)
 from src.utils.data_processing import (
     normalize_model_used,
     signal_attribution_has_content,
@@ -182,7 +186,17 @@ def render(
         }.get(display_action, display_action)
         _, se, _ = get_signal_level(signal_action or display_advice, r.sentiment_score, report_language)
         bound_brief = _bound_investor_brief(r)
+        data_clock = bound_brief.get("data_clock") if isinstance(bound_brief, dict) else None
         canonical_authority = has_canonical_action_authority_for_result(r)
+        product_data_current = product_data_clock_is_current(data_clock)
+        if canonical_authority and bound_brief is not None and not product_data_current:
+            if report_language == "en":
+                display_advice = "Data insufficient"
+            elif report_language == "ko":
+                display_advice = "데이터 부족"
+            else:
+                display_advice = "数据不足"
+            se = "⚪"
         rn = get_localized_stock_name(r.name, r.code, report_language)
         sorted_enriched.append({
             "result": r,
@@ -194,12 +208,27 @@ def render(
             "canonical_authority": canonical_authority,
             "investor_brief_valid": bound_brief is not None,
             "investor_brief": bound_brief or {},
+            "product_data_current": product_data_current,
+            "data_clock_text": format_product_data_clock(
+                data_clock,
+                report_language=report_language,
+            ),
         })
 
-    display_buckets = [
-        display_decision_type_for_result(r, report_language=report_language)
-        for r in results
-    ]
+    display_buckets = []
+    for result in results:
+        bound_brief = _bound_investor_brief(result)
+        data_clock = bound_brief.get("data_clock") if isinstance(bound_brief, dict) else None
+        if (
+            has_canonical_action_authority_for_result(result)
+            and bound_brief is not None
+            and not product_data_clock_is_current(data_clock)
+        ):
+            display_buckets.append("hold")
+        else:
+            display_buckets.append(
+                display_decision_type_for_result(result, report_language=report_language)
+            )
     buy_count = sum(1 for bucket in display_buckets if bucket == "buy")
     sell_count = sum(1 for bucket in display_buckets if bucket == "sell")
     hold_count = len(display_buckets) - buy_count - sell_count

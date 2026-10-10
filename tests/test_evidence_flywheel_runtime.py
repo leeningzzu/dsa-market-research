@@ -432,6 +432,7 @@ def test_record_phase_reuses_bounded_pipeline_and_restores_config(monkeypatch) -
     assert receipt["ledger_receipts"][0]["prediction_hash"] == "a" * 64
     assert observed["init"]["p0_bounded_trial"] is True
     assert observed["init"]["p0_suppress_notification"] is True
+    assert observed["init"]["data_usage_mode"] == "PRODUCTION_LATEST"
     assert observed["init"]["p0_model_request_budget"] == 0
     assert observed["init"]["research_code_sha"] == "1" * 40
     assert observed["run"]["send_notification"] is False
@@ -451,6 +452,25 @@ def test_record_phase_reuses_bounded_pipeline_and_restores_config(monkeypatch) -
     assert config.enable_fundamental_pipeline is True
     assert config.report_integrity_enabled is True
     assert config.searxng_public_instances_enabled is True
+
+
+def test_record_phase_rejects_unknown_data_usage_mode_before_pipeline_factory() -> None:
+    observed = {"factory_calls": 0}
+
+    def factory(**kwargs):
+        observed["factory_calls"] += 1
+        raise AssertionError("factory must not run")
+
+    with pytest.raises(EvidenceFlywheelBoundaryError, match="data usage mode"):
+        record_canonical_run(
+            stock_codes=["600519"],
+            code_sha="1" * 40,
+            config=_config(),
+            pipeline_factory=factory,
+            data_usage_mode="UNKNOWN_CLOCK",
+        )
+
+    assert observed["factory_calls"] == 0
 
 
 def _fake_replay_record_runner(expected_sessions: list[date], code_sha: str, calls: list[dict]):
@@ -539,6 +559,10 @@ def test_replay_specified_codes_sessions_are_ordered_receipt_only(tmp_path) -> N
     assert all(call["receipt_only"] is True for call in calls)
     assert all(call["closed_world_database_receipt"] is False for call in calls)
     assert all(call["require_single_stock"] is True for call in calls)
+    assert all(
+        call["data_usage_mode"] == "HISTORICAL_RESEARCH_ONLY"
+        for call in calls
+    )
     repeated_calls: list[dict] = []
     repeated = replay_specified_codes_daily_sessions(
         stock_code="600519",

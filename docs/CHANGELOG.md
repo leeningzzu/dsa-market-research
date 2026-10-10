@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - [测试] 本地新增 public 手动限定的腾讯日线零代理云端候选，复用现有 Network Smoke workflow 与 TencentFetcher/日线来源身份/XSHG 最新完成交易日；严格验收实际存在的 OHLCV、复权、当前性与内容哈希；腾讯仅六字段时显式标记成交额 MISSING 且量额方法不准入，不伪造零成交额，部分错误成交额拒绝；旧日期、错标的请求和 day 分支 fail-closed（额外复现 000001 实测请求冒充 600519，改用同一 native 调用的短期请求代码绑定）。云端依赖安装和行情查询均清除代理变量，避免在数据请求前已通过代理联网；无新工作流、调度、DB、Secrets、模型、通知或原件 HTML 修改；仅本地代码与 mock 回归，未 commit/push/dispatch/真实云端数据，数据权利/PIT/生产发送仍独立 STOP。
 
+- [修复] 分离历史研究/训练数据时钟与最终 Product 最新数据时钟：Pipeline 显式绑定 `PRODUCTION_LATEST` 或 `HISTORICAL_RESEARCH_ONLY`，普通 P0 有界验收不再因成本/通知开关被误标为历史；historical replay 强制历史模式且继续零通知、零报告、零训练。动态 Report/Email/WeChat 仅在实际 consumed daily bar、target date、completed-through、provider、复权口径、available-at 与 snapshot identity 同时证明本次最新已完成交易日时显示当前价格、指标、价位和操作条件，否则整条资产投影降级为数据不足并抑制旧事实。7周期×8证据族继续只是技术矩阵子集，不构成指标数量上限；Quality/Valuation/Distribution/RiskReward、Global/Breadth、ETF、经典指标、Chan/Wave 与模型层保持独立准入。V2.5 接受原件、数据库、provider、SMTP、训练与 Promotion 权限均未改变。
 - [指标] 在既有 VolatilityMomentum owner 内新增日线 Wilder ATR(14)：首个收盘价不充当跨日 TR，随后 14 个真实波幅取种子并按 Wilder RMA 递推；同时保留原 TR-SMA20 且明确两者不可混称。ATR 进入日线 MOMENTUM 方法与 Ledger 指标投影，但不新增独立投票、硬否决、策略切换或历史 PIT 资格；非日线周期和其余经典指标继续 NOT_ADMITTED。
 - [修复] PIT/MultiTimeframe 日线快照可用时点不得被历史回放参数倒填：在已有 typed daily 数据源 observed_at 与运行观察时间之间取较晚者，保持 Ledger 的 DATA_AVAILABLE_AFTER_DECISION 严格拒绝；新增独立 RED→GREEN 与较晚合法时点非触发测试，不改原始行情、canonical、模型、V2.5 邮件原件或数据库。
 - [测试] CI 忙端口测试仅替换 API 启动入口导入的 socket/threading 对象，保留一次端口探测及禁止建线程的精确断言，避免全局 socket mock 误计后台连接；LLM usage 异常测试显式模拟数据库获取失败，不再重置单例后误写默认业务库。生产代码、V2.5 原件、报告与策略均不变。
