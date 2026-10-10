@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [修复] 严格方法凭据模式下把 TREND_RS / SUPPLY 的风险否决同样绑定既有 Evidence Registry method_observation：若趋势/基准来源、输出或数据身份不通过准入，原始空头/卖出/风险文案不能生成 PROVEN 弱趋势否决；若 SUPPLY 量价父级未准入，原始放量下跌不能生成 PROVEN 量价否决，拒绝原因保留。已验证的 TREND_RS、独立 REGIME 和合法 legacy 非严格风险均保持原合同；对未准入原始证据仍显示 MISSING/UNKNOWN，不补齐数据、评分或动作，不变更原版 V2.5、ETF 专属估值、模型、数据库及通知发送。
+- [修复] 继续收口同一 canonical 风险准入消费者：ETF 的必需专属证据缺失不再抹掉已经证明的市场/趋势 hard veto，保留 ETF 专属缺失 reason；严格模式下市场REGIME的独立父级receipt若因日期/来源身份被Registry拒绝，其未经准入的风险标签不得直接形成最终 PASS/avoid，拒绝原因继续可见；合法严格父凭据及独立弱趋势否决均保留。仅现有Factor/测试/文档本地候选，无第二评分、数据源、模板、数据库、模型、真实消息或Git远端效果。
+- [修复] 修通既有方法执行凭据与消费者链：Pipeline normal/Agent 生成的 receipts 原样进入 Factor 严格模式；严格 MTF 父级缺失或伪造 receipt 时，依赖子方法、7×8 available paths、Product slots 与 Learning metrics 同步 fail-closed，合法 legacy 非严格上下文和已验证 receipt 保持原行为；canonical 在其他必需输入缺失时仍保留独立已证明的市场、量价或趋势 hard veto，并同时记录缺失原因。未改模板、策略身份、数据源、数据库、模型或外部通知。
 - [修复] 在现有NotificationService的可选结构化asset_results报告出站入口，使用canonical绑定、同源完整日K、source可用时间及真实交易所当前已完成交易日阻断陈旧/未来/空批次资产消息；合法纯市场/告警/系统消息保持原路由。仅当前main隔离本地候选，单股Pipeline已经向统一通知入口传递canonical资产结果；批量Pipeline在发送上下文与每个静态通道出站前复用同一校验；P0直达Email、主入口个股/大盘合并通知和每日简报快捷入口已在本地复用同一数据新鲜度保护；真实SMTP收件、合法数据使用权和完整7周期最新快照仍需独立验收；不改V2.5原件、数据/模型/调度。
 
 - [修复] 对已承认的分钟 `MTF_MOMENTUM_CONTEXT` 在唯一7×8 Evidence Registry消费端按证据族区分归属：SUPPLY 只消费已准入的VOLUME与有效量能状态，MACD/RSI只支撑MOMENTUM；不允许只有MACD/RSI就把30m量价族写成PARTIAL，反向也不允许只有成交量冒充动量。已有分钟MTF周期上下文及合法volume/price-momentum非触发保持PARTIAL，不新增第二套方法、投票、schema、模型或数据权利准入。本地现有main一致Git Tree内进行独立RED→GREEN，当前无需新的Git远端效果；V2.5静态原件及其他Lane不变。

@@ -41,6 +41,38 @@ def _trend(**overrides):
     return SimpleNamespace(**data)
 
 
+def _strict_verified_relative_strength():
+    # Independent synthetic method input identity; no real provider or PIT claim.
+    stock = {
+        "data_snapshot_identity": "a" * 64,
+        "provider_identity": "synthetic",
+        "adjustment_basis": "qfq",
+        "price_identity_reasons": [],
+        "stock_code": "600519",
+        "market": "cn",
+        "target_date": "2026-09-30",
+    }
+    return {
+        "schema_version": "relative-strength-v1",
+        "family": "trend_relative_strength",
+        "status": "READY",
+        "market": "cn",
+        "stock_code": "600519",
+        "target_date": "2026-09-30",
+        "benchmark": {"code": "510300", "source": "synthetic"},
+        "stock": {},
+        "relative": {"state": "OUTPERFORMING"},
+        "data_quality": {
+            "source_alignment": "MATCHED",
+            "stock_endpoint_sources": ["synthetic"],
+        },
+        "input_identity": {
+            "stock": stock,
+            "benchmark": {**stock, "stock_code": "510300"},
+        },
+    }
+
+
 def test_summary_reuses_existing_score_without_inventing_probability_or_win_rate():
     summary = build_stock_factor_decision_summary(
         _trend(),
@@ -318,6 +350,276 @@ def test_p0_missing_required_evidence_fails_closed_to_unknown_wait():
     assert summary["canonical_decision"]["reason_codes"] == ["MISSING_TREND_RESULT"]
     assert result.operation_advice.startswith("观望：必需证据不足")
     assert_canonical_consumer_consistency(result)
+
+
+def test_proven_market_veto_survives_missing_trend_and_reaches_public_consumer():
+    summary = build_stock_factor_decision_summary(
+        None,
+        daily_market_context={
+            "market_light": {"status": "red", "score": 20, "data_quality": "ok"}
+        },
+        include_canonical=True,
+    )
+    decision = summary["canonical_decision"]
+    result = apply_canonical_decision_to_result(_llm_result(), summary, scope="production")
+
+    assert decision["action"] == "PASS"
+    assert decision["public_action"] == "avoid"
+    assert decision["evidence_state"] == "PROVEN"
+    assert decision["hard_veto"] is True
+    assert {"MARKET_REGIME_RISK_OFF", "MISSING_TREND_RESULT"} <= set(decision["reason_codes"])
+    assert result.action == "avoid"
+    assert result.operation_advice.startswith("回避")
+    assert summary["conclusion"].startswith("风险或弱势条件触发")
+    assert_canonical_consumer_consistency(result, scope="production")
+
+
+@pytest.mark.parametrize(
+    ("overrides", "missing_code", "veto_code"),
+    [
+        ({"signal_score": None, "volume_status": _enum("放量下跌")}, "MISSING_SIGNAL_SCORE", "HEAVY_VOLUME_DOWN"),
+        ({"volume_status": None, "trend_status": _enum("空头排列")}, "MISSING_VOLUME_STATE", "WEAK_TREND"),
+    ],
+)
+def test_independent_hard_veto_survives_other_missing_required_fields(
+    overrides, missing_code, veto_code
+):
+    summary = build_stock_factor_decision_summary(
+        _trend(**overrides),
+        include_canonical=True,
+    )
+    decision = summary["canonical_decision"]
+
+    assert decision["action"] == "PASS"
+    assert decision["public_action"] == "avoid"
+    assert decision["evidence_state"] == "PROVEN"
+    assert decision["hard_veto"] is True
+    assert {missing_code, veto_code} <= set(decision["reason_codes"])
+
+
+def test_etf_independent_market_veto_survives_missing_etf_specific_fields():
+    summary = build_stock_factor_decision_summary(
+        None,
+        daily_market_context={
+            "market_light": {"status": "red", "score": 20, "data_quality": "ok"}
+        },
+        asset_type="etf",
+        include_canonical=True,
+    )
+    decision = summary["canonical_decision"]
+    assert summary["market_sector_regime"]["hard_veto"] is True
+    assert decision["authority"] == "etf_relative_strength_rotation_v1"
+    assert decision["action"] == "PASS"
+    assert decision["public_action"] == "avoid"
+    assert decision["evidence_state"] == "PROVEN"
+    assert decision["hard_veto"] is True
+    assert {"MARKET_REGIME_RISK_OFF", "ETF_SPECIFIC_EVIDENCE_INCOMPLETE"} <= set(
+        decision["reason_codes"]
+    )
+    assert summary["conclusion"].startswith("风险或弱势条件触发")
+    result = apply_canonical_decision_to_result(_llm_result(), summary, scope="production")
+    assert result.action == "avoid"
+    assert_canonical_consumer_consistency(result, scope="production")
+
+
+def test_strict_rejected_regime_parent_cannot_supply_canonical_veto():
+    summary = build_stock_factor_decision_summary(
+        None,
+        daily_market_context={
+            "trade_date": "2026-09-30",
+            "region": "cn",
+            "market_light": {"status": "red", "score": 20, "data_quality": "ok"},
+        },
+        market_structure_context={
+            "status": "not_supported", "market": "cn", "trade_date": "2026-09-29"
+        },
+        method_execution_receipts={},
+        include_canonical=True,
+    )
+    regime = next(
+        item for item in summary["evidence_traceability"]["observations"]
+        if item["requirement_id"] == "REGIME"
+    )
+    decision = summary["canonical_decision"]
+    assert regime["state"] == "UNKNOWN"
+    assert regime["reason"] == "REGIME_UPSTREAM_DATE_MISMATCH"
+    assert summary["market_sector_regime"]["hard_veto"] is True  # raw observation, not admitted
+    assert decision["action"] == "WAIT"
+    assert decision["public_action"] == "watch"
+    assert decision["evidence_state"] == "UNKNOWN"
+    assert decision["hard_veto"] is False
+    assert "REGIME_UPSTREAM_DATE_MISMATCH" in decision["reason_codes"]
+    assert "MARKET_REGIME_RISK_OFF" not in decision["reason_codes"]
+    result = apply_canonical_decision_to_result(_llm_result(), summary, scope="production")
+    assert result.action == "watch"
+    assert_canonical_consumer_consistency(result, scope="production")
+
+
+def test_strict_verified_regime_parent_retains_market_veto_nontrigger():
+    summary = build_stock_factor_decision_summary(
+        None,
+        daily_market_context={
+            "trade_date": "2026-09-30",
+            "region": "cn",
+            "market_light": {"status": "red", "score": 20, "data_quality": "ok"},
+        },
+        market_structure_context={
+            "status": "not_supported", "market": "cn", "trade_date": "2026-09-30"
+        },
+        method_execution_receipts={},
+        include_canonical=True,
+    )
+    regime = next(
+        item for item in summary["evidence_traceability"]["observations"]
+        if item["requirement_id"] == "REGIME"
+    )
+    assert regime["state"] in {"READY", "PARTIAL"}
+    assert regime["reason"] == "METHOD_INVOCATION_VERIFIED"
+    assert summary["canonical_decision"]["hard_veto"] is True
+    assert summary["canonical_decision"]["action"] == "PASS"
+
+
+def test_etf_strict_verified_market_veto_still_avoids_new_risk():
+    summary = build_stock_factor_decision_summary(
+        None,
+        daily_market_context={
+            "trade_date": "2026-09-30", "region": "cn",
+            "market_light": {"status": "red", "data_quality": "ok", "score": 20},
+        },
+        market_structure_context={
+            "status": "not_supported", "market": "cn", "trade_date": "2026-09-30"
+        },
+        method_execution_receipts={},
+        asset_type="etf",
+        include_canonical=True,
+    )
+    parent = next(
+        item for item in summary["evidence_traceability"]["observations"]
+        if item["requirement_id"] == "REGIME"
+    )
+    assert parent["state"] in {"READY", "PARTIAL"}
+    assert parent["reason"] == "METHOD_INVOCATION_VERIFIED"
+    decision = summary["canonical_decision"]
+    assert decision["hard_veto"] is True
+    assert decision["action"] == "PASS"
+    assert {"MARKET_REGIME_RISK_OFF", "ETF_SPECIFIC_EVIDENCE_INCOMPLETE"} <= set(
+        decision["reason_codes"]
+    )
+
+
+def test_rejected_market_parent_does_not_erase_independent_weak_trend_veto():
+    summary = build_stock_factor_decision_summary(
+        _trend(code="600519", trend_status=_enum("空头排列")),
+        relative_strength_context=_strict_verified_relative_strength(),
+        daily_market_context={
+            "trade_date": "2026-09-30", "region": "cn",
+            "market_light": {"status": "red", "data_quality": "ok", "score": 20},
+        },
+        market_structure_context={
+            "status": "not_supported", "market": "cn", "trade_date": "2026-09-29"
+        },
+        method_execution_receipts={},
+        include_canonical=True,
+    )
+    regime = next(
+        item for item in summary["evidence_traceability"]["observations"]
+        if item["requirement_id"] == "REGIME"
+    )
+    assert regime["state"] == "UNKNOWN"
+    assert regime["reason"] == "REGIME_UPSTREAM_DATE_MISMATCH"
+    decision = summary["canonical_decision"]
+    assert decision["action"] == "PASS"
+    assert decision["hard_veto"] is True
+    assert "WEAK_TREND" in decision["reason_codes"]
+    assert "REGIME_UPSTREAM_DATE_MISMATCH" in decision["reason_codes"]
+    assert "MARKET_REGIME_RISK_OFF" not in decision["reason_codes"]
+
+
+def test_strict_unadmitted_weak_trend_does_not_create_proven_veto():
+    trend = _trend(
+        code="600519",
+        trend_status=_enum("空头排列"),
+        buy_signal=_enum("持有"),
+    )
+    invalid_benchmark = _strict_verified_relative_strength()
+    invalid_benchmark["benchmark"]["code"] = "159919"
+    for rs_context, reason in (
+        (None, "RS_INPUT_IDENTITY_MISSING"),
+        (invalid_benchmark, "RS_BENCHMARK_IDENTITY_MISMATCH"),
+    ):
+        summary = build_stock_factor_decision_summary(
+            trend,
+            relative_strength_context=rs_context,
+            method_execution_receipts={},
+            include_canonical=True,
+        )
+        parent = next(
+            item for item in summary["evidence_traceability"]["observations"]
+            if item["requirement_id"] == "TREND_RS"
+        )
+        assert parent["state"] == "UNKNOWN"
+        assert parent["reason"] == reason
+        canonical = summary["canonical_decision"]
+        assert canonical["action"] == "WAIT"
+        assert canonical["public_action"] == "watch"
+        assert canonical["hard_veto"] is False
+        assert canonical["evidence_state"] == "UNKNOWN"
+        assert reason in canonical["reason_codes"]
+        assert "WEAK_TREND" not in canonical["reason_codes"]
+        result = apply_canonical_decision_to_result(
+            _llm_result(), summary, scope="production"
+        )
+        assert result.action == "watch"
+        assert_canonical_consumer_consistency(result, scope="production")
+
+
+def test_strict_unadmitted_legacy_volume_cannot_claim_proven_heavy_down():
+    summary = build_stock_factor_decision_summary(
+        _trend(
+            code="600519",
+            trend_status=_enum("多头排列"),
+            buy_signal=_enum("持有"),
+            volume_status=_enum("放量下跌"),
+        ),
+        relative_strength_context=_strict_verified_relative_strength(),
+        method_execution_receipts={},
+        include_canonical=True,
+    )
+    observations = {
+        item["requirement_id"]: item
+        for item in summary["evidence_traceability"]["observations"]
+    }
+    assert observations["TREND_RS"]["reason"] == "METHOD_INVOCATION_VERIFIED"
+    assert observations["SUPPLY"]["state"] == "UNKNOWN"
+    assert observations["SUPPLY"]["reason"] == "METHOD_VERSION_MISMATCH"
+    canonical = summary["canonical_decision"]
+    assert canonical["action"] == "WAIT"
+    assert canonical["hard_veto"] is False
+    assert canonical["evidence_state"] == "UNKNOWN"
+    assert "METHOD_VERSION_MISMATCH" in canonical["reason_codes"]
+    assert "HEAVY_VOLUME_DOWN" not in canonical["reason_codes"]
+
+
+def test_verified_trend_with_no_market_or_supply_veto_remains_proven_avoid():
+    summary = build_stock_factor_decision_summary(
+        _trend(
+            code="600519", trend_status=_enum("空头排列"),
+            buy_signal=_enum("持有"), volume_status=_enum("缩量回调"),
+        ),
+        relative_strength_context=_strict_verified_relative_strength(),
+        method_execution_receipts={},
+        include_canonical=True,
+    )
+    parent = next(
+        item for item in summary["evidence_traceability"]["observations"]
+        if item["requirement_id"] == "TREND_RS"
+    )
+    assert parent["state"] == "READY"
+    assert parent["reason"] == "METHOD_INVOCATION_VERIFIED"
+    decision = summary["canonical_decision"]
+    assert decision["action"] == "PASS"
+    assert decision["hard_veto"] is True
+    assert "WEAK_TREND" in decision["reason_codes"]
 
 
 def test_market_regime_red_ready_is_canonical_veto_but_green_never_upgrades_wait():

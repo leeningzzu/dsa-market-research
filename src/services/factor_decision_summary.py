@@ -12,12 +12,14 @@ import math
 from typing import Any, Dict, List, Optional, Tuple
 
 from src.services.evidence_traceability_registry import (
+    EVIDENCE_BINDINGS,
     build_method_execution_receipt,
     build_runtime_trace,
     build_strategy_eligibility,
     describe_macd_state,
     digest,
     json_wire_equal,
+    method_observation,
 )
 from src.services.research_state_projection import (
     STRATEGY_ELIGIBILITY_SCHEMA_VERSION,
@@ -766,40 +768,83 @@ def _canonical_decision(
     market_sector_regime: Optional[Dict[str, Any]] = None,
     *,
     authority: str = _CANONICAL_AUTHORITY,
+    regime_admission_reason: Optional[str] = None,
+    rejected_risk_methods: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """Produce the conservative WAIT/PASS decision from deterministic inputs."""
     reason_codes: List[str] = []
+    hard_veto_codes: List[str] = []
+    if regime_admission_reason:
+        reason_codes.append(regime_admission_reason)
+    rejected_risk_methods = rejected_risk_methods or {}
+
     if trend_result is None:
         reason_codes.append("MISSING_TREND_RESULT")
+    else:
+        trend = _enum_value(getattr(trend_result, "trend_status", None))
+        signal = _enum_value(getattr(trend_result, "buy_signal", None))
+        volume = _enum_value(getattr(trend_result, "volume_status", None))
+        score = _safe_float(getattr(trend_result, "signal_score", None))
+        risk_factors = [
+            str(item or "").strip()
+            for item in (getattr(trend_result, "risk_factors", None) or [])
+            if str(item or "").strip()
+        ]
+
+        if not trend:
+            reason_codes.append("MISSING_TREND_STATE")
+        if not signal:
+            reason_codes.append("MISSING_BUY_SIGNAL")
+        if not volume:
+            reason_codes.append("MISSING_VOLUME_STATE")
+        if score is None:
+            reason_codes.append("MISSING_SIGNAL_SCORE")
+        if any(
+            any(hint in text for hint in _MISSING_EVIDENCE_HINTS)
+            for text in risk_factors
+        ):
+            reason_codes.append("REQUIRED_EVIDENCE_UNAVAILABLE")
+
+        if volume == "放量下跌":
+            if "SUPPLY" in rejected_risk_methods:
+                reason_codes.append(rejected_risk_methods["SUPPLY"])
+            else:
+                hard_veto_codes.append("HEAVY_VOLUME_DOWN")
+        hard_risk = any(
+            text.startswith("❌") or any(hint in text for hint in _HARD_RISK_HINTS)
+            for text in risk_factors
+        )
+        if "TREND_RS" in rejected_risk_methods:
+            if trend in _CANONICAL_WEAK_TRENDS or signal in _NEGATIVE_SIGNALS or hard_risk:
+                reason_codes.append(rejected_risk_methods["TREND_RS"])
+        else:
+            if trend in _CANONICAL_WEAK_TRENDS:
+                hard_veto_codes.append("WEAK_TREND")
+            if signal in _NEGATIVE_SIGNALS:
+                hard_veto_codes.append("NEGATIVE_TREND_SIGNAL")
+            if hard_risk:
+                hard_veto_codes.append("DETERMINISTIC_HARD_RISK")
+
+    if isinstance(market_sector_regime, dict) and market_sector_regime.get("hard_veto"):
+        hard_veto_codes.extend(
+            str(code)
+            for code in (market_sector_regime.get("veto_codes") or [])
+            if str(code).strip()
+        )
+
+    # A separately proven veto remains sufficient to avoid new risk even when
+    # another required input is missing.  Preserve both the veto and the gap.
+    if hard_veto_codes:
         return {
             "authority": authority,
-            "action": "WAIT",
-            "public_action": "watch",
-            "evidence_state": "UNKNOWN",
-            "hard_veto": False,
-            "reason_codes": reason_codes,
+            "action": "PASS",
+            "public_action": "avoid",
+            "evidence_state": "PROVEN",
+            "hard_veto": True,
+            "reason_codes": list(
+                dict.fromkeys([*hard_veto_codes, *reason_codes])
+            ),
         }
-
-    trend = _enum_value(getattr(trend_result, "trend_status", None))
-    signal = _enum_value(getattr(trend_result, "buy_signal", None))
-    volume = _enum_value(getattr(trend_result, "volume_status", None))
-    score = _safe_float(getattr(trend_result, "signal_score", None))
-    risk_factors = [
-        str(item or "").strip()
-        for item in (getattr(trend_result, "risk_factors", None) or [])
-        if str(item or "").strip()
-    ]
-
-    if not trend:
-        reason_codes.append("MISSING_TREND_STATE")
-    if not signal:
-        reason_codes.append("MISSING_BUY_SIGNAL")
-    if not volume:
-        reason_codes.append("MISSING_VOLUME_STATE")
-    if score is None:
-        reason_codes.append("MISSING_SIGNAL_SCORE")
-    if any(any(hint in text for hint in _MISSING_EVIDENCE_HINTS) for text in risk_factors):
-        reason_codes.append("REQUIRED_EVIDENCE_UNAVAILABLE")
 
     if reason_codes:
         return {
@@ -809,36 +854,6 @@ def _canonical_decision(
             "evidence_state": "UNKNOWN",
             "hard_veto": False,
             "reason_codes": reason_codes,
-        }
-
-    hard_veto_codes: List[str] = []
-    if volume == "放量下跌":
-        hard_veto_codes.append("HEAVY_VOLUME_DOWN")
-    if trend in _CANONICAL_WEAK_TRENDS:
-        hard_veto_codes.append("WEAK_TREND")
-    if signal in _NEGATIVE_SIGNALS:
-        hard_veto_codes.append("NEGATIVE_TREND_SIGNAL")
-    if any(
-        text.startswith("❌") or any(hint in text for hint in _HARD_RISK_HINTS)
-        for text in risk_factors
-    ):
-        hard_veto_codes.append("DETERMINISTIC_HARD_RISK")
-
-    if isinstance(market_sector_regime, dict) and market_sector_regime.get("hard_veto"):
-        hard_veto_codes.extend(
-            str(code)
-            for code in (market_sector_regime.get("veto_codes") or [])
-            if str(code).strip()
-        )
-
-    if hard_veto_codes:
-        return {
-            "authority": authority,
-            "action": "PASS",
-            "public_action": "avoid",
-            "evidence_state": "PROVEN",
-            "hard_veto": True,
-            "reason_codes": list(dict.fromkeys(hard_veto_codes)),
         }
 
     return {
@@ -1837,21 +1852,70 @@ def build_stock_factor_decision_summary(
                 "relative_strength_context": digest(rs_context),
             },
         )
+    # Every strict hard-veto source consumes the SAME Registry admission as
+    # Product/Strategy/Learning. A rejected raw parent stays audit-only.
+    rejected_risk_methods: Dict[str, str] = {}
+    if strict_receipts and include_canonical:
+        risk_sources = {
+            "REGIME": market_sector_regime,
+            "TREND_RS": trend_relative_strength,
+            "SUPPLY": supply_demand_volume_price,
+        }
+        for binding in EVIDENCE_BINDINGS:
+            if binding.requirement_id not in risk_sources:
+                continue
+            admitted_state, reason = method_observation(
+                binding,
+                risk_sources[binding.requirement_id],
+                receipt=receipts.get(binding.requirement_id),
+                require_receipt=True,
+            )
+            if admitted_state not in {"READY", "PARTIAL"}:
+                rejected_risk_methods[binding.requirement_id] = reason
+    regime_admission_reason = (
+        rejected_risk_methods.get("REGIME")
+        if market_sector_regime.get("hard_veto")
+        else None
+    )
+    regime_for_canonical = (
+        None if regime_admission_reason else market_sector_regime
+    )
+
     authority = _ETF_CANONICAL_AUTHORITY if asset_type == "etf" else _CANONICAL_AUTHORITY
     canonical_decision = (
-        _canonical_decision(trend_result, market_sector_regime, authority=authority)
+        _canonical_decision(
+            trend_result,
+            regime_for_canonical,
+            authority=authority,
+            regime_admission_reason=regime_admission_reason,
+            rejected_risk_methods=rejected_risk_methods,
+        )
         if include_canonical
         else None
     )
     if asset_type == "etf" and canonical_decision is not None:
-        canonical_decision = {
-            "authority": authority,
-            "action": "WAIT",
-            "public_action": "watch",
-            "evidence_state": "UNKNOWN",
-            "hard_veto": False,
-            "reason_codes": ["ETF_SPECIFIC_EVIDENCE_INCOMPLETE"],
-        }
+        if canonical_decision["hard_veto"]:
+            # ETF-specific missingness may block a positive setup; it must not
+            # erase a separately admitted market/price risk veto.
+            canonical_decision["reason_codes"] = list(dict.fromkeys([
+                *canonical_decision["reason_codes"],
+                "ETF_SPECIFIC_EVIDENCE_INCOMPLETE",
+            ]))
+        else:
+            canonical_decision = {
+                "authority": authority,
+                "action": "WAIT",
+                "public_action": "watch",
+                "evidence_state": "UNKNOWN",
+                "hard_veto": False,
+                "reason_codes": list(dict.fromkeys([
+                    "ETF_SPECIFIC_EVIDENCE_INCOMPLETE",
+                    *(
+                        reason for reason in canonical_decision["reason_codes"]
+                        if reason != "CONDITIONAL_OBSERVATION_ONLY"
+                    ),
+                ])),
+            }
     raw_score = _safe_float(getattr(trend_result, "signal_score", None))
     score = (
         int(max(0, min(100, round(raw_score))))
@@ -1881,7 +1945,11 @@ def build_stock_factor_decision_summary(
         "pattern_trigger": _pattern_trigger_summary(pattern_trigger_evidence),
         "cost_structure": cost_structure,
         "valuation": valuation,
-        "market_sector_regime": _market_sector_regime_summary(market_sector_regime),
+        "market_sector_regime": (
+            "市场/板块：原始风险提示未通过本次方法执行身份准入，不据此作最终否决。"
+            if regime_admission_reason
+            else _market_sector_regime_summary(market_sector_regime)
+        ),
         "trend_relative_strength": _trend_relative_strength_summary(trend_relative_strength),
         "supply_demand_volume_price": _supply_demand_volume_price_summary(supply_demand_volume_price),
     }

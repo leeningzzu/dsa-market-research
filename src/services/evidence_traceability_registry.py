@@ -1379,7 +1379,22 @@ def _matrix_method_observation(
     elif timeframe not in profile.current_execution_timeframes:
         state, reason = "NOT_ADMITTED", "METHOD_TIMEFRAME_NOT_ADMITTED"
     elif profile.requirement_id == "MTF":
-        state, reason = _mtf_method_matrix_state(profile.method_id, factor, timeframe, family)
+        parent = observations.get("MTF", {})
+        parent_state = str(parent.get("state") or "UNKNOWN")
+        parent_state = (
+            parent_state
+            if parent_state in TIMEFRAME_FAMILY_MATRIX_STATES
+            else "UNKNOWN"
+        )
+        if _receipt_required(factor) and parent_state not in {"READY", "PARTIAL"}:
+            state = parent_state
+            reason = str(
+                parent.get("reason") or "MTF_PARENT_OBSERVATION_NOT_ADMITTED"
+            )
+        else:
+            state, reason = _mtf_method_matrix_state(
+                profile.method_id, factor, timeframe, family
+            )
     else:
         observation = observations.get(profile.requirement_id, {})
         state = str(observation.get("state") or "UNKNOWN")
@@ -1459,11 +1474,20 @@ def compile_timeframe_family_matrix(factor: Mapping, *, observations=None, polic
                 matrix_method_ids.add(profile.method_id)
             state, reason = _aggregate_family_state(method_coverage)
             if family == "MTF":
-                frame = at(factor, f"multi_timeframe_structure_context.timeframes.{timeframe}")
-                if isinstance(frame, Mapping):
-                    frame_state = _state(frame)
-                    if frame_state in {"READY", "PARTIAL", "MISSING", "UNKNOWN"}:
-                        state, reason = frame_state, "MTF_FRAME_" + frame_state
+                mtf_parent = observation_lookup.get("MTF", {})
+                parent_state = str(mtf_parent.get("state") or "UNKNOWN")
+                if (
+                    not _receipt_required(factor)
+                    or parent_state in {"READY", "PARTIAL"}
+                ):
+                    frame = at(
+                        factor,
+                        f"multi_timeframe_structure_context.timeframes.{timeframe}",
+                    )
+                    if isinstance(frame, Mapping):
+                        frame_state = _state(frame)
+                        if frame_state in {"READY", "PARTIAL", "MISSING", "UNKNOWN"}:
+                            state, reason = frame_state, "MTF_FRAME_" + frame_state
             cells.append({
                 "timeframe": timeframe,
                 "family": family,
