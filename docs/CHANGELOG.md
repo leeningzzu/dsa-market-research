@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [修复] 现有 MTF 消费者在日线已证明价格复权口径时拒绝不一致的分钟复权口径（如 daily qfq + 30m raw/hfq），保留合法同口径的分钟趋势/MA/MACD/RSI 和独立日线证据；未证明日线口径的原有非触发路径不被新规则擅自升级或抹除。仅为新的拒绝状态记录独立准入规则版本，保持已接受 MTF 数值算法/Manifest 哈希不变，仍不授予来源使用权、PIT、策略、原始 V2.5、通知或业务库写入权限。
 - [修复] 现有 Ledger 原生读回按已核验历史 manifest 保留 2026-10-05 冻结的 33 项数值特征合同，不再用后加的两项 Wilder ATR 重新解释历史 SHA；旧记录无需改写，当前 35 项和其他 legacy manifest 路径保持原有语义，跨版本伪造仍拒绝。仅 B4 历史 readback 消费者及回归，历史样本依旧 PIT=false / strategy=INELIGIBLE，不表示有当前合法行情、模型训练或真实邮件权限。
 - [修复] 严格方法凭据模式下把 TREND_RS / SUPPLY 的风险否决同样绑定既有 Evidence Registry method_observation：若趋势/基准来源、输出或数据身份不通过准入，原始空头/卖出/风险文案不能生成 PROVEN 弱趋势否决；若 SUPPLY 量价父级未准入，原始放量下跌不能生成 PROVEN 量价否决，拒绝原因保留。已验证的 TREND_RS、独立 REGIME 和合法 legacy 非严格风险均保持原合同；对未准入原始证据仍显示 MISSING/UNKNOWN，不补齐数据、评分或动作，不变更原版 V2.5、ETF 专属估值、模型、数据库及通知发送。
 - [修复] 继续收口同一 canonical 风险准入消费者：ETF 的必需专属证据缺失不再抹掉已经证明的市场/趋势 hard veto，保留 ETF 专属缺失 reason；严格模式下市场REGIME的独立父级receipt若因日期/来源身份被Registry拒绝，其未经准入的风险标签不得直接形成最终 PASS/avoid，拒绝原因继续可见；合法严格父凭据及独立弱趋势否决均保留。仅现有Factor/测试/文档本地候选，无第二评分、数据源、模板、数据库、模型、真实消息或Git远端效果。

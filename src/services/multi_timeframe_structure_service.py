@@ -35,6 +35,8 @@ from src.services.evidence_traceability_registry import describe_macd_state
 
 SCHEMA_VERSION = "multi-timeframe-structure-v1"
 ALGORITHM_VERSION = "completed-daily-plus-intraday-context-v2"
+# Input admission rule is tracked separately from the unchanged numeric MTF algorithm.
+INTRADAY_PRICE_BASIS_ADMISSION_VERSION = "intraday-price-basis-admission-v1"
 TREND_MIN_BARS = 26
 CROSS_RUN_PERSISTENCE_POLICY = "BLOCK_UNTIL_ADJUSTMENT_BASIS_PERSISTED"
 
@@ -119,6 +121,7 @@ def _build_intraday_timeframe(
     bars: Any,
     trend_analyzer: Any,
     snapshot_observed_at: Optional[datetime],
+    daily_adjustment_basis: Optional[str] = None,
 ) -> Dict[str, Any]:
     if not isinstance(bars, pd.DataFrame) or bars.empty:
         return _empty_timeframe(
@@ -138,6 +141,19 @@ def _build_intraday_timeframe(
             status="UNKNOWN",
             reason="INTRADAY_IDENTITY_TIMEFRAME_MISMATCH",
         )
+
+    # Correlated timeframes must not combine incompatible price bases.
+    # Only a proven typed daily basis can veto the optional minute context;
+    # legacy/unclassified daily inputs keep their existing missingness route.
+    if (
+        daily_adjustment_basis is not None
+        and identity.get("observed_adjustment_basis") != daily_adjustment_basis
+    ):
+        rejected = _empty_timeframe(
+            key, status="UNKNOWN", reason="INTRADAY_ADJUSTMENT_BASIS_MISMATCH",
+        )
+        rejected["admission_rule_version"] = INTRADAY_PRICE_BASIS_ADMISSION_VERSION
+        return rejected
 
     required = {
         "code",
@@ -1300,6 +1316,11 @@ def build_multi_timeframe_structure_context(
             bars=intraday_inputs.get(key),
             trend_analyzer=trend_analyzer,
             snapshot_observed_at=snapshot_observed_at,
+            daily_adjustment_basis=(
+                base.get("adjustment_basis")
+                if not base.get("price_identity_reasons")
+                else None
+            ),
         )
         for key in ("60m", "30m", "15m", "5m")
     }
