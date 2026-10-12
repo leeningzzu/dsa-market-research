@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pandas as pd
+import pytest
 
 from data_provider.daily_data_identity import (
     attach_daily_data_identity,
@@ -341,6 +342,89 @@ def test_intraday_identity_timeframe_mismatch_is_unknown_not_ready() -> None:
         )
     assert context["timeframes"]["30m"]["status"] == "UNKNOWN"
     assert context["timeframes"]["30m"]["reason"] == "INTRADAY_IDENTITY_TIMEFRAME_MISMATCH"
+
+
+@pytest.mark.parametrize("timeframe", ("60m", "30m", "15m", "5m"))
+def test_mtfs_reject_cross_adjustment_basis_without_dropping_valid_daily(timeframe: str) -> None:
+    """Independent contract: qfq daily cannot consume raw/hfq minute prices."""
+    history = _with_observed_identity(
+        _history(), provider="BaostockFetcher", basis="qfq",
+    )
+    target = history.iloc[-1]["date"].date()
+    minute = _intraday_fixture(timeframe, target, volume_unit="UNKNOWN")
+    original_identity = minute.attrs["intraday_data_identity"]
+    snapshot_at = datetime.combine(target, datetime.max.time(), tzinfo=timezone.utc)
+    common = dict(
+        stock_code="600519",
+        history=history,
+        target_date=target,
+        market="cn",
+        trend_analyzer=_FakeTrendAnalyzer(),
+        daily_trend_result=_trend_result(),
+        daily_price_structure_context={"historical_replay_eligible": False},
+        snapshot_observed_at=snapshot_at,
+    )
+
+    with patch(
+        "src.services.multi_timeframe_structure_service.resolve_completed_timeframe_bar_date",
+        return_value=None,
+    ):
+        valid = build_multi_timeframe_structure_context(
+            intraday_timeframes={timeframe: minute},
+            **common,
+        )
+    assert valid["timeframes"]["daily"]["status"] == "READY"
+    assert valid["timeframes"][timeframe]["status"] == "PARTIAL"
+    assert "MA" in valid["timeframes"][timeframe]["admitted_methods"]
+    assert "VOLUME" not in valid["timeframes"][timeframe]["admitted_methods"]
+
+    for incompatible_basis, adjustflag in (("raw", "3"), ("hfq", "1")):
+        incompatible = minute.copy()
+        incompatible["adjustflag"] = adjustflag
+        bad_identity = build_intraday_data_identity(
+            incompatible,
+            provider_identity="BaostockFetcher",
+            provider_route="unit.intraday",
+            package_version="0.9.4",
+            query_identity={
+                "code": "sh.600519", "frequency": timeframe,
+                "adjustflag": adjustflag,
+            },
+            requested_adjustment_basis=incompatible_basis,
+            observed_adjustment_basis=incompatible_basis,
+            basis_evidence="independent-contract-negative",
+            timeframe=timeframe,
+            timezone_name="Asia/Shanghai",
+            session_calendar="XSHG",
+            currency="CNY",
+            volume_unit="UNKNOWN",
+            amount_unit="UNKNOWN",
+            requested_start=original_identity["requested_start"],
+            requested_end=original_identity["requested_end"],
+            identity_state="OBSERVED",
+            observed_at=datetime.fromisoformat(original_identity["observed_at"]),
+            source_rows_sha256="f" * 64,
+        )
+        attach_intraday_data_identity(incompatible, bad_identity)
+        incompatible["intraday_data_identity_hash"] = bad_identity["identity_hash"]
+        with patch(
+            "src.services.multi_timeframe_structure_service.resolve_completed_timeframe_bar_date",
+            return_value=None,
+        ):
+            rejected = build_multi_timeframe_structure_context(
+                intraday_timeframes={timeframe: incompatible},
+                **common,
+            )
+        assert rejected["timeframes"]["daily"]["status"] == "READY"
+        assert rejected["timeframes"][timeframe]["status"] == "UNKNOWN"
+        assert (
+            rejected["timeframes"][timeframe]["reason"]
+            == "INTRADAY_ADJUSTMENT_BASIS_MISMATCH"
+        )
+        assert (
+            rejected["timeframes"][timeframe]["admission_rule_version"]
+            == "intraday-price-basis-admission-v1"
+        )
 
 
 def _startup_evidence(values, lengths=(40, 60, 80, 120)):
