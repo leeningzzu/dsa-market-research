@@ -198,6 +198,165 @@ def _make_investor_brief_result() -> AnalysisResult:
 
 
 
+def test_b8a_accepted_76_data_objects_survive_runtime_full_report_email_html():
+    """Original 76 dataset obligations cannot be replaced by 26 runtime rollups."""
+    from src.enums import ReportType
+    from src.formatters import markdown_to_html_document
+    from src.services.evidence_traceability_registry import validate_runtime_trace
+
+    accepted = {
+        "GLOBAL": "G_EQ_US G_EQ_ASIA G_VIX G_VIX3M_MOVE G_UST_NOMINAL G_UST_REAL G_INFL_BREAKEVEN G_USD_BROAD G_USDCNH G_A50 G_CRUDE G_GOLD G_COPPER G_HYOAS G_NFCI G_US_POLICY G_US_SENTIMENT G_US_DISCLOSURE",
+        "CN_MARKET": "M_INDEX_CURRENT M_INDEX_BARS M_BASIC_BREADTH M_UP_ABOVE_MA M_NEW_HILO M_MEDIAN_EQUAL M_LIMIT M_BROKEN_LIMIT M_TURNOVER M_MARGIN M_ETF_SHARES M_NORTHBOUND M_PBOC_MONEY M_CPI_PPI_PMI M_INTERBANK M_CN_BOND M_ERP_VAL M_ASOF_UNIVERSE",
+        "SECTOR": "S_CLASSIFICATION S_PRICES_RS S_BREADTH S_TURNOVER S_FUND_FLOW S_LEADER S_VALUATION",
+        "ETF": "E_PRICE_1D E_PRICE_5M E_NAV_IOPV E_SHARES E_PREMIUM E_SPREAD E_TRACKING E_BASKET E_PEER_RS E_UNDERLYING_VAL E_FX_CROSS E_FEES",
+        "STOCK": "P_DAILY P_5M P_PRICE_FACTOR P_CODE_IDENTITY P_QUOTE_LIQUID P_FIN_VINTAGE P_EARNINGS_GROWTH P_CASH_FLOW P_BALANCE_SHEET P_SHARES_EVENTS P_DIVIDEND P_INDUSTRY P_VAL_RATIO P_ORDERFLOW_PROXY P_COST_PROXY P_EVENT_NEWS P_EXEC_RISK",
+        "RECORD": "L_LEDGER L_OUTCOME L_PIT_MANIFEST L_IMMUTABLE_BYTES",
+    }
+    assert {key: len(items.split()) for key, items in accepted.items()} == {
+        "GLOBAL": 18, "CN_MARKET": 18, "SECTOR": 7, "ETF": 12,
+        "STOCK": 17, "RECORD": 4,
+    }
+    expected_ids = {item for items in accepted.values() for item in items.split()}
+    assert len(expected_ids) == 76
+    result = _make_investor_brief_result()
+    with mock.patch("src.notification.get_config", return_value=_make_config(
+        report_renderer_enabled=False, report_history_compare_n=0,
+    )):
+        service = NotificationService()
+        full = service.generate_aggregate_report([result], ReportType.SIMPLE, "2026-10-12")
+        mail = service.generate_brief_report([result], "2026-10-12")
+    html = markdown_to_html_document(mail)
+    universe = validate_runtime_trace(result.dashboard["factor_decision"])["complete_research_universe"]
+    objects = universe.get("data_objects") or []
+    assert len(objects) == 76, "76 accepted dataset identities are missing from runtime"
+    assert {item["dataset_id"] for item in objects} == expected_ids
+    by_id = {item["dataset_id"]: item for item in objects}
+    assert by_id["G_VIX"]["state"] != "READY"
+    assert by_id["E_NAV_IOPV"]["state"] == "NOT_APPLICABLE"
+    assert by_id["P_FIN_VINTAGE"]["state"] != "READY"
+    for dataset_id in expected_ids:
+        tag = chr(96) + dataset_id + chr(96)
+        assert tag in full, dataset_id
+        assert tag in mail, dataset_id
+        assert "<code>" + dataset_id + "</code>" in html, dataset_id
+    assert "VIX" in mail and "ETF" in mail and "财报" in mail
+    # Verify each full material row, not merely the existence of 76 labels.
+    # HTML is checked through its visible text; markup shape is not authority.
+    from html.parser import HTMLParser
+
+    class VisibleHTML(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=True)
+            self.parts = []
+
+        def handle_data(self, data):
+            self.parts.append(data)
+
+    reader = VisibleHTML()
+    reader.feed(html)
+    visible = "".join(reader.parts)
+    for row in objects:
+        state_text = (
+            "当前资产路径不适用" if row["state"] == "NOT_APPLICABLE"
+            else "UNKNOWN／缺独立来源、单位、时点及权利回执"
+        )
+        literal_fields = (
+            " ｜" + row["fact_or_fields"]
+            + " ｜原生频率：" + row["native_frequency"]
+            + " ｜消费者：" + row["product_consumer"]
+            + " ｜状态：" + state_text
+        )
+        markdown_fields = (
+            " ｜" + row["fact_or_fields"]
+            + " ｜原生频率：" + chr(96) + row["native_frequency"] + chr(96)
+            + " ｜消费者：" + chr(96) + row["product_consumer"] + chr(96)
+            + " ｜状态：" + state_text
+        )
+        assert chr(96) + row["dataset_id"] + chr(96) + markdown_fields in full
+        assert chr(96) + row["dataset_id"] + chr(96) + markdown_fields in mail
+        assert row["dataset_id"] + literal_fields in visible
+
+
+
+
+
+def test_b8a_dataset_catalog_tamper_and_forged_runtime_ready_are_rejected():
+    """Source list and numeric readiness cannot be silently rewritten by output."""
+    import pytest
+    import src.services.evidence_traceability_registry as registry
+
+    factor = _make_investor_brief_result().dashboard["factor_decision"]
+    original_catalog = registry._DATA_OBJECT_CATALOG
+    with mock.patch.object(registry, "_DATA_OBJECT_CATALOG", original_catalog[:-1]):
+        with pytest.raises(
+            registry.TraceabilityError,
+            match="ACCEPTED_DATA_OBJECT_CATALOG_MISMATCH",
+        ):
+            registry.build_runtime_trace(factor)
+
+    # Re-signing a presentation object without a typed source receipt must
+    # not turn a real-data UNKNOWN into an admissible VIX observation.
+    forged = deepcopy(factor)
+    trace = forged["evidence_traceability"]
+    universe = trace["complete_research_universe"]
+    vix = next(x for x in universe["data_objects"] if x["dataset_id"] == "G_VIX")
+    vix["state"] = "READY"
+    universe["universe_hash"] = registry.digest({
+        k: v for k, v in universe.items() if k != "universe_hash"
+    })
+    trace["complete_research_universe_hash"] = universe["universe_hash"]
+    trace["runtime_trace_hash"] = registry.digest({
+        k: v for k, v in trace.items() if k != "runtime_trace_hash"
+    })
+    with pytest.raises(
+        registry.TraceabilityError, match="RUNTIME_TRACE_MISSING_OR_STALE"
+    ):
+        registry.validate_runtime_trace(forged)
+
+    # Nontrigger: on this STOCK route, specific ETF-only data is N/A;
+    # the independent stock source obligations remain UNKNOWN (not zero).
+    accepted = registry.validate_runtime_trace(factor)
+    data_objects = accepted["complete_research_universe"]["data_objects"]
+    by_id = {item["dataset_id"]: item for item in data_objects}
+    assert by_id["E_NAV_IOPV"]["state"] == "NOT_APPLICABLE"
+    assert by_id["P_FIN_VINTAGE"]["state"] == "UNKNOWN"
+    assert by_id["G_VIX"]["state"] == "UNKNOWN"
+    assert all(item["independent_source_value_admitted"] is False for item in data_objects)
+
+
+def test_b8a_notification_refuses_forged_dataset_id_even_with_same_76_count():
+    """The actual appendix must not render a plausible but forged 76-item list."""
+    import pytest
+    from src.notification import _append_complete_research_universe_appendix
+
+    factor = _make_investor_brief_result().dashboard["factor_decision"]
+    poisoned = deepcopy(factor)
+    objects = poisoned["evidence_traceability"]["complete_research_universe"]["data_objects"]
+    assert len(objects) == 76
+    objects[2]["dataset_id"] = "G_FAKE_VIX_CLAIM"
+    lines = []
+    with pytest.raises(ValueError, match="ACCEPTED_DATA_OBJECT_SCOPE"):
+        _append_complete_research_universe_appendix(
+            lines, poisoned, poisoned["investor_brief"],
+        )
+    assert not any("G_FAKE_VIX_CLAIM" in line for line in lines)
+
+
+def test_b8a_etf_legitimate_route_keeps_stock_object_not_applicable():
+    """Asset-specific data objects must retain asset route despite global context."""
+    from src.services.evidence_traceability_registry import build_runtime_trace
+
+    factor = deepcopy(_make_investor_brief_result().dashboard["factor_decision"])
+    factor["asset_type"] = "ETF"
+    universe = build_runtime_trace(factor)["complete_research_universe"]
+    objects = {obj["dataset_id"]: obj for obj in universe["data_objects"]}
+    assert len(objects) == 76
+    assert objects["E_NAV_IOPV"]["state"] == "UNKNOWN"
+    assert objects["P_FIN_VINTAGE"]["state"] == "NOT_APPLICABLE"
+    assert objects["G_VIX"]["state"] == "UNKNOWN"
+    assert all(not obj["strategy_upgrade_authority"] for obj in objects.values())
+
+
 def _make_canonical_wait_contaminated_result() -> AnalysisResult:
     result = _make_investor_brief_result()
     factor = result.dashboard["factor_decision"]

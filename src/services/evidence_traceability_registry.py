@@ -51,6 +51,102 @@ TIMEFRAME_FAMILY_MATRIX_STATES = frozenset({
     "READY", "PARTIAL", "MISSING", "UNKNOWN", "NOT_APPLICABLE", "NOT_ADMITTED",
 })
 
+# Read-only point-of-use projection of the accepted 2026-10-10 machine graph.
+# The original 149628-byte 775-edge graph remains immutable and authoritative.
+# These data obligations are NOT provider outputs, market-data rights or model features.
+ACCEPTED_DATA_OBJECT_GRAPH_SHA256 = "b4f69f76807ac44bc0fea1a03f9aa38484b6083ca574a3699220b0564ac55aed"
+ACCEPTED_DATA_OBJECT_SUBSET_SHA256 = "2abf66734296638b5d55ee0cfa863ae57dbabeefb70dd481860eba6adc9e789a"
+_DATA_OBJECT_CATALOG = (
+    ("GLOBAL", "MARKET_GLOBAL_TRANSMISSION", (
+        ("G_EQ_US", "标普/纳斯达克/道指权益指数价格与成交", "daily/close"),
+        ("G_EQ_ASIA", "日经/恒生/恒生科技价格", "daily/close"),
+        ("G_VIX", "VIX和类型正确的期权隐波压力", "daily/close"),
+        ("G_VIX3M_MOVE", "VIX3M/MOVE/VVIX及期限波动", "daily/weekly"),
+        ("G_UST_NOMINAL", "US 2Y/10Y及10Y-3M期限利差", "daily/close"),
+        ("G_UST_REAL", "10Y TIPS实际收益率DFII10", "daily/close"),
+        ("G_INFL_BREAKEVEN", "10Y通胀补偿T10YIE", "daily/close"),
+        ("G_USD_BROAD", "贸易加权美元DTWEXBGS/ICE DXY另名", "daily/close"),
+        ("G_USDCNH", "离岸人民币USD/CNH", "daily/intraday_available"),
+        ("G_A50", "A50期货或合法指数代理", "session/close"),
+        ("G_CRUDE", "WTI/Brent原油", "daily/contract"),
+        ("G_GOLD", "黄金现货或合约可核价格", "daily/contract"),
+        ("G_COPPER", "铜价现货或期货", "daily/contract"),
+        ("G_HYOAS", "HY信用利差ICE/FRED", "daily/close"),
+        ("G_NFCI", "NFCI/ANFCI金融条件指数", "weekly/published"),
+        ("G_US_POLICY", "联储政策/公告日历", "event/published"),
+        ("G_US_SENTIMENT", "AAII/COT等调查/仓位代理", "weekly/published"),
+        ("G_US_DISCLOSURE", "海外公司财报/科技重大事件公告", "event/published"),
+    )),
+    ("CN_MARKET", "MARKET_REGIME_BRIEF", (
+        ("M_INDEX_CURRENT", "上证深证/沪深300/上证50/中证500/1000/2000/创业板/科创50指数现值", "daily/close"),
+        ("M_INDEX_BARS", "代表指数完整OHLCV 1d/5m", "1d+5m ->7TF"),
+        ("M_BASIC_BREADTH", "上涨/下跌/平盘家数+分母", "daily/market_close"),
+        ("M_UP_ABOVE_MA", "全市场站上20/50/200日线家数与当时分母", "daily/universe"),
+        ("M_NEW_HILO", "52周/一定窗口新高新低家数", "daily/universe"),
+        ("M_MEDIAN_EQUAL", "当日收益中位数/等权收益及全市场分母", "daily/universe"),
+        ("M_LIMIT", "涨跌停家数与涨停类型", "daily/market_close"),
+        ("M_BROKEN_LIMIT", "炸板率/连板晋级率及定义分母", "daily/market_close"),
+        ("M_TURNOVER", "两市成交额/换手/相对量", "daily/close"),
+        ("M_MARGIN", "融资余额/买入/偿还/融券余额", "daily/published_next"),
+        ("M_ETF_SHARES", "行业宽基ETF份额/规模变化", "daily/published_next"),
+        ("M_NORTHBOUND", "互联互通成交/季度持仓", "daily/quarterly"),
+        ("M_PBOC_MONEY", "M1/M2/社融原始和可比口径", "monthly/released"),
+        ("M_CPI_PPI_PMI", "CPI/PPI/PMI及分项", "monthly/released"),
+        ("M_INTERBANK", "DR007/R007/FR/FDR/回购定盘", "daily/intraday_publish"),
+        ("M_CN_BOND", "国债收益率/期限和信用参考", "daily/released"),
+        ("M_ERP_VAL", "主要指数估值分位与ERP收益补偿", "daily/period"),
+        ("M_ASOF_UNIVERSE", "历史全A、上市/退市/停牌/指数成员版本", "event+daily/known_at"),
+    )),
+    ("SECTOR", "MARKET_SECTOR_SECTION", (
+        ("S_CLASSIFICATION", "行业标准/版本/证券归属有效期", "event/known_at"),
+        ("S_PRICES_RS", "行业/主题指数OHLCV及一致基准", "daily/weekly"),
+        ("S_BREADTH", "行业内成员涨跌分母/MA/创新高低", "daily/universe"),
+        ("S_TURNOVER", "行业成分成交/占全A成交额比例", "daily/close"),
+        ("S_FUND_FLOW", "供应商行业资金流代理/ETF份额", "daily/source_method"),
+        ("S_LEADER", "候选行业leader个股RS/结构/流动性/基本面", "daily/known_at"),
+        ("S_VALUATION", "行业盈利和市值分位/估值差异", "quarter+daily"),
+    )),
+    ("ETF", "ETF_ASSET_BRIEF", (
+        ("E_PRICE_1D", "ETF 1d OHLCV、价格/成交额", "daily/close"),
+        ("E_PRICE_5M", "ETF 5m以及15/30/60m派生", "5m -> 60/30/15/5"),
+        ("E_NAV_IOPV", "ETF NAV/iNAV/IOPV时间戳和币种", "daily+intraday_published"),
+        ("E_SHARES", "ETF份额/拆分/申赎及净值匹配", "daily/published_next"),
+        ("E_PREMIUM", "交易价与NAV/IOPV同一时点对照", "intraday+daily"),
+        ("E_SPREAD", "ETF bid/ask、成交额、盘口深度", "intraday/orderbook"),
+        ("E_TRACKING", "ETF基准总回报/净值/费用", "daily/rolling"),
+        ("E_BASKET", "ETF持仓/篮子权重/指数成员版本", "daily/event"),
+        ("E_PEER_RS", "同类ETF同基准价格/交易量/历史", "daily+weekly"),
+        ("E_UNDERLYING_VAL", "底层指数盈利/估值/币种和成分", "quarter+daily"),
+        ("E_FX_CROSS", "跨境ETF FX/海外交易时点、限额", "daily+intraday"),
+        ("E_FEES", "费率/交易规则/红利处理", "event/published"),
+    )),
+    ("STOCK", "ASSET_RESEARCH_BRIEF", (
+        ("P_DAILY", "个股1d OHLCV价格/量/额/复权", "daily/completed"),
+        ("P_5M", "个股5m completed bars以及分钟单位", "5m/completed"),
+        ("P_PRICE_FACTOR", "raw/qfq/hfq/分红送配除权因子与vintage", "event+daily"),
+        ("P_CODE_IDENTITY", "证券代码/市场/交易所/板块/公司行为", "event/known_at"),
+        ("P_QUOTE_LIQUID", "当前价格、成交量、换手、市值", "intraday+daily"),
+        ("P_FIN_VINTAGE", "财报报告期/公告发布/更正版本/时间", "quarter+event"),
+        ("P_EARNINGS_GROWTH", "收入/利润/增长/毛利和指引", "quarter+event"),
+        ("P_CASH_FLOW", "经营现金流/资本开支/FCFF/FCFE材料", "quarter+event"),
+        ("P_BALANCE_SHEET", "债务/资产/营运资本/偿债与银行质量", "quarter+event"),
+        ("P_SHARES_EVENTS", "股本/股权激励/回购/注销/配股实际完成时点", "event/known_at"),
+        ("P_DIVIDEND", "现金分红/派息频率/除息", "event/known_at"),
+        ("P_INDUSTRY", "业务分类/收入结构/行业口径版本", "annual+event"),
+        ("P_VAL_RATIO", "PE/PB/市值/EV基础比率或价格", "daily+quarter"),
+        ("P_ORDERFLOW_PROXY", "供应商主力净流入/行业资金代理", "daily/vendor"),
+        ("P_COST_PROXY", "chip或HLC3量权滚动参考", "daily/rolling"),
+        ("P_EVENT_NEWS", "公告/新闻全文与claim发布日期/链接", "event/published"),
+        ("P_EXEC_RISK", "停牌涨跌停/买卖价差/费率/流动性", "session+event"),
+    )),
+    ("RECORD", "HISTORY_LEDGER", (
+        ("L_LEDGER", "一个canonical决策/完整机会分母/intent及权益", "decision_time"),
+        ("L_OUTCOME", "后验可评价结果/净成本/未触发/未成交", "after_label_maturity"),
+        ("L_PIT_MANIFEST", "合法特征的asof/vintage/rights/strategy/data/code/schema", "frozen_dataset"),
+        ("L_IMMUTABLE_BYTES", "合法引用的source/universe/actions/feature原始包/manifest/hash", "frozen_artifact"),
+    )),
+)
+
 VALID_ASSET_ROUTES = frozenset({"STOCK", "ETF", "MARKET"})
 VALID_BINDING_TIMEFRAMES = frozenset({"asset", "daily", "multi", *TIMEFRAMES})
 VALID_METRIC_TIMEFRAMES = frozenset({"daily", "weekly", "monthly"})
@@ -1546,6 +1642,48 @@ def compile_timeframe_family_matrix(factor: Mapping, *, observations=None, polic
     return document
 
 
+def _compile_accepted_data_object_scope(factor: Mapping) -> list[dict]:
+    """Expose accepted DATA obligations, not invented data values or strategy votes."""
+    rows = [
+        (dataset_id, domain, fact, frequency, consumer)
+        for domain, consumer, entries in _DATA_OBJECT_CATALOG
+        for dataset_id, fact, frequency in entries
+    ]
+    ids = {row[0] for row in rows}
+    payload = json.dumps(rows, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if (
+        len(rows) != 76
+        or len(ids) != 76
+        or sha256(payload).hexdigest() != ACCEPTED_DATA_OBJECT_SUBSET_SHA256
+    ):
+        raise TraceabilityError("ACCEPTED_DATA_OBJECT_CATALOG_MISMATCH")
+    # Asset route is a producer-owned Factor fact. A mutable investor_brief
+    # presentation label must never change trace identity after construction.
+    asset_route = str(factor.get("asset_type") or "stock").lower().strip()
+    objects = []
+    for dataset_id, domain, fact, frequency, consumer in rows:
+        applicable = (
+            (domain != "ETF" or asset_route == "etf")
+            and (domain != "STOCK" or asset_route == "stock")
+        )
+        objects.append({
+            "dataset_id": dataset_id,
+            "domain": domain,
+            "fact_or_fields": fact,
+            "native_frequency": frequency,
+            "product_consumer": consumer,
+            "state": "UNKNOWN" if applicable else "NOT_APPLICABLE",
+            "reason": (
+                "NO_INDEPENDENT_TYPED_DATA_OBJECT_RECEIPT"
+                if applicable else "DIFFERENT_ASSET_ROUTE"
+            ),
+            "independent_source_value_admitted": False,
+            "strategy_upgrade_authority": False,
+        })
+    return objects
+
+
+
 def compile_complete_research_universe_view(
     factor: Mapping,
     *,
@@ -1664,6 +1802,11 @@ def compile_complete_research_universe_view(
         },
         "planes": planes,
         "requirements": requirements,
+        "data_objects": _compile_accepted_data_object_scope(factor),
+        "data_objects_count": 76,
+        "data_object_scope_schema": "accepted-data-obligation-scope-v1",
+        "data_object_source_graph_sha256": ACCEPTED_DATA_OBJECT_GRAPH_SHA256,
+        "data_object_subset_sha256": ACCEPTED_DATA_OBJECT_SUBSET_SHA256,
         "methods": method_rows,
         "strategy_bindings": strategy_rows,
         "counts": {
