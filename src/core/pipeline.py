@@ -87,15 +87,16 @@ from src.services.cost_structure_service import (
     REFERENCE_WINDOWS as COST_REFERENCE_WINDOWS,
     build_cost_structure_context,
 )
+from src.services.price_structure_service import build_price_structure_context
 from src.services.price_structure_service import (
     MIN_OBSERVATIONS as PRICE_STRUCTURE_MIN_OBSERVATIONS,
-    build_price_structure_context,
 )
+from src.services.volatility_momentum_service import build_volatility_momentum_context
 from src.services.volatility_momentum_service import (
     READY_OBSERVATIONS as MOMENTUM_READY_OBSERVATIONS,
     WILDER_ATR_PERIOD,
-    build_volatility_momentum_context,
 )
+from src.services.pattern_trigger_service import build_pattern_trigger_context
 from src.services.pattern_trigger_service import (
     CUP_MAX_DURATION_SESSIONS,
     DOUBLE_BOTTOM_MAX_SEPARATION_SESSIONS,
@@ -103,7 +104,6 @@ from src.services.pattern_trigger_service import (
     MIN_OBSERVATIONS as PATTERN_MIN_OBSERVATIONS,
     PRIOR_TREND_WINDOW,
     TIGHT_CONSOLIDATION_WINDOW,
-    build_pattern_trigger_context,
 )
 from src.services.candlestick_pattern_service import (
     MIN_OBSERVATIONS as CANDLESTICK_MIN_OBSERVATIONS,
