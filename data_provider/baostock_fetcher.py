@@ -287,9 +287,6 @@ class BaostockFetcher(BaseFetcher):
             raise DataFetchError("BaoStock intraday only admits canonical 5m input")
         if _is_us_code(stock_code) or _is_hk_market(stock_code) or is_bse_code(stock_code):
             raise DataFetchError(f"BaoStock intraday does not support market code {stock_code}")
-        observed_at = observed_at or datetime.now(timezone.utc)
-        if observed_at.tzinfo is None or observed_at.utcoffset() is None:
-            observed_at = observed_at.replace(tzinfo=timezone.utc)
         bs_code = self._convert_stock_code(stock_code)
         fields = "date,time,code,open,high,low,close,volume,amount,adjustflag"
         with self._baostock_session() as bs:
@@ -326,6 +323,12 @@ class BaostockFetcher(BaseFetcher):
                 if isinstance(exc, DataFetchError):
                     raise
                 raise DataFetchError(f"BaoStock intraday fetch failed: {exc}") from exc
+        # Real provider observations become known only after the response
+        # has been received and the source session has been closed.
+        # Preserve explicit as-of timestamps for bounded historical callers.
+        observed_at = observed_at or datetime.now(timezone.utc)
+        if observed_at.tzinfo is None or observed_at.utcoffset() is None:
+            observed_at = observed_at.replace(tzinfo=timezone.utc)
         frame = normalize_cn_completed_5m_bars(
             raw,
             stock_code=stock_code,
