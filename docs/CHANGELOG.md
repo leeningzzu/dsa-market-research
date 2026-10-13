@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [修复] B8A 原始机器图 76 项数据义务在既有 Evidence Registry complete_research_universe 与 Notification 全文/Email/HTML 消费者逐项保留 ID、业务域、原生频率、明确 UNKNOWN/NOT_APPLICABLE，保留 26 上层要求与七周期技术矩阵。静态义务投影由接受的机器图子集 SHA 严格锁定，绝不产生行情值、PIT/来源许可、模型特征或新增独立投票；无实际来源回执不能把 VIX、ETF NAV、财务版本写成 READY。复用既有 renderer/EmailSender，原 V2.5 HTML 字节不可变，动态客户端交付仍待单独验收。
 - [修复] BaoStock 5m 默认来源观测/available_at 在真实响应读取并关闭会话后取时，避免请求开始时钟伪装数据已经到达；显式历史观察时钟的既有接口和单位 UNKNOWN 拒绝保留，不能把免费取数冒充历史 PIT、权利或量价准入。
 - [修复] DSA 既有 MTF 日线规范化保留已获取 `pct_chg` 原始字段，避免重新绑定 typed daily identity 时改变其内容哈希，导致同一真实来源在 Pipeline 方法收据与 MTF 严格消费者之间发生无谓的 `METHOD_INPUT_SNAPSHOT_MISMATCH`；原始价格/复权身份、未确认结构、Global/ETF/估值缺口和完整报告边界不变。
 - [修复] selected-code 深度日线不再使用固定 1100 自然日或替换成另一个魔法常数；由当前 Registry 已准入的叶子方法、各自 owner 的 K 线预热要求和实际执行周期动态编译 daily/weekly/monthly 所需 bars，再由交易所日历反推精确起始会话。不同形态和周期可独立扩展，合法较小需求不被过度抓取；分钟线继续复用既有方法驱动窗口。仅本地隔离候选，不授予数据许可、业务库、报告发送、训练或 Git 远端效果。

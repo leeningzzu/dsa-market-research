@@ -336,6 +336,68 @@ def _append_complete_research_universe_appendix(
                     if method_ids else ""
                 )
                 lines.append(f"  - `{requirement_id}：{state_text}`{method_text}")
+        # The accepted 76 source data obligations are separate from the
+        # 26 top-level evidence requirements and the 56 technical matrix cells.
+        # Present their exact identity and gap; never invent source values.
+        data_objects = universe.get("data_objects")
+        if isinstance(data_objects, list):
+            identities = [str(row.get("dataset_id") or "") for row in data_objects]
+            if len(identities) != 76 or len(set(identities)) != 76:
+                raise ValueError("ACCEPTED_DATA_OBJECT_SCOPE_INCOMPLETE")
+            # Recompute the producer-owned, source-fenced runtime trace.
+            # Presentation-only investor-brief changes cannot rebind assets.
+            from src.services.evidence_traceability_registry import (
+                TraceabilityError,
+                validate_runtime_trace,
+            )
+            try:
+                expected_scope = validate_runtime_trace(factor)[
+                    "complete_research_universe"
+                ]["data_objects"]
+            except (TraceabilityError, KeyError, TypeError) as exc:
+                raise ValueError(
+                    "ACCEPTED_DATA_OBJECT_SCOPE_IDENTITY_MISMATCH"
+                ) from exc
+            if data_objects != expected_scope:
+                raise ValueError("ACCEPTED_DATA_OBJECT_SCOPE_IDENTITY_MISMATCH")
+
+            domain_labels = {
+                "GLOBAL": "全球及恐慌/利率/美元/商品",
+                "CN_MARKET": "A股市场/宽度/宏观/资金",
+                "SECTOR": "行业分类/强度/量价/估值",
+                "ETF": "ETF专属数据与交易质量",
+                "STOCK": "个股量价/公司/财报/执行",
+                "RECORD": "历史/结果/PIT/可验证字节",
+            }
+            lines.extend([
+                "",
+                "**原机器图76项数据义务与逐项准入（未列指标值不等于0）**:",
+                "以下为原始数据义务，不是26项技术证据或独立决策投票；"
+                "无逐对象来源回执时不得声称已取数、准入或完成。",
+            ])
+            previous_domain = None
+            for item in data_objects:
+                domain = str(item.get("domain") or "")
+                if domain != previous_domain:
+                    lines.append(f"- **{domain_labels.get(domain, domain)}**")
+                    previous_domain = domain
+                state = str(item.get("state") or "UNKNOWN")
+                state_text = (
+                    "当前资产路径不适用"
+                    if state == "NOT_APPLICABLE"
+                    else "UNKNOWN／缺独立来源、单位、时点及权利回执"
+                )
+                lines.append(
+                    f"  - {chr(96)}{item['dataset_id']}{chr(96)} "
+                    f"｜{item['fact_or_fields']} "
+                    f"｜原生频率：{chr(96)}{item['native_frequency']}{chr(96)} "
+                    f"｜消费者：{chr(96)}{item['product_consumer']}{chr(96)} "
+                    f"｜状态：{state_text}"
+                )
+        else:
+            # Compatibility reader: old snapshots are readable as history,
+            # but cannot be reinterpreted as complete present-day research.
+            lines.append("**76项数据对象状态**: 旧版本无逐项绑定；不得宣称完整交付。")
         lines.append(
             "以上是范围、方法与数据准入状态，不以标题或文字替代未完成的指标计算；"
             "缺少时点/财务版本/分钟数据不会升级策略，研究/模型不参与重复计票。"
