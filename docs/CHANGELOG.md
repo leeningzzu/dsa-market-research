@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [修复] BaoStock 5m 默认来源观测/available_at 在真实响应读取并关闭会话后取时，避免请求开始时钟伪装数据已经到达；显式历史观察时钟的既有接口和单位 UNKNOWN 拒绝保留，不能把免费取数冒充历史 PIT、权利或量价准入。
+- [修复] DSA 既有 MTF 日线规范化保留已获取 `pct_chg` 原始字段，避免重新绑定 typed daily identity 时改变其内容哈希，导致同一真实来源在 Pipeline 方法收据与 MTF 严格消费者之间发生无谓的 `METHOD_INPUT_SNAPSHOT_MISMATCH`；原始价格/复权身份、未确认结构、Global/ETF/估值缺口和完整报告边界不变。
 - [修复] selected-code 深度日线不再使用固定 1100 自然日或替换成另一个魔法常数；由当前 Registry 已准入的叶子方法、各自 owner 的 K 线预热要求和实际执行周期动态编译 daily/weekly/monthly 所需 bars，再由交易所日历反推精确起始会话。不同形态和周期可独立扩展，合法较小需求不被过度抓取；分钟线继续复用既有方法驱动窗口。仅本地隔离候选，不授予数据许可、业务库、报告发送、训练或 Git 远端效果。
 - [修复] 现有 MTF 消费者在日线已证明价格复权口径时拒绝不一致的分钟复权口径（如 daily qfq + 30m raw/hfq），保留合法同口径的分钟趋势/MA/MACD/RSI 和独立日线证据；未证明日线口径的原有非触发路径不被新规则擅自升级或抹除。仅为新的拒绝状态记录独立准入规则版本，保持已接受 MTF 数值算法/Manifest 哈希不变，仍不授予来源使用权、PIT、策略、原始 V2.5、通知或业务库写入权限。
 - [修复] 现有 Ledger 原生读回按已核验历史 manifest 保留 2026-10-05 冻结的 33 项数值特征合同，不再用后加的两项 Wilder ATR 重新解释历史 SHA；旧记录无需改写，当前 35 项和其他 legacy manifest 路径保持原有语义，跨版本伪造仍拒绝。仅 B4 历史 readback 消费者及回归，历史样本依旧 PIT=false / strategy=INELIGIBLE，不表示有当前合法行情、模型训练或真实邮件权限。

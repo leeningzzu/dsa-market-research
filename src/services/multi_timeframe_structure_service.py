@@ -313,7 +313,9 @@ def _normalize_daily_history(history: Any, *, target_date: date) -> pd.DataFrame
     frame = frame.sort_values("date").drop_duplicates(subset=["date"], keep="last")
     optional = [
         column
-        for column in ("amount", "data_source", "data_identity_json", "data_identity_hash")
+        # Preserve all typed source-content fields needed for the same
+        # completed-history identity that Pipeline attaches to method receipts.
+        for column in ("amount", "pct_chg", "data_source", "data_identity_json", "data_identity_hash")
         if column in frame.columns
     ]
     result = frame[required + optional].reset_index(drop=True)

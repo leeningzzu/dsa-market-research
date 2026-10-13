@@ -819,6 +819,46 @@ def test_completed_history_identity_is_prefix_safe_and_changes_with_consumed_byt
     assert prefix_context["cross_run_persistence_reason"] == "DAILY_DATA_IDENTITY_READY"
 
 
+def test_baostock_complete_daily_source_identity_survives_mtf_projection_with_pct_chg():
+    """Real-source daily change column must survive 1d→MTF provenance hashing."""
+    raw = _history(periods=85)
+    raw["amount"] = [float(100000 + i * 10) for i in range(len(raw))]
+    raw["pct_chg"] = [float(i % 7) / 100 for i in range(len(raw))]
+    frame = _with_observed_identity(raw, provider="BaostockFetcher", basis="qfq")
+    target = frame.iloc[-1]["date"].date()
+    observed = datetime(2026, 10, 13, 3, 10, tzinfo=timezone.utc)
+    direct = build_completed_history_identity(
+        frame, stock_code="600519", market="cn",
+        target_date=target, observed_at=observed,
+    )
+    kwargs = dict(
+        stock_code="600519", target_date=target, market="cn",
+        trend_analyzer=_FakeTrendAnalyzer(),
+        daily_trend_result=_trend_result(),
+        daily_price_structure_context={"historical_replay_eligible": False},
+        snapshot_observed_at=observed,
+    )
+    changed = raw.copy()
+    changed.loc[10, "pct_chg"] = float(changed.loc[10, "pct_chg"]) + 1.0
+    changed_frame = _with_observed_identity(
+        changed, provider="BaostockFetcher", basis="qfq",
+    )
+    with patch(
+        "src.services.multi_timeframe_structure_service.resolve_completed_timeframe_bar_date",
+        return_value=None,
+    ):
+        mtf = build_multi_timeframe_structure_context(history=frame, **kwargs)
+        changed_mtf = build_multi_timeframe_structure_context(
+            history=changed_frame, **kwargs,
+        )
+    assert mtf["data_snapshot_identity"] == direct["data_snapshot_identity"]
+    assert mtf["daily_data_identity_hash"] == direct["daily_data_identity_hash"]
+    assert mtf["provider_identity"] == "BaostockFetcher"
+    assert mtf["adjustment_basis"] == "qfq"
+    assert mtf["price_identity_reasons"] == []
+    assert changed_mtf["data_snapshot_identity"] != mtf["data_snapshot_identity"]
+
+
 def test_completed_history_identity_binds_observed_price_basis_into_snapshot_hash():
     raw = _history(periods=40)
     target = raw.iloc[-1]["date"].date()

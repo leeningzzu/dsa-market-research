@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import pytest
@@ -125,6 +125,39 @@ def test_baostock_intraday_5m_seam_binds_identity_without_touching_daily_route()
     assert identity["volume_unit"] == "UNKNOWN"
     assert identity["amount_unit"] == "UNKNOWN"
     assert frame["session"].tolist() == ["2026-09-23:AM"] * 3
+
+
+def test_baostock_intraday_default_observation_time_follows_response_completion() -> None:
+    """Source-observed/available clock cannot precede the received response."""
+    requested_at = datetime(2026, 9, 23, 2, 0, tzinfo=timezone.utc)
+    received_at = requested_at + timedelta(minutes=5)
+    rows = [
+        ["2026-09-23", "20260923093500000", "sh.600519",
+         "10", "11", "9", "10.5", "100", "1050", "2"],
+    ]
+    fake = _FakeBaostock(_MinuteResult(rows))
+
+    class _ReceiveAwareClock:
+        @classmethod
+        def now(cls, tz=None):
+            # The source response becomes available after query invocation.
+            return received_at if fake.calls else requested_at
+
+    fetcher = BaostockFetcher()
+    with (
+        patch.object(fetcher, "_baostock_session", side_effect=lambda: _session(fake)),
+        patch("data_provider.baostock_fetcher.datetime", _ReceiveAwareClock),
+        patch("data_provider.baostock_fetcher.metadata.version", return_value="0.9.4"),
+    ):
+        result = fetcher.get_intraday_data(
+            "600519", start_date="2026-09-23", end_date="2026-09-23",
+            frequency="5",
+        )
+
+    assert len(fake.calls) == 1
+    identity = extract_intraday_data_identity(result, strict=True)
+    assert datetime.fromisoformat(identity["observed_at"].replace("Z", "+00:00")) >= received_at
+    assert result["available_at"].iloc[0].to_pydatetime().astimezone(timezone.utc) >= received_at
 
 
 def test_baostock_intraday_rejects_response_identity_drift() -> None:
