@@ -434,6 +434,92 @@ def test_intraday_window_plan_is_method_driven_not_magic_ten() -> None:
     assert expanded["sessions_by_timeframe"]["60m"] == 16
 
 
+def test_daily_window_plan_is_method_and_timeframe_driven_not_magic_days() -> None:
+    from src.core import pipeline as pipeline_module
+    from src.services.evidence_traceability_registry import compile_method_window_policy_view
+
+    target = date(2026, 10, 12)
+    current = pipeline_module._current_daily_window_plan(
+        market="cn",
+        target_date=target,
+    )
+    assert current["timeframe_required_bars"] == {
+        "daily": 110,
+        "weekly": 40,
+        "monthly": 40,
+    }
+    assert current["start_by_timeframe"]["monthly"] == date(2023, 6, 1)
+    assert current["start_date"] == date(2023, 6, 1)
+    assert current["method_required_bars"]["daily"]["CUP_HANDLE"] == 110
+    assert current["method_required_bars"]["monthly"]["MA_COMPRESSION_RELEASE"] == 40
+    assert current["method_window_classes"]["daily"]["CUP_HANDLE"] == (
+        "VARIABLE_STRUCTURE",
+    )
+    assert current["method_window_classes"]["monthly"][
+        "MA_COMPRESSION_RELEASE"
+    ] == (
+        "FIXED_ROLLING",
+        "ADAPTIVE_CONTEXT",
+        "INCREMENTAL_STATE_MACHINE",
+    )
+
+    rows = compile_method_window_policy_view()["methods"]
+    candlestick = next(row for row in rows if row["method_id"] == "CANDLESTICK")
+    minimal = pipeline_module._current_daily_window_plan(
+        market="cn",
+        target_date=target,
+        method_rows=(candlestick,),
+    )
+    assert minimal["timeframe_required_bars"] == {
+        "daily": 2,
+        "weekly": 0,
+        "monthly": 0,
+    }
+    assert minimal["start_date"] == date(2026, 10, 9)
+
+    cup = next(row for row in rows if row["method_id"] == "CUP_HANDLE")
+    monthly_cup = pipeline_module._current_daily_window_plan(
+        market="cn",
+        target_date=target,
+        method_rows=({**cup, "current_execution_timeframes": ("monthly",)},),
+    )
+    assert monthly_cup["timeframe_required_bars"]["monthly"] == 110
+    assert monthly_cup["method_required_bars"]["monthly"]["CUP_HANDLE"] == 110
+    assert monthly_cup["start_date"] < current["start_date"]
+
+    dual_timeframe_cup = {
+        **cup,
+        "current_execution_timeframes": ("daily", "monthly"),
+    }
+    with patch.object(
+        pipeline_module,
+        "_current_method_required_bars",
+        return_value={"CUP_HANDLE": {"daily": 110, "monthly": 75}},
+    ):
+        timeframe_specific = pipeline_module._current_daily_window_plan(
+            market="cn",
+            target_date=target,
+            method_rows=(dual_timeframe_cup,),
+        )
+    assert timeframe_specific["timeframe_required_bars"] == {
+        "daily": 110,
+        "weekly": 0,
+        "monthly": 75,
+    }
+    assert timeframe_specific["method_required_bars"]["daily"]["CUP_HANDLE"] == 110
+    assert timeframe_specific["method_required_bars"]["monthly"]["CUP_HANDLE"] == 75
+
+    with patch.object(pipeline_module, "CUP_MAX_DURATION_SESSIONS", 130):
+        expanded_daily_cup = pipeline_module._current_daily_window_plan(
+            market="cn",
+            target_date=target,
+            method_rows=(cup,),
+        )
+    assert expanded_daily_cup["timeframe_required_bars"]["daily"] == 150
+    assert expanded_daily_cup["start_date"] < current["start_by_timeframe"]["daily"]
+    assert not hasattr(pipeline_module, "DEEP_HISTORY_LOOKBACK_CALENDAR_DAYS")
+
+
 def test_intraday_wiring_refuses_unverified_exchange_sessions_before_provider() -> None:
     """Missing one real XSHG session must never be hidden by 10 available daily rows."""
     from src.core.trading_calendar import resolve_forward_sessions_fail_closed
@@ -856,7 +942,12 @@ def test_analyze_stock_passes_intraday_after_acquisition_and_before_snapshot_to_
         side_effect=_load_intraday
     )
 
+    daily_history_start = date(2023, 6, 1)
+
     with patch(
+        "src.core.pipeline._current_daily_window_plan",
+        return_value={"start_date": daily_history_start},
+    ) as daily_plan, patch(
         "src.core.pipeline.build_market_phase_context",
         return_value=phase_context,
     ), patch(
@@ -888,6 +979,15 @@ def test_analyze_stock_passes_intraday_after_acquisition_and_before_snapshot_to_
     kwargs = mtf_builder.call_args.kwargs
     assert kwargs["intraday_timeframes"] is intraday
     assert kwargs["snapshot_observed_at"] >= observed["loaded_at"]
+    daily_plan.assert_called_once_with(
+        market="cn",
+        target_date=date(2026, 9, 25),
+    )
+    pipeline.db.get_data_range.assert_called_once_with(
+        "600519",
+        daily_history_start,
+        date(2026, 9, 25),
+    )
 def test_pipeline_attaches_low_sensitive_market_context_to_enhanced_context() -> None:
     pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
     enhanced_context = {"code": "600519"}

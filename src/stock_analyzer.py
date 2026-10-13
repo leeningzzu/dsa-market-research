@@ -187,6 +187,8 @@ class StockTrendAnalyzer:
     VOLUME_SHRINK_RATIO = 0.7   # 缩量判断阈值（当日量/5日均量）
     VOLUME_HEAVY_RATIO = 1.5    # 放量判断阈值
     MA_SUPPORT_TOLERANCE = 0.02  # MA 支撑判断容忍度（2%）
+    MA_PERIODS = (5, 10, 20, 60)
+    MA_ALIGNMENT_REQUIRED_BARS = max(MA_PERIODS)
 
     # MACD 参数（标准12/26/9）
     MACD_FAST = 12              # 快线周期
@@ -267,10 +269,11 @@ class StockTrendAnalyzer:
     def _calculate_mas(self, df: pd.DataFrame) -> pd.DataFrame:
         """计算均线"""
         df = df.copy()
-        df['MA5'] = df['close'].rolling(window=5).mean()
-        df['MA10'] = df['close'].rolling(window=10).mean()
-        df['MA20'] = df['close'].rolling(window=20).mean()
-        df['MA60'] = df['close'].rolling(window=60, min_periods=60).mean()
+        for period in self.MA_PERIODS:
+            df[f'MA{period}'] = df['close'].rolling(
+                window=period,
+                min_periods=period,
+            ).mean()
         return df
 
     def _calculate_macd(self, df: pd.DataFrame) -> pd.DataFrame:

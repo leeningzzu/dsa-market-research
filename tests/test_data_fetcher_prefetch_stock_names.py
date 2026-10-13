@@ -165,6 +165,9 @@ class TestPrefetchStockNames(unittest.TestCase):
         pipeline.db = MagicMock()
         pipeline.fetcher_manager.get_stock_name.return_value = "贵州茅台"
         pipeline.db.has_today_data.return_value = False
+        pipeline._resolve_resume_target_date = MagicMock(
+            return_value=pd.Timestamp("2026-10-12").date()
+        )
         pipeline.fetcher_manager.get_daily_data.return_value = (
             pd.DataFrame(
                 [
@@ -195,7 +198,9 @@ class TestPrefetchStockNames(unittest.TestCase):
         self.assertIn("end_date", fetch_args.kwargs)
         start = pd.Timestamp(fetch_args.kwargs["start_date"]).date()
         end = pd.Timestamp(fetch_args.kwargs["end_date"]).date()
-        self.assertEqual((end - start).days, 1100)
+        self.assertEqual(end, pd.Timestamp("2026-10-12").date())
+        self.assertEqual(start, pd.Timestamp("2023-06-01").date())
+        self.assertNotEqual((end - start).days, 1100)
 
     def test_pytdx_get_stock_name_reads_all_security_list_pages(self):
         fetcher = PytdxFetcher(hosts=[])
