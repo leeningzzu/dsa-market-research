@@ -21,7 +21,7 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
-from typing import List, Dict, Any, Optional, Tuple, Callable
+from typing import List, Dict, Any, Mapping, Optional, Tuple, Callable
 
 import pandas as pd
 
@@ -75,12 +75,39 @@ from src.services.analysis_context_builder import (
     PipelineAnalysisArtifacts,
 )
 from src.services.market_structure_service import MarketStructureService
-from src.services.relative_strength_service import RelativeStrengthService
-from src.services.supply_demand_service import build_supply_demand_context
-from src.services.cost_structure_service import build_cost_structure_context
+from src.services.relative_strength_service import (
+    DEFAULT_HORIZON_SESSIONS as RELATIVE_STRENGTH_HORIZON_SESSIONS,
+    RelativeStrengthService,
+)
+from src.services.supply_demand_service import (
+    REQUIRED_OBSERVATIONS as SUPPLY_REQUIRED_OBSERVATIONS,
+    build_supply_demand_context,
+)
+from src.services.cost_structure_service import (
+    REFERENCE_WINDOWS as COST_REFERENCE_WINDOWS,
+    build_cost_structure_context,
+)
 from src.services.price_structure_service import build_price_structure_context
+from src.services.price_structure_service import (
+    MIN_OBSERVATIONS as PRICE_STRUCTURE_MIN_OBSERVATIONS,
+)
 from src.services.volatility_momentum_service import build_volatility_momentum_context
+from src.services.volatility_momentum_service import (
+    READY_OBSERVATIONS as MOMENTUM_READY_OBSERVATIONS,
+    WILDER_ATR_PERIOD,
+)
 from src.services.pattern_trigger_service import build_pattern_trigger_context
+from src.services.pattern_trigger_service import (
+    CUP_MAX_DURATION_SESSIONS,
+    DOUBLE_BOTTOM_MAX_SEPARATION_SESSIONS,
+    FLAT_BASE_WINDOW,
+    MIN_OBSERVATIONS as PATTERN_MIN_OBSERVATIONS,
+    PRIOR_TREND_WINDOW,
+    TIGHT_CONSOLIDATION_WINDOW,
+)
+from src.services.candlestick_pattern_service import (
+    MIN_OBSERVATIONS as CANDLESTICK_MIN_OBSERVATIONS,
+)
 from src.services.multi_timeframe_structure_service import (
     MA_COMPRESSION_READY_BARS,
     MA_LEVEL_READY_BARS,
@@ -92,7 +119,10 @@ from src.services.intraday_bar_service import (
     aggregate_completed_intraday_bars,
     validate_complete_cn_5m_sessions,
 )
-from src.services.evidence_traceability_registry import build_method_execution_receipt
+from src.services.evidence_traceability_registry import (
+    build_method_execution_receipt,
+    compile_method_window_policy_view,
+)
 from src.services.pit_identity import (
     build_completed_history_identity,
     normalize_research_selection_context,
@@ -131,6 +161,7 @@ from src.core.trading_calendar import (
     get_market_now,
     resolve_forward_sessions_fail_closed,
     resolve_latest_completed_session_fail_closed,
+    resolve_required_daily_history_start_fail_closed,
     is_market_open,
 )
 from data_provider.us_index_mapping import is_us_stock_code
@@ -139,10 +170,132 @@ from bot.models import BotMessage
 
 logger = logging.getLogger(__name__)
 
-# Selected-asset deep analysis uses enough completed daily history to form
-# at least 26 completed monthly bars with a calendar buffer.  This remains
-# on-demand data loading; it is not a durable market-data store.
-DEEP_HISTORY_LOOKBACK_CALENDAR_DAYS = 1100
+# Daily acquisition is compiled from the current method owners and their
+# currently admitted timeframes.  No replacement calendar-day magic number is
+# allowed: the exchange calendar maps D/W/M bar requirements to one exact
+# completed-daily start session.
+DAILY_WINDOW_PLAN_VERSION = "method-owner-timeframe-daily-history-v1"
+_DAILY_SOURCE_TIMEFRAMES = ("daily", "weekly", "monthly")
+
+
+def _current_method_required_bars() -> Dict[str, Any]:
+    """Return leaf warm-ups; a method may override them by timeframe.
+
+    Scalar values apply to every currently routed timeframe.  Mapping values
+    permit one owner to expose distinct K-line counts per timeframe without
+    changing this compiler or introducing a new calendar-day constant.
+    """
+
+    return {
+        "RELATIVE_STRENGTH": RELATIVE_STRENGTH_HORIZON_SESSIONS + 1,
+        "MA_LEVEL_ALIGNMENT_DAILY": StockTrendAnalyzer.MA_ALIGNMENT_REQUIRED_BARS,
+        "SUPPLY_RELATIVE_VOLUME": SUPPLY_REQUIRED_OBSERVATIONS,
+        "SUPPLY_DIRECTIONAL_VOLUME": SUPPLY_REQUIRED_OBSERVATIONS,
+        "SUPPLY_CMF": SUPPLY_REQUIRED_OBSERVATIONS,
+        "COST_ROLLING_REFERENCE": max(COST_REFERENCE_WINDOWS),
+        "PRICE_PIVOT_SWING": PRICE_STRUCTURE_MIN_OBSERVATIONS,
+        "BREAKOUT_RETEST_FAILED": PRICE_STRUCTURE_MIN_OBSERVATIONS,
+        "MACD": StockTrendAnalyzer.MACD_SLOW + StockTrendAnalyzer.MACD_SIGNAL,
+        "RSI": StockTrendAnalyzer.RSI_LONG,
+        "ROC": MOMENTUM_READY_OBSERVATIONS,
+        "VOLATILITY_TR_SMA": MOMENTUM_READY_OBSERVATIONS,
+        "CONFIRMED_DIVERGENCE": MOMENTUM_READY_OBSERVATIONS,
+        "ATR_WILDER": WILDER_ATR_PERIOD + 1,
+        "CUP_HANDLE": PRIOR_TREND_WINDOW + CUP_MAX_DURATION_SESSIONS,
+        "DOUBLE_BOTTOM": PRIOR_TREND_WINDOW + DOUBLE_BOTTOM_MAX_SEPARATION_SESSIONS,
+        "VCP": PATTERN_MIN_OBSERVATIONS,
+        "FLAT_BASE": max(PATTERN_MIN_OBSERVATIONS, FLAT_BASE_WINDOW),
+        "TIGHT_CONSOLIDATION": max(
+            PATTERN_MIN_OBSERVATIONS,
+            TIGHT_CONSOLIDATION_WINDOW,
+        ),
+        "MTF_MA_LEVEL_ALIGNMENT": MA_LEVEL_READY_BARS,
+        "MTF_MOMENTUM_CONTEXT": TREND_MIN_BARS,
+        "MTF_PRICE_STRUCTURE": PRICE_STRUCTURE_MIN_OBSERVATIONS,
+        "MA_SLOPE_CROSS": MA_SLOPE_CROSS_READY_BARS,
+        "MA_COMPRESSION_RELEASE": MA_COMPRESSION_READY_BARS,
+        "CANDLESTICK": CANDLESTICK_MIN_OBSERVATIONS,
+    }
+
+
+def _current_daily_window_plan(
+    *,
+    market: Optional[str],
+    target_date: date,
+    method_rows: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """Compile exact D/W/M source history from admitted leaf-method owners."""
+
+    rows = tuple(
+        method_rows
+        if method_rows is not None
+        else compile_method_window_policy_view()["methods"]
+    )
+    requirements = _current_method_required_bars()
+    method_required_bars: Dict[str, Dict[str, int]] = {
+        timeframe: {} for timeframe in _DAILY_SOURCE_TIMEFRAMES
+    }
+    method_window_classes: Dict[str, Dict[str, Tuple[str, ...]]] = {
+        timeframe: {} for timeframe in _DAILY_SOURCE_TIMEFRAMES
+    }
+    unresolved: List[str] = []
+    for row in rows:
+        if row.get("leaf_implementation_state") != "EXISTING_REUSED":
+            continue
+        timeframes = tuple(row.get("current_execution_timeframes") or ())
+        relevant = tuple(
+            timeframe for timeframe in timeframes
+            if timeframe in _DAILY_SOURCE_TIMEFRAMES
+        )
+        if not relevant:
+            continue
+        method_id = str(row.get("method_id") or "").strip()
+        requirement = requirements.get(method_id)
+        window_classes = tuple(row.get("window_classes") or ())
+        for timeframe in relevant:
+            if isinstance(requirement, Mapping):
+                required = requirement.get(timeframe, requirement.get("*"))
+            else:
+                required = requirement
+            if (
+                isinstance(required, bool)
+                or not isinstance(required, int)
+                or required <= 0
+            ):
+                unresolved.append(f"{method_id or 'UNKNOWN_METHOD'}@{timeframe}")
+                continue
+            method_required_bars[timeframe][method_id] = required
+            method_window_classes[timeframe][method_id] = window_classes
+    if unresolved:
+        raise RuntimeError(
+            "DAILY_WINDOW_REQUIREMENT_MISSING:" + ",".join(sorted(set(unresolved)))
+        )
+
+    timeframe_required_bars = {
+        timeframe: max(values.values(), default=0)
+        for timeframe, values in method_required_bars.items()
+    }
+    calendar_plan = resolve_required_daily_history_start_fail_closed(
+        market,
+        target_date,
+        timeframe_required_bars,
+    )
+    if calendar_plan is None:
+        raise RuntimeError("DAILY_HISTORY_CALENDAR_PLAN_UNAVAILABLE")
+
+    identity = {
+        "version": DAILY_WINDOW_PLAN_VERSION,
+        "market": str(market or "").strip().lower() or None,
+        "target_date": target_date.isoformat(),
+        "timeframe_required_bars": timeframe_required_bars,
+        "method_required_bars": method_required_bars,
+        "method_window_classes": method_window_classes,
+    }
+    return {
+        **calendar_plan,
+        **identity,
+        "plan_hash": sha256_payload(identity),
+    }
 
 # Canonical 5m remains the single intraday source.  The fetch horizon is
 # compiled from the currently admitted minute consumers, rather than treating
@@ -539,7 +692,12 @@ class StockAnalysisPipeline:
 
             # 从数据源获取数据
             logger.info(f"{stock_name}({code}) 开始从数据源获取数据...")
-            history_start = target_date - timedelta(days=DEEP_HISTORY_LOOKBACK_CALENDAR_DAYS)
+            market = get_market_for_stock(normalize_stock_code(code))
+            daily_window_plan = _current_daily_window_plan(
+                market=market,
+                target_date=target_date,
+            )
+            history_start = daily_window_plan["start_date"]
             df, source_name = self.fetcher_manager.get_daily_data(
                 code,
                 start_date=history_start.isoformat(),
@@ -864,7 +1022,11 @@ class StockAnalysisPipeline:
                 _mkt = get_market_for_stock(normalize_stock_code(code))
                 frozen = get_frozen_target_date()
                 end_date = frozen if frozen else daily_market_target_date
-                start_date = end_date - timedelta(days=DEEP_HISTORY_LOOKBACK_CALENDAR_DAYS)
+                daily_window_plan = _current_daily_window_plan(
+                    market=_mkt,
+                    target_date=end_date,
+                )
+                start_date = daily_window_plan["start_date"]
                 historical_bars = self.db.get_data_range(code, start_date, end_date)
                 if historical_bars:
                     completed_daily_history = pd.DataFrame([bar.to_dict() for bar in historical_bars])

@@ -17,7 +17,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from enum import Enum
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -408,6 +408,93 @@ def resolve_completed_timeframe_bar_date(
     except Exception as e:
         logger.warning(
             "trading_calendar.resolve_completed_timeframe_bar_date fail-closed: %s",
+            e,
+        )
+        return None
+
+
+def resolve_required_daily_history_start_fail_closed(
+    market: Optional[str],
+    target_date: date,
+    required_bars_by_timeframe: Mapping[str, int],
+) -> Optional[Dict[str, Any]]:
+    """Map method-owned D/W/M bar counts to one exact daily-session start.
+
+    The caller owns the method warm-ups.  This calendar owner only converts
+    those counts into exchange sessions, so no fixed calendar-day lookback can
+    silently survive a method or timeframe change.
+    """
+    if (
+        market not in MARKET_EXCHANGE
+        or not _XCALS_AVAILABLE
+        or not isinstance(target_date, date)
+        or not isinstance(required_bars_by_timeframe, Mapping)
+    ):
+        return None
+
+    allowed = {"daily", "weekly", "monthly"}
+    normalized: Dict[str, int] = {}
+    for timeframe, value in required_bars_by_timeframe.items():
+        key = str(timeframe or "").strip().lower()
+        if key not in allowed or isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            return None
+        normalized[key] = value
+    if not any(normalized.values()):
+        return None
+
+    try:
+        cal = xcals.get_calendar(MARKET_EXCHANGE[market])
+        if not bool(cal.is_session(target_date)):
+            return None
+        target_session = cal.date_to_session(target_date, direction="previous")
+        start_by_timeframe: Dict[str, date] = {}
+
+        daily_count = normalized.get("daily", 0)
+        if daily_count:
+            cursor = target_session
+            for _ in range(daily_count - 1):
+                cursor = cal.previous_session(cursor)
+            start_by_timeframe["daily"] = cursor.date()
+
+        period_frequency = {"weekly": "W-FRI", "monthly": "M"}
+        for timeframe, frequency in period_frequency.items():
+            count = normalized.get(timeframe, 0)
+            if not count:
+                continue
+            completed_through = resolve_completed_timeframe_bar_date(
+                market,
+                target_date,
+                timeframe,
+            )
+            if completed_through is None:
+                return None
+            latest_period = pd.Timestamp(completed_through).to_period(frequency)
+            earliest_period = latest_period - (count - 1)
+            first_session = cal.date_to_session(
+                earliest_period.start_time.date(),
+                direction="next",
+            )
+            if pd.Timestamp(first_session.date()).to_period(frequency) != earliest_period:
+                return None
+            start_by_timeframe[timeframe] = first_session.date()
+
+        if not start_by_timeframe:
+            return None
+        start_date = min(start_by_timeframe.values())
+        return {
+            "target_date": target_date,
+            "required_bars_by_timeframe": dict(normalized),
+            "start_by_timeframe": start_by_timeframe,
+            "start_date": start_date,
+            "limiting_timeframes": tuple(
+                timeframe
+                for timeframe, value in start_by_timeframe.items()
+                if value == start_date
+            ),
+        }
+    except Exception as e:
+        logger.warning(
+            "trading_calendar.resolve_required_daily_history_start_fail_closed: %s",
             e,
         )
         return None
