@@ -2031,7 +2031,7 @@ def build_stock_factor_decision_summary(
             "display": "暂不提供（尚未完成独立校准）",
         },
         "conclusion": conclusion,
-        "why": why[:4],
+        "why": why,
         "action_condition": action_condition,
         "invalidation_condition": invalidation_condition,
         "valuation": valuation,

@@ -342,6 +342,70 @@ def test_b8a_notification_refuses_forged_dataset_id_even_with_same_76_count():
     assert not any("G_FAKE_VIX_CLAIM" in line for line in lines)
 
 
+def test_b8a_distinct_producer_factor_material_survives_report_email_html_and_single():
+    """Independent synthetic facts are retained by every existing projection."""
+    from html.parser import HTMLParser
+    from src.enums import ReportType
+    from src.formatters import markdown_to_html_document
+    from src.services.factor_decision_summary import canonical_factor_binding
+
+    result = _make_investor_brief_result()
+    factor = result.dashboard["factor_decision"]
+    material = {
+        "why_a": "DISTINCT_VOLUME_OPPOSITION_A4F9",
+        "why_b": "DISTINCT_VIX_MISSING_B7E2",
+        "condition": "DISTINCT_EXECUTION_TRIGGER_C914",
+        "invalid": "DISTINCT_INVALIDATION_D213",
+        "valuation": "DISTINCT_FINANCIAL_VERSION_F2A8",
+        "cost": "DISTINCT_COST_PROXY_E8F5",
+        "risk": "DISTINCT_LIQUIDITY_VETO_G1C4",
+    }
+    factor["why"] = [material["why_a"], material["why_b"]]
+    factor["action_condition"] = material["condition"]
+    factor["invalidation_condition"] = material["invalid"]
+    factor["valuation"] = material["valuation"]
+    factor["cost_structure"] = material["cost"]
+    factor["risk_notes"] = [material["risk"]]
+    factor["evidence_traceability"] = build_runtime_trace(factor)
+    factor["canonical_decision_identity"] = canonical_factor_binding(factor)
+    factor["investor_brief"]["canonical_binding"] = deepcopy(factor["canonical_decision_identity"])
+    with mock.patch("src.notification.get_config", return_value=_make_config(
+        report_renderer_enabled=False, report_history_compare_n=0,
+    )):
+        service = NotificationService()
+        full = service.generate_aggregate_report([result], ReportType.SIMPLE, "2026-10-12")
+        email = service.generate_brief_report([result], "2026-10-12")
+        single = service.generate_single_stock_report(result)
+
+    class VisibleText(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=True)
+            self.parts = []
+        def handle_data(self, data):
+            self.parts.append(data)
+
+    visible = VisibleText()
+    visible.feed(markdown_to_html_document(email))
+    rendered = "".join(visible.parts)
+    for text in material.values():
+        assert text in full, text
+        assert text in email, text
+        assert text in single, text
+        assert text in rendered, text
+    assert "UNKNOWN／缺独立来源、单位、时点及权利回执" in email
+
+    # Nontrigger: a material string already in the brief is not appended again.
+    factor["action_condition"] = factor["investor_brief"]["trigger"]
+    factor["evidence_traceability"] = build_runtime_trace(factor)
+    factor["canonical_decision_identity"] = canonical_factor_binding(factor)
+    factor["investor_brief"]["canonical_binding"] = deepcopy(factor["canonical_decision_identity"])
+    with mock.patch("src.notification.get_config", return_value=_make_config(
+        report_renderer_enabled=False, report_history_compare_n=0,
+    )):
+        once = NotificationService().generate_brief_report([result], "2026-10-12")
+    assert once.count(factor["investor_brief"]["trigger"]) == 1
+
+
 def test_b8a_etf_legitimate_route_keeps_stock_object_not_applicable():
     """Asset-specific data objects must retain asset route despite global context."""
     from src.services.evidence_traceability_registry import build_runtime_trace

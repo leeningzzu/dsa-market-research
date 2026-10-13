@@ -102,6 +102,24 @@ def test_summary_reuses_existing_score_without_inventing_probability_or_win_rate
 
 
 
+def test_five_distinct_native_rationale_sections_are_not_budget_truncated(monkeypatch):
+    """Five valid distinct original method explanations must all be kept."""
+    import src.services.factor_decision_summary as owner
+
+    values = {
+        "_market_sector_regime_summary": "DISTINCT_MARKET_CONTEXT_1",
+        "_trend_relative_strength_summary": "DISTINCT_RELATIVE_STRENGTH_2",
+        "_supply_demand_volume_price_summary": "DISTINCT_SUPPLY_DEMAND_3",
+        "_price_structure_summary": "DISTINCT_PRICE_STRUCTURE_4",
+        "_valuation_summary": "DISTINCT_VALUATION_UNCERTAINTY_5",
+    }
+    for name, value in values.items():
+        monkeypatch.setattr(owner, name, lambda *args, _text=value, **kwargs: _text)
+    factor = build_stock_factor_decision_summary(_trend(), include_canonical=True)
+    assert factor["why"] == list(values.values())
+    assert len(factor["why"]) == 5
+
+
 def test_material_risks_are_preserved_through_summary_brief_and_binding():
     risks = [
         "RISK_LIQUIDITY_DISTINCT",
