@@ -593,10 +593,67 @@ def _append_investor_brief_block(lines: List[str], factor: Any, report_language:
             if short_summary:
                 lines.append(f"**短线波段 30/15/5m**: {short_summary}")
 
+    _append_missing_factor_material(lines, factor)
     _append_complete_research_universe_appendix(lines, factor, brief)
 
     lines.append("")
     return True
+
+
+def _append_missing_factor_material(lines: List[str], factor: Any) -> None:
+    """Keep producer-owned Factor facts omitted by the compact investor brief.
+
+    Supplemental explanation never creates data admission or another strategy vote.
+    """
+    if not isinstance(factor, dict):
+        return
+    existing = "\n".join(lines)
+    seen = set()
+    items = []
+
+    def add(label: str, value: Any) -> None:
+        if not isinstance(value, str):
+            return
+        text = value.strip()
+        if not text or text in existing or text in seen:
+            return
+        seen.add(text)
+        # A literal identifier containing underscores is Markdown emphasis
+        # otherwise: code-span fencing preserves its visible characters.
+        if "_" in text:
+            fence = "`"
+            while fence in text:
+                fence += "`"
+            display = f"{fence}{text}{fence}"
+        else:
+            display = text
+        items.append(f"- **{label}**: {display}")
+
+    why = factor.get("why")
+    if isinstance(why, (list, tuple)):
+        for entry in why:
+            add("判断依据", entry)
+    sections = factor.get("sections")
+    if isinstance(sections, dict):
+        for key in (
+            "market_sector_regime", "trend_relative_strength",
+            "supply_demand_volume_price", "price_structure", "valuation",
+            "cost_structure", "trend", "volume_price", "momentum", "pattern_trigger",
+        ):
+            add(f"研究证据/{key}", sections.get(key))
+    for key, label in (
+        ("action_condition", "操作条件"),
+        ("invalidation_condition", "失效条件"),
+        ("valuation", "估值前提"),
+        ("cost_structure", "成本/筹码口径"),
+    ):
+        add(label, factor.get(key))
+    risks = factor.get("risk_notes")
+    if isinstance(risks, (list, tuple)):
+        for entry in risks:
+            add("风险与反证", entry)
+    if items:
+        lines.extend(["", "**完整研究补充材料（不增加独立投票）**:", *items])
 
 
 def _append_investor_notification_block(
@@ -761,6 +818,7 @@ def _append_investor_notification_block(
         lines.append("**主要风险**:")
         lines.extend(f"- {item}" for item in rendered_risks)
 
+    _append_missing_factor_material(lines, factor)
     _append_complete_research_universe_appendix(lines, factor, brief)
 
     lines.append("")

@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [修复] B8A 原生 Factor 的第五条及后续不同判断依据不再固定丢弃；既有 Report/Email/单股通知对合法 brief 未覆盖的原生 Factor 条件、风险、估值、成本、反证补充保留，不增加独立投票或已准入来源事实。离线消费者负例与合法不重复 nontrigger 保护；原始 V2.5 不动、无实际 SMTP、Git 发布或业务库写入。
 - [修复] B8A 原始机器图 76 项数据义务在既有 Evidence Registry complete_research_universe 与 Notification 全文/Email/HTML 消费者逐项保留 ID、业务域、原生频率、明确 UNKNOWN/NOT_APPLICABLE，保留 26 上层要求与七周期技术矩阵。静态义务投影由接受的机器图子集 SHA 严格锁定，绝不产生行情值、PIT/来源许可、模型特征或新增独立投票；无实际来源回执不能把 VIX、ETF NAV、财务版本写成 READY。复用既有 renderer/EmailSender，原 V2.5 HTML 字节不可变，动态客户端交付仍待单独验收。
 - [修复] BaoStock 5m 默认来源观测/available_at 在真实响应读取并关闭会话后取时，避免请求开始时钟伪装数据已经到达；显式历史观察时钟的既有接口和单位 UNKNOWN 拒绝保留，不能把免费取数冒充历史 PIT、权利或量价准入。
 - [修复] DSA 既有 MTF 日线规范化保留已获取 `pct_chg` 原始字段，避免重新绑定 typed daily identity 时改变其内容哈希，导致同一真实来源在 Pipeline 方法收据与 MTF 严格消费者之间发生无谓的 `METHOD_INPUT_SNAPSHOT_MISMATCH`；原始价格/复权身份、未确认结构、Global/ETF/估值缺口和完整报告边界不变。
