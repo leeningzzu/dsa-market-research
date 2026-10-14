@@ -1421,12 +1421,19 @@ def _mtf_method_matrix_state(method_id: str, factor: Mapping, timeframe: str, fa
                     if volume_ready else ("MISSING", "MTF_VOLUME_CONTEXT_NOT_ADMITTED")
                 )
             if family == "MOMENTUM":
-                price_momentum = any(
-                    str(trend.get(key) or "").strip() for key in ("macd_status", "rsi_status")
+                admitted = frame.get("admitted_methods")
+                methods = admitted if isinstance(admitted, (tuple, list)) else ()
+                startup = frame.get("macd_startup_stability")
+                macd_ready = (
+                    "MACD" in methods
+                    and isinstance(startup, Mapping)
+                    and startup.get("status") == "READY"
+                    and str(trend.get("macd_status") or "").strip()
                 )
+                rsi_ready = "RSI" in methods and str(trend.get("rsi_status") or "").strip()
                 return (
                     ("PARTIAL", "MTF_MACD_RSI_CONTEXT_ONLY")
-                    if price_momentum else ("MISSING", "MTF_MACD_RSI_CONTEXT_MISSING")
+                    if macd_ready or rsi_ready else ("MISSING", "MTF_MACD_RSI_CONTEXT_MISSING")
                 )
         fields = [str(trend.get(key) or "").strip() for key in ("volume_status", "macd_status", "rsi_status")]
         ready = sum(bool(value) for value in fields)

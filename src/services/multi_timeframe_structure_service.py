@@ -13,6 +13,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from hashlib import sha256
 import json
+import math
 from typing import Any, Dict, Optional
 
 import pandas as pd
@@ -111,6 +112,112 @@ _INTRADAY_EVIDENCE_CONFIG = {
 INTRADAY_EVIDENCE_CONFIG_HASH = sha256(
     json.dumps(_INTRADAY_EVIDENCE_CONFIG, sort_keys=True, separators=(",", ":")).encode("utf-8")
 ).hexdigest()
+
+
+def macd_startup_comparison_required_bars() -> int:
+    """Minimum available bars for three distinct native MACD startup comparisons.
+
+    Keep each suffix at least twice the formula minimum and compare three
+    distinct earlier starts against the full available completed history.
+    This is an observation-bound floor, never universal EMA convergence proof.
+    """
+    from src.stock_analyzer import StockTrendAnalyzer
+
+    return 4 * (StockTrendAnalyzer.MACD_SLOW + StockTrendAnalyzer.MACD_SIGNAL)
+
+
+def _macd_startup_stability(frame: pd.DataFrame, analyzer: Any) -> Dict[str, Any]:
+    """Audit MACD sensitivity to three earlier starts using its native owner.
+
+    Only the observed completed history is compared. Stable observed prefixes
+    cannot certify unseen prehistory, rights/PIT, 30m triggers or strategy action.
+    """
+    from src.stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult
+
+    formula_minimum = StockTrendAnalyzer.MACD_SLOW + StockTrendAnalyzer.MACD_SIGNAL
+    minimum = macd_startup_comparison_required_bars()
+    observations = len(frame)
+    result = {
+        "policy_version": "native-macd-multiple-startup-v2",
+        "method_owner": "StockTrendAnalyzer._calculate_macd",
+        "status": "MISSING",
+        "reason": "MACD_MULTI_START_HISTORY_INSUFFICIENT",
+        "observations": observations,
+        "formula_minimum_bars": formula_minimum,
+        "required_observations": minimum,
+        "comparison_observations": None,
+        "evaluated_startup_lengths": [],
+        "max_endpoint_difference": None,
+        "absolute_tolerance": None,
+        "reference_macd_state": None,
+        "startup_state_agreement": None,
+        "numeric_agreement": None,
+        "readiness_scope": "OBSERVED_COMPLETED_PREFIXES_ONLY",
+        "unobserved_prehistory_convergence": "NOT_PROVEN",
+        "strategy_admitted": False,
+        "learning_admitted": False,
+    }
+    if observations < minimum:
+        return result
+    if not isinstance(analyzer, StockTrendAnalyzer):
+        return {**result, "status": "UNKNOWN", "reason": "NATIVE_MACD_OWNER_UNAVAILABLE"}
+
+    # Fractions of the actual available history, not an absolute fixed time
+    # window. The shortest history has >=2x formula minimum when N>=4x.
+    lengths = tuple((observations * fraction) // 6 for fraction in (3, 4, 5))
+    if len(set(lengths)) != 3 or min(lengths) < 2 * formula_minimum:
+        return {**result, "status": "MISSING", "reason": "MACD_DISTINCT_STARTS_INSUFFICIENT"}
+    try:
+        close = pd.to_numeric(frame["close"], errors="raise").reset_index(drop=True)
+        if not close.notna().all() or not all(math.isfinite(float(v)) and v > 0 for v in close):
+            raise ValueError("invalid close")
+        fields = ("MACD_DIF", "MACD_DEA", "MACD_BAR")
+        reference = analyzer._calculate_macd(pd.DataFrame({"close": close}))
+        reference_state = TrendAnalysisResult(code="MACD_MULTI_START_AUDIT")
+        analyzer._analyze_macd(reference, reference_state)
+        tolerance = max(1e-10, abs(float(close.iloc[-1])) * 1e-4)
+        max_difference = 0.0
+        numeric_matches = []
+        state_matches = []
+        for count in lengths:
+            suffix = analyzer._calculate_macd(
+                pd.DataFrame({"close": close.iloc[-count:].reset_index(drop=True)})
+            )
+            differences = [
+                abs(float(reference.iloc[idx][field]) - float(suffix.iloc[idx][field]))
+                for idx in (-2, -1)
+                for field in fields
+            ]
+            if not all(math.isfinite(value) for value in differences):
+                raise ValueError("invalid recursive output")
+            difference = max(differences)
+            max_difference = max(max_difference, difference)
+            numeric_matches.append(difference <= tolerance)
+            suffix_state = TrendAnalysisResult(code="MACD_MULTI_START_AUDIT")
+            analyzer._analyze_macd(suffix, suffix_state)
+            state_matches.append(suffix_state.macd_status == reference_state.macd_status)
+        numeric_agreement = all(numeric_matches)
+        state_agreement = all(state_matches)
+        stable = numeric_agreement and state_agreement
+    except (ValueError, KeyError, TypeError, IndexError, ArithmeticError):
+        return {**result, "status": "UNKNOWN", "reason": "NATIVE_MACD_MULTI_START_RECOMPUTE_INVALID"}
+    return {
+        **result,
+        "status": "READY" if stable else "UNKNOWN",
+        "reason": (
+            "MACD_OBSERVED_MULTI_START_NUMERIC_AND_STATE_AGREE"
+            if stable else "MACD_MULTI_START_NUMERIC_OR_STATE_DRIFT"
+        ),
+        "comparison_observations": min(lengths),
+        "evaluated_startup_lengths": list(lengths) + [observations],
+        "max_endpoint_difference": max_difference,
+        "absolute_tolerance": tolerance,
+        "reference_macd_state": reference_state.macd_status.name,
+        "startup_state_agreement": state_agreement,
+        "numeric_agreement": numeric_agreement,
+    }
+
+
 
 
 def _build_intraday_timeframe(
@@ -239,6 +346,18 @@ def _build_intraday_timeframe(
         if not volume_evidence_ready:
             trend["volume_status"] = None
             trend["volume_ratio_5bar"] = None
+    macd_startup = _macd_startup_stability(analyzer_frame, trend_analyzer)
+    if isinstance(trend, dict):
+        trend["macd_startup_stability"] = macd_startup
+        if macd_startup["status"] != "READY":
+            # Retain the raw computation for audit but never render it as a
+            # confirmed crossover before a native prefix comparison.
+            trend["macd_raw_observation"] = {
+                "status": trend.get("macd_status"),
+                "signal": trend.get("macd_signal"),
+                "admitted": False,
+            }
+            trend["macd_signal"] = None
     price_structure = {
         "status": "MISSING",
         "reason": "INTRADAY_PRICE_STRUCTURE_NOT_ADMITTED",
@@ -253,6 +372,10 @@ def _build_intraday_timeframe(
     )
     has_partial = trend is not None or ma_structure.get("status") in {"READY", "PARTIAL"}
     summary = _human_summary(trend, {}, ma_structure)
+    if isinstance(trend, dict) and macd_startup["status"] != "READY":
+        summary = "；".join(filter(None, (
+            summary, "MACD递归启动稳定性未验证，原始数值不得作金叉确认",
+        )))
     if isinstance(trend, dict):
         rsi_signal = str(trend.get("rsi_signal") or "").strip()
         if rsi_signal and rsi_signal != "数据不足":
@@ -277,6 +400,7 @@ def _build_intraday_timeframe(
         "observations": int(len(analyzer_frame)),
         "source_alignment": alignment,
         "intraday_identity_hash": identity["identity_hash"],
+        "macd_startup_stability": macd_startup,
         "trend": trend or {"status": "MISSING", "reason": "WARMUP_INSUFFICIENT"},
         "ma_structure": ma_structure,
         "price_structure": price_structure,
@@ -287,7 +411,8 @@ def _build_intraday_timeframe(
         },
         "summary": summary,
         "admitted_methods": [
-            "TREND", "MA", *(["VOLUME"] if volume_evidence_ready else []), "MACD", "RSI",
+            "TREND", "MA", *(["VOLUME"] if volume_evidence_ready else []),
+            *(["MACD"] if macd_startup["status"] == "READY" else []), "RSI",
         ],
         "independent_action_authority": False,
         "strategy_admitted": False,
