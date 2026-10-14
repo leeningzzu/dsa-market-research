@@ -555,6 +555,37 @@ def test_mtf_execution_populates_only_its_admitted_family_context_and_not_supply
     assert factor["strategy_eligibility"]["required_evidence"]["thirty_minute_trigger"] == "UNKNOWN"
 
 
+def test_minute_raw_macd_without_recursive_startup_receipt_cannot_enter_momentum_cell():
+    """A naked 'golden cross' label is neither a verified minute MACD nor a 30m trigger."""
+    from src.services.evidence_traceability_registry import _mtf_method_matrix_state
+
+    factor = {
+        "multi_timeframe_structure_context": {
+            "timeframes": {
+                "30m": {
+                    "status": "PARTIAL",
+                    "admitted_methods": ["MACD"],
+                    "macd_startup_stability": {"status": "UNKNOWN"},
+                    "trend": {"status": "READY", "macd_status": "零轴上金叉", "rsi_status": None},
+                    "strategy_admitted": False,
+                }
+            }
+        }
+    }
+    state, _ = _mtf_method_matrix_state("MTF_MOMENTUM_CONTEXT", factor, "30m", "MOMENTUM")
+    assert state == "MISSING"
+    factor["multi_timeframe_structure_context"]["timeframes"]["30m"][
+        "macd_startup_stability"
+    ] = {"status": "READY"}
+    state, _ = _mtf_method_matrix_state("MTF_MOMENTUM_CONTEXT", factor, "30m", "MOMENTUM")
+    assert state == "PARTIAL"
+    factor["multi_timeframe_structure_context"]["timeframes"]["30m"][
+        "admitted_methods"
+    ] = []
+    state, _ = _mtf_method_matrix_state("MTF_MOMENTUM_CONTEXT", factor, "30m", "MOMENTUM")
+    assert state == "MISSING"
+
+
 def test_current_intraday_context_is_visible_without_admitting_structure_pattern_cost_or_30m_trigger():
     # A valid typed volume unit is required for the existing SUPPLY PARTIAL positive.
     factor = native_summary_with_mtf(intraday=True, volume_unit="share")

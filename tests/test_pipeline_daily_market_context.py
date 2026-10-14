@@ -334,7 +334,9 @@ def _pipeline_intraday_sessions() -> list[date]:
     ]
 
 
-def _pipeline_canonical_5m(session_dates: list[date]) -> pd.DataFrame:
+def _pipeline_canonical_5m(
+    session_dates: list[date], *, requested_start: date | None = None,
+) -> pd.DataFrame:
     observed = pd.Timestamp(
         f"{session_dates[-1].isoformat()} 16:00:00",
         tz="Asia/Shanghai",
@@ -394,7 +396,7 @@ def _pipeline_canonical_5m(session_dates: list[date]) -> pd.DataFrame:
         currency="CNY",
         volume_unit="UNKNOWN",
         amount_unit="UNKNOWN",
-        requested_start=session_dates[0].isoformat(),
+        requested_start=(requested_start or session_dates[0]).isoformat(),
         requested_end=session_dates[-1].isoformat(),
         identity_state="OBSERVED",
         observed_at=observed.tz_convert("UTC").to_pydatetime(),
@@ -432,6 +434,242 @@ def test_intraday_window_plan_is_method_driven_not_magic_ten() -> None:
     assert expanded["required_bars"] == 61
     assert expanded["required_sessions"] == 16
     assert expanded["sessions_by_timeframe"]["60m"] == 16
+
+
+def test_b5_seven_timeframe_indicator_windows_keep_method_specific_inputs() -> None:
+    """Three higher and four minute frames have distinct owner-driven bar demands."""
+    from src.core import pipeline as owner
+
+    higher = owner._current_daily_window_plan(
+        market="cn", target_date=date(2026, 10, 12),
+    )
+    assert higher["timeframe_required_bars"] == {
+        "daily": 110, "weekly": 40, "monthly": 40,
+    }
+    assert higher["method_required_bars"]["daily"]["CUP_HANDLE"] == 110
+    assert higher["method_required_bars"]["daily"]["DOUBLE_BOTTOM"] == 90
+    assert higher["method_required_bars"]["daily"]["CANDLESTICK"] == 2
+
+    minute = owner._current_intraday_window_plan()
+    assert minute["required_bars"] == 40  # Lawful minimum source-only plan.
+    assert minute["required_sessions"] == 10
+    assert minute["admission_target_required_bars"] == 4 * (26 + 9)
+    assert minute["admission_target_sessions"] == 35
+    assert minute["admission_sessions_by_timeframe"] == {
+        "5m": 3, "15m": 9, "30m": 18, "60m": 35,
+    }
+    for timeframe in ("5m", "15m", "30m", "60m"):
+        methods = minute["method_required_bars_by_timeframe"][timeframe]
+        assert methods["MA_COMPRESSION_RELEASE"] == 40
+        assert methods["RSI_FORMULA_MINIMUM"] == 24
+        assert methods["MACD_FORMULA_MINIMUM"] == 35
+        assert methods["MACD_STARTUP_COMPARISON"] == 4 * (26 + 9)
+    # Changes to the native MACD owner, not magic constants, change the horizon.
+    with patch.object(owner.StockTrendAnalyzer, "MACD_SIGNAL", 17):
+        longer = owner._current_intraday_window_plan()
+    assert longer["admission_target_required_bars"] == 4 * (26 + 17)
+    assert longer["admission_target_sessions"] == 43
+    with patch.object(owner, "MA_COMPRESSION_READY_BARS", 90):
+        owner_ma = owner._current_intraday_window_plan()
+    assert owner_ma["required_bars"] == 90
+    assert owner_ma["required_sessions"] == 23
+    assert owner_ma["admission_target_sessions"] == 35
+    with patch.object(owner, "MA_COMPRESSION_READY_BARS", 180):
+        ma_domination = owner._current_intraday_window_plan()
+    assert ma_domination["admission_target_required_bars"] == 180
+    assert ma_domination["admission_target_sessions"] == 45
+
+
+def test_b5_live_pipeline_chooses_verified_longer_macd_source_when_available() -> None:
+    """Extra legitimate sessions cause one larger 5m query; no second source owner."""
+    import exchange_calendars as xcals
+    from datetime import timedelta
+    from src.core.trading_calendar import resolve_forward_sessions_fail_closed
+
+    calendar = xcals.get_calendar("XSHG")
+    end = calendar.date_to_session(date(2026, 10, 8))
+    sessions = [bar.date() for bar in calendar.sessions_window(end, -35)]
+    assert len(sessions) == 35 and sessions[-1] == date(2026, 10, 8)
+    assert resolve_forward_sessions_fail_closed(
+        "cn", sessions[0] - timedelta(days=1), 35,
+    ) == sessions
+
+    pipeline = _intraday_pipeline_for_helper()
+    pipeline.fetcher_manager._call_fetcher_method.return_value = (
+        _pipeline_canonical_5m(sessions)
+    )
+    with patch(
+        "src.core.pipeline.resolve_latest_completed_session_fail_closed",
+        return_value=sessions[-1],
+    ), patch(
+        "src.core.pipeline.SearchService.is_index_or_etf",
+        return_value=False,
+    ):
+        result = pipeline._load_current_stock_intraday_timeframes(
+            code="600519",
+            stock_name="贵州茅台",
+            market="cn",
+            target_date=sessions[-1],
+            completed_daily_history=pd.DataFrame({"date": sessions}),
+        )
+
+    pipeline.fetcher_manager._call_fetcher_method.assert_called_once_with(
+        pipeline.fetcher_manager._get_fetcher_by_name.return_value,
+        "get_intraday_data", "600519",
+        start_date=sessions[0].isoformat(),
+        end_date=sessions[-1].isoformat(), frequency="5",
+    )
+    assert {key: len(value) for key, value in result.items()} == {
+        "5m": 1680, "15m": 560, "30m": 280, "60m": 140,
+    }
+
+
+def test_b5_completed_18_sessions_preserve_short_methods_but_not_140_bar_macd() -> None:
+    """A valid partial history must not claim the new longer MACD readiness."""
+    import exchange_calendars as xcals
+
+    calendar = xcals.get_calendar("XSHG")
+    end = calendar.date_to_session(date(2026, 10, 8))
+    sessions = [bar.date() for bar in calendar.sessions_window(end, -18)]
+    assert len(sessions) == 18
+    pipeline = _intraday_pipeline_for_helper()
+    pipeline.fetcher_manager._call_fetcher_method.return_value = (
+        _pipeline_canonical_5m(sessions[-10:])
+    )
+    with patch(
+        "src.core.pipeline.resolve_latest_completed_session_fail_closed",
+        return_value=sessions[-1],
+    ), patch(
+        "src.core.pipeline.SearchService.is_index_or_etf",
+        return_value=False,
+    ):
+        result = pipeline._load_current_stock_intraday_timeframes(
+            code="600519", stock_name="贵州茅台", market="cn",
+            target_date=sessions[-1],
+            completed_daily_history=pd.DataFrame({"date": sessions}),
+        )
+    pipeline.fetcher_manager._call_fetcher_method.assert_called_once_with(
+        pipeline.fetcher_manager._get_fetcher_by_name.return_value,
+        "get_intraday_data", "600519",
+        start_date=sessions[-10].isoformat(),
+        end_date=sessions[-1].isoformat(), frequency="5",
+    )
+    assert {key: len(value) for key, value in result.items()} == {
+        "5m": 480, "15m": 160, "30m": 80, "60m": 40,
+    }
+
+
+def test_b5_provider_returns_exact_verified_short_suffix_of_long_request() -> None:
+    """One 35-session request returning complete last-10 may preserve MA/RSI input.
+
+    The source identity records the actual long query separately from the
+    independently validated returned ten-session content; never claim MACD140.
+    """
+    import exchange_calendars as xcals
+    from data_provider.intraday_data_identity import extract_intraday_data_identity
+
+    calendar = xcals.get_calendar("XSHG")
+    end = calendar.date_to_session(date(2026, 10, 8))
+    sessions = [bar.date() for bar in calendar.sessions_window(end, -35)]
+    returned = _pipeline_canonical_5m(
+        sessions[-10:], requested_start=sessions[0],
+    )
+    identity = extract_intraday_data_identity(returned, strict=True)
+    assert identity["requested_start"] == sessions[0].isoformat()
+    assert len(returned) == 480
+
+    pipeline = _intraday_pipeline_for_helper()
+    pipeline.fetcher_manager._call_fetcher_method.return_value = returned
+    with patch(
+        "src.core.pipeline.resolve_latest_completed_session_fail_closed",
+        return_value=sessions[-1],
+    ), patch(
+        "src.core.pipeline.SearchService.is_index_or_etf",
+        return_value=False,
+    ):
+        actual = pipeline._load_current_stock_intraday_timeframes(
+            code="600519", stock_name="SYNTHETIC", market="cn",
+            target_date=sessions[-1],
+            completed_daily_history=pd.DataFrame({"date": sessions}),
+        )
+    pipeline.fetcher_manager._call_fetcher_method.assert_called_once_with(
+        pipeline.fetcher_manager._get_fetcher_by_name.return_value,
+        "get_intraday_data", "600519",
+        start_date=sessions[0].isoformat(),
+        end_date=sessions[-1].isoformat(), frequency="5",
+    )
+    assert {key: len(value) for key, value in actual.items()} == {
+        "5m": 480, "15m": 160, "30m": 80, "60m": 40,
+    }
+
+
+def test_b5_provider_short_incomplete_return_still_rejected() -> None:
+    """A partial 5m session is not repaired by a short-horizon fallback."""
+    import exchange_calendars as xcals
+
+    calendar = xcals.get_calendar("XSHG")
+    end = calendar.date_to_session(date(2026, 10, 8))
+    sessions = [bar.date() for bar in calendar.sessions_window(end, -35)]
+    returned = _pipeline_canonical_5m(
+        sessions[-10:], requested_start=sessions[0],
+    )
+    returned = returned.drop(returned.index[24]).reset_index(drop=True)
+    assert len(returned) == 479
+    pipeline = _intraday_pipeline_for_helper()
+    pipeline.fetcher_manager._call_fetcher_method.return_value = returned
+    with patch(
+        "src.core.pipeline.resolve_latest_completed_session_fail_closed",
+        return_value=sessions[-1],
+    ), patch(
+        "src.core.pipeline.SearchService.is_index_or_etf",
+        return_value=False,
+    ):
+        actual = pipeline._load_current_stock_intraday_timeframes(
+            code="600519", stock_name="SYNTHETIC", market="cn",
+            target_date=sessions[-1],
+            completed_daily_history=pd.DataFrame({"date": sessions}),
+        )
+    pipeline.fetcher_manager._call_fetcher_method.assert_called_once()
+    assert actual == {}
+
+
+def test_b5_missing_older_sessions_does_not_erase_complete_short_window() -> None:
+    """A broken 18-session candidate must not fake MACD history or lose valid MA/RSI."""
+    import exchange_calendars as xcals
+
+    calendar = xcals.get_calendar("XSHG")
+    end = calendar.date_to_session(date(2026, 10, 8))
+    nineteen = [session.date() for session in calendar.sessions_window(end, -19)]
+    valid_eighteen = nineteen[1:]
+    with_one_older_gap = [nineteen[0], *nineteen[2:]]
+    assert len(with_one_older_gap) == 18
+    assert len(valid_eighteen) == 18
+    assert with_one_older_gap[-10:] == valid_eighteen[-10:]
+    pipeline = _intraday_pipeline_for_helper()
+    pipeline.fetcher_manager._call_fetcher_method.return_value = (
+        _pipeline_canonical_5m(valid_eighteen[-10:])
+    )
+    with patch(
+        "src.core.pipeline.resolve_latest_completed_session_fail_closed",
+        return_value=valid_eighteen[-1],
+    ), patch(
+        "src.core.pipeline.SearchService.is_index_or_etf",
+        return_value=False,
+    ):
+        frames = pipeline._load_current_stock_intraday_timeframes(
+            code="600519", stock_name="贵州茅台", market="cn",
+            target_date=valid_eighteen[-1],
+            completed_daily_history=pd.DataFrame({"date": with_one_older_gap}),
+        )
+    pipeline.fetcher_manager._call_fetcher_method.assert_called_once_with(
+        pipeline.fetcher_manager._get_fetcher_by_name.return_value,
+        "get_intraday_data", "600519",
+        start_date=valid_eighteen[-10].isoformat(),
+        end_date=valid_eighteen[-1].isoformat(), frequency="5",
+    )
+    assert {key: len(value) for key, value in frames.items()} == {
+        "5m": 480, "15m": 160, "30m": 80, "60m": 40,
+    }
 
 
 def test_daily_window_plan_is_method_and_timeframe_driven_not_magic_days() -> None:

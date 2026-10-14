@@ -122,13 +122,14 @@ def _daily_trend(_history: pd.DataFrame, _target_index: int):
 
 def _intraday_fixture(
     timeframe: str, target, periods: int = 40, *, volume_unit: str = "UNKNOWN", zero_reference_volume: bool = False,
+    closes: list[float] | None = None,
 ) -> pd.DataFrame:
     end = pd.Timestamp(target).tz_localize("Asia/Shanghai") + pd.Timedelta(hours=15)
     ends = pd.date_range(end=end, periods=periods, freq="30min")
     observed = end + pd.Timedelta(hours=1)
     rows = []
     for index, bar_end in enumerate(ends):
-        close = 100.0 + index * 0.2
+        close = float(closes[index]) if closes is not None else 100.0 + index * 0.2
         rows.append(
             {
                 "code": "600519",
@@ -271,6 +272,198 @@ def test_intraday_real_trend_analyzer_cannot_resurrect_unknown_volume() -> None:
     assert item["learning_admitted"] is False
 
 
+def test_intraday_macd_40_bar_formula_minimum_does_not_certify_recursive_startup() -> None:
+    """The real MACD producer may describe 40 bars, but cannot self-certify its seed."""
+    item = _volume_unit_intraday_context("UNKNOWN", analyzer=StockTrendAnalyzer())
+    assert item["status"] == "PARTIAL"
+    assert item["trend"]["macd_status"]  # Raw observed state remains inspectable.
+    assert item["macd_startup_stability"]["status"] == "MISSING"
+    assert item["macd_startup_stability"]["formula_minimum_bars"] == (
+        StockTrendAnalyzer.MACD_SLOW + StockTrendAnalyzer.MACD_SIGNAL
+    )
+    assert item["macd_startup_stability"]["required_observations"] == 4 * (
+        StockTrendAnalyzer.MACD_SLOW + StockTrendAnalyzer.MACD_SIGNAL
+    )
+    assert "MACD" not in item["admitted_methods"]
+    assert "RSI" in item["admitted_methods"]
+    assert item["trend"]["macd_signal"] is None
+    assert "MACD递归" in item["summary"]
+    assert item["price_structure"]["status"] == "MISSING"
+    assert item["strategy_admitted"] is False
+
+
+def test_long_intraday_macd_prefix_agreement_keeps_only_descriptive_nontrigger() -> None:
+    """Long stable synthetic history keeps legal price/RSI context, not 30m authority."""
+    item = _volume_unit_intraday_context(
+        "UNKNOWN", analyzer=StockTrendAnalyzer(), periods=240,
+    )
+    stability = item["macd_startup_stability"]
+    assert stability["status"] == "READY"
+    assert stability["observations"] == 240
+    assert stability["comparison_observations"] == 120
+    assert stability["evaluated_startup_lengths"] == [120, 160, 200, 240]
+    assert stability["numeric_agreement"] is True
+    assert stability["startup_state_agreement"] is True
+    assert stability["max_endpoint_difference"] <= stability["absolute_tolerance"]
+    assert "MACD" in item["admitted_methods"]
+    assert "RSI" in item["admitted_methods"]
+    assert "VOLUME" not in item["admitted_methods"]
+    assert item["price_structure"]["status"] == "MISSING"
+    assert item["pattern_trigger"]["status"] == "MISSING"
+    assert item["strategy_admitted"] is False
+    assert item["learning_admitted"] is False
+
+
+def test_same_last_40_bars_can_flip_native_macd_cross_under_different_prior_seed() -> None:
+    """Historical seed can change a MACD cross without changing any recent bar."""
+    from math import cos, sin
+    from src.stock_analyzer import MACDStatus, TrendAnalysisResult
+    from src.services.multi_timeframe_structure_service import _macd_startup_stability
+
+    shared = [
+        100.0 + .6 * sin(index * .33 + 17 * .19)
+        + .13 * cos(index * .17 + 17 * .19)
+        for index in range(40)
+    ]
+    shared[-1] += 1.0
+    extended = [60.0] * 200 + shared
+    analyzer = StockTrendAnalyzer()
+
+    def status(prices):
+        full = analyzer._calculate_macd(pd.DataFrame({"close": prices}))
+        observation = TrendAnalysisResult(code="SYNTHETIC_ONLY")
+        analyzer._analyze_macd(full, observation)
+        return observation.macd_status
+
+    assert extended[-40:] == shared
+    assert status(shared) == MACDStatus.GOLDEN_CROSS_ZERO
+    assert status(extended) != MACDStatus.GOLDEN_CROSS_ZERO
+    assert _macd_startup_stability(
+        pd.DataFrame({"close": shared}), analyzer,
+    )["status"] == "MISSING"
+    longer = _macd_startup_stability(pd.DataFrame({"close": extended}), analyzer)
+    assert longer["status"] == "READY"
+    assert longer["strategy_admitted"] is False
+
+
+def test_unverified_minute_gold_cross_never_becomes_narrative_confirmation() -> None:
+    """Real MTF consumer cannot turn a native startup-sensitive cross into prose fact."""
+    from math import cos, sin
+
+    closes = [
+        100.0 + .6 * sin(index * .33 + 17 * .19)
+        + .13 * cos(index * .17 + 17 * .19)
+        for index in range(40)
+    ]
+    closes[-1] += 1.0
+    frame = _volume_unit_intraday_context(
+        "UNKNOWN", analyzer=StockTrendAnalyzer(), closes=closes,
+    )
+    assert frame["trend"]["macd_status"] == "零轴上金叉"  # Original audit observation
+    assert frame["trend"]["macd_raw_observation"]["status"] == "零轴上金叉"
+    assert frame["macd_startup_stability"]["status"] == "MISSING"
+    assert frame["trend"]["macd_signal"] is None
+    assert "零轴上金叉" not in frame["summary"]
+    assert "MACD递归启动稳定性未验证" in frame["summary"]
+    assert "MACD" not in frame["admitted_methods"]
+    assert "RSI" in frame["admitted_methods"]
+    assert frame["strategy_admitted"] is False
+
+
+def test_macd_two_prefix_ready_cannot_override_distant_seed_numeric_counterexample() -> None:
+    """A 70-bar two-prefix agreement cannot certify a different older price seed."""
+    from src.services.multi_timeframe_structure_service import _macd_startup_stability
+
+    recent = [100.0] * 70
+    historical = [60.0] * 200 + recent
+    owner = StockTrendAnalyzer()
+    prior = owner._calculate_macd(pd.DataFrame({"close": historical}))
+    limited = owner._calculate_macd(pd.DataFrame({"close": recent}))
+    receipt = _macd_startup_stability(pd.DataFrame({"close": recent}), owner)
+
+    assert historical[-70:] == recent
+    assert receipt["formula_minimum_bars"] == 35
+    assert receipt["required_observations"] == 4 * (
+        StockTrendAnalyzer.MACD_SLOW + StockTrendAnalyzer.MACD_SIGNAL
+    )
+    assert receipt["comparison_observations"] is None
+    assert receipt["evaluated_startup_lengths"] == []
+    maximum_drift = max(
+        abs(float(prior.iloc[-1][key]) - float(limited.iloc[-1][key]))
+        for key in ("MACD_DIF", "MACD_DEA", "MACD_BAR")
+    )
+    independent_tolerance = max(1e-10, abs(recent[-1]) * 1e-4)
+    assert maximum_drift > independent_tolerance * 2
+    assert receipt["status"] == "MISSING"
+    assert receipt["reason"] == "MACD_MULTI_START_HISTORY_INSUFFICIENT"
+    assert receipt["unobserved_prehistory_convergence"] == "NOT_PROVEN"
+    # A bounded two-start numeric comparison alone may not claim independent
+    # MACD convergence; keep the exact counterexample for the next admission gate.
+    assert receipt["status"] != "READY"
+
+
+def test_multi_startup_state_disagreement_rejects_intraday_cross_context() -> None:
+    """A genuine full-vs-short native crossover disagreement is not an action."""
+    from math import cos, sin
+    from src.stock_analyzer import TrendAnalysisResult
+    from src.services.multi_timeframe_structure_service import _macd_startup_stability
+
+    close = [60.0] * 70 + [
+        100.0 + .4 * sin(i * .38) + .17 * cos(i * .17)
+        for i in range(70)
+    ]
+    close[-1] -= 2.0
+    analyzer = StockTrendAnalyzer()
+
+    def native_status(values):
+        frame = analyzer._calculate_macd(pd.DataFrame({"close": values}))
+        result = TrendAnalysisResult(code="SYNTHETIC_OBSERVER")
+        analyzer._analyze_macd(frame, result)
+        return result.macd_status
+
+    assert native_status(close) != native_status(close[-70:])
+    evidence = _macd_startup_stability(pd.DataFrame({"close": close}), analyzer)
+    assert evidence["evaluated_startup_lengths"] == [70, 93, 116, 140]
+    assert evidence["startup_state_agreement"] is False
+    assert evidence["status"] == "UNKNOWN"
+    assert evidence["strategy_admitted"] is False
+    assert evidence["learning_admitted"] is False
+
+
+def test_multi_startup_bounded_positive_does_not_claim_older_pit_or_action() -> None:
+    """Four tested starts agree on a benign trend; no universal history guarantee."""
+    from src.services.multi_timeframe_structure_service import _macd_startup_stability
+
+    close = [100 + index * .2 for index in range(240)]
+    evidence = _macd_startup_stability(pd.DataFrame({"close": close}), StockTrendAnalyzer())
+    assert evidence["policy_version"] == "native-macd-multiple-startup-v2"
+    assert evidence["status"] == "READY"
+    assert evidence["evaluated_startup_lengths"] == [120, 160, 200, 240]
+    assert evidence["numeric_agreement"] is True
+    assert evidence["startup_state_agreement"] is True
+    assert evidence["max_endpoint_difference"] <= evidence["absolute_tolerance"]
+    assert evidence["readiness_scope"] == "OBSERVED_COMPLETED_PREFIXES_ONLY"
+    assert evidence["unobserved_prehistory_convergence"] == "NOT_PROVEN"
+    assert evidence["strategy_admitted"] is False
+    assert evidence["learning_admitted"] is False
+
+
+def test_multi_startup_numeric_drift_rejects_even_when_named_state_agrees() -> None:
+    """Value instability independently vetoes descriptive admission."""
+    from src.services.multi_timeframe_structure_service import _macd_startup_stability
+
+    evidence = _macd_startup_stability(
+        pd.DataFrame({"close": [100.0] * 70 + [120.0] * 70}),
+        StockTrendAnalyzer(),
+    )
+    assert evidence["evaluated_startup_lengths"] == [70, 93, 116, 140]
+    assert evidence["numeric_agreement"] is False
+    assert evidence["startup_state_agreement"] is True
+    assert evidence["max_endpoint_difference"] > evidence["absolute_tolerance"]
+    assert evidence["status"] == "UNKNOWN"
+    assert evidence["strategy_admitted"] is False
+
+
 def test_intraday_known_unit_without_prior_volume_denominator_is_not_ready() -> None:
     item = _volume_unit_intraday_context(
         "share", analyzer=StockTrendAnalyzer(), zero_reference_volume=True,
@@ -287,6 +480,7 @@ def test_intraday_known_unit_without_prior_volume_denominator_is_not_ready() -> 
 
 def _volume_unit_intraday_context(
     volume_unit: str, *, analyzer=None, zero_reference_volume: bool = False,
+    periods: int = 40, closes: list[float] | None = None,
 ) -> dict:
     history = _history()
     target = history.iloc[-1]["date"].date()
@@ -310,7 +504,7 @@ def _volume_unit_intraday_context(
             daily_price_structure_context={"historical_replay_eligible": True},
             snapshot_observed_at=datetime.combine(target, datetime.max.time(), tzinfo=timezone.utc),
             intraday_timeframes={
-                "30m": _intraday_fixture("30m", target, volume_unit=volume_unit, zero_reference_volume=zero_reference_volume),
+                "30m": _intraday_fixture("30m", target, periods=periods, volume_unit=volume_unit, zero_reference_volume=zero_reference_volume, closes=closes),
             },
         )
     return context["timeframes"]["30m"]

@@ -114,8 +114,10 @@ from src.services.multi_timeframe_structure_service import (
     MA_SLOPE_CROSS_READY_BARS,
     TREND_MIN_BARS,
     build_multi_timeframe_structure_context,
+    macd_startup_comparison_required_bars,
 )
 from src.services.intraday_bar_service import (
+    IntradayBarError,
     aggregate_completed_intraday_bars,
     validate_complete_cn_5m_sessions,
 )
@@ -339,10 +341,30 @@ def _current_intraday_window_plan() -> Dict[str, Any]:
         for timeframe, sessions in sessions_by_timeframe.items()
         if sessions == required_sessions
     )
+    # A source-only diagnostic can still use the historical 10-session minimum.
+    # Real evidence consumers prefer the independent recursive comparison target
+    # only when the completed XSHG sessions are actually available.
+    admission_requirements = {
+        **method_required_bars,
+        "MACD_STARTUP_COMPARISON": macd_startup_comparison_required_bars(),
+    }
+    admission_target_required_bars = max(admission_requirements.values())
+    admission_sessions_by_timeframe = {
+        timeframe: (admission_target_required_bars + bars - 1) // bars
+        for timeframe, bars in _INTRADAY_BARS_PER_SESSION.items()
+    }
+    admission_target_sessions = max(admission_sessions_by_timeframe.values())
     return {
         "required_bars": required_bars,
         "required_sessions": required_sessions,
         "method_required_bars": method_required_bars,
+        "method_required_bars_by_timeframe": {
+            timeframe: dict(admission_requirements)
+            for timeframe in _INTRADAY_BARS_PER_SESSION
+        },
+        "admission_target_required_bars": admission_target_required_bars,
+        "admission_target_sessions": admission_target_sessions,
+        "admission_sessions_by_timeframe": admission_sessions_by_timeframe,
         "bars_per_session": dict(_INTRADAY_BARS_PER_SESSION),
         "sessions_by_timeframe": sessions_by_timeframe,
         "limiting_timeframes": limiting_timeframes,
@@ -776,26 +798,33 @@ class StockAnalysisPipeline:
             }
         )
         window_plan = _current_intraday_window_plan()
-        required_session_count = int(window_plan["required_sessions"])
-        if len(available_sessions) < required_session_count:
+        base_sessions = int(window_plan["required_sessions"])
+        if len(available_sessions) < base_sessions:
             return {}
-        expected_sessions = available_sessions[-required_session_count:]
-        if expected_sessions[-1] != target_date:
-            return {}
-
-        # Do not derive a method-demand minute query from a gapped or
-        # holiday-filled daily history. The exchange calendar independently owns
-        # the exact session set; the method owners own the required bar count.
-        exact_sessions = resolve_forward_sessions_fail_closed(
-            "cn", expected_sessions[0] - timedelta(days=1), len(expected_sessions),
-        )
-        if exact_sessions != expected_sessions:
+        # Pick the most informative *verified* completed window, once per
+        # asset. Insufficient older bars only withhold MACD; valid MA/RSI are
+        # not discarded and we never silently fill a missing XSHG session.
+        candidate_sizes = sorted({
+            base_sessions, int(window_plan["admission_target_sessions"]),
+        }, reverse=True)
+        expected_sessions = None
+        for count in candidate_sizes:
+            if len(available_sessions) < count:
+                continue
+            candidate = available_sessions[-count:]
+            if candidate[-1] != target_date:
+                continue
+            exact = resolve_forward_sessions_fail_closed(
+                "cn", candidate[0] - timedelta(days=1), count,
+            )
+            if exact == candidate:
+                expected_sessions = candidate
+                break
+        if expected_sessions is None:
             logger.warning(
-                "%s(%s) intraday context blocked: daily dates are not the exact "
-                "%s consecutive XSHG sessions required by current minute methods",
-                stock_name,
-                code,
-                required_session_count,
+                "%s(%s) intraday context blocked: no independently verified "
+                "completed XSHG window for current minute methods",
+                stock_name, code,
             )
             return {}
 
@@ -814,10 +843,35 @@ class StockAnalysisPipeline:
                 end_date=expected_sessions[-1].isoformat(),
                 frequency="5",
             )
-            validate_complete_cn_5m_sessions(
-                five_minute,
-                expected_session_dates=expected_sessions,
-            )
+            try:
+                validate_complete_cn_5m_sessions(
+                    five_minute,
+                    expected_session_dates=expected_sessions,
+                )
+            except IntradayBarError:
+                # A provider can return only the latest fully completed source
+                # suffix even when the checked daily calendar supports more.
+                # Reuse that exact response once; never fabricate old 5m bars,
+                # request a second source or accept a partial/foreign session.
+                if len(expected_sessions) <= base_sessions:
+                    raise
+                short_sessions = expected_sessions[-base_sessions:]
+                if resolve_forward_sessions_fail_closed(
+                    "cn", short_sessions[0] - timedelta(days=1),
+                    base_sessions,
+                ) != short_sessions:
+                    raise
+                validate_complete_cn_5m_sessions(
+                    five_minute,
+                    expected_session_dates=short_sessions,
+                )
+                logger.info(
+                    "%s(%s) minute source returned one verified short suffix: "
+                    "%s/%s XSHG sessions; recursive MACD readiness checked "
+                    "independently against actual received bars",
+                    stock_name, code, base_sessions, len(expected_sessions),
+                )
+                expected_sessions = short_sessions
             derived = {
                 "5m": five_minute,
                 "15m": aggregate_completed_intraday_bars(
