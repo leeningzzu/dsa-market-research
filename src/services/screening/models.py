@@ -198,6 +198,14 @@ class Pick:
     deep_analysis_operation_advice: str = ""
     deep_analysis_trend_prediction: str = ""
     deep_analysis_risk_flags: list[str] = field(default_factory=list)
+    # Existing DSA MTF output projected into the bounded L3 shortlist only.
+    # These fields are audit/selection preference, never a canonical action,
+    # probability, win rate, or independent seven-vote score.
+    mtf_screening_status: str = "NOT_AVAILABLE"
+    mtf_screening_delta: float = 0.0
+    mtf_screening_summary: str = ""
+    mtf_screening_groups: dict[str, str] = field(default_factory=dict)
+    mtf_screening_timeframes: dict[str, dict[str, str]] = field(default_factory=dict)
 
 
 @dataclass

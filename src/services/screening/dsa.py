@@ -227,6 +227,18 @@ def _attach_deep_analysis_fields(pick: Pick, result: dict) -> None:
     pick.deep_analysis_trend_prediction = _safe_str(summary.get("trend_prediction"))
     pick.deep_analysis_risk_flags = _extract_risk_flags(trend)
 
+    mtf_projection = _qualified_mtf_screening_projection(
+        result,
+        expected_code=pick.code,
+    )
+    pick.mtf_screening_status = str(mtf_projection.get("status") or "REJECTED")
+    pick.mtf_screening_delta = float(mtf_projection.get("delta") or 0.0)
+    pick.mtf_screening_summary = str(mtf_projection.get("summary") or "")
+    pick.mtf_screening_groups = dict(mtf_projection.get("groups") or {})
+    pick.mtf_screening_timeframes = dict(mtf_projection.get("timeframes") or {})
+    pick.post_analysis_score_deltas["dsa_mtf_roles"] = pick.mtf_screening_delta
+    pick.post_analysis_results["dsa_mtf_roles"] = mtf_projection
+
 
 def _qualified_dsa_overlay_reference_score(result: dict | None) -> int | None:
     """Use the exact existing Factor score identity, not the raw API score.
@@ -234,13 +246,7 @@ def _qualified_dsa_overlay_reference_score(result: dict | None) -> int | None:
     A public report containing only a legacy score or explanation is not
     positive evidence of method execution or permission to reorder picks.
     """
-    if not isinstance(result, dict):
-        return None
-    report = result.get("report")
-    details = report.get("details") if isinstance(report, dict) else None
-    raw = details.get("raw_result") if isinstance(details, dict) else None
-    dashboard = raw.get("dashboard") if isinstance(raw, dict) else None
-    factor = dashboard.get("factor_decision") if isinstance(dashboard, dict) else None
+    factor = _extract_factor_decision(result)
     if not isinstance(factor, dict):
         return None
     if factor.get("method_execution_receipt_policy") != "REQUIRED":
@@ -268,13 +274,297 @@ def _qualified_dsa_overlay_reference_score(result: dict | None) -> int | None:
 
 
 def _compute_dsa_overlay_score(pick: Pick) -> float:
-    """Only admitted Factor numeric reference contributes to L3 rank.
+    """Combine two bounded, independently audited DSA shortlist preferences.
 
-    Raw trend/sentiment, LLM advice and native risk text stay in audit;
-    independent hard risk and portfolio veto owners stay separate.
+    The legacy Factor reference remains conditional on its exact admission.
+    The MTF component consumes four hierarchical role groups, not seven
+    independent votes or presentation text. Neither component can override an
+    existing risk exclusion or create canonical BUY authority.
     """
     qualified = _qualified_dsa_overlay_reference_score(pick.deep_analysis_result)
-    return (qualified - 50) * 0.20 if qualified is not None else 0.0
+    reference_delta = (qualified - 50) * 0.20 if qualified is not None else 0.0
+    pick.post_analysis_score_deltas["dsa_reference_score"] = round(
+        reference_delta, 4
+    )
+    mtf_delta = (
+        float(pick.mtf_screening_delta)
+        if pick.mtf_screening_status == "VERIFIED"
+        else 0.0
+    )
+    return reference_delta + mtf_delta
+
+
+def _extract_factor_decision(result: dict | None) -> dict | None:
+    if not isinstance(result, dict):
+        return None
+    report = result.get("report")
+    details = report.get("details") if isinstance(report, dict) else None
+    raw = details.get("raw_result") if isinstance(details, dict) else None
+    dashboard = raw.get("dashboard") if isinstance(raw, dict) else None
+    factor = dashboard.get("factor_decision") if isinstance(dashboard, dict) else None
+    return factor if isinstance(factor, dict) else None
+
+
+_MTF_TIMEFRAMES = ("monthly", "weekly", "daily", "60m", "30m", "15m", "5m")
+MTF_SCREENING_ROLE_GROUPS = (
+    "context", "setup", "bridge_structure", "confirmation_timing",
+)
+MTF_SCREENING_DELTA_BOUNDS = (-6.0, 4.0)
+_MTF_POSITIVE_MACD = {
+    "GOLDEN_CROSS_ZERO", "GOLDEN_CROSS", "BULLISH", "CROSSING_UP",
+    "零轴上金叉", "金叉", "多头", "上穿零轴",
+}
+_MTF_NEGATIVE_MACD = {
+    "BEARISH", "DEATH_CROSS", "CROSSING_DOWN",
+    "空头", "死叉", "下穿零轴",
+}
+_MTF_ADVERSE_RSI = {"OVERBOUGHT", "WEAK", "OVERSOLD", "超买", "弱势", "超卖"}
+_MTF_POSITIVE_STRUCTURE = {
+    "UP_BREAKOUT", "UP_BREAKOUT_RETEST_HOLD", "FAILED_DOWN_BREAKDOWN",
+    # Backward-compatible names from older structure projections.
+    "FAILED_DOWN_BREAKOUT",
+}
+_MTF_NEGATIVE_STRUCTURE = {
+    "FAILED_UP_BREAKOUT", "DOWN_BREAKDOWN", "DOWN_BREAKDOWN_RETEST_REJECT",
+    # Backward-compatible names from older structure projections.
+    "DOWN_BREAKOUT", "DOWN_BREAKOUT_RETEST_HOLD",
+}
+
+
+def _qualified_mtf_screening_projection(
+    result: dict | None,
+    *,
+    expected_code: str = "",
+) -> dict:
+    """Project verified seven-timeframe evidence into four ordered role groups.
+
+    This is a bounded shortlist preference. It never recomputes indicators,
+    counts correlated timeframes as votes, changes canonical, or grants action,
+    data-rights, PIT, or training authority.
+    """
+    rejected = {
+        "status": "REJECTED",
+        "reason": "STRICT_MTF_FACTOR_NOT_VERIFIED",
+        "delta": 0.0,
+        "summary": "",
+        "groups": {},
+        "timeframes": {},
+        "role_group_count": len(MTF_SCREENING_ROLE_GROUPS),
+        "cross_timeframe_vote_counting": False,
+        "independent_action_authority": False,
+        "canonical_veto_suppressed_positive": False,
+    }
+    factor = _extract_factor_decision(result)
+    if not isinstance(factor, dict):
+        return {**rejected, "status": "NOT_AVAILABLE", "reason": "FACTOR_MISSING"}
+    if factor.get("method_execution_receipt_policy") != "REQUIRED":
+        return {**rejected, "reason": "STRICT_METHOD_RECEIPTS_NOT_REQUIRED"}
+
+    from src.services.evidence_traceability_registry import (
+        TraceabilityError,
+        validate_runtime_trace,
+    )
+    from src.services.factor_decision_summary import validate_canonical_factor_binding
+
+    try:
+        validate_canonical_factor_binding(factor)
+        trace = validate_runtime_trace(factor)
+    except (TraceabilityError, ValueError, TypeError, KeyError):
+        return {**rejected, "reason": "CANONICAL_OR_RUNTIME_BINDING_REJECTED"}
+
+    mtf_observation = next(
+        (
+            item
+            for item in trace.get("observations", ())
+            if isinstance(item, dict) and item.get("requirement_id") == "MTF"
+        ),
+        None,
+    )
+    if not isinstance(mtf_observation, dict) or (
+        mtf_observation.get("state") not in {"READY", "PARTIAL"}
+        or mtf_observation.get("reason") != "METHOD_INVOCATION_VERIFIED"
+    ):
+        return {**rejected, "reason": "MTF_METHOD_INVOCATION_NOT_VERIFIED"}
+
+    mtf = factor.get("multi_timeframe_structure_context")
+    if not isinstance(mtf, dict) or not isinstance(mtf.get("timeframes"), dict):
+        return {**rejected, "reason": "MTF_CONTEXT_MISSING"}
+    if mtf.get("cross_timeframe_vote_counting") is not False:
+        return {**rejected, "reason": "MTF_VOTE_COUNTING_POLICY_INVALID"}
+    if mtf.get("independent_action_authority") is not False:
+        return {**rejected, "reason": "MTF_ACTION_AUTHORITY_INVALID"}
+    if expected_code and _screening_code_key(mtf.get("stock_code")) != _screening_code_key(
+        expected_code
+    ):
+        return {**rejected, "reason": "MTF_CANDIDATE_CODE_MISMATCH"}
+
+    rows = {
+        timeframe: _timeframe_screening_projection(
+            mtf["timeframes"].get(timeframe)
+        )
+        for timeframe in _MTF_TIMEFRAMES
+    }
+    groups = {
+        "context": _combine_role_group(
+            rows["monthly"], rows["weekly"], primary="weekly"
+        ),
+        "setup": rows["daily"]["state"],
+        "bridge_structure": _combine_role_group(
+            rows["60m"], rows["30m"], primary="30m"
+        ),
+        "confirmation_timing": _combine_role_group(
+            rows["15m"], rows["5m"], require_both=True
+        ),
+    }
+
+    delta = 0.0
+    delta += {"SUPPORTIVE": 1.25, "ADVERSE": -2.0}.get(groups["context"], 0.0)
+    delta += {"SUPPORTIVE": 1.75, "ADVERSE": -2.5}.get(groups["setup"], 0.0)
+    delta += {"SUPPORTIVE": 0.75, "ADVERSE": -1.0}.get(
+        groups["bridge_structure"], 0.0
+    )
+    if groups["confirmation_timing"] == "ADVERSE":
+        delta -= 0.5
+    elif (
+        groups["confirmation_timing"] == "SUPPORTIVE"
+        and groups["context"] == "SUPPORTIVE"
+        and groups["setup"] == "SUPPORTIVE"
+        and groups["bridge_structure"] != "ADVERSE"
+    ):
+        delta += 0.25
+    delta = max(
+        MTF_SCREENING_DELTA_BOUNDS[0],
+        min(MTF_SCREENING_DELTA_BOUNDS[1], round(delta, 4)),
+    )
+
+    decision = factor.get("canonical_decision")
+    canonical_suppressed = bool(
+        isinstance(decision, dict)
+        and (
+            decision.get("hard_veto") is True
+            or str(decision.get("action") or "").upper() == "PASS"
+        )
+        and delta > 0
+    )
+    if canonical_suppressed:
+        delta = 0.0
+
+    summary = "; ".join(
+        f"{name}={state}" for name, state in groups.items()
+    )
+    return {
+        "status": "VERIFIED",
+        "reason": "STRICT_MTF_METHOD_AND_CANONICAL_BINDING_VERIFIED",
+        "asset_type": str(factor.get("asset_type") or "stock").lower(),
+        "delta": delta,
+        "summary": summary,
+        "groups": groups,
+        "timeframes": rows,
+        "role_group_count": len(MTF_SCREENING_ROLE_GROUPS),
+        "cross_timeframe_vote_counting": False,
+        "independent_action_authority": False,
+        "canonical_veto_suppressed_positive": canonical_suppressed,
+    }
+
+
+def _timeframe_screening_projection(value: object) -> dict[str, str]:
+    row = value if isinstance(value, dict) else {}
+    row_status = str(row.get("status") or "MISSING").upper()
+    trend = row.get("trend") if isinstance(row.get("trend"), dict) else {}
+    direction = str(trend.get("direction") or "UNKNOWN").upper()
+    ma = row.get("ma_structure") if isinstance(row.get("ma_structure"), dict) else {}
+    ma_status = str(ma.get("status") or "MISSING").upper()
+    macd = (
+        row.get("macd_startup_stability")
+        if isinstance(row.get("macd_startup_stability"), dict)
+        else {}
+    )
+    rsi = (
+        row.get("rsi_startup_stability")
+        if isinstance(row.get("rsi_startup_stability"), dict)
+        else {}
+    )
+    macd_status = str(
+        trend.get("macd_status") or macd.get("reference_macd_state") or "UNKNOWN"
+    ).upper()
+    rsi_status = str(
+        trend.get("rsi_status") or rsi.get("reference_state") or "UNKNOWN"
+    ).upper()
+    structure = (
+        row.get("price_structure")
+        if isinstance(row.get("price_structure"), dict)
+        else {}
+    )
+    event = (
+        structure.get("structure_event")
+        if isinstance(structure.get("structure_event"), dict)
+        else {}
+    )
+    structure_state = str(event.get("state") or structure.get("status") or "MISSING").upper()
+
+    if row_status not in {"READY", "PARTIAL"} or direction == "UNKNOWN":
+        state = "MISSING"
+    elif (
+        direction == "BEARISH"
+        or macd_status in _MTF_NEGATIVE_MACD
+        or structure_state in _MTF_NEGATIVE_STRUCTURE
+    ):
+        state = "ADVERSE"
+    elif (
+        direction == "BULLISH"
+        and ma_status in {"READY", "PARTIAL"}
+        and str(macd.get("status") or "").upper() == "READY"
+        and macd_status in _MTF_POSITIVE_MACD
+        and not (
+            str(rsi.get("status") or "").upper() == "READY"
+            and rsi_status in _MTF_ADVERSE_RSI
+        )
+        and structure_state not in _MTF_NEGATIVE_STRUCTURE
+    ):
+        state = "SUPPORTIVE"
+    else:
+        state = "NEUTRAL"
+    return {
+        "state": state,
+        "period_status": row_status,
+        "direction": direction,
+        "ma": ma_status,
+        "macd": macd_status,
+        "rsi": rsi_status,
+        "structure": structure_state,
+    }
+
+
+def _combine_role_group(
+    first: dict[str, str],
+    second: dict[str, str],
+    *,
+    primary: str = "",
+    require_both: bool = False,
+) -> str:
+    states = (first.get("state"), second.get("state"))
+    if "ADVERSE" in states:
+        return "ADVERSE"
+    if states == ("MISSING", "MISSING"):
+        return "MISSING"
+    if require_both:
+        return "SUPPORTIVE" if states == ("SUPPORTIVE", "SUPPORTIVE") else "PARTIAL"
+    primary_state = second.get("state") if primary else None
+    if primary_state == "SUPPORTIVE" and first.get("state") != "MISSING":
+        return "SUPPORTIVE"
+    if states == ("SUPPORTIVE", "SUPPORTIVE"):
+        return "SUPPORTIVE"
+    if "SUPPORTIVE" in states:
+        return "PARTIAL"
+    if "MISSING" in states:
+        return "PARTIAL"
+    return "NEUTRAL"
+
+
+def _screening_code_key(value: object) -> str:
+    text = str(value or "").strip().upper()
+    digits = "".join(character for character in text if character.isdigit())
+    return digits[-6:] if len(digits) >= 6 else text
 
 
 def _extract_report_summary(result: dict) -> dict:

@@ -73,6 +73,15 @@
 
 理由：七周期核心来源、方法回执和完整展示已经形成一条可运行链；父产品最大的当前缺口是市场、行业、ETF和基本面时点，而不是再增加同源相关指标。继续批量堆指标会提高局部深度，却无法关闭市场许可、资产适用性和完整产品门禁。
 
+七周期现在也进入现有筛选消费者，但只位于便宜L1/L2之后的有界DSA候选短名单：`snapshot/daily prefilter → capped DSA deep analysis → strict MTF role overlay → final selection`。它不让全市场逐标的无界执行七周期，也不新增第二筛选器。严格MTF回执和canonical binding通过后，七个周期按四个职责组消费，而不是七票相加：
+
+- `context`：月线长期环境与周线主趋势；
+- `setup`：日线主要setup；
+- `bridge_structure`：60m桥接与30m主结构；
+- `confirmation_timing`：15m确认与5m时点。
+
+筛选偏好限定在 -6至+4，低周期只能在context和daily setup均支持时给最多+0.25确认，任何canonical PASS/hard veto都阻断正向加分。MISSING/UNKNOWN不转换为中性票，来源回执过期、候选代码错配或签名篡改均为0分拒绝。真实2026-10-15完整七周期只读验收中，600519因月周与日线动量不利、但60m/30m和15m/5m局部支持，筛选偏好为-3.75；510300在周/日及60m/30m不利、仅5m局部支持时触及-6下限。两者均未被低周期反转；这证明层级消费有效，不代表该数值是永久或全市场结论。
+
 技术指标继续作为有界子Lane：
 
 - 月线RSI：只有合法更长历史和交易日历可证明时推进；
@@ -95,6 +104,7 @@
 
 - Freqtrade类递归启动/未来信息检测：只借鉴多起点敏感性和lookahead负例，不复用交易动作或第二策略框架。
 - LEAN类warm-up和多分辨率聚合：只借鉴按实际订阅分辨率规划历史、避免循环重复History，不并存第二数据调度器。
+- AlphaSift类级联筛选：只复用本仓已有的便宜L1/L2→有界L3深析顺序；七周期不在全市场入口重复计算，也不允许LLM文字参与排名。
 - Qlib：仅在合法PIT数据集、rolling实验和独立模型阶段使用。
 - CZSC：仅可作为窄ChanFeatureAdapter；普通pivot不得冒充Chan笔段/背驰。
 - AlphaEvo/LightGBM：仅在有独立样本外增量的冻结Shadow阶段。
@@ -108,6 +118,7 @@ CI必须同时保护：
 - Email必需/TG可选、无自动交易、无LLM数值生产；
 - 类型化来源身份、错时点、未知单位、未来回填、资产错配和渠道替代负例；
 - 七周期同一方法Owner数值进入FULL Report/Email/HTML，无第二计算；
+- 七周期筛选必须严格MTF回执+canonical binding、四职责组、-6/+4边界、低周期不可独立升级；
 - 旧golden不得为候选输出降低，MISSING/UNKNOWN不得补造。
 
 失败按PRODUCT、DEV_TOOLING、AUTHORITY_CURRENTNESS、ENVIRONMENT、ADAPTER_INTERFACE、PROCESS_CONSUMER、DATA_MODEL分类；同Gate连续两次同类失败即Parent-Route Re-entry，不机械追加补丁。
@@ -122,5 +133,7 @@ CI必须同时保护：
 6. 等待ai-governance、backend-gate、docker-build等阻断检查；
 7. 记录CI结果、未证明项和Role Review；
 8. 显式merge后，该commit才成为新的Production GitHub基线。
+
+当前公开GitHub门禁对象为PR #30。功能分支push本身不会触发本仓CI，因为`ci.yml`只对`main` push或面向`main`的Pull Request运行；因此Actions首页最初只显示main定时任务不代表分支未推送。PR首次运行中ai-governance、docker-build和桌面打包通过，backend-gate在Offline suite发现17条历史Pipeline通知测试仍期待微信/飞书/NTFY/Gotify/上下文替代正式Email。生产合同没有放宽；旧测试被改为Email REQUIRED、Telegram OPTIONAL及其他渠道不替代Report的准确正负例，本地相关模块42/42与Notification/Schedule 203/203通过，等待新分支提交触发远端复验。
 
 M2候选实现可以在同一已推送功能分支继续，并持续以小提交同步GitHub；但未merge的分支能力只能称候选基线，不能冒充main/Production。任何本地WIP、ZIP、Project Source或聊天结论都不能替代GitHub分支、CI与最终merge形成的工程基线。

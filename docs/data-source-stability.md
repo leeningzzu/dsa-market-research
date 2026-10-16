@@ -110,6 +110,18 @@ M_INDEX_CURRENT接线后，父路线比较M_INDEX_BARS、M_BASIC_BREADTH与ETF�
 
 独立ETF fixture先得到E_PRICE_1D UNKNOWN的真实RED，再经最小Registry路由映射GREEN；缺MTF执行回执时两项重新UNKNOWN。真实510300同日闭环进入完整Research Universe与FULL Report/Email，本地无发送；E_PRICE_1D/E_PRICE_5M均PARTIAL，完整报告保留ETF专属UNKNOWN。带原MTF技术证据的canonical为WAIT，而无该技术上下文的对照为PASS；数据对象映射本身没有策略升级权，canonical变化来自原MTF策略合同。未存原始ETF行情、未写业务库/训练、未发送、未证明NAV/份额/折溢价或当前2026-10-16可用性。
 
+## 2026-10-16 B5七周期→AUTO_SCREEN/SPECIFIED_CODES有界筛选消费（GitHub候选）
+
+用户指出七周期不能只在报告中展示，还必须服务ETF/个股筛选。审查既有Screening发现：便宜snapshot/daily和资产路由已存在，DSA深析也在最终短名单执行；但`apply_dsa_overlay`只消费严格Factor参考分，未消费`multi_timeframe_structure_context`，因此七周期虽然已算、已签名、已报告，却不能影响最终候选排序。归因是PROCESS_CONSUMER/LANE_RECURRENT，而非再增加指标公式或另建筛选系统。
+
+最小实现复用当前AlphaSift-derived级联和DSA post-analyzer：只有候选已完成DSA深析、`method_execution_receipt_policy=REQUIRED`、MTF observation为`METHOD_INVOCATION_VERIFIED`、candidate code一致、canonical binding和runtime trace均通过时，才把原MTF输出投射为四个职责组：月+周context、日setup、60m+30m bridge/structure、15m+5m confirmation/timing。每周期只读取原MA方向、递归准入后的MACD/RSI状态及已确认结构；不重新计算、不将相关指标或七周期当七票。总偏好限定[-6,+4]；15m/5m只有在context和daily均支持且bridge不反对时最多+0.25；canonical PASS/hard veto抑制所有正向MTF偏好，既有独立risk exclusion仍不可被抵消。
+
+独立测试先出现5项RED：没有MTF字段、排序不变、无回执/篡改未拒绝、ETF未走同一职责合同、hard veto可能被正向周期覆盖。修复后5/5 GREEN，Screening模块31/31 PASS；stage baseline新增机器可读四组、资产路由、严格回执/binding和-6/+4不变量。真实只读2026-10-15完整七周期验收：600519使用4443根日线、3216根5m并确定性聚合15m1072/30m536/60m268，context与daily setup均ADVERSE，但bridge/structure和confirmation/timing SUPPORTIVE，最终MTF delta=-3.75、canonical WAIT；510300使用430根日线、480根5m并聚合15m160/30m80/60m40，context/setup/bridge均ADVERSE且confirmation/timing也因15m不利为ADVERSE，只有5m局部SUPPORTIVE，最终触及-6下限、canonical WAIT。该样本证明低周期不能覆盖高周期和结构风险，不证明未来固定排序、胜率或全市场Production。
+
+成熟复用明确：Freqtrade式多起点递归稳定性决定指标是否可消费；LEAN式按分辨率warm-up和完成bar决定MISSING/READY；现有级联只对Top-K运行昂贵MTF。未准入的月RSI、15m/5m结构、分钟量额单位继续MISSING/UNKNOWN；ADX/Boll/KDJ/OBV/MFI/VWAP/Chan等不能为增加筛选维度而批量实现。未保存真实行情、未写History/Ledger、未训练、未发通知、未自动交易。
+
+GitHub可见性与远端门禁也在同一里程碑处理：远端公开仓库`leeningzzu/dsa-market-research`的功能分支已存在，但workflow没有feature-push触发，所以用户Actions截图只出现main定时任务。已建立PR #30使CI实际运行；首次backend-gate为6331 PASS/17 FAIL，失败全部来自`test_pipeline_notification_image_routing.py`的旧正式报告渠道预期，仍让微信/飞书/NTFY/Gotify或上下文替代Email。按HISTORICAL_CONTRACT/PROCESS_CONSUMER修正测试而非生产门禁：正式Report继续只允许Email REQUIRED和Telegram OPTIONAL，其他路由改为被过滤或不能替代Email的负例；该模块42/42、Notification+Schedule 203/203本地通过。没有删测试、xfail或改变golden来掩盖失败。
+
 ## 2026-10-16 B5→B8 七周期逐指标“完整展示”实施、验收与Role Review（原DSA本地WIP）
 
 **Parent Goal / 当前Stage：** 唯一DSA Production Shell沿Global／CN Market／Sector→ETF／Stock→7TF原生完成bar和确定性方法→相同canonical（相关性去重、Execution/Liquidity/Risk veto）→FULL Report／Email REQUIRED（TG OPTIONAL）→仅合法History/Outcome/PIT→独立校准/Shadow/显式Promotion。本节只认已检验的真实生产者输出，不以方法注册、字符串标题、125919字节V2.5原件、56格静态矩阵或产品结构图代替执行证据。

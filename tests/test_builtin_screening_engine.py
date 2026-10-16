@@ -415,6 +415,283 @@ def test_bounded_strict_native_score_receipt_keeps_one_legitimate_dsa_overlay():
     assert result.excluded_by_risk is False
 
 
+def _synthetic_strict_mtf_screening_payload(
+    *,
+    asset_type: str = "stock",
+    mode: str = "supportive",
+    hard_veto: bool = False,
+) -> dict:
+    """Build one strict synthetic MTF receipt; no provider rights or trade claim."""
+    from copy import deepcopy
+
+    from src.services.evidence_traceability_registry import build_method_execution_receipt
+    from src.services.factor_decision_summary import build_stock_factor_decision_summary
+    from tests.test_evidence_traceability_registry import (
+        _closed_typed_etf_source_factor,
+        _closed_typed_stock_source_factor,
+    )
+
+    raw_factor, _minute = (
+        _closed_typed_etf_source_factor()
+        if asset_type == "etf"
+        else _closed_typed_stock_source_factor()
+    )
+    mtf = deepcopy(raw_factor["multi_timeframe_structure_context"])
+    timeframe_modes = {
+        "supportive": {name: "BULLISH" for name in mtf["timeframes"]},
+        "adverse": {name: "BEARISH" for name in mtf["timeframes"]},
+        "low_only": {
+            "monthly": "MISSING",
+            "weekly": "MISSING",
+            "daily": "MISSING",
+            "60m": "MISSING",
+            "30m": "MISSING",
+            "15m": "BULLISH",
+            "5m": "BULLISH",
+        },
+    }
+    directions = timeframe_modes[mode]
+    mtf["status"] = "READY"
+    mtf["reason"] = "SYNTHETIC_STRICT_MTF_SCREENING_FIXTURE"
+    mtf["cross_timeframe_vote_counting"] = False
+    mtf["independent_action_authority"] = False
+    for timeframe, direction in directions.items():
+        row = mtf["timeframes"][timeframe]
+        if direction == "MISSING":
+            row.update(
+                status="MISSING",
+                reason="SYNTHETIC_TIMEFRAME_MISSING",
+                trend={"status": "MISSING"},
+                ma_structure={"status": "MISSING", "state": "UNKNOWN"},
+                macd_startup_stability={"status": "MISSING"},
+                rsi_startup_stability={"status": "MISSING"},
+                price_structure={"status": "MISSING", "reason": "NO_CONFIRMED_PIVOTS"},
+                strategy_admitted=False,
+                independent_action_authority=False,
+                learning_admitted=False,
+            )
+            continue
+        bullish = direction == "BULLISH"
+        row.update(
+            status="READY",
+            reason="SYNTHETIC_TIMEFRAME_READY",
+            trend={
+                "status": "READY",
+                "direction": direction,
+                "ma_alignment": (
+                    "MA5 > MA10 > MA20" if bullish else "MA5 < MA10 < MA20"
+                ),
+                "macd_status": "多头" if bullish else "空头",
+                "rsi_status": "中性" if bullish else "弱势",
+            },
+            ma_structure={
+                "status": "READY",
+                "state": "BULLISH_STACK" if bullish else "BEARISH_STACK",
+                "readiness": {"level": {"status": "READY"}},
+            },
+            macd_startup_stability={
+                "status": "READY",
+                "reference_macd_state": "BULLISH" if bullish else "BEARISH",
+            },
+            rsi_startup_stability={
+                "status": "READY",
+                "reference_state": "NEUTRAL" if bullish else "WEAK",
+            },
+            price_structure={
+                "status": "READY",
+                "structure_event": {
+                    "state": "UP_BREAKOUT" if bullish else "DOWN_BREAKDOWN"
+                },
+            },
+            strategy_admitted=False,
+            independent_action_authority=False,
+            learning_admitted=False,
+        )
+
+    old_receipt = raw_factor["method_execution_receipts"]["MTF"]
+    receipt = build_method_execution_receipt(
+        "MTF",
+        output=mtf,
+        asset_route="ETF" if asset_type == "etf" else "STOCK",
+        stock_code=old_receipt["stock_code"],
+        market=old_receipt["market"],
+        target_date=old_receipt["target_date"],
+        timeframe="multi",
+        input_identity=old_receipt["input_identity"],
+    )
+    kwargs = {}
+    if hard_veto:
+        kwargs = {
+            "daily_market_context": {
+                "trade_date": old_receipt["target_date"],
+                "region": "cn",
+                "market_light": {
+                    "status": "red",
+                    "data_quality": "ok",
+                    "score": 20,
+                },
+            },
+            "market_structure_context": {
+                "status": "not_supported",
+                "market": "cn",
+                "trade_date": old_receipt["target_date"],
+            },
+        }
+    factor = build_stock_factor_decision_summary(
+        None,
+        multi_timeframe_structure_context=mtf,
+        method_execution_receipts={"MTF": receipt},
+        include_canonical=True,
+        asset_type=asset_type,
+        **kwargs,
+    )
+    return {
+        "report": {
+            "summary": {
+                "sentiment_score": 99,
+                "operation_advice": "强烈买入",
+                "trend_prediction": "看多",
+            },
+            "details": {
+                "raw_result": {"dashboard": {"factor_decision": factor}},
+                "context_snapshot": {
+                    "trend_result": {"signal_score": 99, "risk_factors": []},
+                },
+            },
+        },
+    }
+
+
+def test_strict_mtf_roles_rerank_shortlist_without_seven_independent_votes() -> None:
+    from src.services.screening.dsa import _attach_deep_analysis_fields, apply_dsa_overlay
+
+    supportive = Pick(
+        rank=2, code="600519", name="SUPPORTIVE", final_score=50.0, screen_score=50.0,
+    )
+    adverse = Pick(
+        rank=1, code="600519", name="ADVERSE", final_score=50.0, screen_score=50.0,
+    )
+    for pick, payload in (
+        (supportive, _synthetic_strict_mtf_screening_payload(mode="supportive")),
+        (adverse, _synthetic_strict_mtf_screening_payload(mode="adverse")),
+    ):
+        pick.deep_analysis_status = "completed"
+        pick.deep_analysis_result = payload
+        _attach_deep_analysis_fields(pick, payload)
+
+    ranked = apply_dsa_overlay([adverse, supportive])
+    assert [pick.name for pick in ranked] == ["SUPPORTIVE", "ADVERSE"]
+    assert supportive.mtf_screening_status == "VERIFIED"
+    assert adverse.mtf_screening_status == "VERIFIED"
+    assert supportive.mtf_screening_delta == 4.0
+    assert adverse.mtf_screening_delta == -6.0
+    assert supportive.mtf_screening_groups == {
+        "context": "SUPPORTIVE",
+        "setup": "SUPPORTIVE",
+        "bridge_structure": "SUPPORTIVE",
+        "confirmation_timing": "SUPPORTIVE",
+    }
+    assert supportive.mtf_screening_timeframes["monthly"]["direction"] == "BULLISH"
+    assert supportive.mtf_screening_timeframes["5m"]["direction"] == "BULLISH"
+    assert supportive.post_analysis_score_deltas["dsa_mtf_roles"] == 4.0
+    assert supportive.post_analysis_results["dsa_mtf_roles"]["role_group_count"] == 4
+    assert supportive.post_analysis_results["dsa_mtf_roles"]["cross_timeframe_vote_counting"] is False
+    assert supportive.post_analysis_results["dsa_mtf_roles"]["independent_action_authority"] is False
+
+
+def test_low_timeframe_momentum_cannot_upgrade_without_context_and_daily_setup() -> None:
+    from src.services.screening.dsa import _attach_deep_analysis_fields, apply_dsa_overlay
+
+    payload = _synthetic_strict_mtf_screening_payload(mode="low_only")
+    pick = Pick(rank=1, code="600519", name="LOW_ONLY", final_score=50.0, screen_score=50.0)
+    pick.deep_analysis_status = "completed"
+    pick.deep_analysis_result = payload
+    _attach_deep_analysis_fields(pick, payload)
+    [result] = apply_dsa_overlay([pick])
+
+    assert result.mtf_screening_status == "VERIFIED"
+    assert result.mtf_screening_groups["confirmation_timing"] == "SUPPORTIVE"
+    assert result.mtf_screening_groups["context"] == "MISSING"
+    assert result.mtf_screening_groups["setup"] == "MISSING"
+    assert result.mtf_screening_delta == 0.0
+    assert result.final_score == 50.0
+
+
+def test_mtf_screening_projection_requires_current_receipt_and_canonical_binding() -> None:
+    from copy import deepcopy
+    from src.services.screening.dsa import _attach_deep_analysis_fields, apply_dsa_overlay
+
+    payload = _synthetic_strict_mtf_screening_payload(mode="supportive")
+    factor = payload["report"]["details"]["raw_result"]["dashboard"]["factor_decision"]
+    factor["multi_timeframe_structure_context"]["timeframes"]["weekly"]["trend"][
+        "direction"
+    ] = "BEARISH"
+    pick = Pick(rank=1, code="600519", name="TAMPERED", final_score=50.0, screen_score=50.0)
+    pick.deep_analysis_status = "completed"
+    pick.deep_analysis_result = deepcopy(payload)
+    _attach_deep_analysis_fields(pick, pick.deep_analysis_result)
+    [result] = apply_dsa_overlay([pick])
+
+    assert result.mtf_screening_status == "REJECTED"
+    assert result.mtf_screening_delta == 0.0
+    assert result.final_score == 50.0
+    assert result.mtf_screening_groups == {}
+
+    valid_payload = _synthetic_strict_mtf_screening_payload(mode="supportive")
+    wrong_candidate = Pick(
+        rank=1, code="000001", name="WRONG_CODE", final_score=50.0, screen_score=50.0,
+    )
+    wrong_candidate.deep_analysis_status = "completed"
+    wrong_candidate.deep_analysis_result = valid_payload
+    _attach_deep_analysis_fields(wrong_candidate, valid_payload)
+    [wrong_candidate] = apply_dsa_overlay([wrong_candidate])
+    assert wrong_candidate.mtf_screening_status == "REJECTED"
+    assert wrong_candidate.mtf_screening_delta == 0.0
+    assert wrong_candidate.post_analysis_results["dsa_mtf_roles"]["reason"] == (
+        "MTF_CANDIDATE_CODE_MISMATCH"
+    )
+
+
+def test_etf_uses_same_strict_mtf_role_projection_without_stock_semantics() -> None:
+    from src.services.screening.dsa import _attach_deep_analysis_fields, apply_dsa_overlay
+
+    payload = _synthetic_strict_mtf_screening_payload(
+        asset_type="etf", mode="supportive",
+    )
+    factor = payload["report"]["details"]["raw_result"]["dashboard"]["factor_decision"]
+    pick = Pick(rank=1, code="510300", name="ETF", final_score=50.0, screen_score=50.0)
+    pick.deep_analysis_status = "completed"
+    pick.deep_analysis_result = payload
+    _attach_deep_analysis_fields(pick, payload)
+    [result] = apply_dsa_overlay([pick])
+
+    assert factor["asset_type"] == "etf"
+    assert result.mtf_screening_status == "VERIFIED"
+    assert result.mtf_screening_delta == 4.0
+    assert result.final_score == 54.0
+    assert result.post_analysis_results["dsa_mtf_roles"]["asset_type"] == "etf"
+
+
+def test_positive_mtf_roles_cannot_offset_a_certified_canonical_hard_veto() -> None:
+    from src.services.screening.dsa import _attach_deep_analysis_fields, apply_dsa_overlay
+
+    payload = _synthetic_strict_mtf_screening_payload(
+        mode="supportive", hard_veto=True,
+    )
+    factor = payload["report"]["details"]["raw_result"]["dashboard"]["factor_decision"]
+    assert factor["canonical_decision"]["hard_veto"] is True
+    pick = Pick(rank=1, code="600519", name="VETO", final_score=50.0, screen_score=50.0)
+    pick.deep_analysis_status = "completed"
+    pick.deep_analysis_result = payload
+    _attach_deep_analysis_fields(pick, payload)
+    [result] = apply_dsa_overlay([pick])
+
+    assert result.mtf_screening_status == "VERIFIED"
+    assert result.mtf_screening_delta == 0.0
+    assert result.final_score == 50.0
+    assert result.post_analysis_results["dsa_mtf_roles"]["canonical_veto_suppressed_positive"] is True
+
+
 def test_existing_independent_risk_exclusion_cannot_be_offset_by_dsa_overlay():
     """No positive score may erase an already enforced hard risk exclusion."""
     from src.services.screening.dsa import _attach_deep_analysis_fields, apply_dsa_overlay

@@ -9,6 +9,10 @@ from unittest import mock
 
 from src.config import Config
 from src.notification import NotificationChannel, NotificationService
+from src.services.screening.dsa import (
+    MTF_SCREENING_DELTA_BOUNDS,
+    MTF_SCREENING_ROLE_GROUPS,
+)
 from src.services.evidence_traceability_registry import (
     ACCEPTED_DATA_OBJECT_GRAPH_SHA256,
     ACCEPTED_REQUIREMENT_ROLES,
@@ -110,6 +114,24 @@ def test_stage_baseline_preserves_formal_email_contract_and_no_auto_trade() -> N
         NotificationChannel.TELEGRAM,
     ]
     assert NotificationChannel.WECHAT not in service.get_channels_for_route("report")
+
+
+def test_stage_baseline_locks_bounded_hierarchical_mtf_screening() -> None:
+    contract = _baseline()["screening_contract"]
+    assert contract["stage"] == "BOUNDED_L3_AFTER_CHEAP_L1_L2"
+    assert contract["asset_routes"] == ["stock", "etf"]
+    assert contract["strict_mtf_receipt_required"] is True
+    assert contract["canonical_binding_required"] is True
+    assert contract["role_groups"] == list(MTF_SCREENING_ROLE_GROUPS)
+    assert [contract["delta_min"], contract["delta_max"]] == list(
+        MTF_SCREENING_DELTA_BOUNDS
+    )
+    assert contract["low_timeframe_independent_upgrade"] is False
+    assert contract["cross_timeframe_vote_counting"] is False
+    assert contract["independent_action_authority"] is False
+    assert _baseline()["regression_policy"][
+        "mtf_screening_requires_strict_receipt_and_canonical_binding"
+    ] is True
 
 
 def test_indicator_backlog_is_subordinate_to_the_multi_asset_parent_route() -> None:

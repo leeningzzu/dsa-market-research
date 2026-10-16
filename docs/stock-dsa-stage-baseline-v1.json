@@ -40,11 +40,23 @@
     "source_identity_implies_storage_or_training_rights": false,
     "future_outcome_backfills_historical_evidence": false
   },
+  "screening_contract": {
+    "stage": "BOUNDED_L3_AFTER_CHEAP_L1_L2",
+    "asset_routes": ["stock", "etf"],
+    "strict_mtf_receipt_required": true,
+    "canonical_binding_required": true,
+    "role_groups": ["context", "setup", "bridge_structure", "confirmation_timing"],
+    "delta_min": -6.0,
+    "delta_max": 4.0,
+    "low_timeframe_independent_upgrade": false,
+    "cross_timeframe_vote_counting": false,
+    "independent_action_authority": false
+  },
   "vertical_alignment": {
     "program": "合法known-at数据到白盒证据、唯一canonical、完整交付、合法Outcome/PIT、独立校准和显式Promotion",
     "product": "Global到A股市场和行业、ETF与股票、七周期全材料、风险和执行veto、FULL Report/Email",
-    "current_lane": "B5来源和确定性方法到B8唯一canonical与完整无发送报告",
-    "current_milestone": "真实七周期原生指标逐项无损展示并保留完整76项研究义务",
+    "current_lane": "M2多资产known-at与B5七周期证据进入同一筛选、canonical和B8完整报告",
+    "current_milestone": "严格MTF回执按四个层级角色组进入股票/ETF有界L3筛选，同时保留完整76项研究义务",
     "atomic_rule": "只复用现有Owner、消费者、测试和拒绝条件，不新建并行Shell或权威"
   },
   "stage_ladder": [
@@ -62,8 +74,8 @@
     },
     {
       "id": "B5_7TF_METHOD_PRODUCT",
-      "scope": "七周期完成bar、动态窗口、来源身份、原生指标、方法回执和逐项展示",
-      "exit": "现有准入方法对合法输入无损进入同一canonical和报告",
+      "scope": "七周期完成bar、动态窗口、来源身份、原生指标、方法回执、逐项展示和有界L3筛选偏好",
+      "exit": "现有准入方法对合法输入无损进入同一筛选、canonical和报告",
       "proof_ceiling": "不等于43方法全部READY或独立交易资格"
     },
     {
@@ -100,7 +112,7 @@
   ],
   "route_decision": {
     "next_primary": "M2_MULTI_ASSET_KNOWN_AT",
-    "reason": "七周期核心已进入严格产品消费者；当前最大父产品缺口是市场、行业、ETF及known-at证据，而不是继续堆叠相关技术指标",
+    "reason": "七周期核心已进入严格报告和有界股票/ETF筛选消费者；主路线继续市场、行业、ETF known-at，同时只按产品触发补技术指标",
     "bounded_indicator_sub_lanes": [
       "MONTHLY_RSI_HISTORY_IF_LEGAL",
       "15M_CONFIRMATION",
@@ -129,6 +141,7 @@
   "regression_policy": {
     "static_counts_never_prove_runtime_ready": true,
     "runtime_method_receipts_required_for_strict_current_research": true,
+    "mtf_screening_requires_strict_receipt_and_canonical_binding": true,
     "negative_tests_must_cover_missing_units_wrong_clock_stale_identity_future_backfill_and_channel_substitution": true,
     "accepted_goldens_may_not_be_changed_to_match_candidate_output": true,
     "baseline_changes_require_machine_graph_or_product_contract_delta": true
