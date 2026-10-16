@@ -2279,6 +2279,84 @@ class MainScheduleModeTestCase(unittest.TestCase):
         pipeline.notifier.generate_brief_report.assert_called_once_with([stock_result])
         pipeline.notifier.generate_aggregate_report.assert_not_called()
 
+
+    def test_merge_main_canonical_keeps_full_source_risk_and_tail_not_legacy_brief(self) -> None:
+        """Actual main merge consumer: canonical must not be replaced by a compact card."""
+        from src.enums import ReportType
+        from tests.test_notification import _make_investor_brief_result
+
+        args = self._make_args()
+        target_date = date(2026, 3, 26)
+        config = self._make_config(
+            trading_day_check_enabled=False,
+            market_review_enabled=True,
+            daily_market_context_enabled=True,
+            single_stock_notify=False,
+            merge_email_notification=True,
+            analysis_delay=0,
+            database_path=str(Path(self.temp_dir.name) / "stock_analysis.db"),
+            report_type="simple",
+        )
+        canonical_stock = _make_investor_brief_result()
+        full_report = (
+            "CANONICAL_COMPLETE_SEVEN_TIMEFRAMES\n"
+            "GLOBAL_SOURCE_UNKNOWN_UNLESS_PROVEN\n"
+            "MA_KLINE_30M_FAILED_BREAKOUT\n"
+            "INDEPENDENT_COUNTEREVIDENCE\n"
+            "VALUATION_DATA_MISSING\n"
+            "SOURCE_AVAILABLE_AT_AND_RISK_VETO\n"
+            "FINAL_TRIGGER_INVALIDATION_MUST_NOT_DISAPPEAR"
+        )
+        dispatches = []
+
+        def fake_dispatch(
+            content, *, email_send_to_all=False, route_type=None,
+            email_subject=None, asset_results=None,
+        ):
+            dispatches.append({
+                "content": content,
+                "email_send_to_all": email_send_to_all,
+                "route_type": route_type,
+                "asset_results": asset_results,
+            })
+            return True
+
+        pipeline = MagicMock()
+        pipeline.run.return_value = [canonical_stock]
+        pipeline.notifier.is_available.return_value = True
+        pipeline.notifier.generate_aggregate_report.return_value = full_report
+        pipeline.notifier.generate_brief_report.return_value = "ABRIDGED_OMITS_RISK"
+        pipeline.notifier.send = fake_dispatch
+        with (
+            patch.object(main, "_refresh_stock_index_cache_for_analysis"),
+            patch("main._compute_trading_day_filter", return_value=([], "cn", False)),
+            patch("main._resolve_daily_market_context_target_date", return_value=target_date),
+            patch("src.core.pipeline.StockAnalysisPipeline", return_value=pipeline),
+            patch("main._prime_daily_market_context", return_value=(
+                "SHORT_MARKET_DO_NOT_USE",
+                "FULL_MARKET_EVIDENCE_AND_INDEPENDENT_RISK",
+            )),
+            patch("main._run_market_review_with_shared_lock") as review,
+            patch("src.core.market_review.run_market_review"),
+        ):
+            ok = main.run_full_analysis(config, args, [])
+        self.assertTrue(ok)
+        review.assert_not_called()
+        self.assertEqual(len(dispatches), 1)
+        message = dispatches[0]["content"]
+        self.assertIn("FULL_MARKET_EVIDENCE_AND_INDEPENDENT_RISK", message)
+        self.assertIn(full_report, message)
+        self.assertIn("FINAL_TRIGGER_INVALIDATION_MUST_NOT_DISAPPEAR", message)
+        self.assertNotIn("ABRIDGED_OMITS_RISK", message)
+        self.assertNotIn("SHORT_MARKET_DO_NOT_USE", message)
+        self.assertIs(dispatches[0]["asset_results"][0], canonical_stock)
+        self.assertTrue(dispatches[0]["email_send_to_all"])
+        self.assertEqual(dispatches[0]["route_type"], "report")
+        pipeline.notifier.generate_aggregate_report.assert_called_once_with(
+            [canonical_stock], ReportType.FULL,
+        )
+        pipeline.notifier.generate_brief_report.assert_not_called()
+
     def test_run_full_analysis_projects_existing_global_market_payload_into_actual_fused_notification(self) -> None:
         args = self._make_args()
         config = self._make_config(

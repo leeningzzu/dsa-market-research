@@ -2,6 +2,16 @@
 
 本文档记录通知能力 P0-P7 终态：渠道、配置 key、GitHub Actions 映射、Web 设置元数据、CLI 诊断口径、Web 一键测试、自定义 Webhook Body 模板语义、通知路由策略、降噪机制、聚合报告失败隔离、ntfy / Gotify 一等渠道、WebPush / Apprise 评估，以及本地 / Docker / GitHub Actions / Desktop 场景化配置说明。P0 只做基线与只读诊断；P1 增加 Web 单渠道真实测试；P2 产品化现有 Body 模板；P3 增加 report / alert / system_error 路由；P4 增加进程内降噪；P5 强化测试诊断和聚合报告逐渠道失败隔离；P6-A 新增 ntfy；P6-C 新增 Gotify；P6-D 只评估 WebPush / Apprise；P7 收口文档与 Actions env 对照表自动化，不新增运行时依赖、配置入口、per-URL 模板、跨进程持久化、真实每日摘要或重试循环。
 
+## STOCK_DSA 正式研究报告：Email 必须、Telegram 可选（2026-10-15）
+
+本节只改变 `route_type="report"` 的正式研究交付合同，覆盖指定代码、批量、分组邮件和大盘报告。接受的报告仍由唯一 DSA canonical 生成完整 Markdown／HTML，不以短简报或图片替代研究事实，也不改动不可变 V2.5 HTML 原件。
+
+- **Email 是唯一必须配置并成功的正式渠道。** 既有 `EMAIL_SENDER`、`EMAIL_PASSWORD` 和可选 `EMAIL_RECEIVERS` 仍是唯一 Email 配置入口；缺少 Email 返回 `email_required`，不得因 Custom、飞书、微信、交互式会话或 Telegram 成功而记为报告已交付。邮件发送失败时，整体 `success=false`，即使 Telegram 成功。
+- **Telegram 可选，配置困难可完全不启用。** 只有既有 `TELEGRAM_BOT_TOKEN` 与 `TELEGRAM_CHAT_ID` 都配置且路由许可时才作为附加消费者；Telegram 单独失败不否决已成功的 Email，但须单独记录失败。推荐 `NOTIFICATION_REPORT_CHANNELS=email`；如需要 Telegram 才使用 `email,telegram`。
+- 飞书、微信、钉钉、Custom、Gotify 等保持历史代码和非正式告警／系统错误的合法兼容，不再作为 `report` 出口。旧 `NOTIFICATION_REPORT_CHANNELS` 即使包含其它渠道，正式研究仍仅可选择 Email 和可选 Telegram；该 Advanced 配置不能取消 Email 的必须性。
+- 批量 `StockAnalysisPipeline._send_notifications` 对报告组逐个记录邮件成败，任何收件组邮件失败均不得被另一组或 Telegram 成功掩盖。正式 Report 不由交互式上下文返回充当 Email 成功。
+- 严格当前 canonical 仍由既有 source/available_at、风险绑定、全文 SHA256 回执门禁保护；前述更新**不**证明真实 SMTP 接受、邮箱收件端 HTML 解码或 Telegram 实收。本地验收必须关闭网络并拦截真实 sender；真实发送、使用 Secret 或更改外部账户要另获授权。
+
 ## 渠道基线
 
 | 渠道 | 类型 | Minimal key | Advanced key | 说明 |

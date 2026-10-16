@@ -257,6 +257,182 @@ def test_dsa_post_analyzer_records_attempted_and_capped_statuses(monkeypatch) ->
     assert degradation == ["one failure"]
 
 
+def test_unadmitted_native_rsi_must_not_flip_dsa_deep_analysis_ranking() -> None:
+    """The real L3 overlay cannot re-import the 47/52 raw audit score."""
+    from src.services.screening.dsa import (
+        _attach_deep_analysis_fields, apply_dsa_overlay,
+    )
+    from tests.test_factor_decision_summary import _root_admission_score_pair
+
+    inputs = _root_admission_score_pair(strict=True)
+    assert [case[0].signal_score for case in inputs] == [47, 52]
+
+    def ordered(values):
+        picks = [
+            Pick(rank=i + 1, code=code, name="SYNTHETIC", final_score=50.0, screen_score=50.0)
+            for i, code in enumerate(("A", "B"))
+        ]
+        for pick, (trend, factor, public) in zip(picks, values):
+            assert factor["score_admission"]["eligible_for_ranking"] is False
+            payload = {
+                "report": {
+                    "summary": {
+                        "sentiment_score": trend.signal_score,
+                        "operation_advice": "观望",
+                        "trend_prediction": "中性",
+                    },
+                    "details": {
+                        "raw_result": public.to_dict(),
+                        "context_snapshot": {"trend_result": trend.to_dict()},
+                    },
+                }
+            }
+            pick.deep_analysis_status = "completed"
+            pick.deep_analysis_result = payload
+            _attach_deep_analysis_fields(pick, payload)
+            assert pick.deep_analysis_signal_score == trend.signal_score
+        return apply_dsa_overlay(picks)
+
+    first = ordered(inputs)
+    flipped = ordered(list(reversed(inputs)))
+    assert [p.code for p in first] == ["A", "B"]
+    assert [p.code for p in flipped] == ["A", "B"]
+    assert [p.final_score for p in first] == [50.0, 50.0]
+    assert [p.final_score for p in flipped] == [50.0, 50.0]
+
+
+def test_missing_or_forged_dsa_score_admission_cannot_buy_rank() -> None:
+    """Absent receipt or altered eligibility cannot grant L3 score authority."""
+    from copy import deepcopy
+    from src.services.screening.dsa import _attach_deep_analysis_fields, apply_dsa_overlay
+    from tests.test_factor_decision_summary import _root_admission_score_pair
+
+    trend, factor, public = _root_admission_score_pair(strict=True)[1]
+    assert trend.signal_score == 52
+    for flavor in ("missing", "forged"):
+        source = public.to_dict()
+        factor_copy = deepcopy(factor)
+        if flavor == "missing":
+            source["dashboard"]["factor_decision"] = None
+        else:
+            factor_copy["score_admission"]["eligible_for_ranking"] = True
+            source["dashboard"]["factor_decision"] = factor_copy
+
+        data = {
+            "report": {
+                "summary": {"sentiment_score": 52, "operation_advice": "观望", "trend_prediction": "中性"},
+                "details": {
+                    "raw_result": source,
+                    "context_snapshot": {"trend_result": trend.to_dict()},
+                },
+            }
+        }
+        pick = Pick(rank=1, code="SYN", name="SYNTHETIC", final_score=50.0, screen_score=50.0)
+        pick.deep_analysis_status = "completed"
+        pick.deep_analysis_result = data
+        _attach_deep_analysis_fields(pick, data)
+        [result] = apply_dsa_overlay([pick])
+        assert result.final_score == 50.0
+        assert result.rank == 1
+
+
+def _synthetic_strict_admitted_dsa_score_payload() -> tuple[dict, int]:
+    """One real DSA-native method receipt; synthetic bars, not production rights."""
+    from tests.test_evidence_traceability_registry import bars
+    from src.stock_analyzer import StockTrendAnalyzer
+    from src.services.volatility_momentum_service import build_volatility_momentum_context
+    from src.services.evidence_traceability_registry import build_method_execution_receipt
+    from src.services.factor_decision_summary import (
+        build_stock_factor_decision_summary, validate_canonical_factor_binding,
+    )
+
+    hist = bars(320)
+    target = hist["date"].iloc[-1]
+    trend = StockTrendAnalyzer().analyze(hist, "600519")
+    momentum = build_volatility_momentum_context(
+        stock_code="600519", history=hist, target_date=target,
+        market="cn", trend_result=trend,
+    )
+    assert momentum["momentum"]["macd"]["admission"]["status"] == "READY"
+    assert momentum["momentum"]["rsi"]["admission"]["status"] == "READY"
+    identity = {
+        "data_snapshot_identity": "a" * 64,
+        "provider_identity": "synthetic",
+        "adjustment_basis": "qfq",
+        "price_identity_reasons": [],
+        "stock_code": "600519",
+        "market": "cn",
+        "target_date": str(target),
+    }
+    native_receipt = build_method_execution_receipt(
+        "MOMENTUM", output=momentum, asset_route="STOCK",
+        stock_code="600519", market="cn", target_date=target,
+        timeframe="daily", input_identity=identity,
+    )
+    factor = build_stock_factor_decision_summary(
+        trend, volatility_momentum_context=momentum,
+        method_execution_receipts={"MOMENTUM": native_receipt},
+        include_canonical=True,
+    )
+    assert factor["score_admission"]["eligible_for_ranking"] is True
+    assert factor["method_execution_receipt_policy"] == "REQUIRED"
+    assert validate_canonical_factor_binding(factor)["runtime_trace_hash"]
+    score = factor["composite_score"]
+    assert type(score) is int
+    body = {
+        "report": {
+            "summary": {
+                "sentiment_score": 99,
+                "operation_advice": "强烈买入",
+                "trend_prediction": "看多",
+            },
+            "details": {
+                "raw_result": {"dashboard": {"factor_decision": factor}},
+                "context_snapshot": {
+                    "trend_result": {"signal_score": 99, "risk_factors": []},
+                },
+            },
+        },
+    }
+    return body, score
+
+
+def test_bounded_strict_native_score_receipt_keeps_one_legitimate_dsa_overlay():
+    """A valid bound Factor numeric reference stays useful; LLM prose adds no votes."""
+    from src.services.screening.dsa import _attach_deep_analysis_fields, apply_dsa_overlay
+
+    payload, score = _synthetic_strict_admitted_dsa_score_payload()
+    pick = Pick(rank=1, code="600519", name="SYNTHETIC", final_score=50., screen_score=50.)
+    pick.deep_analysis_status = "completed"
+    pick.deep_analysis_result = payload
+    _attach_deep_analysis_fields(pick, payload)
+    [result] = apply_dsa_overlay([pick])
+    assert result.final_score == round(50.0 + (score - 50) * .20, 4)
+    assert result.deep_analysis_sentiment_score == 99  # audit only
+    assert result.deep_analysis_operation_advice == "强烈买入"  # no rank bonus
+    assert result.deep_analysis_signal_score == 99  # not the qualified score
+    assert result.rank == 1
+    assert result.excluded_by_risk is False
+
+
+def test_existing_independent_risk_exclusion_cannot_be_offset_by_dsa_overlay():
+    """No positive score may erase an already enforced hard risk exclusion."""
+    from src.services.screening.dsa import _attach_deep_analysis_fields, apply_dsa_overlay
+
+    payload, score = _synthetic_strict_admitted_dsa_score_payload()
+    assert score > 50
+    pick = Pick(rank=1, code="600519", name="SYNTHETIC", final_score=22., screen_score=50.)
+    pick.deep_analysis_status = "completed"
+    pick.deep_analysis_result = payload
+    pick.excluded_by_risk = True
+    pick.risk_flags = ["INDEPENDENT_SYNTHETIC_RISK_EXCLUSION"]
+    _attach_deep_analysis_fields(pick, payload)
+    [result] = apply_dsa_overlay([pick])
+    assert result.final_score == 22.0
+    assert result.excluded_by_risk is True
+    assert result.risk_flags == ["INDEPENDENT_SYNTHETIC_RISK_EXCLUSION"]
+
+
 def test_scorecard_reranks_before_capped_dsa_analyzer(monkeypatch) -> None:
     picks = [
         Pick(

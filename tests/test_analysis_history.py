@@ -272,6 +272,26 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             self.assertEqual(row.id, saved)
             return row.id
 
+    def test_current_strict_canonical_without_vendor_storage_grant_rejects_history_and_journal(self) -> None:
+        """History must not be a shortcut around the later Ledger rights veto."""
+        result = self._build_result()
+        result.dashboard = {"factor_decision": {
+            "method_execution_receipt_policy": "REQUIRED",
+            "canonical_decision": {"action": "WAIT", "hard_veto": False},
+            "risk_notes": ["Source rights UNKNOWN"],
+            "data_rights": {"storage": "GRANTED"},  # Unverified assertion
+        }}
+        with self.assertRaisesRegex(PermissionError, "SOURCE_STORAGE_RIGHTS_NOT_ADMITTED"):
+            self.db.save_analysis_history(
+                result=result, query_id="strict-unlicensed-history",
+                report_type="full", news_content=None,
+                context_snapshot={"raw_ohlcv": "UNLICENSED_RAW_VALUES"},
+                recording_intent={"recording_intent_hash": "a" * 64},
+            )
+        with self.db.get_session() as session:
+            self.assertEqual(session.query(AnalysisHistory).count(), 0)
+            self.assertEqual(session.query(LearningRecordingRecord).count(), 0)
+
     def test_save_analysis_history_with_snapshot(self) -> None:
         """保存历史记录并写入上下文快照"""
         result = self._build_result()
