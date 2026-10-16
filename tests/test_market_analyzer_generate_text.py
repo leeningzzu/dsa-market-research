@@ -3302,6 +3302,51 @@ Index text.
 
 
 
+
+    def test_cn_daily_review_actually_routes_completed_index_source_into_payload(self):
+        """M2 must execute the existing source-only producer, not leave it test-only."""
+        from src.market_analyzer import MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value="review")
+        ma.region = "cn"
+        overview = MarketOverview(date="2026-10-14")
+        sentinel = object()
+        with (
+            patch.object(ma, "get_market_overview", return_value=overview),
+            patch.object(ma, "search_market_news", return_value=[]),
+            patch.object(ma, "_merge_persisted_market_intelligence", return_value=[]),
+            patch.object(ma, "generate_market_review", return_value="## A股复盘\n\n完整材料。"),
+            patch.object(ma, "build_market_light_snapshot", return_value={"status": "yellow", "data_quality": "partial"}),
+            patch.object(ma, "build_market_review_payload", return_value={"region": "cn"}) as build_payload,
+            patch("data_provider.baostock_fetcher.BaostockFetcher.get_cn_index_completed_close_source", return_value=sentinel) as get_source,
+        ):
+            result = ma._run_daily_review_parts()
+
+        assert result.structured_payload == {"region": "cn"}
+        get_source.assert_called_once()
+        kwargs = get_source.call_args.kwargs
+        assert kwargs["end_date"] == "2026-10-14"
+        assert kwargs["start_date"] < kwargs["end_date"]
+        assert build_payload.call_args.kwargs["cn_index_completed_close_source"] is sentinel
+
+    def test_non_cn_daily_review_never_requests_cn_completed_index_source(self):
+        from src.market_analyzer import MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value="review")
+        ma.region = "us"
+        with (
+            patch.object(ma, "get_market_overview", return_value=MarketOverview(date="2026-10-14")),
+            patch.object(ma, "search_market_news", return_value=[]),
+            patch.object(ma, "_merge_persisted_market_intelligence", return_value=[]),
+            patch.object(ma, "generate_market_review", return_value="## US review"),
+            patch.object(ma, "build_market_light_snapshot", return_value={"status": "yellow", "data_quality": "partial"}),
+            patch.object(ma, "build_market_review_payload", return_value={"region": "us"}),
+            patch("data_provider.baostock_fetcher.BaostockFetcher.get_cn_index_completed_close_source") as get_source,
+        ):
+            ma._run_daily_review_parts()
+
+        get_source.assert_not_called()
+
     def test_cn_index_completed_source_receipt_reaches_market_full_report_without_new_vote(self):
         """Actual existing Market review renderer consumes source-only PARTIAL, not index value."""
         from data_provider.baostock_fetcher import BaostockFetcher

@@ -1785,6 +1785,81 @@ def _verified_stock_base_bar_scope(factor: Mapping) -> dict[str, dict]:
     return scope
 
 
+
+def _verified_cn_market_source_scope(factor: Mapping) -> dict[str, dict]:
+    """Admit only source identity for M_INDEX_CURRENT, never the index value."""
+    if not _receipt_required(factor):
+        return {}
+    evidence = factor.get("market_sector_regime")
+    if not isinstance(evidence, Mapping):
+        return {}
+    binding = next(b for b in EVIDENCE_BINDINGS if b.requirement_id == "REGIME")
+    state, reason = method_observation(
+        binding,
+        evidence,
+        receipt=_receipt_for(factor, "REGIME"),
+        require_receipt=True,
+    )
+    if state not in {"READY", "PARTIAL"} or reason != "METHOD_INVOCATION_VERIFIED":
+        return {}
+    sources = evidence.get("source_observations")
+    observation = (
+        sources.get("M_INDEX_CURRENT") if isinstance(sources, Mapping) else None
+    )
+    if not isinstance(observation, Mapping):
+        return {}
+    upstream = evidence.get("upstream_identity")
+    daily_upstream = (
+        upstream.get("daily_market_context")
+        if isinstance(upstream, Mapping) else None
+    )
+    target = (
+        str(daily_upstream.get("trade_date") or "")
+        if isinstance(daily_upstream, Mapping) else ""
+    )
+    static_expected = {
+        "dataset_id": "M_INDEX_CURRENT",
+        "source_state": "PARTIAL",
+        "provider_identity": "BaostockFetcher",
+        "completed_through": target,
+        "source_data_rights": "UNKNOWN",
+        "volume_unit": "UNKNOWN",
+        "amount_unit": "UNKNOWN",
+        "historical_pit_eligible": False,
+        "independent_source_value_admitted": False,
+        "strategy_upgrade_authority": False,
+    }
+    if (
+        not target
+        or any(observation.get(key) != expected for key, expected in static_expected.items())
+        or observation.get("source_code") not in {"sh.000001", "sh.000300"}
+    ):
+        return {}
+    for key in ("content_sha256", "identity_hash"):
+        value = str(observation.get(key) or "")
+        if len(value) != 64 or any(char not in "0123456789abcdef" for char in value.lower()):
+            return {}
+    observed_at = str(observation.get("observed_at") or "")
+    if not observed_at or ("+" not in observed_at[10:] and not observed_at.endswith("Z")):
+        return {}
+    return {
+        "M_INDEX_CURRENT": {
+            "state": "PARTIAL",
+            "reason": "CURRENT_SOURCE_IDENTITY_VERIFIED_VALUE_NOT_ADMITTED",
+            "provider_identity": observation["provider_identity"],
+            "source_code": observation["source_code"],
+            "completed_through": observation["completed_through"],
+            "source_observed_at": observed_at,
+            "source_identity_hash": observation["identity_hash"],
+            "source_content_sha256": observation["content_sha256"],
+            "source_data_rights": "UNKNOWN",
+            "historical_pit_eligible": False,
+            "independent_source_value_admitted": False,
+            "strategy_upgrade_authority": False,
+        }
+    }
+
+
 def _compile_accepted_data_object_scope(factor: Mapping) -> list[dict]:
     """Expose accepted DATA obligations, not invented data values or strategy votes."""
     rows = [
@@ -1806,6 +1881,7 @@ def _compile_accepted_data_object_scope(factor: Mapping) -> list[dict]:
     base_source_scope = (
         _verified_stock_base_bar_scope(factor) if asset_route == "stock" else {}
     )
+    market_source_scope = _verified_cn_market_source_scope(factor)
     objects = []
     for dataset_id, domain, fact, frequency, consumer in rows:
         applicable = (
@@ -1828,6 +1904,8 @@ def _compile_accepted_data_object_scope(factor: Mapping) -> list[dict]:
         }
         if applicable and dataset_id in base_source_scope:
             row.update(base_source_scope[dataset_id])
+        if applicable and dataset_id in market_source_scope:
+            row.update(market_source_scope[dataset_id])
         objects.append(row)
     return objects
 

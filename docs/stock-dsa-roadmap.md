@@ -51,9 +51,11 @@
 
 76项义务、支持、反证、风险、触发/失效、时点和七周期逐指标明细进入同一FULL Report、Email和HTML。正式报告Email必需，Telegram可选；真实SMTP和收件客户端另验。
 
-### M2 多资产known-at（下一主线）
+### M2 多资产known-at（ACTIVE）
 
 优先接入可独立核验的A股指数/宽度、行业分类与相对强度、ETF价格/NAV/份额/折溢价/跟踪/篮子时点。它们只能确认、降级、否决或保持UNKNOWN，不能单独升级BUY。
+
+首个运行检查点已经落到现有DSA：CN MarketReview会在A股复盘中有界读取上证指数已完成日线来源，经原MarketReview→DailyMarketContext→REGIME严格方法回执→76数据对象，把 **M_INDEX_CURRENT** 从UNKNOWN推进为**仅来源身份PARTIAL**。真实2026-10-15只读回执已验证，指数值本身仍不作为独立策略投票，M_INDEX_BARS、全市场宽度、行业和ETF义务均未因此升级；历史MarketReview缓存不得重获该同进程来源准入。下一原子关口为M_INDEX_BARS或M_BASIC_BREADTH中最先能满足known-at、单位和来源身份的一项。
 
 ### L1 合法Ledger/Outcome/PIT
 
@@ -117,6 +119,6 @@ CI必须同时保护：
 5. 推送分支并建立PR；
 6. 等待ai-governance、backend-gate、docker-build等阻断检查；
 7. 记录CI结果、未证明项和Role Review；
-8. 显式merge后，才从该GitHub commit继续M2多资产known-at。
+8. 显式merge后，该commit才成为新的Production GitHub基线。
 
-任何本地WIP、ZIP、Project Source或聊天结论都不能替代第8步形成的GitHub新基线。
+M2候选实现可以在同一已推送功能分支继续，并持续以小提交同步GitHub；但未merge的分支能力只能称候选基线，不能冒充main/Production。任何本地WIP、ZIP、Project Source或聊天结论都不能替代GitHub分支、CI与最终merge形成的工程基线。

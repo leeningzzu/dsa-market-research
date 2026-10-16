@@ -92,6 +92,16 @@ Risk/Challenge Role Review: 任何来源无法证明、分钟量额单位未知�
 
 Closure: OBSERVED_OUTCOME=PASS_SCOPED_REAL_B5_SOURCE_PIT_MTF_7RECEIPTS_TO_STRICT_CANONICAL_B8_FULL_REPORT; NOT_PROVEN=data rights/PIT, Global/CN Sector/ETF全源、月RSI、分钟单位、模型、实际邮件收件及远端Git currentness。CURRENT_ROUTE_STILL_WORTH_CONTINUING=YES，INSTRUCTIONS_UPDATE_DECISION=NO；SOURCES_UPDATE_DECISION=DEFER_TILL_FULL_MULTI_ASSET_CHECKPOINT，先原仓文档与本地Git preimage/Manifest归档，避免为单原子让用户重复替换8份Source。UNIQUE_NEXT_STEP=EXISTING_DSA_BOUND_NON_STOCK_INDEPENDENT_MARKET_SECTOR_ETF_SOURCE_EVIDENCE_TO_SAME_CANONICAL_FULL_REPORT_NO_SEND; no new schema/shell/db/scheduler. 用户无需人工动作。
 
+## 2026-10-16 M2首条非股票known-at来源：M_INDEX_CURRENT（GitHub候选）
+
+父产品不再只深化单股票七周期。本轮复用既有 BaostockFetcher.get_cn_index_completed_close_source 与MarketReview，不增加供应商、数据库、调度器或第二Factor。此前该来源验证器只在显式测试/可选报告参数中存在，生产 MarketAnalyzer._run_daily_review_parts 从未调用，属于 **PROCESS_CONSUMER/LANE_RECURRENT：机器图节点存在但主消费者未执行**。
+
+当前CN MarketReview仅在A股区域有界请求 sh.000001 已完成日线窗口；失败为合法nontrigger，非CN市场不请求。原始DataFrame先由已有frame verifier核schema、完成日、provider route、内容SHA、观测时点、交易日历和固定UNKNOWN权利/单位，再仅把不含指数数值的来源观察传入 DailyMarketContext。该观察只在 source=market_review_runtime 同进程上下文继续；analysis_history重载、错误日期、伪造READY、错误hash/provider不得重新取得严格准入。
+
+Factor的现有REGIME回执仍拥有市场风险语义；M_INDEX_CURRENT仅作为其受绑定的source observation。Registry只有在REGIME METHOD_INVOCATION_VERIFIED 且目标日期/来源字段一致时，把76对象中的 M_INDEX_CURRENT 改为 PARTIAL / CURRENT_SOURCE_IDENTITY_VERIFIED_VALUE_NOT_ADMITTED。真实2026-10-15上证指数只读验证已通过：provider=BaostockFetcher、rights=UNKNOWN、historical_pit=false、strategy_upgrade_authority=false；M_INDEX_BARS 与 M_BASIC_BREADTH 继续UNKNOWN，加入来源前后canonical完全相同且仍WAIT。未保存原始指数行情、未写业务History/Ledger、未训练、未发真实通知。
+
+反例先RED后GREEN；自然回归MarketAnalyzer121/121、DailyMarketContext34/34、Factor71/71、Registry64/64。该PASS只关闭第一条A股市场**来源身份**，不代表指数7TF、全市场宽度、行业分类/RS、ETF NAV/份额/折溢价/跟踪或Global已完成。CURRENT_ROUTE_STILL_WORTH_CONTINUING=YES；下一原子选择M_INDEX_BARS或M_BASIC_BREADTH中可合法完成known-at闭环者，不回到批量堆股票技术指标。
+
 ## 2026-10-16 B5→B8 七周期逐指标“完整展示”实施、验收与Role Review（原DSA本地WIP）
 
 **Parent Goal / 当前Stage：** 唯一DSA Production Shell沿Global／CN Market／Sector→ETF／Stock→7TF原生完成bar和确定性方法→相同canonical（相关性去重、Execution/Liquidity/Risk veto）→FULL Report／Email REQUIRED（TG OPTIONAL）→仅合法History/Outcome/PIT→独立校准/Shadow/显式Promotion。本节只认已检验的真实生产者输出，不以方法注册、字符串标题、125919字节V2.5原件、56格静态矩阵或产品结构图代替执行证据。

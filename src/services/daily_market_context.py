@@ -59,6 +59,59 @@ def run_market_review(**kwargs: Any) -> Any:
     return _run_market_review(**kwargs)
 
 
+
+def _validated_runtime_cn_index_source_observation(
+    value: Any,
+    *,
+    trade_date: date,
+    source: str,
+) -> Optional[Dict[str, Any]]:
+    """Carry only a same-process, source-only M_INDEX_CURRENT receipt.
+
+    History/cache serialization does not re-prove the underlying market frame,
+    so it must not regain strict source admission.  Numeric index values are
+    deliberately absent from this receipt.
+    """
+    if source != "market_review_runtime" or not isinstance(value, Mapping):
+        return None
+    required_keys = {
+        "dataset_id", "source_code", "source_state", "provider_identity",
+        "completed_through", "observed_at", "content_sha256", "identity_hash",
+        "source_data_rights", "volume_unit", "amount_unit",
+        "historical_pit_eligible", "independent_source_value_admitted",
+        "strategy_upgrade_authority",
+    }
+    if set(value) != required_keys:
+        return None
+    expected = {
+        "dataset_id": "M_INDEX_CURRENT",
+        "source_state": "PARTIAL",
+        "provider_identity": "BaostockFetcher",
+        "completed_through": trade_date.isoformat(),
+        "source_data_rights": "UNKNOWN",
+        "volume_unit": "UNKNOWN",
+        "amount_unit": "UNKNOWN",
+        "historical_pit_eligible": False,
+        "independent_source_value_admitted": False,
+        "strategy_upgrade_authority": False,
+    }
+    if any(value.get(key) != expected_value for key, expected_value in expected.items()):
+        return None
+    if value.get("source_code") not in {"sh.000001", "sh.000300"}:
+        return None
+    for key in ("content_sha256", "identity_hash"):
+        digest = str(value.get(key) or "")
+        if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest.lower()):
+            return None
+    try:
+        observed_at = datetime.fromisoformat(str(value.get("observed_at") or ""))
+    except ValueError:
+        return None
+    if observed_at.tzinfo is None or observed_at.utcoffset() is None:
+        return None
+    return dict(value)
+
+
 @dataclass(frozen=True)
 class DailyMarketContext:
     """Low-sensitivity daily market background for stock analysis prompts."""
@@ -74,6 +127,7 @@ class DailyMarketContext:
     query_id: Optional[str] = None
     full_report: Optional[str] = None
     market_light: Optional[Dict[str, Any]] = None
+    cn_index_completed_close_source: Optional[Dict[str, Any]] = None
 
     def to_safe_dict(self) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
@@ -85,6 +139,10 @@ class DailyMarketContext:
         }
         if self.position_cap:
             payload["position_cap"] = self.position_cap
+        if self.cn_index_completed_close_source is not None:
+            payload["cn_index_completed_close_source"] = dict(
+                self.cn_index_completed_close_source
+            )
         return payload
 
 
@@ -620,6 +678,11 @@ class DailyMarketContextService:
             scoped_payload=scoped_payload,
             fallback_full_report=fallback_full_report,
         )
+        cn_index_source = _validated_runtime_cn_index_source_observation(
+            scoped_payload.get("cn_index_completed_close_source"),
+            trade_date=trade_date,
+            source=source,
+        )
         return DailyMarketContext(
             region=normalized_region,
             trade_date=trade_date,
@@ -632,6 +695,7 @@ class DailyMarketContextService:
             query_id=query_id if isinstance(query_id, str) and query_id else None,
             full_report=full_report,
             market_light=_validated_market_light_payload(scoped_payload.get("market_light")),
+            cn_index_completed_close_source=cn_index_source,
         )
 
 

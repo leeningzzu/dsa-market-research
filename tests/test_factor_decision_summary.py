@@ -777,6 +777,100 @@ def test_partial_red_and_sector_cooling_are_caution_not_hard_veto():
     assert summary["canonical_decision"]["action"] == "WAIT"
 
 
+
+def test_m2_verified_runtime_index_source_advances_only_m_index_current_to_partial() -> None:
+    from datetime import date
+    from src.services.daily_market_context import DailyMarketContext
+    from src.services.evidence_traceability_registry import compile_complete_research_universe_view
+
+    observation = {
+        "dataset_id": "M_INDEX_CURRENT",
+        "source_code": "sh.000001",
+        "source_state": "PARTIAL",
+        "provider_identity": "BaostockFetcher",
+        "completed_through": "2026-09-30",
+        "observed_at": "2026-10-01T08:00:00+00:00",
+        "content_sha256": "a" * 64,
+        "identity_hash": "b" * 64,
+        "source_data_rights": "UNKNOWN",
+        "volume_unit": "UNKNOWN",
+        "amount_unit": "UNKNOWN",
+        "historical_pit_eligible": False,
+        "independent_source_value_admitted": False,
+        "strategy_upgrade_authority": False,
+    }
+    context = DailyMarketContext(
+        region="cn",
+        trade_date=date(2026, 9, 30),
+        summary="市场震荡，等待确认。",
+        source="market_review_runtime",
+        market_light={"status": "yellow", "data_quality": "partial", "score": 45},
+        cn_index_completed_close_source=observation,
+    )
+    with_source = build_stock_factor_decision_summary(
+        _trend(signal_score=82),
+        daily_market_context=context,
+        market_structure_context={
+            "status": "not_supported", "market": "cn", "trade_date": "2026-09-30"
+        },
+        method_execution_receipts={},
+        include_canonical=True,
+    )
+    without_source = build_stock_factor_decision_summary(
+        _trend(signal_score=82),
+        daily_market_context=DailyMarketContext(
+            region="cn",
+            trade_date=date(2026, 9, 30),
+            summary="市场震荡，等待确认。",
+            source="market_review_runtime",
+            market_light={"status": "yellow", "data_quality": "partial", "score": 45},
+        ),
+        market_structure_context={
+            "status": "not_supported", "market": "cn", "trade_date": "2026-09-30"
+        },
+        method_execution_receipts={},
+        include_canonical=True,
+    )
+    assert with_source["canonical_decision"] == without_source["canonical_decision"]
+
+    objects = {
+        row["dataset_id"]: row
+        for row in compile_complete_research_universe_view(with_source)["data_objects"]
+    }
+    index_row = objects["M_INDEX_CURRENT"]
+    assert index_row["state"] == "PARTIAL"
+    assert index_row["reason"] == "CURRENT_SOURCE_IDENTITY_VERIFIED_VALUE_NOT_ADMITTED"
+    assert index_row["provider_identity"] == "BaostockFetcher"
+    assert index_row["completed_through"] == "2026-09-30"
+    assert index_row["source_data_rights"] == "UNKNOWN"
+    assert index_row["independent_source_value_admitted"] is False
+    assert index_row["strategy_upgrade_authority"] is False
+    assert objects["M_INDEX_BARS"]["state"] == "UNKNOWN"
+    assert objects["M_BASIC_BREADTH"]["state"] == "UNKNOWN"
+
+    history_context = DailyMarketContext(
+        region="cn",
+        trade_date=date(2026, 9, 30),
+        summary="历史摘要。",
+        source="analysis_history",
+        market_light={"status": "yellow", "data_quality": "partial", "score": 45},
+        cn_index_completed_close_source=observation,
+    )
+    historical = build_stock_factor_decision_summary(
+        _trend(signal_score=82),
+        daily_market_context=history_context,
+        market_structure_context={
+            "status": "not_supported", "market": "cn", "trade_date": "2026-09-30"
+        },
+        method_execution_receipts={},
+        include_canonical=True,
+    )
+    history_objects = {
+        row["dataset_id"]: row
+        for row in compile_complete_research_universe_view(historical)["data_objects"]
+    }
+    assert history_objects["M_INDEX_CURRENT"]["state"] == "UNKNOWN"
+
 def test_market_sector_regime_missing_inputs_stay_unknown_without_changing_legacy_decision():
     summary = build_stock_factor_decision_summary(_trend(signal_score=82), include_canonical=True)
     evidence = summary["market_sector_regime"]

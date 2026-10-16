@@ -610,8 +610,19 @@ def _build_market_sector_regime_evidence(
     else:
         evidence_state = "UNKNOWN"
 
+    source_observations: Dict[str, Any] = {}
+    if (
+        not isinstance(daily_market_context, dict)
+        and str(getattr(daily_market_context, "source", "") or "") == "market_review_runtime"
+    ):
+        index_source = _mapping(
+            getattr(daily_market_context, "cn_index_completed_close_source", None)
+        )
+        if index_source:
+            source_observations["M_INDEX_CURRENT"] = index_source
+
     hard_veto = market_state == "RISK_OFF" and market_evidence_state == "READY"
-    return {
+    result = {
         "family": "market_sector_regime",
         "version": _MARKET_SECTOR_REGIME_VERSION,
         "evidence_state": evidence_state,
@@ -633,6 +644,9 @@ def _build_market_sector_regime_evidence(
             "risk_tags": risk_tags,
         },
     }
+    if source_observations:
+        result["source_observations"] = source_observations
+    return result
 
 
 def _market_sector_regime_summary(evidence: Dict[str, Any]) -> str:

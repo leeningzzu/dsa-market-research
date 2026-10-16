@@ -2171,6 +2171,33 @@ Market conditions can change quickly. The data above is for reference only and d
 - 市场有风险，投资需谨慎。以上数据仅供参考，不构成投资建议。
 """
     
+
+    def _load_cn_index_completed_close_source(self, overview: MarketOverview) -> Optional[pd.DataFrame]:
+        """Bounded read-only M2 source: one completed CN index history slice.
+
+        Failure is a lawful nontrigger.  The downstream payload verifier owns
+        identity/currentness; this helper never turns the source into a regime
+        score, strategy vote, storage right, historical PIT, or model feature.
+        """
+        if self.region != "cn":
+            return None
+        try:
+            trade_date = pd.Timestamp(str(overview.date)).date()
+            start_date = (pd.Timestamp(trade_date) - pd.Timedelta(days=14)).date()
+            from data_provider.baostock_fetcher import BaostockFetcher
+            return BaostockFetcher().get_cn_index_completed_close_source(
+                "sh.000001",
+                start_date=start_date.isoformat(),
+                end_date=trade_date.isoformat(),
+            )
+        except Exception as exc:
+            logger.warning(
+                "[大盘] %s action=load_completed_index_source status=failed error=%s",
+                self._log_context(),
+                exc,
+            )
+            return None
+
     def _run_daily_review_parts(self) -> MarketLightReviewResult:
         """Run market review once and keep report/snapshot on the same overview."""
         logger.info("========== 开始大盘复盘分析 ==========")
@@ -2185,11 +2212,15 @@ Market conditions can change quickly. The data above is for reference only and d
         # 3. 生成复盘报告
         report = self.generate_market_review(overview, news)
         snapshot = self.build_market_light_snapshot(overview) if self._supports_market_light() else None
+        cn_index_completed_close_source = self._load_cn_index_completed_close_source(
+            overview
+        )
         structured_payload = self.build_market_review_payload(
             overview,
             news,
             report,
             snapshot,
+            cn_index_completed_close_source=cn_index_completed_close_source,
         )
 
         logger.info("========== 大盘复盘分析完成 ==========")
