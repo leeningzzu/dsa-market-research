@@ -1860,6 +1860,96 @@ def _verified_cn_market_source_scope(factor: Mapping) -> dict[str, dict]:
     }
 
 
+def _verified_cn_market_5m_source_scope(factor: Mapping) -> dict[str, dict]:
+    """Only a strict REGIME parent may carry a 5m source receipt forward.
+
+    Market index returns, numeric vote, warmup, storage, PIT and rights all
+    remain independent closed gates.
+    """
+    if not _receipt_required(factor):
+        return {}
+    evidence = factor.get("market_sector_regime")
+    if not isinstance(evidence, Mapping):
+        return {}
+    parent = next(b for b in EVIDENCE_BINDINGS if b.requirement_id == "REGIME")
+    state, reason = method_observation(
+        parent, evidence, receipt=_receipt_for(factor, "REGIME"),
+        require_receipt=True,
+    )
+    if state not in {"READY", "PARTIAL"} or reason != "METHOD_INVOCATION_VERIFIED":
+        return {}
+    sources = evidence.get("source_observations")
+    receipt = sources.get("M_INDEX_BARS") if isinstance(sources, Mapping) else None
+    upstream = evidence.get("upstream_identity")
+    market_context = upstream.get("daily_market_context") if isinstance(upstream, Mapping) else None
+    target = str(market_context.get("trade_date") or "") if isinstance(market_context, Mapping) else ""
+    expected = {
+        "schema_version": "cn-index-completed-5m-source-v1",
+        "dataset_id": "M_INDEX_BARS",
+        "source_state": "PARTIAL",
+        "provider_identity": "EastmoneyIndex5mAdapter",
+        "provider_route": "eastmoney.index_zh_a_hist_min_em|push2his/qt/stock/kline/get",
+        "completed_through": target,
+        "source_data_rights": "UNKNOWN",
+        "volume_unit": "UNKNOWN",
+        "amount_unit": "UNKNOWN",
+        "historical_pit_eligible": False,
+        "independent_source_value_admitted": False,
+        "native_recursive_stability_admitted": False,
+        "strategy_upgrade_authority": False,
+    }
+    if (
+        not target or not isinstance(receipt, Mapping)
+        or set(receipt) != set(expected) | {
+            "source_code", "observed_at", "content_sha256",
+            "identity_hash", "session_count", "row_count", "receipt_sha256",
+        }
+        or any(receipt.get(k) != v for k, v in expected.items())
+        or receipt.get("source_code") not in {"sh.000001", "sh.000300"}
+    ):
+        return {}
+    from data_provider.daily_data_identity import sha256_payload
+    if sha256_payload({k: v for k, v in receipt.items() if k != "receipt_sha256"}) != receipt.get("receipt_sha256"):
+        return {}
+    for key in ("content_sha256", "identity_hash"):
+        digest = str(receipt.get(key) or "")
+        if len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest.lower()):
+            return {}
+    sessions, rows = receipt.get("session_count"), receipt.get("row_count")
+    if (
+        type(sessions) is not int or type(rows) is not int or sessions < 1
+        or rows != 48 * sessions
+    ):
+        return {}
+    from datetime import datetime, date
+    from src.core.trading_calendar import resolve_latest_completed_session_fail_closed
+    try:
+        observed = datetime.fromisoformat(str(receipt.get("observed_at") or ""))
+        if observed.tzinfo is None or observed.utcoffset() is None:
+            return {}
+        if resolve_latest_completed_session_fail_closed("cn", current_time=observed) < date.fromisoformat(target):
+            return {}
+    except (TypeError, ValueError):
+        return {}
+    return {
+        "M_INDEX_BARS": {
+            "state": "PARTIAL",
+            "reason": "INDEX_5M_COMPLETED_SOURCE_VERIFIED_RECURSIVE_METHOD_NOT_ADMITTED",
+            "provider_identity": receipt["provider_identity"],
+            "source_code": receipt["source_code"],
+            "completed_through": receipt["completed_through"],
+            "source_observed_at": receipt["observed_at"],
+            "source_identity_hash": receipt["identity_hash"],
+            "source_content_sha256": receipt["content_sha256"],
+            "source_data_rights": "UNKNOWN",
+            "historical_pit_eligible": False,
+            "independent_source_value_admitted": False,
+            "native_recursive_stability_admitted": False,
+            "strategy_upgrade_authority": False,
+        },
+    }
+
+
 def _compile_accepted_data_object_scope(factor: Mapping) -> list[dict]:
     """Expose accepted DATA obligations, not invented data values or strategy votes."""
     rows = [
@@ -1901,6 +1991,7 @@ def _compile_accepted_data_object_scope(factor: Mapping) -> list[dict]:
     else:
         base_source_scope = {}
     market_source_scope = _verified_cn_market_source_scope(factor)
+    market_source_scope.update(_verified_cn_market_5m_source_scope(factor))
     objects = []
     for dataset_id, domain, fact, frequency, consumer in rows:
         applicable = (

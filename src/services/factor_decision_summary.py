@@ -620,6 +620,11 @@ def _build_market_sector_regime_evidence(
         )
         if index_source:
             source_observations["M_INDEX_CURRENT"] = index_source
+        minute_source = _mapping(
+            getattr(daily_market_context, "cn_index_completed_5m_source", None)
+        )
+        if minute_source:
+            source_observations["M_INDEX_BARS"] = minute_source
 
     hard_veto = market_state == "RISK_OFF" and market_evidence_state == "READY"
     result = {

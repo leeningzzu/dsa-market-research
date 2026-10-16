@@ -713,6 +713,29 @@ def _append_complete_research_universe_appendix(
                         f"；来源观测于{item['source_observed_at']}"
                         f"；来源身份：{item['source_identity_hash']}"
                     )
+                elif (
+                    state == "PARTIAL"
+                    and item.get("dataset_id") in {
+                        "M_INDEX_CURRENT", "M_INDEX_BARS",
+                        "E_PRICE_1D", "E_PRICE_5M",
+                    }
+                    and item.get("source_data_rights") == "UNKNOWN"
+                    and item.get("independent_source_value_admitted") is False
+                    and item.get("strategy_upgrade_authority") is False
+                    and item.get("source_observed_at")
+                    and item.get("source_identity_hash")
+                ):
+                    # Same verified 76-object trace; do not hide source-only
+                    # M2/ETF progress as UNKNOWN or promote it to indicators.
+                    state_text = (
+                        "PARTIAL／来源身份有界可追；仅来源收据不构成独立策略数值，具体指标就绪以原生回执为准"
+                        f"；原因：{item.get('reason') or 'UNKNOWN'}"
+                        f"；来源：{item.get('provider_identity') or 'UNKNOWN'}"
+                        f"；完成至：{item.get('completed_through') or 'UNKNOWN'}"
+                        f"；实际观测于：{item['source_observed_at']}"
+                        f"；来源身份：{item['source_identity_hash']}"
+                        "；数据权利、历史PIT和训练资格未证明"
+                    )
                 else:
                     state_text = (
                         "当前资产路径不适用"
