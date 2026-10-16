@@ -606,6 +606,140 @@ def _closed_typed_stock_source_factor():
     return factor, minute
 
 
+
+def _closed_typed_etf_source_factor():
+    """ETF price bars use the same typed source proof, never stock fundamentals."""
+    from datetime import datetime, date, timezone
+    from data_provider.daily_data_identity import (
+        attach_daily_data_identity, build_daily_data_identity,
+    )
+    from data_provider.intraday_data_identity import (
+        attach_intraday_data_identity, build_intraday_data_identity,
+    )
+    from tests.test_intraday_bar_service import _canonical_session_set
+    from tests.test_multi_timeframe_structure_service import _history
+    from src.services.pit_identity import build_completed_history_identity
+    from src.stock_analyzer import StockTrendAnalyzer
+
+    dates = [
+        date(2026, 9, 14), date(2026, 9, 15), date(2026, 9, 16),
+        date(2026, 9, 17), date(2026, 9, 18), date(2026, 9, 21),
+        date(2026, 9, 22), date(2026, 9, 23), date(2026, 9, 24),
+        date(2026, 9, 25),
+    ]
+    minute = _canonical_session_set(dates).copy()
+    minute.attrs.clear()
+    minute = minute.drop(columns=["intraday_data_identity_hash"])
+    minute["code"] = "510300"
+    observed = datetime(2026, 10, 2, tzinfo=timezone.utc)
+    minute_identity = build_intraday_data_identity(
+        minute,
+        provider_identity="BaostockFetcher",
+        provider_route="baostock.query_history_k_data_plus",
+        package_version="0.9.4",
+        query_identity={"code": "sh.510300", "frequency": "5", "adjustflag": "2"},
+        requested_adjustment_basis="qfq",
+        observed_adjustment_basis="qfq",
+        basis_evidence="independent_etf_fixture",
+        timeframe="5m",
+        timezone_name="Asia/Shanghai",
+        session_calendar="XSHG",
+        currency="CNY",
+        volume_unit="UNKNOWN",
+        amount_unit="UNKNOWN",
+        requested_start=dates[0].isoformat(),
+        requested_end=dates[-1].isoformat(),
+        identity_state="OBSERVED",
+        observed_at=observed,
+        source_rows_sha256="e" * 64,
+    )
+    attach_intraday_data_identity(minute, minute_identity)
+    minute["intraday_data_identity_hash"] = minute_identity["identity_hash"]
+
+    frame = _history(330)
+    frame["date"] = pd.bdate_range(end="2026-09-25", periods=len(frame))
+    frame["data_source"] = "BaostockFetcher"
+    frame["amount"] = frame["close"] * frame["volume"]
+    identity = build_daily_data_identity(
+        frame,
+        provider_identity="BaostockFetcher",
+        provider_route="baostock.query_history_k_data_plus",
+        actual_response_branch="fixture:etf;adjustflag=2",
+        requested_adjustment_basis="qfq",
+        observed_adjustment_basis="qfq",
+        basis_evidence="independent_etf_fixture",
+        requested_start="2025-01-01",
+        requested_end="2026-09-25",
+        currency="CNY",
+        volume_unit="share",
+        amount_unit="CNY",
+        identity_state="OBSERVED",
+        observed_at=observed,
+    )
+    attach_daily_data_identity(frame, identity)
+    target = dates[-1]
+    analyzer = StockTrendAnalyzer()
+    trend = analyzer.analyze(frame.copy(), "510300")
+    mtf = build_multi_timeframe_structure_context(
+        stock_code="510300", history=frame, target_date=target, market="cn",
+        trend_analyzer=analyzer, daily_trend_result=trend,
+        snapshot_observed_at=observed,
+        intraday_timeframes={"5m": minute},
+    )
+    source = build_completed_history_identity(
+        frame, stock_code="510300", market="cn",
+        target_date=target, observed_at=observed,
+    )
+    source.update(stock_code="510300", market="cn", target_date=target.isoformat())
+    receipt = reg.build_method_execution_receipt(
+        "MTF", output=mtf, asset_route="ETF", stock_code="510300",
+        market="cn", target_date=target, timeframe="multi",
+        input_identity=source,
+    )
+    factor = {
+        "asset_type": "etf",
+        "multi_timeframe_structure_context": mtf,
+        "method_execution_receipt_policy": "REQUIRED",
+        "method_execution_receipts": {"MTF": receipt},
+    }
+    return factor, minute
+
+
+def test_m2_etf_typed_1d_5m_sources_progress_only_etf_price_objects():
+    factor, minute = _closed_typed_etf_source_factor()
+    trace = reg.build_runtime_trace(factor)
+    data = {
+        row["dataset_id"]: row
+        for row in trace["complete_research_universe"]["data_objects"]
+    }
+    assert data["E_PRICE_1D"]["state"] == "PARTIAL"
+    assert data["E_PRICE_5M"]["state"] == "PARTIAL"
+    assert data["E_PRICE_1D"]["source_identity_hash"] == (
+        factor["multi_timeframe_structure_context"]["daily_data_identity_hash"]
+    )
+    assert data["E_PRICE_5M"]["source_identity_hash"] == (
+        minute.attrs["intraday_data_identity"]["identity_hash"]
+    )
+    assert data["E_PRICE_1D"]["independent_source_value_admitted"] is False
+    assert data["E_PRICE_5M"]["strategy_upgrade_authority"] is False
+    assert "UNITS_UNKNOWN" in data["E_PRICE_5M"]["reason"]
+    assert data["P_DAILY"]["state"] == "NOT_APPLICABLE"
+    assert data["P_5M"]["state"] == "NOT_APPLICABLE"
+    for dataset_id in ("E_NAV_IOPV", "E_SHARES", "E_PREMIUM", "E_TRACKING", "E_BASKET"):
+        assert data[dataset_id]["state"] == "UNKNOWN"
+
+    missing_receipt = deepcopy(factor)
+    missing_receipt["method_execution_receipts"] = {}
+    missing = {
+        row["dataset_id"]: row
+        for row in reg.build_runtime_trace(missing_receipt)[
+            "complete_research_universe"
+        ]["data_objects"]
+    }
+    assert missing["E_PRICE_1D"]["state"] == "UNKNOWN"
+    assert missing["E_PRICE_5M"]["state"] == "UNKNOWN"
+
+
 def test_accepted_p_daily_and_p_5m_real_source_receipt_progress_is_scoped_not_full_admission():
     """An executed producer can progress source coverage without granting rights/PIT/trade."""
     factor, minute = _closed_typed_stock_source_factor()

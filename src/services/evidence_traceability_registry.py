@@ -1710,8 +1710,8 @@ def compile_timeframe_family_matrix(factor: Mapping, *, observations=None, polic
 
 
 
-def _verified_stock_base_bar_scope(factor: Mapping) -> dict[str, dict]:
-    """Point-of-use source provenance via the existing strict DSA MTF receipt."""
+def _verified_typed_price_bar_scope(factor: Mapping) -> dict[str, dict]:
+    """Point-of-use 1d/5m provenance via the existing strict DSA MTF receipt."""
     if not _receipt_required(factor):
         return {}
     mtf = factor.get("multi_timeframe_structure_context")
@@ -1878,9 +1878,28 @@ def _compile_accepted_data_object_scope(factor: Mapping) -> list[dict]:
     # Asset route is a producer-owned Factor fact. A mutable investor_brief
     # presentation label must never change trace identity after construction.
     asset_route = str(factor.get("asset_type") or "stock").lower().strip()
-    base_source_scope = (
-        _verified_stock_base_bar_scope(factor) if asset_route == "stock" else {}
+    typed_price_scope = (
+        _verified_typed_price_bar_scope(factor)
+        if asset_route in {"stock", "etf"} else {}
     )
+    if asset_route == "stock":
+        base_source_scope = typed_price_scope
+    elif asset_route == "etf":
+        base_source_scope = {}
+        for source_id, target_id in (
+            ("P_DAILY", "E_PRICE_1D"),
+            ("P_5M", "E_PRICE_5M"),
+        ):
+            if source_id in typed_price_scope:
+                mapped = dict(typed_price_scope[source_id])
+                mapped["reason"] = "ETF_" + str(mapped.get("reason") or "")
+                mapped["source_data_rights"] = "UNKNOWN"
+                mapped["historical_pit_eligible"] = False
+                mapped["independent_source_value_admitted"] = False
+                mapped["strategy_upgrade_authority"] = False
+                base_source_scope[target_id] = mapped
+    else:
+        base_source_scope = {}
     market_source_scope = _verified_cn_market_source_scope(factor)
     objects = []
     for dataset_id, domain, fact, frequency, consumer in rows:

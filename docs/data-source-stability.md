@@ -102,6 +102,14 @@ Factor的现有REGIME回执仍拥有市场风险语义；M_INDEX_CURRENT仅作�
 
 反例先RED后GREEN；自然回归MarketAnalyzer121/121、DailyMarketContext34/34、Factor71/71、Registry64/64。该PASS只关闭第一条A股市场**来源身份**，不代表指数7TF、全市场宽度、行业分类/RS、ETF NAV/份额/折溢价/跟踪或Global已完成。CURRENT_ROUTE_STILL_WORTH_CONTINUING=YES；下一原子选择M_INDEX_BARS或M_BASIC_BREADTH中可合法完成known-at闭环者，不回到批量堆股票技术指标。
 
+## 2026-10-16 M2 ETF价格源：E_PRICE_1D / E_PRICE_5M（GitHub候选）
+
+M_INDEX_CURRENT接线后，父路线比较M_INDEX_BARS、M_BASIC_BREADTH与ETF价格成熟度。真实探测显示：当前BaoStock sh.000001 5m在2026-10-16完成交易日日历下返回0行，因此指数5m→7TF不能复用股票入口；当前受控venv未安装AkShare，M_BASIC_BREADTH真实源不能在不新增依赖的情况下验证。按Stop-Loss不安装、不伪造，选择既有BaoStock ETF能力。
+
+真实510300只读源冻结到供应商共同可得的2026-10-15：1d共430根；最近10个XSHG完整会话5m共480根；provider均BaostockFetcher、qfq、CNY，日线volume=share/amount=CNY，5m volume/amount仍UNKNOWN。原通用MTF来源回执不再仅映射stock的P_DAILY/P_5M；当asset_type=ETF且同一严格MTF回执验证时，Registry把同一typed source proof映射为E_PRICE_1D/E_PRICE_5M PARTIAL，并保留independent_source_value_admitted=false、strategy_upgrade_authority=false、rights/PIT未知。股票P_DAILY/P_5M及P_FIN_VINTAGE在ETF路由NOT_APPLICABLE；NAV/IOPV、份额、折溢价、价差、跟踪、篮子继续UNKNOWN。
+
+独立ETF fixture先得到E_PRICE_1D UNKNOWN的真实RED，再经最小Registry路由映射GREEN；缺MTF执行回执时两项重新UNKNOWN。真实510300同日闭环进入完整Research Universe与FULL Report/Email，本地无发送；E_PRICE_1D/E_PRICE_5M均PARTIAL，完整报告保留ETF专属UNKNOWN。带原MTF技术证据的canonical为WAIT，而无该技术上下文的对照为PASS；数据对象映射本身没有策略升级权，canonical变化来自原MTF策略合同。未存原始ETF行情、未写业务库/训练、未发送、未证明NAV/份额/折溢价或当前2026-10-16可用性。
+
 ## 2026-10-16 B5→B8 七周期逐指标“完整展示”实施、验收与Role Review（原DSA本地WIP）
 
 **Parent Goal / 当前Stage：** 唯一DSA Production Shell沿Global／CN Market／Sector→ETF／Stock→7TF原生完成bar和确定性方法→相同canonical（相关性去重、Execution/Liquidity/Risk veto）→FULL Report／Email REQUIRED（TG OPTIONAL）→仅合法History/Outcome/PIT→独立校准/Shadow/显式Promotion。本节只认已检验的真实生产者输出，不以方法注册、字符串标题、125919字节V2.5原件、56格静态矩阵或产品结构图代替执行证据。
