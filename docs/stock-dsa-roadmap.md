@@ -85,7 +85,97 @@ Role Review：Program长期DSA单一Research Shell→Product Global/CN市场/行
 
 白盒Logistic先行；仅有样本外增量才LightGBM；walk-forward、独立校准、冻结Shadow和显式Promotion分离。
 
-## 5. 当前路线选择
+## 5. 粗筛→细选运行时机器图、证据组合与权重
+
+本节是原775边接受图和Registry的**派生运行投影**，不是第二套机器图、评分器或Product权威。机器可读版本由 `compile_screening_funnel_contract()` 与 `stock-dsa-stage-baseline-v1.json` 共同锁定。
+
+```text
+L0 Source Admission
+  provider / symbol / completed_bar / known_at / available_at / units / rights
+        │  不满足即UNKNOWN或拒绝；不计分
+        ▼
+L1 Global / Market / Sector Permission
+  Global只确认/降级/失效；Market/Sector风险可veto，不独立升级BUY
+        │
+        ▼
+L2 Asset Coarse Filter（便宜、全Universe）
+  Stock: currentness + daily bar + liquidity + market + sector classification
+  ETF:   currentness + daily bar + liquidity/spread + market + peer universe
+        │  只缩小Universe，不跑全量7TF
+        ▼
+L3 Asset Fine Rank（仍为确定性排序，不是概率）
+  Stock: sector/peer RS → quality/growth → valuation → daily setup → execution
+  ETF:   peer RS → liquidity/spread → NAV/premium/tracking → shares flow → daily setup
+        │
+        ▼
+L4 Bounded Deep Analysis + 7TF Overlay
+  M/W context → D setup → 60/30 bridge/structure → 15/5 confirmation/timing
+        │  严格MTF receipt + canonical binding；只对Top-K执行
+        ▼
+L5 Correlation Dedup + Hard Veto + Canonical + FULL Report/Email
+        │
+        ▼
+Legal Outcome / PIT / OOT / Calibration / Shadow / Promotion
+```
+
+### 5.1 邮件中的八个技术证据组如何组合
+
+八组继续保留，但每组只回答一个主问题；质量成长、估值、ETF专属和Data/Risk/Liquidity/Execution不硬塞进八组，而作为独立横向Lane。
+
+动态邮件的阅读顺序固定为：canonical结论 → 市场/行业许可 → 股票质量/估值或ETF专属 → 八证据族 → 七周期职责摘要 → 相关性去重 → Data/Risk/Liquidity/Execution veto → 触发/失效 → 来源/时点/权利/缺失。顺序变化不得删除材料；V2.5静态接受原件保持字节不变。
+
+| 证据组 | 主问题 | 主要内容 | 去重规则 |
+| --- | --- | --- | --- |
+| REGIME | 当前环境是否许可 | Global、Market Regime、Breadth、Sector Phase | 绿灯只能确认，红灯可降级/否决 |
+| TREND_RS | 相对方向是否有优势 | 相对强度、MA排列、斜率、粘连/释放 | MA和RS同属trend_price，不逐指标投票 |
+| SUPPLY | 供需/量价是否确认 | 相对量、方向量、CMF、派发风险 | 与OBV/MFI等共属volume_pressure |
+| COST | 当前价格相对成本如何 | rolling cost、VWAP/AVWAP/Volume Profile | 同属price_volume_cost，只保留一份独立贡献 |
+| STRUCTURE | 已确认价格结构是什么 | pivot、breakout/retest/invalidation、Chan分型/笔/中枢、Wave Shadow | 普通pivot、Chan、Wave共属confirmed_price_swing；Chan不得冒充额外一票 |
+| MOMENTUM | 同一摆动的动量/波动怎样 | MACD、RSI、ROC、ATR、confirmed divergence、扩展oscillator | 同一摆动共属same_swing_momentum，最多一份独立贡献 |
+| PATTERN | 是否形成可执行形态 | VCP、杯柄、双底、flat/tight base、candlestick | 收缩/底部形态共属price_contraction，不能多次加分 |
+| MTF | 各周期职责是否一致 | 月周环境、日setup、60/30结构、15/5确认时点 | 不重算前七组，不作为第九票，只做层级一致性修正 |
+
+Chan仅作为窄 `ChanFeatureAdapter`：分型/笔/中枢进入STRUCTURE；背驰若基于同一摆动进入MOMENTUM相关组；买卖点只有完成bar、confirmed_at、invalidation和算法版本齐全时才可进入PATTERN/MTF。一般pivot不得改名为Chan。
+
+### 5.2 当前实际权重，而不是永久权重
+
+权重分三层：
+
+1. **Gate无权重**：Data/Risk/Liquidity/Execution和hard veto不可被平均抵消；失败直接拒绝或降级。
+2. **当前可执行的确定性权重**：只有现有严格7TF overlay已获准使用数值；context `+1.25/-2.0`，daily setup `+1.75/-2.5`，60/30 bridge-structure `+0.75/-1.0`，15/5确认仅在高/日周期支持时 `+0.25`，不利时 `-0.5`，总边界 `[-6,+4]`。
+3. **学习型权重**：质量、估值、行业、ETF专属及各技术族的最终权重，必须等合法Outcome/PIT、walk-forward和独立OOT后再由白盒Logistic估计；在此之前只使用优先级、family cap和coverage，不把启发式分数叫胜率或概率。
+
+MISSING/UNKNOWN不是0分好消息，也不是负分；它们是`zero vote + lower coverage`。同一correlation group无论有多少指标最多贡献一次。报告必须同时显示score和coverage，避免缺失数据通过归一化反而提高排名。
+
+### 5.3 是否必须先把七周期全部跑通才讨论筛选
+
+不需要等待43种方法和56格全部READY才设计粗筛/细选；但**任何被消费的周期/指标必须先有完成bar、来源身份、方法回执和readiness**。当前顺序是：
+
+- 先用便宜L0-L3缩到有限候选；
+- 只对Top-K执行7TF深析；
+- 已READY方法进入相应family，MISSING/UNKNOWN原样保留；
+- 当月RSI、15m确认、5m时点或单位未来补齐时，自动增加coverage，不改机器图或另建评分器。
+
+因此“先完成全部7TF再筛选”会浪费资源；“没验证7TF就先加权”同样错误。正确做法是**架构先定、方法逐项准入、权重后验校准**。
+
+### 5.4 数据库到指标的最简实现链
+
+```text
+Provider Adapter
+→ Standard Data Object（OpenBB式Query/Data标准化思想）
+→ content identity / known_at / available_at / rights
+→ completed-bar aggregation（LEAN式market-hours-aware consolidation）
+→ method-specific dynamic window
+→ recursive stability / lookahead negatives（Freqtrade模式）
+→ 8-family evidence + correlation dedup
+→ asset route + hard veto
+→ canonical / FULL Report / Email
+→ 仅合法Ledger/Outcome/PIT（Qlib思想延后复用）
+```
+
+当前不安装OpenBB、LEAN、Freqtrade、Qlib或CZSC作为并行运行栈；只吸收标准化、coarse/fine、warm-up、recursive/lookahead、PIT和窄Chan adapter模式。原DSA继续拥有数据、调度、Registry、canonical、Report和History权威。
+
+## 6. 当前路线选择
 
 **主路线选择M2多资产known-at，而不是先把17个延期技术方法全部开发完。**
 
@@ -107,7 +197,7 @@ Role Review：Program长期DSA单一Research Shell→Product Global/CN市场/行
 - 分钟量/额单位：来源未证明前不得消费量价方法；
 - ADX/DMI、Bollinger、KDJ、OBV/ADL、MFI、VWAP/AVWAP、Chan/Wave：只有产品消费者或独立增量触发时重入。
 
-## 6. 横向对齐
+## 7. 横向对齐
 
 - **B1**：来源和持久化权利为不可抵消veto。
 - **B5**：指标只由确定性Owner生成；LLM/Email不生成数值、价位、概率或意图。
@@ -116,7 +206,7 @@ Role Review：Program长期DSA单一Research Shell→Product Global/CN市场/行
 - **History/PIT**：未来结果只进入Outcome/label，不倒灌历史证据。
 - **Promotion**：绑定exact代码、数据、特征、策略、模型和校准器，并需显式批准。
 
-## 7. 成熟项目复用边界
+## 8. 成熟项目复用边界
 
 复用顺序保持：DSA现有能力→DSA upstream→接受的成熟Sibling→窄Donor→最薄Adapter。
 
@@ -127,7 +217,7 @@ Role Review：Program长期DSA单一Research Shell→Product Global/CN市场/行
 - CZSC：仅可作为窄ChanFeatureAdapter；普通pivot不得冒充Chan笔段/背驰。
 - AlphaEvo/LightGBM：仅在有独立样本外增量的冻结Shadow阶段。
 
-## 8. 防退化和防返工
+## 9. 防退化和防返工
 
 CI必须同时保护：
 
@@ -141,7 +231,7 @@ CI必须同时保护：
 
 失败按PRODUCT、DEV_TOOLING、AUTHORITY_CURRENTNESS、ENVIRONMENT、ADAPTER_INTERFACE、PROCESS_CONSUMER、DATA_MODEL分类；同Gate连续两次同类失败即Parent-Route Re-entry，不机械追加补丁。
 
-## 9. GitHub发布节奏
+## 10. GitHub发布节奏
 
 1. 冻结当前父提交与回滚包；
 2. 建功能分支，不直接推main；

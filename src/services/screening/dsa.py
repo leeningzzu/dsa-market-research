@@ -310,6 +310,148 @@ MTF_SCREENING_ROLE_GROUPS = (
     "context", "setup", "bridge_structure", "confirmation_timing",
 )
 MTF_SCREENING_DELTA_BOUNDS = (-6.0, 4.0)
+SCREENING_FUNNEL_STAGES = (
+    "L0_SOURCE_ADMISSION",
+    "L1_MARKET_SECTOR_PERMISSION",
+    "L2_ASSET_COARSE_FILTER",
+    "L3_ASSET_FINE_RANK",
+    "L4_BOUNDED_7TF_DEEP_OVERLAY",
+    "L5_CANONICAL_VETO_AND_FULL_REPORT",
+)
+MTF_SCREENING_ROLE_WEIGHTS = {
+    "context": {"SUPPORTIVE": 1.25, "ADVERSE": -2.0},
+    "setup": {"SUPPORTIVE": 1.75, "ADVERSE": -2.5},
+    "bridge_structure": {"SUPPORTIVE": 0.75, "ADVERSE": -1.0},
+    "confirmation_timing": {
+        "SUPPORTIVE_CONDITIONAL": 0.25,
+        "ADVERSE": -0.5,
+    },
+}
+_SCREENING_EMAIL_EVIDENCE_COMPOSITION = {
+    "REGIME": {
+        "includes": ["global_context", "market_regime", "market_breadth", "sector_phase"],
+        "positive_authority": "CONFIRM_ONLY_NOT_INDEPENDENT_BUY",
+    },
+    "TREND_RS": {
+        "includes": ["relative_strength", "ma_level_alignment", "ma_slope_compression"],
+        "max_independent_contribution_per_group": 1,
+    },
+    "SUPPLY": {
+        "includes": ["relative_volume", "directional_volume", "cmf", "distribution_risk"],
+        "max_independent_contribution_per_group": 1,
+    },
+    "COST": {
+        "includes": ["rolling_cost_reference", "vwap_avwap_volume_profile"],
+        "max_independent_contribution_per_group": 1,
+    },
+    "STRUCTURE": {
+        "includes": ["confirmed_pivot_breakout_retest", "chan_fx_bi_zs", "wave_shadow"],
+        "max_independent_contribution_per_group": 1,
+    },
+    "MOMENTUM": {
+        "includes": [
+            "macd", "rsi", "roc", "atr_volatility",
+            "confirmed_divergence", "extended_oscillators",
+        ],
+        "max_independent_contribution_per_group": 1,
+    },
+    "PATTERN": {
+        "includes": [
+            "vcp", "cup_handle", "double_bottom", "flat_base",
+            "tight_consolidation", "candlestick",
+        ],
+        "max_independent_contribution_per_group": 1,
+    },
+    "MTF": {
+        "includes": ["timeframe_role_alignment", "completed_bar_readiness", "invalidation"],
+        "recomputes_underlying_indicators": False,
+        "independent_action_authority": False,
+    },
+}
+_SCREENING_ASSET_ROUTES = {
+    "stock": {
+        "coarse_filters": [
+            "source_currentness", "completed_daily_bar", "minimum_liquidity",
+            "market_permission", "sector_classification_if_available",
+        ],
+        "fine_rank_priority": [
+            "sector_peer_relative_strength", "quality_growth", "valuation",
+            "daily_setup", "liquidity_execution",
+        ],
+        "deep_analysis": [
+            "eight_evidence_families", "seven_timeframes",
+            "risk_reward", "canonical",
+        ],
+    },
+    "etf": {
+        "coarse_filters": [
+            "source_currentness", "completed_daily_bar", "minimum_liquidity",
+            "market_permission", "peer_universe",
+        ],
+        "fine_rank_priority": [
+            "peer_relative_strength", "liquidity_spread", "nav_premium_tracking",
+            "shares_flow", "daily_setup",
+        ],
+        "deep_analysis": [
+            "eight_evidence_families", "seven_timeframes",
+            "etf_specific", "canonical",
+        ],
+    },
+}
+
+
+def compile_screening_funnel_contract() -> dict:
+    """Derived runtime/funnel view; not a second score or machine-graph authority.
+
+    The accepted graph and Registry remain authoritative.  This projection makes
+    coarse/fine ordering, active bounded weights, evidence composition and
+    correlation de-duplication machine-readable for CI and report maintenance.
+    """
+    from src.services.evidence_traceability_registry import (
+        compile_method_window_policy_view,
+    )
+
+    groups: dict[str, list[str]] = {}
+    for row in compile_method_window_policy_view()["methods"]:
+        group = str(row["correlation_group"])
+        groups.setdefault(group, []).append(str(row["method_id"]))
+    groups = {
+        key: sorted(values)
+        for key, values in sorted(groups.items())
+    }
+    return {
+        "schema_version": "screening-funnel-contract-v1",
+        "stages": list(SCREENING_FUNNEL_STAGES),
+        "weight_mode": "GATES_THEN_BOUNDED_HEURISTIC_CAPS_NOT_PROBABILITY",
+        "hard_veto_is_unweighted": True,
+        "missing_unknown_is_zero_vote": True,
+        "learned_weights": "DEFERRED_UNTIL_LEGAL_PIT_OOT",
+        "active_numeric_weights": {
+            "mtf_role_deltas": json.loads(json.dumps(MTF_SCREENING_ROLE_WEIGHTS)),
+            "mtf_delta_bounds": list(MTF_SCREENING_DELTA_BOUNDS),
+        },
+        "correlation_groups": groups,
+        "email_evidence_composition": json.loads(
+            json.dumps(_SCREENING_EMAIL_EVIDENCE_COMPOSITION)
+        ),
+        "email_section_order": [
+            "canonical_conclusion",
+            "market_sector_permission",
+            "asset_specific_quality_valuation_or_etf",
+            "eight_evidence_families",
+            "seven_timeframe_role_summary",
+            "correlation_dedup",
+            "data_risk_liquidity_execution_veto",
+            "trigger_invalidation",
+            "source_time_rights_and_missingness",
+        ],
+        "nontechnical_lanes": [
+            "QUALITY_GROWTH", "VALUATION", "ETF_SPECIFIC",
+            "DATA_RISK_LIQUIDITY_EXECUTION",
+        ],
+        "asset_routes": json.loads(json.dumps(_SCREENING_ASSET_ROUTES)),
+    }
+
 _MTF_POSITIVE_MACD = {
     "GOLDEN_CROSS_ZERO", "GOLDEN_CROSS", "BULLISH", "CROSSING_UP",
     "零轴上金叉", "金叉", "多头", "上穿零轴",
@@ -418,20 +560,22 @@ def _qualified_mtf_screening_projection(
     }
 
     delta = 0.0
-    delta += {"SUPPORTIVE": 1.25, "ADVERSE": -2.0}.get(groups["context"], 0.0)
-    delta += {"SUPPORTIVE": 1.75, "ADVERSE": -2.5}.get(groups["setup"], 0.0)
-    delta += {"SUPPORTIVE": 0.75, "ADVERSE": -1.0}.get(
+    delta += MTF_SCREENING_ROLE_WEIGHTS["context"].get(groups["context"], 0.0)
+    delta += MTF_SCREENING_ROLE_WEIGHTS["setup"].get(groups["setup"], 0.0)
+    delta += MTF_SCREENING_ROLE_WEIGHTS["bridge_structure"].get(
         groups["bridge_structure"], 0.0
     )
     if groups["confirmation_timing"] == "ADVERSE":
-        delta -= 0.5
+        delta += MTF_SCREENING_ROLE_WEIGHTS["confirmation_timing"]["ADVERSE"]
     elif (
         groups["confirmation_timing"] == "SUPPORTIVE"
         and groups["context"] == "SUPPORTIVE"
         and groups["setup"] == "SUPPORTIVE"
         and groups["bridge_structure"] != "ADVERSE"
     ):
-        delta += 0.25
+        delta += MTF_SCREENING_ROLE_WEIGHTS["confirmation_timing"][
+            "SUPPORTIVE_CONDITIONAL"
+        ]
     delta = max(
         MTF_SCREENING_DELTA_BOUNDS[0],
         min(MTF_SCREENING_DELTA_BOUNDS[1], round(delta, 4)),

@@ -52,6 +52,75 @@
     "cross_timeframe_vote_counting": false,
     "independent_action_authority": false
   },
+  "screening_funnel_contract": {
+    "schema_version": "screening-funnel-contract-v1",
+    "stages": [
+      "L0_SOURCE_ADMISSION",
+      "L1_MARKET_SECTOR_PERMISSION",
+      "L2_ASSET_COARSE_FILTER",
+      "L3_ASSET_FINE_RANK",
+      "L4_BOUNDED_7TF_DEEP_OVERLAY",
+      "L5_CANONICAL_VETO_AND_FULL_REPORT"
+    ],
+    "weight_mode": "GATES_THEN_BOUNDED_HEURISTIC_CAPS_NOT_PROBABILITY",
+    "hard_veto_is_unweighted": true,
+    "missing_unknown_is_zero_vote": true,
+    "learned_weights": "DEFERRED_UNTIL_LEGAL_PIT_OOT",
+    "active_numeric_weights": {
+      "mtf_role_deltas": {
+        "context": {"SUPPORTIVE": 1.25, "ADVERSE": -2.0},
+        "setup": {"SUPPORTIVE": 1.75, "ADVERSE": -2.5},
+        "bridge_structure": {"SUPPORTIVE": 0.75, "ADVERSE": -1.0},
+        "confirmation_timing": {
+          "SUPPORTIVE_CONDITIONAL": 0.25,
+          "ADVERSE": -0.5
+        }
+      },
+      "mtf_delta_bounds": [-6.0, 4.0]
+    },
+    "correlation_group_count": 15,
+    "email_section_order": [
+      "canonical_conclusion",
+      "market_sector_permission",
+      "asset_specific_quality_valuation_or_etf",
+      "eight_evidence_families",
+      "seven_timeframe_role_summary",
+      "correlation_dedup",
+      "data_risk_liquidity_execution_veto",
+      "trigger_invalidation",
+      "source_time_rights_and_missingness"
+    ],
+    "asset_routes": {
+      "stock": {
+        "coarse_filters": [
+          "source_currentness", "completed_daily_bar", "minimum_liquidity",
+          "market_permission", "sector_classification_if_available"
+        ],
+        "fine_rank_priority": [
+          "sector_peer_relative_strength", "quality_growth", "valuation",
+          "daily_setup", "liquidity_execution"
+        ],
+        "deep_analysis": [
+          "eight_evidence_families", "seven_timeframes",
+          "risk_reward", "canonical"
+        ]
+      },
+      "etf": {
+        "coarse_filters": [
+          "source_currentness", "completed_daily_bar", "minimum_liquidity",
+          "market_permission", "peer_universe"
+        ],
+        "fine_rank_priority": [
+          "peer_relative_strength", "liquidity_spread", "nav_premium_tracking",
+          "shares_flow", "daily_setup"
+        ],
+        "deep_analysis": [
+          "eight_evidence_families", "seven_timeframes",
+          "etf_specific", "canonical"
+        ]
+      }
+    }
+  },
   "vertical_alignment": {
     "program": "合法known-at数据到白盒证据、唯一canonical、完整交付、合法Outcome/PIT、独立校准和显式Promotion",
     "product": "Global到A股市场和行业、ETF与股票、七周期全材料、风险和执行veto、FULL Report/Email",
