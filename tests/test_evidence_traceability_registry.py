@@ -145,7 +145,9 @@ def bars(n=180):
 
 
 def native_summary(frame=None, target=None):
-    frame = bars() if frame is None else frame
+    # Positive native contract fixture must supply the largest currently
+    # executed recursive owner window; 180 completed bars now prove PARTIAL.
+    frame = bars(320) if frame is None else frame
     target = target or frame["date"].iloc[-1]
     completed = frame[frame["date"] <= target].copy()
     trend = StockTrendAnalyzer().analyze(completed, "600519")
@@ -179,7 +181,9 @@ def native_summary_with_mtf(*, intraday=False, volume_unit="UNKNOWN"):
         from tests.test_multi_timeframe_structure_service import _intraday_fixture
 
         intraday_timeframes = {
-            timeframe: _intraday_fixture(timeframe, target, volume_unit=volume_unit)
+            timeframe: _intraday_fixture(
+                timeframe, target, volume_unit=volume_unit, periods=320,
+            )
             for timeframe in ("60m", "30m", "15m", "5m")
         }
         snapshot_observed_at = (
@@ -456,6 +460,8 @@ def _minute_matrix_volume_context(*, volume_status=None, admitted_volume=False, 
             "macd_status": "BULLISH" if price_momentum else None,
             "rsi_status": "NEUTRAL" if price_momentum else None,
         },
+        "macd_startup_stability": {"status": "READY"} if price_momentum else {"status": "MISSING"},
+        "rsi_startup_stability": {"status": "READY"} if price_momentum else {"status": "MISSING"},
         "ma_structure": {"status": "READY"},
         "price_structure": {"status": "MISSING"},
         "strategy_admitted": False,
@@ -536,6 +542,120 @@ def test_complete_research_universe_view_prevents_scope_collapse_beyond_7x8():
     assert trace["complete_research_universe_hash"] == universe["universe_hash"]
 
 
+
+def _closed_typed_stock_source_factor():
+    """Original DSA price identity + ten completed XSHG sessions + real MTF receipt."""
+    from datetime import datetime, date, timezone
+    from data_provider.daily_data_identity import (
+        attach_daily_data_identity, build_daily_data_identity,
+    )
+    from tests.test_intraday_bar_service import _canonical_session_set
+    from tests.test_multi_timeframe_structure_service import _history
+    from src.services.pit_identity import build_completed_history_identity
+    from src.stock_analyzer import StockTrendAnalyzer
+
+    dates = [
+        date(2026, 9, 14), date(2026, 9, 15), date(2026, 9, 16),
+        date(2026, 9, 17), date(2026, 9, 18), date(2026, 9, 21),
+        date(2026, 9, 22), date(2026, 9, 23), date(2026, 9, 24),
+        date(2026, 9, 25),
+    ]
+    minute = _canonical_session_set(dates)
+    frame = _history(330)
+    frame["date"] = pd.bdate_range(end="2026-09-25", periods=len(frame))
+    frame["data_source"] = "BaostockFetcher"
+    frame["amount"] = frame["close"] * frame["volume"]
+    observed = datetime(2026, 10, 2, tzinfo=timezone.utc)
+    identity = build_daily_data_identity(
+        frame, provider_identity="BaostockFetcher",
+        provider_route="baostock.query_history_k_data_plus",
+        actual_response_branch="fixture:adjustflag=2",
+        requested_adjustment_basis="qfq",
+        observed_adjustment_basis="qfq",
+        basis_evidence="independent_fixture",
+        requested_start="2025-01-01", requested_end="2026-09-25",
+        currency="CNY", volume_unit="share", amount_unit="CNY",
+        identity_state="OBSERVED", observed_at=observed,
+    )
+    attach_daily_data_identity(frame, identity)
+    target = dates[-1]
+    analyzer = StockTrendAnalyzer()
+    trend = analyzer.analyze(frame.copy(), "600519")
+    mtf = build_multi_timeframe_structure_context(
+        stock_code="600519", history=frame, target_date=target, market="cn",
+        trend_analyzer=analyzer, daily_trend_result=trend,
+        snapshot_observed_at=observed,
+        intraday_timeframes={"5m": minute},
+    )
+    source = build_completed_history_identity(
+        frame, stock_code="600519", market="cn",
+        target_date=target, observed_at=observed,
+    )
+    source.update(stock_code="600519", market="cn", target_date=target.isoformat())
+    receipt = reg.build_method_execution_receipt(
+        "MTF", output=mtf, asset_route="STOCK", stock_code="600519",
+        market="cn", target_date=target, timeframe="multi",
+        input_identity=source,
+    )
+    factor = {
+        "asset_type": "stock",
+        "multi_timeframe_structure_context": mtf,
+        "method_execution_receipt_policy": "REQUIRED",
+        "method_execution_receipts": {"MTF": receipt},
+    }
+    return factor, minute
+
+
+def test_accepted_p_daily_and_p_5m_real_source_receipt_progress_is_scoped_not_full_admission():
+    """An executed producer can progress source coverage without granting rights/PIT/trade."""
+    factor, minute = _closed_typed_stock_source_factor()
+    actual = reg.build_runtime_trace(factor)
+    data = {x["dataset_id"]: x for x in actual["complete_research_universe"]["data_objects"]}
+    assert data["P_DAILY"]["state"] == "PARTIAL"
+    assert data["P_5M"]["state"] == "PARTIAL"
+    assert data["P_DAILY"]["source_identity_hash"] == factor["multi_timeframe_structure_context"]["daily_data_identity_hash"]
+    assert data["P_5M"]["source_identity_hash"] == minute.attrs["intraday_data_identity"]["identity_hash"]
+    assert data["P_DAILY"]["independent_source_value_admitted"] is False
+    assert data["P_5M"]["independent_source_value_admitted"] is False
+    assert data["P_5M"]["strategy_upgrade_authority"] is False
+    assert "UNITS" in data["P_5M"]["reason"]
+    assert data["G_VIX"]["state"] == "UNKNOWN"
+    assert data["E_NAV_IOPV"]["state"] == "NOT_APPLICABLE"
+    assert factor["multi_timeframe_structure_context"]["timeframes"]["5m"]["strategy_admitted"] is False
+
+
+def test_accepted_source_p_daily_p_5m_fail_closed_without_invocation_or_with_wrong_clock():
+    """Counterfeit state flags must not be treated as original machine-graph data facts."""
+    from copy import deepcopy
+
+    source, minute = _closed_typed_stock_source_factor()
+    unbound = deepcopy(source)
+    unbound.pop("method_execution_receipts")
+    data = {x["dataset_id"]: x for x in reg.build_runtime_trace(unbound)["complete_research_universe"]["data_objects"]}
+    assert data["P_DAILY"]["state"] == "UNKNOWN"
+    assert data["P_5M"]["state"] == "UNKNOWN"
+
+    stale_receipt = deepcopy(source)
+    stale_receipt["multi_timeframe_structure_context"]["timeframes"]["5m"]["completed_source_session_receipt"]["session_count"] = 9
+    data = {x["dataset_id"]: x for x in reg.build_runtime_trace(stale_receipt)["complete_research_universe"]["data_objects"]}
+    assert data["P_DAILY"]["state"] == "UNKNOWN"
+    assert data["P_5M"]["state"] == "UNKNOWN"
+
+    wrong_target = deepcopy(source)
+    wrong_target["multi_timeframe_structure_context"]["timeframes"]["daily"]["completed_through"] = "2026-09-24"
+    data = {x["dataset_id"]: x for x in reg.build_runtime_trace(wrong_target)["complete_research_universe"]["data_objects"]}
+    assert data["P_DAILY"]["state"] == "UNKNOWN"
+    assert data["P_5M"]["state"] == "UNKNOWN"
+
+    # Fully typed 5m data with an incomplete session is a legal negative.
+    assert len(minute) == 480
+    wrong_asset = deepcopy(source)
+    wrong_asset["asset_type"] = "etf"
+    data = {x["dataset_id"]: x for x in reg.build_runtime_trace(wrong_asset)["complete_research_universe"]["data_objects"]}
+    assert data["P_DAILY"]["state"] == "NOT_APPLICABLE"
+    assert data["P_5M"]["state"] == "NOT_APPLICABLE"
+
+
 def test_mtf_execution_populates_only_its_admitted_family_context_and_not_supply_or_cost():
     factor = native_summary_with_mtf()
     trace = factor["evidence_traceability"]
@@ -543,7 +663,12 @@ def test_mtf_execution_populates_only_its_admitted_family_context_and_not_supply
     cells = {(row["timeframe"], row["family"]): row for row in matrix["cells"]}
 
     assert cells[("weekly", "STRUCTURE")]["state"] == "READY"
-    assert cells[("weekly", "MOMENTUM")]["state"] == "PARTIAL"
+    # The 520-day source does not supply 140 native weekly MACD bars or
+    # 268 native RSI bars; weekly volume cannot stand in for momentum.
+    week = factor["multi_timeframe_structure_context"]["timeframes"]["weekly"]
+    assert week["macd_startup_stability"]["status"] == "MISSING"
+    assert week["rsi_startup_stability"]["status"] == "MISSING"
+    assert cells[("weekly", "MOMENTUM")]["state"] == "MISSING"
     assert cells[("weekly", "TREND_RS")]["state"] == "PARTIAL"
     assert cells[("weekly", "MTF")]["state"] == "READY"
     assert cells[("weekly", "SUPPLY")]["state"] == "PARTIAL"
@@ -553,6 +678,69 @@ def test_mtf_execution_populates_only_its_admitted_family_context_and_not_supply
     assert trace["method_window_policy_hash"] == reg.compile_method_window_policy_view()["view_hash"]
     assert trace["timeframe_family_matrix_hash"] == matrix["matrix_hash"]
     assert factor["strategy_eligibility"]["required_evidence"]["thirty_minute_trigger"] == "UNKNOWN"
+
+
+def test_higher_timeframes_cannot_count_only_volume_as_momentum() -> None:
+    """Weekly/monthly SUPPLY may survive while unverified RSI/MACD are missing."""
+    from src.services.evidence_traceability_registry import _mtf_method_matrix_state
+
+    for tf in ("weekly", "monthly"):
+        row = {
+            "status": "PARTIAL",
+            "trend": {
+                "status": "READY", "volume_status": "量能正常",
+                "macd_status": None, "rsi_status": None,
+            },
+            "macd_startup_stability": {"status": "MISSING"},
+            "rsi_startup_stability": {"status": "MISSING"},
+            "independent_action_authority": False,
+        }
+        data = {"multi_timeframe_structure_context": {"timeframes": {tf: row}}}
+        supply, _ = _mtf_method_matrix_state(
+            "MTF_MOMENTUM_CONTEXT", data, tf, "SUPPLY",
+        )
+        momentum, _ = _mtf_method_matrix_state(
+            "MTF_MOMENTUM_CONTEXT", data, tf, "MOMENTUM",
+        )
+        assert supply == "PARTIAL"
+        assert momentum == "MISSING"
+        row["macd_startup_stability"] = {"status": "READY"}
+        row["trend"]["macd_status"] = "多头"
+        momentum, _ = _mtf_method_matrix_state(
+            "MTF_MOMENTUM_CONTEXT", data, tf, "MOMENTUM",
+        )
+        assert momentum == "PARTIAL"
+        row["macd_startup_stability"] = {"status": "MISSING"}
+        row["trend"]["macd_status"] = None
+        row["rsi_startup_stability"] = {"status": "READY"}
+        row["trend"]["rsi_status"] = "中性"
+        momentum, _ = _mtf_method_matrix_state(
+            "MTF_MOMENTUM_CONTEXT", data, tf, "MOMENTUM",
+        )
+        assert momentum == "PARTIAL"
+        assert row["independent_action_authority"] is False
+
+
+def test_minute_rsi_raw_status_without_independent_startup_is_not_momentum():
+    """RSI has a recursive owner; a naked status must not bypass MTF."""
+    from src.services.evidence_traceability_registry import _mtf_method_matrix_state
+
+    frame = {
+        "status": "PARTIAL",
+        "admitted_methods": ["RSI"],
+        "trend": {"status": "READY", "rsi_status": "NEUTRAL"},
+        "strategy_admitted": False,
+    }
+    factor = {"multi_timeframe_structure_context": {"timeframes": {"30m": frame}}}
+    state, _ = _mtf_method_matrix_state("MTF_MOMENTUM_CONTEXT", factor, "30m", "MOMENTUM")
+    assert state == "MISSING"
+    frame["rsi_startup_stability"] = {"status": "UNKNOWN"}
+    state, _ = _mtf_method_matrix_state("MTF_MOMENTUM_CONTEXT", factor, "30m", "MOMENTUM")
+    assert state == "MISSING"
+    frame["rsi_startup_stability"] = {"status": "READY"}
+    state, _ = _mtf_method_matrix_state("MTF_MOMENTUM_CONTEXT", factor, "30m", "MOMENTUM")
+    assert state == "PARTIAL"
+    assert frame["strategy_admitted"] is False
 
 
 def test_minute_raw_macd_without_recursive_startup_receipt_cannot_enter_momentum_cell():
@@ -586,7 +774,7 @@ def test_minute_raw_macd_without_recursive_startup_receipt_cannot_enter_momentum
     assert state == "MISSING"
 
 
-def test_current_intraday_context_is_visible_without_admitting_structure_pattern_cost_or_30m_trigger():
+def test_current_intraday_context_keeps_unconfirmed_structure_and_trigger_unadmitted():
     # A valid typed volume unit is required for the existing SUPPLY PARTIAL positive.
     factor = native_summary_with_mtf(intraday=True, volume_unit="share")
     trace = factor["evidence_traceability"]
@@ -601,10 +789,42 @@ def test_current_intraday_context_is_visible_without_admitting_structure_pattern
         assert cells[(timeframe, "MOMENTUM")]["state"] == "PARTIAL"
         assert cells[(timeframe, "MTF")]["state"] == "PARTIAL"
         assert cells[(timeframe, "COST")]["state"] == "NOT_ADMITTED"
-        assert cells[(timeframe, "STRUCTURE")]["state"] == "NOT_ADMITTED"
+        assert cells[(timeframe, "STRUCTURE")]["state"] == (
+            "MISSING" if timeframe in {"60m", "30m"} else "NOT_ADMITTED"
+        )
         assert cells[(timeframe, "PATTERN")]["state"] == "NOT_ADMITTED"
         assert cells[(timeframe, "REGIME")]["state"] == "NOT_APPLICABLE"
     assert factor["strategy_eligibility"]["required_evidence"]["thirty_minute_trigger"] == "UNKNOWN"
+
+
+
+def test_30m_structure_matrix_rejects_forged_ready_without_typed_pivot_identity() -> None:
+    """A legacy display label cannot open a 30m evidence family by itself."""
+    fake = {
+        "multi_timeframe_structure_context": {
+            "timeframes": {
+                "30m": {
+                    "status": "PARTIAL",
+                    "completed_bar_only": True,
+                    "price_structure": {
+                        "status": "READY",
+                        "pivots": [{"origin_time": "2026-10-14T13:30:00+08:00",
+                                    "confirmed_at": "2026-10-14T14:30:00+08:00",
+                                    "provisional": False}],
+                    },
+                    "admitted_methods": ["MA"],
+                },
+            },
+        },
+    }
+    matrix = reg.compile_timeframe_family_matrix(fake)
+    cell = next(c for c in matrix["cells"] if
+                (c["timeframe"], c["family"]) == ("30m", "STRUCTURE"))
+    method = next(x for x in cell["method_coverage"]
+                  if x["method_id"] == "MTF_PRICE_STRUCTURE")
+    assert method["state"] == "UNKNOWN"
+    assert method["reason"] == "MTF_30M_STRUCTURE_RECEIPT_UNBOUND"
+    assert not method["independent_action_authority"]
 
 
 def test_native_intraday_unknown_volume_keeps_momentum_but_supply_missing():
@@ -701,6 +921,40 @@ def test_method_window_policy_keeps_asset_only_valuation_as_legal_nontrigger():
     assert valuation.target_timeframes == ("asset",)
     assert valuation.current_execution_timeframes == ()
     assert valuation.implementation_state == "DEFERRED_WITH_OWNER_AND_REENTRY"
+
+
+def test_score_trace_addition_preserves_independent_main_preimage_when_receipt_absent():
+    """Original accepted git function is the golden for old-format traces.
+
+    Read-only test oracle only: do not import old code into production or
+    change the accepted machine graph/manifest.
+    """
+    import ast
+    import subprocess
+
+    old_source = subprocess.check_output(
+        ["git", "show", "HEAD:src/services/evidence_traceability_registry.py"],
+        text=True, encoding="utf-8",
+    )
+    old_module = ast.parse(old_source)
+    original = next(
+        node for node in old_module.body
+        if isinstance(node, ast.FunctionDef) and node.name == "build_runtime_trace"
+    )
+    original.name = "_accepted_git_main_runtime_trace_oracle"
+    namespace = dict(reg.__dict__)
+    exec(compile(ast.fix_missing_locations(
+        ast.Module(body=[original], type_ignores=[]),
+    ), "<accepted-git-main-runtime-trace>", "exec"), namespace)
+
+    current = native_summary()
+    current.pop("score_admission", None)
+    previous = namespace["_accepted_git_main_runtime_trace_oracle"](current)
+    actual = reg.build_runtime_trace(current)
+    assert json.loads(reg.canonical_json(actual)) == json.loads(reg.canonical_json(previous))
+    assert "score_admission" not in actual
+    assert "composite_score" not in actual
+    assert actual["runtime_trace_hash"] == previous["runtime_trace_hash"]
 
 
 def test_runtime_trace_accepts_exact_json_wire_roundtrip_but_rejects_content_drift():
@@ -1140,6 +1394,24 @@ def test_learning_metric_economic_domains_reject_invalid_values():
     for positive_only_metric in (price_metric, cost_metric, ma_metric):
         assert reg._metric_value_valid(positive_only_metric, 0.0) is False
         assert reg._metric_value_valid(positive_only_metric, 1.0) is True
+
+
+def test_short_180_bar_native_momentum_keeps_roc_but_no_recursive_feature_ready():
+    """Native producer retains lawful fixed-window evidence and refuses RSI."""
+    frame = bars(180)
+    factor = native_summary(frame=frame)
+    item = factor["volatility_momentum_evidence"]["context"]
+    assert item["status"] == "PARTIAL"
+    assert item["momentum"]["roc_20_pct"] is not None
+    assert item["volatility"]["true_range_sma_20_pct"] is not None
+    assert item["momentum"]["macd"]["admission"]["status"] == "READY"
+    assert item["momentum"]["rsi"]["admission"]["status"] != "READY"
+    assert item["momentum"]["rsi"]["rsi_12"] is None
+    assert item["volatility"]["atr_wilder_admission"]["status"] == "READY"
+    assert item["independent_action_authority"] is False
+    values = reg.learning_projection(factor)["values"]
+    assert values["daily.macd_dif"]["state"] == "MISSING_OR_UNADMITTED"
+    assert values["daily.rsi12"]["state"] == "MISSING_OR_UNADMITTED"
 
 
 @pytest.mark.parametrize(

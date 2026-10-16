@@ -15,23 +15,6 @@ from src.services.screening.models import Pick
 
 logger = logging.getLogger(__name__)
 _DEFAULT_ANALYZE_PATH = "/api/v1/analysis/analyze"
-_ADVICE_SCORE_MAP = {
-    "强烈买入": 10.0,
-    "买入": 8.0,
-    "增持": 5.0,
-    "持有": 1.5,
-    "中性": 0.0,
-    "观望": -4.0,
-    "减持": -8.0,
-    "卖出": -12.0,
-    "回避": -12.0,
-}
-_TREND_SCORE_MAP = {
-    "看多": 4.0,
-    "震荡": 0.0,
-    "中性": 0.0,
-    "看空": -6.0,
-}
 
 
 def analyze_picks_with_dsa(
@@ -222,7 +205,7 @@ def apply_dsa_overlay(picks: list[Pick]) -> list[Pick]:
     rescored: list[tuple[int, Pick]] = []
     for idx, pick in enumerate(picks):
         base_score = float(pick.final_score)
-        if pick.deep_analysis_status == "completed":
+        if pick.deep_analysis_status == "completed" and not pick.excluded_by_risk:
             base_score += _compute_dsa_overlay_score(pick)
         pick.final_score = round(base_score, 4)
         rescored.append((idx, pick))
@@ -245,24 +228,53 @@ def _attach_deep_analysis_fields(pick: Pick, result: dict) -> None:
     pick.deep_analysis_risk_flags = _extract_risk_flags(trend)
 
 
-def _compute_dsa_overlay_score(pick: Pick) -> float:
-    score = 0.0
+def _qualified_dsa_overlay_reference_score(result: dict | None) -> int | None:
+    """Use the exact existing Factor score identity, not the raw API score.
 
-    if pick.deep_analysis_signal_score is not None:
-        score += (pick.deep_analysis_signal_score - 50) * 0.20
-    if pick.deep_analysis_sentiment_score is not None:
-        score += (pick.deep_analysis_sentiment_score - 50) * 0.12
+    A public report containing only a legacy score or explanation is not
+    positive evidence of method execution or permission to reorder picks.
+    """
+    if not isinstance(result, dict):
+        return None
+    report = result.get("report")
+    details = report.get("details") if isinstance(report, dict) else None
+    raw = details.get("raw_result") if isinstance(details, dict) else None
+    dashboard = raw.get("dashboard") if isinstance(raw, dict) else None
+    factor = dashboard.get("factor_decision") if isinstance(dashboard, dict) else None
+    if not isinstance(factor, dict):
+        return None
+    if factor.get("method_execution_receipt_policy") != "REQUIRED":
+        return None
+    admission = factor.get("score_admission")
+    if not isinstance(admission, dict) or admission.get("eligible_for_ranking") is not True:
+        return None
+    if admission.get("producer_scheme") != "StockTrendAnalyzer.signal_score/legacy":
+        return None
+    decision = factor.get("canonical_decision")
+    if isinstance(decision, dict) and decision.get("hard_veto") is True:
+        return None  # A certified veto cannot be offset by a positive score.
+    score = factor.get("composite_score")
+    if type(score) is not int or not 0 <= score <= 100:
+        return None
+    if admission.get("raw_reference_score_audit") != score:
+        return None
+    from src.services.factor_decision_summary import validate_canonical_factor_binding
 
-    advice = pick.deep_analysis_operation_advice.strip()
-    score += _ADVICE_SCORE_MAP.get(advice, 0.0)
-
-    trend = pick.deep_analysis_trend_prediction.strip()
-    score += _TREND_SCORE_MAP.get(trend, 0.0)
-
-    if pick.deep_analysis_risk_flags:
-        score -= min(len(pick.deep_analysis_risk_flags) * 2.0, 6.0)
-
+    try:
+        validate_canonical_factor_binding(factor)
+    except (ValueError, TypeError):
+        return None
     return score
+
+
+def _compute_dsa_overlay_score(pick: Pick) -> float:
+    """Only admitted Factor numeric reference contributes to L3 rank.
+
+    Raw trend/sentiment, LLM advice and native risk text stay in audit;
+    independent hard risk and portfolio veto owners stay separate.
+    """
+    qualified = _qualified_dsa_overlay_reference_score(pick.deep_analysis_result)
+    return (qualified - 50) * 0.20 if qualified is not None else 0.0
 
 
 def _extract_report_summary(result: dict) -> dict:

@@ -11,6 +11,7 @@
 """
 
 import logging
+from math import isfinite
 import re
 import time
 from dataclasses import dataclass, field
@@ -87,6 +88,28 @@ def _classify_market_index_role(index: Any) -> str:
     if any(marker in name for marker in _RISK_PRESSURE_NAME_MARKERS):
         return "risk_pressure"
     return "equity_index"
+
+
+def _has_equity_index_spot_level(index: Any) -> bool:
+    """A zero-filled quote is not an observed equity-index price."""
+    if _classify_market_index_role(index) != "equity_index":
+        return False
+    try:
+        level = float(getattr(index, "current", None))
+    except (TypeError, ValueError):
+        return False
+    return isfinite(level) and level > 0
+
+
+def _eligible_equity_index_change(index: Any) -> Optional[float]:
+    """Retain a legitimate flat 0% move, reject absent price/sentinel percent."""
+    if not _has_equity_index_spot_level(index):
+        return None
+    try:
+        change = float(getattr(index, "change_pct", None))
+    except (TypeError, ValueError):
+        return None
+    return change if isfinite(change) else None
 
 
 def _split_market_indices(indices: List[Any]) -> tuple[List[Any], List[Any]]:
@@ -821,7 +844,10 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             ("growth", "成长", ("创业板指",)),
             ("technology_innovation", "科技创新", ("科创50",)),
         )
-        by_name = {str(index.name or "").strip(): index for index in overview.indices}
+        by_name = {
+            str(index.name or "").strip(): index
+            for index in overview.indices if _has_equity_index_spot_level(index)
+        }
         roles: Dict[str, Dict[str, Any]] = {}
         for key, label, names in role_specs:
             observed = [by_name[name] for name in names if name in by_name]
@@ -853,7 +879,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             }
 
         return {
-            "status": "READY" if overview.indices else "MISSING",
+            "status": "READY" if by_name else "MISSING",
             "roles": roles,
             "large_cap_role": combine_role(("large_core", "large_value"), "大盘权重"),
             "small_cap_role": combine_role(("mid_cap", "small_cap"), "中小盘"),
@@ -940,6 +966,8 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         news: List,
         report: str,
         market_light_snapshot: Optional[Dict[str, Any]] = None,
+        *,
+        cn_index_completed_close_source: Optional[pd.DataFrame] = None,
     ) -> Dict[str, Any]:
         """Build the structured market-review contract consumed by API, Web, and notifications."""
         language = self._get_output_language()
@@ -996,6 +1024,37 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             "sections": sections,
             "markdown_report": report,
         }
+
+        if cn_index_completed_close_source is not None:
+            # Explicit in-memory research consumer only. Ordinary Market
+            # Review does not refetch providers or reinterpret spot quotes.
+            if self.region != "cn":
+                raise ValueError("INDEX_SOURCE_REGION_MISMATCH")
+            from data_provider.baostock_fetcher import (
+                verify_cn_index_completed_close_source_frame,
+            )
+            observation = verify_cn_index_completed_close_source_frame(
+                cn_index_completed_close_source,
+                trade_date=str(overview.date),
+            )
+            tick = chr(96)
+            source_block = (
+                "### 指数完成收盘来源（仅来源级研究，非数值准入）\n"
+                f"- {tick}M_INDEX_CURRENT{tick} / {tick}{observation['source_code']}{tick}: "
+                f"{tick}PARTIAL{tick}，完成日 {tick}{observation['completed_through']}{tick}，"
+                f"观测于 {tick}{observation['observed_at']}{tick}。\n"
+                f"- 来源 {tick}{observation['provider_identity']}{tick}；"
+                f"内容 SHA256 {tick}{observation['content_sha256']}{tick}；"
+                f"身份 {tick}{observation['identity_hash']}{tick}。\n"
+                "- 证券来源未准入为策略数值：权利、量额单位、"
+                "历史发布和修订版本、历史PIT均为 UNKNOWN；"
+                "不改变 Market Light、独立投票、canonical 或模型概率。"
+            )
+            # Preserve entire report, including risks and counterevidence.
+            augmented_report = report.rstrip() + "\n\n" + source_block
+            payload["markdown_report"] = augmented_report
+            payload["sections"] = self._split_report_sections(augmented_report)
+            payload["cn_index_completed_close_source"] = observation
 
         if light is not None:
             payload["market_light"] = light
@@ -1275,7 +1334,10 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             else:
                 reasons.append(f"上涨家数占比 {up_ratio:.0%}，市场分化")
         equity_indices, risk_pressure_indices = _split_market_indices(overview.indices)
-        index_changes = [idx.change_pct for idx in equity_indices if idx.change_pct is not None]
+        index_changes = [
+            change for idx in equity_indices
+            if (change := _eligible_equity_index_change(idx)) is not None
+        ]
         if index_changes:
             avg_change = sum(index_changes) / len(index_changes)
             reasons.append(f"权益指数平均涨跌幅 {avg_change:+.2f}%")
@@ -1313,7 +1375,10 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             else:
                 reasons.append(f"advancers ratio {up_ratio:.0%}, breadth is mixed")
         equity_indices, risk_pressure_indices = _split_market_indices(overview.indices)
-        index_changes = [idx.change_pct for idx in equity_indices if idx.change_pct is not None]
+        index_changes = [
+            change for idx in equity_indices
+            if (change := _eligible_equity_index_change(idx)) is not None
+        ]
         if index_changes:
             avg_change = sum(index_changes) / len(index_changes)
             reasons.append(f"average equity-index change {avg_change:+.2f}%")
@@ -1513,9 +1578,8 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 
         equity_indices, _ = _split_market_indices(overview.indices)
         index_changes = [
-            idx.change_pct
-            for idx in equity_indices
-            if idx.change_pct is not None
+            change for idx in equity_indices
+            if (change := _eligible_equity_index_change(idx)) is not None
         ]
         index_available = bool(index_changes)
         index_score = 50

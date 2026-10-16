@@ -13,6 +13,7 @@ A股自选股智能分析系统 - 核心分析流水线
 
 import json
 import logging
+import math
 import inspect
 import threading
 import time
@@ -40,7 +41,10 @@ from src.analyzer import (
     stabilize_decision_with_structure,
 )
 from src.notification import NotificationService, NotificationChannel
-from src.schemas.decision_action import normalize_decision_action
+from src.schemas.decision_action import (
+    has_canonical_action_authority_for_result,
+    normalize_decision_action,
+)
 from src.report_language import (
     get_placeholder_text,
     get_unknown_text,
@@ -95,6 +99,8 @@ from src.services.volatility_momentum_service import build_volatility_momentum_c
 from src.services.volatility_momentum_service import (
     READY_OBSERVATIONS as MOMENTUM_READY_OBSERVATIONS,
     WILDER_ATR_PERIOD,
+    rsi_startup_comparison_required_bars,
+    atr_startup_comparison_required_bars,
 )
 from src.services.pattern_trigger_service import build_pattern_trigger_context
 from src.services.pattern_trigger_service import (
@@ -176,7 +182,7 @@ logger = logging.getLogger(__name__)
 # currently admitted timeframes.  No replacement calendar-day magic number is
 # allowed: the exchange calendar maps D/W/M bar requirements to one exact
 # completed-daily start session.
-DAILY_WINDOW_PLAN_VERSION = "method-owner-timeframe-daily-history-v1"
+DAILY_WINDOW_PLAN_VERSION = "method-owner-timeframe-recursive-calendar-v2"
 _DAILY_SOURCE_TIMEFRAMES = ("daily", "weekly", "monthly")
 
 
@@ -197,12 +203,12 @@ def _current_method_required_bars() -> Dict[str, Any]:
         "COST_ROLLING_REFERENCE": max(COST_REFERENCE_WINDOWS),
         "PRICE_PIVOT_SWING": PRICE_STRUCTURE_MIN_OBSERVATIONS,
         "BREAKOUT_RETEST_FAILED": PRICE_STRUCTURE_MIN_OBSERVATIONS,
-        "MACD": StockTrendAnalyzer.MACD_SLOW + StockTrendAnalyzer.MACD_SIGNAL,
-        "RSI": StockTrendAnalyzer.RSI_LONG,
+        "MACD": macd_startup_comparison_required_bars(),
+        "RSI": rsi_startup_comparison_required_bars(),
         "ROC": MOMENTUM_READY_OBSERVATIONS,
         "VOLATILITY_TR_SMA": MOMENTUM_READY_OBSERVATIONS,
         "CONFIRMED_DIVERGENCE": MOMENTUM_READY_OBSERVATIONS,
-        "ATR_WILDER": WILDER_ATR_PERIOD + 1,
+        "ATR_WILDER": atr_startup_comparison_required_bars(),
         "CUP_HANDLE": PRIOR_TREND_WINDOW + CUP_MAX_DURATION_SESSIONS,
         "DOUBLE_BOTTOM": PRIOR_TREND_WINDOW + DOUBLE_BOTTOM_MAX_SEPARATION_SESSIONS,
         "VCP": PATTERN_MIN_OBSERVATIONS,
@@ -273,31 +279,229 @@ def _current_daily_window_plan(
             "DAILY_WINDOW_REQUIREMENT_MISSING:" + ",".join(sorted(set(unresolved)))
         )
 
-    timeframe_required_bars = {
+    source_only_timeframe_required_bars = {
         timeframe: max(values.values(), default=0)
         for timeframe, values in method_required_bars.items()
     }
+    # Preserve the legal MA/structure baseline even when a native recursive
+    # MACD/RSI comparison needs more completed W/M bars. These are SOURCE
+    # acquisition targets, not algorithm readiness, PIT or trading authority.
+    timeframe_required_bars = dict(source_only_timeframe_required_bars)
     calendar_plan = resolve_required_daily_history_start_fail_closed(
-        market,
-        target_date,
-        timeframe_required_bars,
+        market, target_date, timeframe_required_bars,
     )
     if calendar_plan is None:
         raise RuntimeError("DAILY_HISTORY_CALENDAR_PLAN_UNAVAILABLE")
+
+    mtf_recursive_comparison_required_bars: Dict[str, int] = {}
+    mtf_recursive_calendar_status: Dict[str, Dict[str, str]] = {}
+    routed_higher_timeframes = tuple(
+        timeframe for timeframe in ("weekly", "monthly")
+        if "MTF_MOMENTUM_CONTEXT" in method_required_bars[timeframe]
+    )
+    if routed_higher_timeframes:
+        mtf_recursive_comparison_required_bars = {
+            "MACD_STARTUP_COMPARISON": macd_startup_comparison_required_bars(),
+            "RSI_STARTUP_COMPARISON": rsi_startup_comparison_required_bars(),
+        }
+        # Attempt longer native RSI then MACD. The installed exchange
+        # calendar may not reach 268 completed months; that must not erase
+        # a reachable 140-month MACD, 40-month MA or source-only evidence.
+        for timeframe in routed_higher_timeframes:
+            status_by_component: Dict[str, str] = {}
+            for component, required in sorted(
+                mtf_recursive_comparison_required_bars.items(),
+                key=lambda item: (-item[1], item[0]),
+            ):
+                candidate_required = max(timeframe_required_bars[timeframe], required)
+                if candidate_required == timeframe_required_bars[timeframe]:
+                    status_by_component[component] = "ACQUISITION_PLANNED"
+                    continue
+                tentative = dict(timeframe_required_bars)
+                tentative[timeframe] = candidate_required
+                planned = resolve_required_daily_history_start_fail_closed(
+                    market, target_date, tentative,
+                )
+                if planned is None:
+                    status_by_component[component] = "CALENDAR_HISTORY_OUT_OF_RANGE"
+                    continue
+                timeframe_required_bars = tentative
+                calendar_plan = planned
+                status_by_component[component] = "ACQUISITION_PLANNED"
+            mtf_recursive_calendar_status[timeframe] = status_by_component
 
     identity = {
         "version": DAILY_WINDOW_PLAN_VERSION,
         "market": str(market or "").strip().lower() or None,
         "target_date": target_date.isoformat(),
         "timeframe_required_bars": timeframe_required_bars,
+        "source_only_timeframe_required_bars": source_only_timeframe_required_bars,
         "method_required_bars": method_required_bars,
         "method_window_classes": method_window_classes,
+        "mtf_recursive_comparison_required_bars": mtf_recursive_comparison_required_bars,
+        "mtf_recursive_calendar_status": mtf_recursive_calendar_status,
     }
     return {
         **calendar_plan,
         **identity,
         "plan_hash": sha256_payload(identity),
     }
+
+def _next_bounded_monthly_macd_window(
+    *,
+    base_plan: Mapping[str, Any],
+    target_date: date,
+    receipt: Mapping[str, Any],
+    attempted_monthly_bars: Tuple[int, ...],
+) -> Dict[str, Any]:
+    """Advise a bounded read-only extension after an actual native MACD drift.
+
+    A minimum recursive warm-up is not a convergence claim. Only an exact
+    native multi-start comparison showing drift requests more completed
+    months, in steps derived from the existing MACD owner formula. This
+    function NEVER fetches, persists, labels, trades or upgrades evidence.
+    The caller separately owns provider rights, source-identity checks and
+    actual fresh execution at the proposed date.
+    """
+    base: Dict[str, Any] = {
+        "status": "NO_EXTENSION",
+        "reason": "PROOF_NOT_ADMITTED",
+        "storage_admitted": False,
+        "strategy_admitted": False,
+        "training_admitted": False,
+        "numerical_convergence_proven": False,
+        "external_fetch_performed": False,
+    }
+
+    def reject(reason: str) -> Dict[str, Any]:
+        return {**base, "reason": reason}
+
+    if (
+        not isinstance(base_plan, Mapping)
+        or not isinstance(target_date, date)
+        or isinstance(target_date, datetime)
+        or base_plan.get("market") != "cn"
+        or base_plan.get("target_date") != target_date.isoformat()
+    ):
+        return reject("PLAN_CURRENTNESS_UNPROVEN")
+    method_rows = base_plan.get("method_required_bars")
+    monthly = method_rows.get("monthly") if isinstance(method_rows, Mapping) else None
+    if not isinstance(monthly, Mapping) or "MTF_MOMENTUM_CONTEXT" not in monthly:
+        return reject("MONTHLY_MTF_METHOD_NOT_ROUTED")
+    calendar_status = base_plan.get("mtf_recursive_calendar_status")
+    states = calendar_status.get("monthly") if isinstance(calendar_status, Mapping) else None
+    if not isinstance(states, Mapping) or states.get("MACD_STARTUP_COMPARISON") != "ACQUISITION_PLANNED":
+        return reject("NATIVE_RECURSIVE_STARTUP_NOT_AVAILABLE")
+    if not isinstance(attempted_monthly_bars, (tuple, list)) or not attempted_monthly_bars:
+        return reject("ATTEMPT_IDENTITY_MISSING")
+    attempts = tuple(attempted_monthly_bars)
+    if any(isinstance(count, bool) or not isinstance(count, int) or count <= 0 for count in attempts):
+        return reject("ATTEMPT_IDENTITY_INVALID")
+    timeframe_rows = base_plan.get("timeframe_required_bars")
+    baseline = timeframe_rows.get("monthly") if isinstance(timeframe_rows, Mapping) else None
+    if attempts[0] != baseline or any(a >= b for a, b in zip(attempts, attempts[1:])):
+        return reject("ATTEMPT_SEQUENCE_UNPROVEN")
+    if not isinstance(receipt, Mapping):
+        return reject("NATIVE_EXECUTION_RECEIPT_MISSING")
+    if receipt.get("status") == "READY":
+        return reject("NATIVE_MACD_ALREADY_READY")
+    if len(attempts) - 1 >= 3:
+        return reject("BOUNDED_RETRY_BUDGET_EXHAUSTED")
+    if not (
+        receipt.get("status") == "UNKNOWN"
+        and receipt.get("method_owner") == "StockTrendAnalyzer._calculate_macd"
+        and receipt.get("reason") == "MACD_MULTI_START_NUMERIC_OR_STATE_DRIFT"
+        and receipt.get("readiness_scope") == "OBSERVED_COMPLETED_PREFIXES_ONLY"
+        and receipt.get("required_observations") == macd_startup_comparison_required_bars()
+        and type(receipt.get("observations")) is int
+        and receipt["observations"] == attempts[-1]
+    ):
+        return reject("NATIVE_DRIFT_RECEIPT_NOT_PROVEN")
+    increment = StockTrendAnalyzer.MACD_SLOW + StockTrendAnalyzer.MACD_SIGNAL
+    if len(attempts) - 1 == 2:
+        # Exactly one final, smaller-granularity attempt is possible only
+        # when native independent comparison proves state agreement and a
+        # finite numeric difference just above (within 2x) its tolerance.
+        # The signal period is a native increment, NOT a magic 220-month
+        # universal floor or relaxation of the convergence tolerance.
+        difference = receipt.get("max_endpoint_difference")
+        tolerance = receipt.get("absolute_tolerance")
+        if not (
+            type(difference) in (int, float)
+            and type(tolerance) in (int, float)
+            and math.isfinite(difference)
+            and math.isfinite(tolerance)
+            and tolerance > 0
+            and tolerance < difference <= 2 * tolerance
+            and receipt.get("startup_state_agreement") is True
+            and receipt.get("numeric_agreement") is False
+        ):
+            return reject("BOUNDED_RETRY_BUDGET_EXHAUSTED")
+        increment = StockTrendAnalyzer.MACD_SIGNAL
+    if increment <= 0:
+        return reject("INVALID_NATIVE_FORMULA")
+    next_count = attempts[-1] + increment
+    proposed = dict(timeframe_rows)
+    proposed["monthly"] = max(int(proposed["monthly"]), next_count)
+    calendar_plan = resolve_required_daily_history_start_fail_closed(
+        "cn", target_date, proposed,
+    )
+    if calendar_plan is None:
+        return reject("EXCHANGE_CALENDAR_EXTENSION_UNAVAILABLE")
+    return {
+        **base,
+        "status": "READ_ONLY_EXTENSION_AVAILABLE",
+        "reason": "NATIVE_MACD_NUMERIC_DRIFT_NEEDS_MORE_OBSERVED_HISTORY",
+        "proposed_monthly_bars": next_count,
+        "increment_bars": increment,
+        "new_start_date": calendar_plan["start_date"],
+        "start_by_timeframe": calendar_plan["start_by_timeframe"],
+        "attempted_monthly_bars": attempts,
+        "next_attempt_number": len(attempts),
+    }
+
+
+def _cached_daily_history_covers_current_window(
+    *,
+    db: Any,
+    code: str,
+    market: Optional[str],
+    target_date: date,
+    window_plan: Mapping[str, Any],
+) -> bool:
+    """Permit a cache SKIP only for every completed exchange session in scope.
+
+    This is a date-coverage test, never an attestation of source license,
+    adjustment revision, historical PIT, recursive convergence or action.
+    Missing sessions (including unverified suspensions) cause a fetch attempt
+    rather than a false claim of a fully covered window.
+    """
+    start = window_plan.get("start_date")
+    if not isinstance(start, date) or isinstance(start, datetime) or start > target_date:
+        return False
+    try:
+        rows = db.get_data_range(code, start, target_date)
+        if not isinstance(rows, (list, tuple)) or not rows:
+            return False
+        observed = [getattr(row, "date", None) for row in rows]
+        if any(
+            not isinstance(value, date) or isinstance(value, datetime)
+            for value in observed
+        ):
+            return False
+        if len(set(observed)) != len(observed):
+            return False
+        actual = sorted(observed)
+        if actual[0] != start or actual[-1] != target_date:
+            return False
+        expected = resolve_forward_sessions_fail_closed(
+            market, start - timedelta(days=1), len(actual),
+        )
+        return expected == actual
+    except Exception:
+        logger.warning("Cannot verify source-window cache coverage for %s", code)
+        return False
+
 
 # Canonical 5m remains the single intraday source.  The fetch horizon is
 # compiled from the currently admitted minute consumers, rather than treating
@@ -347,6 +551,7 @@ def _current_intraday_window_plan() -> Dict[str, Any]:
     admission_requirements = {
         **method_required_bars,
         "MACD_STARTUP_COMPARISON": macd_startup_comparison_required_bars(),
+        "RSI_STARTUP_COMPARISON": rsi_startup_comparison_required_bars(),
     }
     admission_target_required_bars = max(admission_requirements.values())
     admission_sessions_by_timeframe = {
@@ -705,20 +910,37 @@ class StockAnalysisPipeline:
                 code, current_time=current_time
             )
 
-            # 断点续传检查：如果最新可复用交易日的数据已存在，则跳过
+            # Latest-day presence alone cannot certify the extended method
+            # windows (e.g. 140 monthly/268 weekly bars). Preserve old P0
+            # and non-CN resume semantics until those owners have dedicated
+            # admission contracts; current CN research needs real coverage.
+            market = get_market_for_stock(normalize_stock_code(code))
+            daily_window_plan = None
             if not force_refresh and self.db.has_today_data(code, target_date):
-                logger.info(
-                    f"{stock_name}({code}) {target_date} 数据已存在，跳过获取（断点续传）"
+                legacy_resume = (
+                    str(market or "").lower() != "cn"
+                    or bool(getattr(self, "p0_bounded_trial", False))
+                    or bool(getattr(self, "p0_receipt_only", False))
                 )
-                return True, None
+                if not legacy_resume:
+                    daily_window_plan = _current_daily_window_plan(
+                        market=market, target_date=target_date,
+                    )
+                if legacy_resume or _cached_daily_history_covers_current_window(
+                    db=self.db, code=code, market=market,
+                    target_date=target_date, window_plan=daily_window_plan,
+                ):
+                    logger.info(
+                        f"{stock_name}({code}) {target_date} 当前方法窗口已有完整缓存，跳过获取"
+                    )
+                    return True, None
 
             # 从数据源获取数据
             logger.info(f"{stock_name}({code}) 开始从数据源获取数据...")
-            market = get_market_for_stock(normalize_stock_code(code))
-            daily_window_plan = _current_daily_window_plan(
-                market=market,
-                target_date=target_date,
-            )
+            if daily_window_plan is None:
+                daily_window_plan = _current_daily_window_plan(
+                    market=market, target_date=target_date,
+                )
             history_start = daily_window_plan["start_date"]
             df, source_name = self.fetcher_manager.get_daily_data(
                 code,
@@ -4970,7 +5192,12 @@ class StockAnalysisPipeline:
 
         with notify_lock:
             try:
-                if report_type == ReportType.FULL:
+                if has_canonical_action_authority_for_result(result):
+                    if getattr(self.notifier, "_report_summary_only", False) is True:
+                        raise ValueError("canonical research cannot use report_summary_only")
+                    report_content = self._generate_aggregate_report([result], ReportType.FULL)
+                    logger.info(f"[{stock_code}] 使用完整 canonical 研究报告")
+                elif report_type == ReportType.FULL:
                     report_content = self.notifier.generate_dashboard_report([result])
                     logger.info(f"[{stock_code}] 使用完整报告格式")
                 elif report_type == ReportType.BRIEF:
@@ -5106,14 +5333,44 @@ class StockAnalysisPipeline:
                     freshness_guard(results)
                 channels = self.notifier.get_available_channels()
                 channels = self.notifier.get_channels_for_route("report", channels=channels)
+                # Existing report consumer keeps only required Email plus
+                # optional Telegram, even if a legacy adapter returns others.
+                channels = [
+                    ch for ch in (NotificationChannel.EMAIL, NotificationChannel.TELEGRAM)
+                    if ch in channels
+                ]
+                if NotificationChannel.EMAIL not in channels:
+                    raise ValueError("Email is required for full research reports")
+                email_results: List[bool] = []
 
-                # Compact investor projection is owned only by Email/Telegram.
-                # Full-report consumers (for example Feishu) must not depend on
-                # generate_brief_report, while Email/Telegram remain fail-closed.
-                compact_consumers = {
-                    NotificationChannel.EMAIL,
-                    NotificationChannel.TELEGRAM,
-                }
+
+                # Complete research Email must consume the same full evidence
+                # as the saved Report, including canonical SIMPLE asset runs.
+                # A report_type=BRIEF flag cannot override canonical Product
+                # completeness. Only noncanonical legacy routes remain scoped.
+                # The immutable V2.5 original is not rendered by this route.
+                full_email_required = (
+                    report_type == ReportType.FULL
+                    or any(
+                        has_canonical_action_authority_for_result(item)
+                        for item in results
+                    )
+                )
+                if (
+                    full_email_required
+                    and any(
+                        channel in channels
+                        for channel in (NotificationChannel.EMAIL, NotificationChannel.TELEGRAM)
+                    )
+                    and getattr(self.notifier, "_report_summary_only", False) is True
+                ):
+                    raise ValueError(
+                        "full research Email cannot use report_summary_only"
+                    )
+                compact_consumers = (
+                    {NotificationChannel.TELEGRAM, NotificationChannel.EMAIL}
+                    if not full_email_required else set()
+                )
                 compact_required = any(channel in compact_consumers for channel in channels)
                 notification_report = report
                 if compact_required and report_type != ReportType.BRIEF:
@@ -5167,6 +5424,11 @@ class StockAnalysisPipeline:
                     error_message: Optional[Exception] = None,
                     target_results: Optional[List[AnalysisResult]] = None,
                 ) -> None:
+                    if (
+                        channel_label == NotificationChannel.EMAIL.value
+                        or channel_label.startswith(NotificationChannel.EMAIL.value + ":")
+                    ):
+                        email_results.append(bool(success))
                     notification_run = self._build_notification_run_snapshot(
                         channel=channel_label,
                         status="success" if success else "failed",
@@ -5184,27 +5446,31 @@ class StockAnalysisPipeline:
                         notification_run=notification_run,
                     )
 
-                send_context = self.notifier.send_to_context(report)
-                if send_context:
-                    _record_channel_result("__context__", True)
-
-                should_broadcast_static = True
-                should_broadcast_static_func = getattr(
-                    self.notifier,
-                    "should_broadcast_static_channels",
-                    None,
+                # B8 transport is an existing DSA Product consumer.  Current
+                # strict method receipts may leave only with the same FULL
+                # bytes generated by THIS notifier for THIS ordered canonical
+                # result set. Legacy/P0 fixtures do not create Production proof.
+                strict_payload_required = any(
+                    isinstance(getattr(item, "dashboard", None), dict)
+                    and isinstance(item.dashboard.get("factor_decision"), dict)
+                    and item.dashboard["factor_decision"].get(
+                        "method_execution_receipt_policy"
+                    ) == "REQUIRED"
+                    for item in results
                 )
-                if callable(should_broadcast_static_func):
-                    should_broadcast_static = bool(should_broadcast_static_func())
-                if not should_broadcast_static:
-                    if not send_context:
-                        _record_channel_result("__context__", False)
-                    if send_context:
-                        logger.info("决策仪表盘推送成功")
-                    else:
-                        logger.warning("决策仪表盘推送失败")
-                    logger.info("交互式消息上下文回复模式：已跳过静态通知渠道")
-                    return
+                if strict_payload_required:
+                    payload_guard = getattr(
+                        self.notifier, "require_current_report_payload", None,
+                    )
+                    if not callable(payload_guard):
+                        raise ValueError("strict canonical final payload consumer missing")
+                    payload_guard(report, results)
+                    if notification_report != report:
+                        raise ValueError("strict canonical notification was replaced")
+
+                # Formal Report is required to reach Email. An interactive
+                # chat reply must not suppress or substitute for that channel.
+                send_context = False
 
                 if channels and hasattr(self.notifier, "evaluate_noise_control"):
                     report_type_key = report_type.value if isinstance(report_type, ReportType) else str(report_type)
@@ -5247,10 +5513,11 @@ class StockAnalysisPipeline:
                     if ch.value in self.notifier._markdown_to_image_channels
                     and ch not in {NotificationChannel.NTFY, NotificationChannel.GOTIFY}
                 }
-                compact_image_channels = channels_needing_image & {
-                    NotificationChannel.TELEGRAM,
-                    NotificationChannel.EMAIL,
-                }
+                compact_image_channels = channels_needing_image & (
+                    {NotificationChannel.TELEGRAM, NotificationChannel.EMAIL}
+                    if not full_email_required
+                    else set()
+                )
                 full_image_channels = channels_needing_image - {
                     NotificationChannel.WECHAT,
                     NotificationChannel.TELEGRAM,
@@ -5354,7 +5621,7 @@ class StockAnalysisPipeline:
                         wechat_error,
                     )
 
-                # 渠道按既有契约选择投影：Email/Telegram 使用精简投资者简报，其他渠道保留原投影。
+                # 完整 canonical 研究在 Email/Telegram 均消费同一全文，图片不替代材料。
                 non_wechat_success = False
                 stock_email_groups = getattr(self.config, 'stock_email_groups', []) or []
                 for channel in channels:
@@ -5423,11 +5690,20 @@ class StockAnalysisPipeline:
                                     group_results=group_results,
                                     receivers=receivers,
                                 ) -> bool:
-                                    grp_report = self.notifier.generate_brief_report(group_results)
+                                    grp_report = (
+                                        self._generate_aggregate_report(group_results, report_type)
+                                        if full_email_required
+                                        else self.notifier.generate_brief_report(group_results)
+                                    )
                                     if not isinstance(grp_report, str) or not grp_report.strip():
                                         raise ValueError("email-group investor notification projection is empty")
+                                    if strict_payload_required:
+                                        payload_guard(grp_report, group_results)
                                     grp_image_bytes = None
-                                    if channel.value in self.notifier._markdown_to_image_channels:
+                                    if (
+                                        not full_email_required
+                                        and channel.value in self.notifier._markdown_to_image_channels
+                                    ):
                                         group_payload = (
                                             _share_image_payload(group_results[0])
                                             if len(group_results) == 1
@@ -5487,8 +5763,11 @@ class StockAnalysisPipeline:
                                 )
                         else:
                             def _send_email_report() -> bool:
-                                use_image = self.notifier._should_use_image_for_channel(
-                                    channel, notification_image_bytes
+                                use_image = (
+                                    not full_email_required
+                                    and self.notifier._should_use_image_for_channel(
+                                        channel, notification_image_bytes
+                                    )
                                 )
                                 if use_image:
                                     if email_subject:
@@ -5499,13 +5778,16 @@ class StockAnalysisPipeline:
                                     return self.notifier._send_email_with_inline_image(
                                         notification_image_bytes
                                     )
+                                email_body = (
+                                    report if full_email_required else notification_report
+                                )
                                 if email_subject:
                                     return self.notifier.send_to_email(
-                                        strip_hidden_markdown_metadata(notification_report).strip(),
+                                        strip_hidden_markdown_metadata(email_body).strip(),
                                         subject=email_subject,
                                     )
                                 return self.notifier.send_to_email(
-                                    strip_hidden_markdown_metadata(notification_report).strip()
+                                    strip_hidden_markdown_metadata(email_body).strip()
                                 )
 
                             channel_success, channel_error = _send_channel_safely(
@@ -5641,9 +5923,11 @@ class StockAnalysisPipeline:
                         logger.warning(f"未知通知渠道: {channel}")
 
                 has_targeted_channels = bool(channels)
-                success = wechat_success or non_wechat_success or send_context
+                # Telegram (and any retired optional adapter) cannot turn a
+                # failed Email group into a Product success.
+                success = bool(email_results) and all(email_results)
                 if (
-                    (wechat_success or non_wechat_success)
+                    success
                     and noise_decision is not None
                     and hasattr(self.notifier, "record_noise_control")
                 ):
@@ -5725,7 +6009,12 @@ class StockAnalysisPipeline:
         results: List[AnalysisResult],
         report_type: ReportType,
     ) -> str:
-        """Generate aggregate report with backward-compatible notifier fallback."""
+        """Use the existing full renderer whenever canonical research requires it."""
+        if any(has_canonical_action_authority_for_result(item) for item in results):
+            if getattr(self.notifier, "_report_summary_only", False) is True:
+                raise ValueError("canonical research cannot use report_summary_only")
+            if report_type == ReportType.BRIEF:
+                report_type = ReportType.FULL
         generator = getattr(self.notifier, "generate_aggregate_report", None)
         if callable(generator):
             return generator(results, report_type)

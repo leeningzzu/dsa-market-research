@@ -155,6 +155,14 @@ def render(
     has_canonical_results = any(
         has_canonical_action_authority_for_result(result) for result in results
     )
+    # The direct Jinja route is a Product entry, not a fallback authority.
+    # Reuse the existing canonical/brief verifier before rendering any text;
+    # historical results without a canonical object keep their legacy route.
+    if has_canonical_results:
+        for current in results:
+            if (has_canonical_action_authority_for_result(current)
+                    and _bound_investor_brief(current) is None):
+                raise ValueError("canonical report material binding invalid")
     sorted_results = (
         list(results)
         if has_canonical_results

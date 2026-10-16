@@ -19,9 +19,11 @@ from typing import Any, Dict, Optional
 import pandas as pd
 
 from data_provider.daily_data_identity import (
+    DAILY_DATA_IDENTITY_FRAME_ATTR,
     attach_daily_data_identity,
     extract_daily_data_identity,
     rebind_daily_data_identity,
+    verified_observed_daily_frame_provider,
 )
 from data_provider.intraday_data_identity import (
     IntradayDataIdentityError,
@@ -29,9 +31,15 @@ from data_provider.intraday_data_identity import (
 )
 
 from src.core.trading_calendar import resolve_completed_timeframe_bar_date
-from src.services.price_structure_service import build_price_structure_context
+from src.services.intraday_bar_service import IntradayBarError, validate_complete_cn_5m_sessions
+
+from src.services.price_structure_service import (
+    build_confirmed_intraday_structure_context,
+    build_price_structure_context,
+)
 from src.services.pit_identity import build_completed_history_identity
 from src.services.evidence_traceability_registry import describe_macd_state
+from src.services.volatility_momentum_service import _rsi_startup_stability
 
 
 SCHEMA_VERSION = "multi-timeframe-structure-v1"
@@ -100,12 +108,12 @@ _ROLE = {
 }
 
 INTRADAY_EVIDENCE_SCHEMA_VERSION = "intraday-timeframe-evidence-v1"
-INTRADAY_EVIDENCE_ALGORITHM_VERSION = "canonical-intraday-trend-ma-v1"
+INTRADAY_EVIDENCE_ALGORITHM_VERSION = "canonical-intraday-trend-ma-confirmed-60m-30m-structure-v3"
 _INTRADAY_EVIDENCE_CONFIG = {
     "schema_version": INTRADAY_EVIDENCE_SCHEMA_VERSION,
     "algorithm_version": INTRADAY_EVIDENCE_ALGORITHM_VERSION,
     "admitted_methods": ["TREND", "MA", "VOLUME", "MACD", "RSI"],
-    "price_structure": "NOT_ADMITTED",
+    "price_structure": "CONFIRMED_60M_BRIDGE_AND_30M_CONTEXT_ONLY",
     "pattern_trigger": "NOT_ADMITTED",
     "independent_action_authority": False,
 }
@@ -212,12 +220,39 @@ def _macd_startup_stability(frame: pd.DataFrame, analyzer: Any) -> Dict[str, Any
         "evaluated_startup_lengths": list(lengths) + [observations],
         "max_endpoint_difference": max_difference,
         "absolute_tolerance": tolerance,
+        # Native StockTrendAnalyzer output, never presentation-layer
+        # recalculation or a numeric claim when startup remains UNKNOWN.
+        "native_endpoint_values": (
+            {field: float(reference.iloc[-1][field]) for field in fields}
+            if stable else None
+        ),
         "reference_macd_state": reference_state.macd_status.name,
         "startup_state_agreement": state_agreement,
         "numeric_agreement": numeric_agreement,
     }
 
 
+
+
+def _admitted_recursive_trend_projection(
+    trend: Optional[Dict[str, Any]], *,
+    macd_startup: Dict[str, Any],
+    rsi_startup: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Keep honest MA/volume while withholding unverified recursive labels."""
+    if not isinstance(trend, dict):
+        return trend
+    for method, receipt in (("macd", macd_startup), ("rsi", rsi_startup)):
+        trend[method + "_startup_stability"] = receipt
+        if receipt.get("status") != "READY":
+            trend[method + "_raw_observation"] = {
+                "status": trend.get(method + "_status"),
+                "signal": trend.get(method + "_signal"),
+                "admitted": False,
+            }
+            trend[method + "_status"] = None
+            trend[method + "_signal"] = None
+    return trend
 
 
 def _build_intraday_timeframe(
@@ -329,6 +364,30 @@ def _build_intraday_timeframe(
     if alignment["status"] != "SINGLE_SOURCE":
         return _empty_timeframe(key, status="UNKNOWN", reason="INTRADAY_SOURCE_ALIGNMENT_UNPROVEN")
 
+    # Existing 5m closed-session verifier, not a parallel data registry.
+    # A correctly typed 5m frame alone does not prove complete sessions or units.
+    completed_source_session_receipt = None
+    if key == "5m":
+        try:
+            session_receipt = validate_complete_cn_5m_sessions(
+                bars,
+                expected_session_dates=sorted(set(local_bar_end.dt.date.tolist())),
+            )
+        except (IntradayBarError, ValueError, TypeError):
+            session_receipt = None
+        if isinstance(session_receipt, dict) and session_receipt.get("session_count", 0) >= 10:
+            completed_source_session_receipt = {
+                **session_receipt,
+                "provider_identity": identity["provider_identity"],
+                "observed_adjustment_basis": identity["observed_adjustment_basis"],
+                "identity_state": identity["identity_state"],
+                "content_sha256": identity["content_sha256"],
+                "currency": identity["currency"],
+                "volume_unit": identity["volume_unit"],
+                "amount_unit": identity["amount_unit"],
+                "observed_at": identity["observed_at"],
+                "available_at_max": identity["available_at_max"],
+            }
     # The price-only methods remain available without a volume unit, but the
     # legacy analyzer's volume labels are not evidence until the source unit is typed.
     recent_reference_volume = analyzer_frame["volume"].iloc[-6:-1]
@@ -347,40 +406,57 @@ def _build_intraday_timeframe(
             trend["volume_status"] = None
             trend["volume_ratio_5bar"] = None
     macd_startup = _macd_startup_stability(analyzer_frame, trend_analyzer)
-    if isinstance(trend, dict):
-        trend["macd_startup_stability"] = macd_startup
-        if macd_startup["status"] != "READY":
-            # Retain the raw computation for audit but never render it as a
-            # confirmed crossover before a native prefix comparison.
-            trend["macd_raw_observation"] = {
-                "status": trend.get("macd_status"),
-                "signal": trend.get("macd_signal"),
-                "admitted": False,
-            }
-            trend["macd_signal"] = None
-    price_structure = {
-        "status": "MISSING",
-        "reason": "INTRADAY_PRICE_STRUCTURE_NOT_ADMITTED",
-        "summary": None,
-        "independent_action_authority": False,
-    }
+    rsi_startup = _rsi_startup_stability(analyzer_frame, trend_analyzer)
+    trend = _admitted_recursive_trend_projection(
+        trend, macd_startup=macd_startup, rsi_startup=rsi_startup,
+    )
+    price_structure = (
+        build_confirmed_intraday_structure_context(
+            analyzer_frame.assign(available_at=frame["available_at"]),
+            timeframe=key,
+        )
+        if key in {"60m", "30m"}
+        else {
+            "status": "MISSING",
+            "reason": "INTRADAY_PRICE_STRUCTURE_NOT_ADMITTED",
+            "summary": None,
+            "independent_action_authority": False,
+        }
+    )
+    if key in {"60m", "30m"}:
+        price_structure["intraday_identity_hash"] = identity["identity_hash"]
     ma_structure = build_ma_structure_evidence(
         analyzer_frame,
         timeframe=key,
         trend_result=trend_result if volume_evidence_ready else None,
         structure_context={},
     )
-    has_partial = trend is not None or ma_structure.get("status") in {"READY", "PARTIAL"}
+    has_partial = (
+        trend is not None
+        or ma_structure.get("status") in {"READY", "PARTIAL"}
+        or price_structure.get("status") == "READY"
+    )
     summary = _human_summary(trend, {}, ma_structure)
     if isinstance(trend, dict) and macd_startup["status"] != "READY":
         summary = "；".join(filter(None, (
             summary, "MACD递归启动稳定性未验证，原始数值不得作金叉确认",
         )))
     if isinstance(trend, dict):
-        rsi_signal = str(trend.get("rsi_signal") or "").strip()
-        if rsi_signal and rsi_signal != "数据不足":
-            summary = "；".join(item for item in (summary, rsi_signal) if item)
-    if summary:
+        if rsi_startup["status"] != "READY":
+            summary = "；".join(filter(None, (
+                summary, "RSI递归启动稳定性未验证，原始状态不得确认",
+            )))
+        else:
+            rsi_signal = str(trend.get("rsi_signal") or "").strip()
+            if rsi_signal and rsi_signal != "数据不足":
+                summary = "；".join(item for item in (summary, rsi_signal) if item)
+    if key in {"60m", "30m"} and price_structure.get("status") == "READY":
+        summary = "；".join(filter(None, (
+            summary, price_structure.get("summary"), f"{key}形态和独立交易触发尚未准入",
+        )))
+    elif summary and key in {"60m", "30m"}:
+        summary += f"；{key}尚无已确认枢轴，形态和交易触发仍未准入"
+    elif summary:
         summary += "；分钟价格结构/形态尚未准入"
 
     return {
@@ -389,7 +465,10 @@ def _build_intraday_timeframe(
         "config_hash": INTRADAY_EVIDENCE_CONFIG_HASH,
         "status": "PARTIAL" if has_partial else "MISSING",
         "reason": (
-            "INTRADAY_TREND_MA_PARTIAL_CURRENT"
+            ("INTRADAY_CONFIRMED_30M_STRUCTURE_CONTEXT_ONLY"
+             if key == "30m" else "INTRADAY_CONFIRMED_60M_BRIDGE_CONTEXT_ONLY")
+            if key in {"60m", "30m"} and price_structure.get("status") == "READY"
+            else "INTRADAY_TREND_MA_PARTIAL_CURRENT"
             if has_partial
             else "INTRADAY_WARMUP_INSUFFICIENT"
         ),
@@ -399,8 +478,10 @@ def _build_intraday_timeframe(
         "latest_bar_end": local_bar_end.iloc[-1].isoformat(),
         "observations": int(len(analyzer_frame)),
         "source_alignment": alignment,
-        "intraday_identity_hash": identity["identity_hash"],
+        "intraday_identity_hash": identity["identity_hash"],        **({"completed_source_session_receipt": completed_source_session_receipt}
+           if key == "5m" and completed_source_session_receipt is not None else {}),
         "macd_startup_stability": macd_startup,
+        "rsi_startup_stability": rsi_startup,
         "trend": trend or {"status": "MISSING", "reason": "WARMUP_INSUFFICIENT"},
         "ma_structure": ma_structure,
         "price_structure": price_structure,
@@ -412,7 +493,9 @@ def _build_intraday_timeframe(
         "summary": summary,
         "admitted_methods": [
             "TREND", "MA", *(["VOLUME"] if volume_evidence_ready else []),
-            *(["MACD"] if macd_startup["status"] == "READY" else []), "RSI",
+            *(["MACD"] if macd_startup["status"] == "READY" else []),
+            *(["RSI"] if rsi_startup["status"] == "READY" else []),
+            *(["PRICE_STRUCTURE"] if price_structure.get("status") == "READY" else []),
         ],
         "independent_action_authority": False,
         "strategy_admitted": False,
@@ -425,9 +508,27 @@ def _normalize_daily_history(history: Any, *, target_date: date) -> pd.DataFrame
     required = ["date", "open", "high", "low", "close", "volume"]
     if not isinstance(history, pd.DataFrame) or history.empty:
         return pd.DataFrame(columns=required)
+
     identity = extract_daily_data_identity(history, strict=False)
+    # A legacy row label is descriptive only.  A typed claim must first bind
+    # the original, unfiltered frame bytes before rebind/prefix normalization;
+    # otherwise a stale DataFrame.attrs identity can launder changed prices.
+    identity_fields = {"data_identity_json", "data_identity_hash"}
+    persisted_columns = [
+        col for col in history.columns if str(col).lower() in identity_fields
+    ]
+    source_columns = [
+        col for col in history.columns if str(col).lower() == "data_source"
+    ]
+    typed_claim = (
+        DAILY_DATA_IDENTITY_FRAME_ATTR in history.attrs or bool(persisted_columns)
+    )
+    verified_provider = verified_observed_daily_frame_provider(history)
+
     frame = history.copy()
     frame.columns = [str(column).lower() for column in frame.columns]
+    if frame.columns.duplicated().any():
+        return pd.DataFrame(columns=required)
     if any(column not in frame.columns for column in required):
         return pd.DataFrame(columns=required)
     frame["date"] = pd.to_datetime(frame["date"], errors="coerce").dt.date
@@ -444,8 +545,19 @@ def _normalize_daily_history(history: Any, *, target_date: date) -> pd.DataFrame
         if column in frame.columns
     ]
     result = frame[required + optional].reset_index(drop=True)
-    if identity is not None:
+    if verified_provider is not None:
+        # The sole source label is recovered from the content-bound typed owner.
+        # This is provenance alignment, NOT data rights, vintage or PIT approval.
+        result["data_source"] = verified_provider
         attach_daily_data_identity(result, rebind_daily_data_identity(identity, result))
+    elif typed_claim:
+        # A bad/mixed/stale typed claim must not be rescued by a plausible plain
+        # source string, nor by rebinding its stale identity to altered bytes.
+        result = result.drop(columns=["data_identity_json", "data_identity_hash"], errors="ignore")
+        result["data_source"] = ""
+        result.attrs.pop(DAILY_DATA_IDENTITY_FRAME_ATTR, None)
+    # A legitimately untyped legacy frame retains its existing descriptive
+    # data_source handling; it does not acquire a typed history/PIT identity.
     return result
 
 
@@ -1225,6 +1337,11 @@ def _build_higher_timeframe(
         trend_result = trend_analyzer.analyze(bars.copy(), stock_code)
         trend = _trend_projection(trend_result)
 
+    macd_startup = _macd_startup_stability(bars, trend_analyzer)
+    rsi_startup = _rsi_startup_stability(bars, trend_analyzer)
+    trend = _admitted_recursive_trend_projection(
+        trend, macd_startup=macd_startup, rsi_startup=rsi_startup,
+    )
     ma_structure = build_ma_structure_evidence(
         bars,
         timeframe=key,
@@ -1244,6 +1361,8 @@ def _build_higher_timeframe(
         "status": status,
         "reason": reason,
         "trend": trend or {"status": "MISSING", "reason": "WARMUP_INSUFFICIENT"},
+        "macd_startup_stability": macd_startup,
+        "rsi_startup_stability": rsi_startup,
         "ma_structure": ma_structure,
         "price_structure": structure,
         "summary": _human_summary(trend, structure, ma_structure),
@@ -1381,6 +1500,13 @@ def build_multi_timeframe_structure_context(
             "material": False,
             "summary": None,
         }
+    daily_macd = _macd_startup_stability(frame, trend_analyzer)
+    daily_rsi = _rsi_startup_stability(frame, trend_analyzer)
+    daily_trend_projection = _admitted_recursive_trend_projection(
+        _trend_projection(daily_trend_result)
+        if daily_trend_result is not None else None,
+        macd_startup=daily_macd, rsi_startup=daily_rsi,
+    )
     daily = {
         "status": "READY"
         if daily_trend_result is not None and alignment["status"] == "SINGLE_SOURCE"
@@ -1400,10 +1526,10 @@ def build_multi_timeframe_structure_context(
         else {"status": "MISSING"},
         "ma_structure": daily_ma_structure,
         "price_structure": daily_structure,
+        "macd_startup_stability": daily_macd,
+        "rsi_startup_stability": daily_rsi,
         "summary": _human_summary(
-            _trend_projection(daily_trend_result)
-            if daily_trend_result is not None
-            else None,
+            daily_trend_projection,
             daily_structure,
             daily_ma_structure,
         )

@@ -73,6 +73,41 @@ def _strict_verified_relative_strength():
     }
 
 
+def test_explicit_native_partial_momentum_never_falls_back_to_raw_gold_cross() -> None:
+    """Preserve valid ROC/TR while suppressing unadmitted raw MACD and RSI prose."""
+    from src.services.factor_decision_summary import (
+        _build_volatility_momentum_evidence, _volatility_momentum_summary,
+    )
+
+    trend = _trend(macd_signal="零轴上金叉，动量转强", rsi_signal="RSI强势，建议积极买入")
+    partial = {
+        "status": "PARTIAL",
+        "reason": "RECURSIVE_METHOD_ADMISSION_INCOMPLETE",
+        "volatility": {"status": "PARTIAL", "true_range_sma_20_pct": 1.5},
+        "momentum": {
+            "status": "PARTIAL", "roc_20_pct": 3.0,
+            "macd": {"status": None, "admission": {"status": "MISSING"}},
+            "rsi": {"status": None, "admission": {"status": "MISSING"}},
+        },
+        "confirmed_divergence": {"status": "MISSING", "state": "NONE"},
+    }
+    text = _volatility_momentum_summary(
+        _build_volatility_momentum_evidence(trend, partial), trend,
+    )
+    assert "ROC20 +3.0%" in text
+    assert "真实波幅" in text
+    assert "零轴上金叉" not in text
+    assert "RSI强势" not in text
+
+    blank = {**partial, "volatility": {"status": "PARTIAL"},
+             "momentum": {"status": "PARTIAL", "macd": {}, "rsi": {}}}
+    blank_text = _volatility_momentum_summary(
+        _build_volatility_momentum_evidence(trend, blank), trend,
+    )
+    assert "没有可独立准入的当前指标" in blank_text
+    assert "零轴上金叉" not in blank_text
+
+
 def test_summary_reuses_existing_score_without_inventing_probability_or_win_rate():
     summary = build_stock_factor_decision_summary(
         _trend(),
@@ -161,6 +196,61 @@ def test_material_risk_normalization_keeps_legal_nontriggers_without_duplicates(
         "需继续关注市场环境、行业变化及关键支撑失效风险。"
     ]
     assert no_event["investor_brief"]["risk_notes"] == no_event["risk_notes"]
+
+def test_b8_current_canonical_binds_both_risk_material_layers_and_rejects_stale_legacy():
+    """A signed action must not carry risk sentences edited after finalization."""
+    from copy import deepcopy
+    from src.services.factor_decision_summary import canonical_factor_binding
+
+    source = build_stock_factor_decision_summary(
+        _trend(risk_factors=["LIQUIDITY_RISK_SOURCE_A", "VINTAGE_RISK_SOURCE_B"]),
+        include_canonical=True,
+    )
+    binding = source["canonical_decision_identity"]
+    assert binding["risk_material_binding_version"] == "factor-brief-risk-atoms-v1"
+    assert len(binding["risk_material_sha256"]) == 64
+
+    for target in ("factor", "brief", "both"):
+        poisoned = deepcopy(source)
+        if target in ("factor", "both"):
+            poisoned["risk_notes"][0] = "FORGED_FACTOR_RISK_REPLACEMENT"
+        if target in ("brief", "both"):
+            poisoned["investor_brief"]["risk_notes"][0] = "FORGED_BRIEF_RISK_REPLACEMENT"
+        with pytest.raises(ValueError, match="stale|risk"):
+            validate_canonical_factor_binding(poisoned)
+        with pytest.raises(ValueError, match="stale|risk"):
+            validate_investor_brief_binding(poisoned)
+
+    detached_brief = deepcopy(source["investor_brief"])
+    detached_brief["risk_notes"][0] = "FORGED_DETACHED_BRIEF_RISK"
+    with pytest.raises(ValueError, match="stale|risk"):
+        validate_investor_brief_binding(source, detached_brief)
+
+    old_current = deepcopy(source)
+    old_current["canonical_decision_identity"].pop("risk_material_sha256")
+    old_current["canonical_decision_identity"].pop("risk_material_binding_version")
+    old_current["investor_brief"]["canonical_binding"] = deepcopy(
+        old_current["canonical_decision_identity"]
+    )
+    with pytest.raises(ValueError, match="stale|risk"):
+        validate_canonical_factor_binding(old_current)
+
+    # Distinct, independently admitted facts before sealing are not collapsed
+    # into one generic risk sentence or made identical between Product layers.
+    expanded = deepcopy(source)
+    expanded["risk_notes"].append("INDEPENDENT_FACTOR_RISK_C")
+    expanded["investor_brief"]["risk_notes"].append("INDEPENDENT_BRIEF_RISK_D")
+    expanded["canonical_decision_identity"] = canonical_factor_binding(expanded)
+    expanded["investor_brief"]["canonical_binding"] = deepcopy(
+        expanded["canonical_decision_identity"]
+    )
+    assert (
+        validate_canonical_factor_binding(expanded)["risk_material_sha256"]
+        != binding["risk_material_sha256"]
+    )
+    assert expanded["risk_notes"] != expanded["investor_brief"]["risk_notes"]
+    assert validate_investor_brief_binding(expanded)["risk_notes"][-1] == "INDEPENDENT_BRIEF_RISK_D"
+
 
 def test_static_pe_pb_without_percentile_or_peers_does_not_claim_relative_valuation():
     summary = build_stock_factor_decision_summary(
@@ -1443,3 +1533,179 @@ def test_higher_timeframe_material_structure_event_reaches_investor_brief_consum
     material_text = "向上突破失败并回到结构位下方"
     assert material_text in brief["timeframe_thesis"]["weekly"]["summary"]
     assert material_text in brief["fused_paragraph"]
+
+
+# Systemic admission regression: raw diagnostics may remain archived, but an
+# unadmitted input may not change an admitted/rank-eligible score or public prose.
+# Synthetic counterfactual; no provider, real price, portfolio or PIT claim.
+def _root_admission_score_pair(strict=False, heavy_volume_down=False):
+    from copy import deepcopy
+    from src.stock_analyzer import TrendStatus, MACDStatus, RSIStatus
+
+    partial = {
+        "status": "PARTIAL", "reason": "RECURSIVE_METHOD_ADMISSION_INCOMPLETE",
+        "volatility": {"status": "PARTIAL", "true_range_sma_20_pct": 1.5},
+        "momentum": {
+            "status": "PARTIAL", "roc_20_pct": 3.0,
+            "macd": {"status": None, "admission": {"status": "MISSING"}},
+            "rsi": {"status": None, "admission": {"status": "MISSING"}},
+        },
+        "confirmed_divergence": {"status": "MISSING", "state": "NONE"},
+    }
+    records = []
+    for state in (RSIStatus.WEAK, RSIStatus.STRONG_BUY):
+        trend = TrendAnalysisResult(
+            code="600519", trend_status=TrendStatus.CONSOLIDATION,
+            volume_status=(VolumeStatus.HEAVY_VOLUME_DOWN if heavy_volume_down else VolumeStatus.NORMAL),
+            bias_ma5=2.5, macd_status=MACDStatus.BULLISH, rsi_status=state,
+            current_price=100, ma5=98, ma10=98, ma20=98, ma60=98,
+            ma_alignment="MA5=MA10=MA20",
+        )
+        trend.macd_signal = "SYNTHETIC_RAW_MACD"
+        trend.rsi_signal = "SYNTHETIC_RAW_RSI_" + state.name
+        StockTrendAnalyzer()._generate_signal(trend)
+        kwargs = {"method_execution_receipts": {}} if strict else {}
+        factor = build_stock_factor_decision_summary(
+            trend, volatility_momentum_context=deepcopy(partial),
+            include_canonical=True, **kwargs,
+        )
+        validate_canonical_factor_binding(factor)
+        public = AnalysisResult(
+            code="600519", name="SYNTHETIC", sentiment_score=50,
+            operation_advice="watch", trend_prediction="SYNTHETIC",
+            analysis_summary="", dashboard={},
+        )
+        apply_canonical_decision_to_result(public, factor, scope="research")
+        records.append((trend, factor, public))
+    return records
+
+
+@pytest.mark.parametrize(
+    "forgery",
+    ["ranking_eligibility", "public_score", "raw_reference_audit"],
+)
+def test_root_score_admission_is_bound_to_existing_canonical_runtime_identity(forgery):
+    """The accepted score guard must not be an unbound display-only field."""
+    from copy import deepcopy
+
+    original = _root_admission_score_pair(strict=True)[0][1]
+    assert original["score_admission"]["eligible_for_ranking"] is False
+    assert original["composite_score"] is None
+    assert validate_canonical_factor_binding(original)["runtime_trace_hash"]
+    mutated = deepcopy(original)
+    if forgery == "ranking_eligibility":
+        mutated["score_admission"]["eligible_for_ranking"] = True
+    elif forgery == "public_score":
+        mutated["composite_score"] = mutated["score_admission"]["raw_reference_score_audit"]
+    else:
+        mutated["score_admission"]["raw_reference_score_audit"] = 9999
+    with pytest.raises(ValueError, match="stale|missing|score"):
+        validate_canonical_factor_binding(mutated)
+
+
+def test_root_new_score_runtime_binding_is_json_wire_stable():
+    """Local JSON persistence keeps the canonical identity/qualification receipt."""
+    import json
+
+    candidate = _root_admission_score_pair(strict=True)[0][1]
+    wire_copy = json.loads(json.dumps(candidate, ensure_ascii=False))
+    assert validate_canonical_factor_binding(wire_copy) == candidate[
+        "canonical_decision_identity"
+    ]
+    assert wire_copy["score_admission"]["eligible_for_ranking"] is False
+
+
+def test_root_strict_missing_momentum_receipt_blocks_unqualified_legacy_score():
+    """An empty strict execution set is not permission to rank by raw RSI."""
+    results = []
+    for trend, _, _ in _root_admission_score_pair(False):
+        strict = build_stock_factor_decision_summary(
+            trend, method_execution_receipts={}, include_canonical=True,
+        )
+        assert strict["method_execution_receipt_policy"] == "REQUIRED"
+        assert strict["score_admission"]["eligible_for_ranking"] is False
+        assert strict["composite_score"] is None
+        assert strict["canonical_decision"]["action"] == "WAIT"
+        results.append(strict["conclusion"])
+        # Legitimate direct legacy mode is still explicitly distinct: no
+        # strict execution identity can be synthesized for a direct caller.
+        direct = build_stock_factor_decision_summary(
+            trend, include_canonical=True,
+        )
+        assert direct["score_admission"]["status"] == "LEGACY_REFERENCE_ONLY"
+    assert len(set(results)) == 1
+
+
+@pytest.mark.parametrize("strict", [False, True])
+def test_root_unqualified_legacy_score_not_reintroduced_by_three_report_channels(strict):
+    """Full reports preserve independent material without a raw 47/52 score."""
+    import re
+    from src.notification import NotificationService
+
+    service = NotificationService()
+    reports = []
+    for trend, factor, result in _root_admission_score_pair(strict):
+        result.sentiment_score = trend.signal_score  # Existing compatibility data
+        apply_canonical_decision_to_result(result, factor, scope="research")
+        assert factor["score_admission"]["eligible_for_ranking"] is False
+        assert factor["composite_score"] is None
+        rendered = []
+        for method in (
+            service.generate_daily_report,
+            service.generate_dashboard_report,
+            service.generate_brief_report,
+        ):
+            text = method([result], report_date="2026-10-14")
+            assert "ROC20 +3.0%" in text
+            assert "1.5%" in text
+            rendered.append(re.sub(r"\b\d{2}:\d{2}:\d{2}\b", "HH:MM:SS", text))
+        reports.append(rendered)
+    assert reports[0] == reports[1]
+
+
+@pytest.mark.parametrize("strict", [False, True])
+def test_root_rejected_rsi_does_not_change_rank_eligible_score(strict):
+    left, right = _root_admission_score_pair(strict)
+    assert left[0].signal_score != right[0].signal_score
+    equal_public_score = left[1]["composite_score"] == right[1]["composite_score"]
+    audit_only = all(
+        factor.get("score_admission", {}).get("eligible_for_ranking") is False
+        for _, factor, _ in (left, right)
+    )
+    assert equal_public_score or audit_only, (
+        "Rejected RSI changed an unqualified score; raw audit is allowed, ranking eligibility is not."
+    )
+
+
+@pytest.mark.parametrize("strict", [False, True])
+def test_root_rejected_rsi_does_not_change_public_conclusion(strict):
+    left, right = _root_admission_score_pair(strict)
+    assert left[1]["sections"]["momentum"] == right[1]["sections"]["momentum"]
+    assert left[2].analysis_summary == right[2].analysis_summary, (
+        "Same admitted inputs changed canonical-linked public prose through legacy score."
+    )
+
+
+def test_root_counterexample_remains_wait_and_not_buy():
+    for strict in (False, True):
+        for _, factor, public in _root_admission_score_pair(strict):
+            assert factor["canonical_decision"]["action"] == "WAIT"
+            assert public.action == "watch"
+            assert factor["strategy_eligibility"]["state"] == "UNKNOWN"
+
+
+def test_root_independent_volume_risk_still_vetoes():
+    for _, factor, public in _root_admission_score_pair(heavy_volume_down=True):
+        assert factor["canonical_decision"]["action"] == "PASS"
+        assert factor["canonical_decision"]["hard_veto"] is True
+        assert public.action == "avoid"
+
+
+def test_root_unrelated_fixed_window_evidence_is_not_deleted():
+    left, right = _root_admission_score_pair(strict=True)
+    for _, factor, _ in (left, right):
+        text = factor["sections"]["momentum"]
+        assert "ROC20 +3.0%" in text
+        assert "1.5%" in text
+        assert "SYNTHETIC_RAW_RSI" not in text
+    assert left[1]["sections"]["momentum"] == right[1]["sections"]["momentum"]

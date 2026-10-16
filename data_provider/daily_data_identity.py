@@ -226,6 +226,60 @@ def extract_daily_data_identity(
         return None
 
 
+def verified_observed_daily_frame_provider(frame: Any) -> Optional[str]:
+    """Verify an OBSERVED producer against the original full daily-frame bytes.
+
+    A bare provider label is never authority.  This shared, read-only check
+    binds typed attrs / serialized per-row identities to row count, price
+    content, source labels and adjustment evidence *before* callers project
+    frequency-specific bars. It conveys no storage, PIT or training rights.
+    """
+    if not isinstance(frame, pd.DataFrame) or frame.empty:
+        return None
+    names = [str(name).lower() for name in frame.columns]
+    if len(set(names)) != len(names):
+        return None
+    persisted = [name for name in frame.columns
+                 if str(name).lower() in {"data_identity_json", "data_identity_hash"}]
+    source = [name for name in frame.columns if str(name).lower() == "data_source"]
+    claimed = DAILY_DATA_IDENTITY_FRAME_ATTR in frame.attrs or bool(persisted)
+    if not claimed:
+        return None
+    if persisted and (
+        len(persisted) != 2
+        or set(persisted) != {"data_identity_json", "data_identity_hash"}
+    ):
+        return None
+    identity = extract_daily_data_identity(frame, strict=False)
+    if not identity or identity.get("identity_state") != "OBSERVED":
+        return None
+    if persisted:
+        serialized = extract_daily_data_identity_from_records(
+            frame[["data_identity_json", "data_identity_hash"]].to_dict("records"),
+            strict=False,
+        )
+        if not serialized or serialized.get("identity_hash") != identity.get("identity_hash"):
+            return None
+    try:
+        rebound = rebind_daily_data_identity(identity, frame)
+    except (DailyDataIdentityError, TypeError, ValueError):
+        return None
+    if any(
+        identity.get(key) != rebound.get(key)
+        for key in ("row_count", "returned_start", "returned_end", "content_sha256")
+    ):
+        return None
+    provider = str(identity.get("provider_identity") or "").strip()
+    if not provider:
+        return None
+    if source and (
+        len(source) != 1
+        or not frame[source[0]].map(lambda value: str(value).strip()).eq(provider).all()
+    ):
+        return None
+    return provider
+
+
 def extract_daily_data_identity_from_records(
     records: Sequence[Any],
     *,

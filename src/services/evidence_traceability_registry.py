@@ -402,7 +402,7 @@ METHOD_WINDOW_PROFILES = (
     ),
     MethodWindowProfile(
         "RSI", "MOMENTUM",
-        ("FIXED_ROLLING",), TIMEFRAMES, ("daily",), "EXISTING_REUSED",
+        ("RECURSIVE_WARMUP",), TIMEFRAMES, ("daily",), "EXISTING_REUSED",
     ),
     MethodWindowProfile(
         "ROC", "MOMENTUM",
@@ -449,7 +449,7 @@ METHOD_WINDOW_PROFILES = (
     MethodWindowProfile(
         "MTF_PRICE_STRUCTURE", "MTF",
         ("VARIABLE_STRUCTURE",), NON_DAILY_TECHNICAL_TIMEFRAMES,
-        ("monthly", "weekly"), "EXISTING_REUSED",
+        ("monthly", "weekly", "60m", "30m"), "EXISTING_REUSED",
     ),
     MethodWindowProfile(
         "MA_SLOPE_CROSS", "MTF",
@@ -599,6 +599,7 @@ if frozenset(_METHOD_CONSUMER_CLASSIFICATION) != ACCEPTED_METHOD_WINDOW_IDS:
 INTRADAY_CONTEXT_METHOD_IDS = frozenset({
     "MTF_MA_LEVEL_ALIGNMENT",
     "MTF_MOMENTUM_CONTEXT",
+    "MTF_PRICE_STRUCTURE",  # 30m confirmed pivots: descriptive only; trigger gate stays deferred.
     "MA_SLOPE_CROSS",
     "MA_COMPRESSION_RELEASE",
 })
@@ -1430,11 +1431,42 @@ def _mtf_method_matrix_state(method_id: str, factor: Mapping, timeframe: str, fa
                     and startup.get("status") == "READY"
                     and str(trend.get("macd_status") or "").strip()
                 )
-                rsi_ready = "RSI" in methods and str(trend.get("rsi_status") or "").strip()
+                rsi_startup = frame.get("rsi_startup_stability")
+                rsi_ready = (
+                    "RSI" in methods
+                    and isinstance(rsi_startup, Mapping)
+                    and rsi_startup.get("status") == "READY"
+                    and str(trend.get("rsi_status") or "").strip()
+                )
                 return (
                     ("PARTIAL", "MTF_MACD_RSI_CONTEXT_ONLY")
                     if macd_ready or rsi_ready else ("MISSING", "MTF_MACD_RSI_CONTEXT_MISSING")
                 )
+        if family == "SUPPLY":
+            # Higher-frame volume belongs to SUPPLY, never to MOMENTUM.
+            return (
+                ("PARTIAL", "MTF_HIGHER_VOLUME_CONTEXT_ONLY")
+                if str(trend.get("volume_status") or "").strip()
+                else ("MISSING", "MTF_HIGHER_VOLUME_NOT_OBSERVED")
+            )
+        if family == "MOMENTUM":
+            macd_receipt = frame.get("macd_startup_stability")
+            rsi_receipt = frame.get("rsi_startup_stability")
+            macd_ok = (
+                isinstance(macd_receipt, Mapping)
+                and macd_receipt.get("status") == "READY"
+                and str(trend.get("macd_status") or "").strip()
+            )
+            rsi_ok = (
+                isinstance(rsi_receipt, Mapping)
+                and rsi_receipt.get("status") == "READY"
+                and str(trend.get("rsi_status") or "").strip()
+            )
+            return (
+                ("PARTIAL", "MTF_HIGHER_VERIFIED_RECURSIVE_CONTEXT_ONLY")
+                if macd_ok or rsi_ok
+                else ("MISSING", "MTF_HIGHER_RECURSIVE_NOT_ADMITTED")
+            )
         fields = [str(trend.get(key) or "").strip() for key in ("volume_status", "macd_status", "rsi_status")]
         ready = sum(bool(value) for value in fields)
         if ready == len(fields):
@@ -1445,6 +1477,34 @@ def _mtf_method_matrix_state(method_id: str, factor: Mapping, timeframe: str, fa
     if method_id == "MTF_PRICE_STRUCTURE":
         structure = frame.get("price_structure")
         state = _state(structure)
+        if timeframe in {"60m", "30m"} and state == "READY":
+            methods = frame.get("admitted_methods")
+            pivots = structure.get("pivots") if isinstance(structure, Mapping) else None
+            identity_hash = str(frame.get("intraday_identity_hash") or "")
+            verified = (
+                frame.get("completed_bar_only") is True
+                and isinstance(structure, Mapping)
+                and structure.get("timeframe") == timeframe
+                and structure.get("completed_bar_only") is True
+                and len(identity_hash) == 64
+                and structure.get("intraday_identity_hash") == identity_hash
+                and isinstance(methods, (list, tuple))
+                and "PRICE_STRUCTURE" in methods
+                and isinstance(pivots, list) and bool(pivots)
+                and all(
+                    isinstance(pivot, Mapping)
+                    and pivot.get("provisional") is False
+                    and str(pivot.get("origin_time") or "")
+                    and str(pivot.get("confirmed_at") or "")
+                    and str(pivot.get("confirmed_available_at") or "")
+                    for pivot in pivots
+                )
+                and frame.get("strategy_admitted") is False
+            )
+            return (
+                ("READY", f"MTF_{timeframe.upper()}_CONFIRMED_CONTEXT_ONLY")
+                if verified else ("UNKNOWN", f"MTF_{timeframe.upper()}_STRUCTURE_RECEIPT_UNBOUND")
+            )
         return (state, "MTF_PRICE_STRUCTURE_" + state) if state in TIMEFRAME_FAMILY_MATRIX_STATES else ("UNKNOWN", "MTF_PRICE_STRUCTURE_UNKNOWN")
     ma_structure = frame.get("ma_structure")
     if not isinstance(ma_structure, Mapping):
@@ -1649,6 +1709,82 @@ def compile_timeframe_family_matrix(factor: Mapping, *, observations=None, polic
     return document
 
 
+
+def _verified_stock_base_bar_scope(factor: Mapping) -> dict[str, dict]:
+    """Point-of-use source provenance via the existing strict DSA MTF receipt."""
+    if not _receipt_required(factor):
+        return {}
+    mtf = factor.get("multi_timeframe_structure_context")
+    if not isinstance(mtf, Mapping):
+        return {}
+    binding = next(b for b in EVIDENCE_BINDINGS if b.requirement_id == "MTF")
+    state, reason = method_observation(
+        binding, mtf, receipt=_receipt_for(factor, "MTF"), require_receipt=True,
+    )
+    if state not in {"READY", "PARTIAL"} or reason != "METHOD_INVOCATION_VERIFIED":
+        return {}
+    frames = mtf.get("timeframes")
+    if not isinstance(frames, Mapping):
+        return {}
+    target = str(mtf.get("target_date") or "")
+    provider = str(mtf.get("provider_identity") or "")
+    basis = str(mtf.get("adjustment_basis") or "")
+    observed = str(mtf.get("available_at_max") or "")
+    if not (target and provider and basis and observed):
+        return {}
+    if mtf.get("price_identity_reasons") or mtf.get("daily_data_identity_state") != "OBSERVED":
+        return {}
+    scope = {}
+    daily = frames.get("daily")
+    identity = str(mtf.get("daily_data_identity_hash") or "")
+    if (isinstance(daily, Mapping) and len(identity) == 64
+        and daily.get("status") == "READY"
+        and daily.get("completed_bar_only") is True
+        and daily.get("completed_through") == target
+        and (daily.get("source_alignment") or {}).get("status") == "SINGLE_SOURCE"):
+        scope["P_DAILY"] = {
+            "state": "PARTIAL",
+            "reason": "TYPED_1D_SOURCE_OBSERVED_RIGHTS_HISTORICAL_PIT_NOT_PROVEN",
+            "source_identity_hash": identity, "source_observed_at": observed,
+        }
+    minute = frames.get("5m")
+    session = minute.get("completed_source_session_receipt") if isinstance(minute, Mapping) else None
+    if isinstance(session, Mapping):
+        minute_hash = str(minute.get("intraday_identity_hash") or "")
+        sessions = session.get("session_count")
+        rows = session.get("row_count")
+        dates = session.get("expected_session_dates")
+        if (minute.get("status") in {"READY", "PARTIAL"}
+            and minute.get("completed_bar_only") is True
+            and (minute.get("source_alignment") or {}).get("status") == "SINGLE_SOURCE"
+            and str(minute.get("latest_bar_end") or "").startswith(target + "T")
+            and len(minute_hash) == 64 and session.get("identity_hash") == minute_hash
+            and session.get("schema_version") == "cn-complete-5m-session-set-v1"
+            and session.get("identity_state") == "OBSERVED"
+            and session.get("provider_identity") == provider
+            and session.get("observed_adjustment_basis") == basis
+            and session.get("currency") not in (None, "", "UNKNOWN")
+            and isinstance(sessions, int) and sessions >= 10
+            and isinstance(rows, int) and rows == sessions * 48
+            and minute.get("observations") == rows
+            and isinstance(dates, list) and len(dates) == sessions
+            and dates[-1] == target and session.get("bars_per_session") == 48
+            and session.get("observed_at") and session.get("available_at_max")):
+            unknown_units = any(
+                session.get(k) in (None, "", "UNKNOWN")
+                for k in ("volume_unit", "amount_unit")
+            )
+            scope["P_5M"] = {
+                "state": "PARTIAL",
+                "reason": ("TYPED_5M_PRICE_ONLY_UNITS_UNKNOWN_RIGHTS_PIT_NOT_PROVEN"
+                           if unknown_units else "TYPED_5M_SOURCE_RIGHTS_PIT_NOT_PROVEN"),
+                "source_identity_hash": minute_hash,
+                "source_observed_at": session["observed_at"],
+                "completed_sessions": sessions,
+            }
+    return scope
+
+
 def _compile_accepted_data_object_scope(factor: Mapping) -> list[dict]:
     """Expose accepted DATA obligations, not invented data values or strategy votes."""
     rows = [
@@ -1667,13 +1803,16 @@ def _compile_accepted_data_object_scope(factor: Mapping) -> list[dict]:
     # Asset route is a producer-owned Factor fact. A mutable investor_brief
     # presentation label must never change trace identity after construction.
     asset_route = str(factor.get("asset_type") or "stock").lower().strip()
+    base_source_scope = (
+        _verified_stock_base_bar_scope(factor) if asset_route == "stock" else {}
+    )
     objects = []
     for dataset_id, domain, fact, frequency, consumer in rows:
         applicable = (
             (domain != "ETF" or asset_route == "etf")
             and (domain != "STOCK" or asset_route == "stock")
         )
-        objects.append({
+        row = {
             "dataset_id": dataset_id,
             "domain": domain,
             "fact_or_fields": fact,
@@ -1686,7 +1825,10 @@ def _compile_accepted_data_object_scope(factor: Mapping) -> list[dict]:
             ),
             "independent_source_value_admitted": False,
             "strategy_upgrade_authority": False,
-        })
+        }
+        if applicable and dataset_id in base_source_scope:
+            row.update(base_source_scope[dataset_id])
+        objects.append(row)
     return objects
 
 
@@ -1868,6 +2010,12 @@ def build_runtime_trace(factor: Mapping) -> dict:
                 "product_state": "NOT_RENDERED_NOT_AUTHORIZED",
                 "ledger_state": "NOT_YET_PERSISTED",
                 "independent_vote_count": None}
+    # New qualified-score receipts are part of the same runtime identity,
+    # not a separate scoring/graph authority. Legacy historical traces without
+    # this field retain their prior exact wire shape and manifest identity.
+    if isinstance(factor.get("score_admission"), Mapping):
+        document["score_admission"] = factor.get("score_admission")
+        document["composite_score"] = factor.get("composite_score")
     document["runtime_trace_hash"] = digest(document)
     return document
 

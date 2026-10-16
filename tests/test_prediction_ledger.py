@@ -141,6 +141,40 @@ def _signal() -> dict:
     }
 
 
+def test_strict_current_source_with_unproven_storage_rights_never_writes_ledger():
+    """PIT clock/schema/hash are not licenses to durably store vendor data."""
+    from datetime import datetime
+
+    db = MagicMock()
+    db.get_analysis_history_by_id.return_value = SimpleNamespace(
+        code="600519", created_at=datetime(2026, 10, 14, 11, 0, 0),
+    )
+    repo = MagicMock()
+    service = PredictionLedgerService(db_manager=db, repo=repo)
+    for rights in (None, {"storage": "GRANTED", "source": "UNVERIFIED_TEXT"}):
+        current = _result()
+        factor = current.dashboard["factor_decision"]
+        factor["method_execution_receipt_policy"] = "REQUIRED"
+        factor["multi_timeframe_structure_context"].update({
+            "provider_identity": "BaostockFetcher",
+            "adjustment_basis": "qfq",
+            "data_snapshot_identity": "a" * 64,
+            "available_at_max": "2026-10-14T10:00:00+00:00",
+        })
+        if rights is not None:
+            factor["multi_timeframe_structure_context"]["data_rights"] = rights
+        outcome = service.persist(
+            analysis_history_id=71, result=current,
+            decision_signal=_signal(), code_sha="a" * 40,
+        )
+        assert outcome == {
+            "status": "LAWFULLY_REJECTED",
+            "reason_code": "SOURCE_STORAGE_RIGHTS_NOT_ADMITTED",
+        }
+    repo.insert_if_history_exists.assert_not_called()
+    db._run_write_transaction.assert_not_called()
+
+
 def test_durable_projection_rejects_forged_canonical_action() -> None:
     with pytest.raises(ValueError, match="canonical"):
         build_canonical_opportunity_projection(

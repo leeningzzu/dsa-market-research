@@ -427,7 +427,9 @@ def _volatility_momentum_summary(evidence: Dict[str, Any], trend_result: Any) ->
     if rsi.get("status"):
         parts.append(f"RSI {rsi['status']}")
     if not parts:
-        return _momentum_summary(trend_result)
+        # An explicit native context must never fall back to an unadmitted
+        # raw trend MACD/RSI, even if the legacy analyzer has a label.
+        return "波动/动量：没有可独立准入的当前指标。"
     prefix = "波动/动量："
     return prefix + "；".join(parts) + "。"
 
@@ -770,6 +772,7 @@ def _canonical_decision(
     authority: str = _CANONICAL_AUTHORITY,
     regime_admission_reason: Optional[str] = None,
     rejected_risk_methods: Optional[Dict[str, str]] = None,
+    raw_score_admitted: bool = True,
 ) -> Dict[str, Any]:
     """Produce the conservative WAIT/PASS decision from deterministic inputs."""
     reason_codes: List[str] = []
@@ -777,14 +780,22 @@ def _canonical_decision(
     if regime_admission_reason:
         reason_codes.append(regime_admission_reason)
     rejected_risk_methods = rejected_risk_methods or {}
+    if not raw_score_admitted:
+        reason_codes.append("RECURSIVE_SCORE_DEPENDENCIES_UNADMITTED")
 
     if trend_result is None:
         reason_codes.append("MISSING_TREND_RESULT")
     else:
         trend = _enum_value(getattr(trend_result, "trend_status", None))
-        signal = _enum_value(getattr(trend_result, "buy_signal", None))
+        signal = (
+            _enum_value(getattr(trend_result, "buy_signal", None))
+            if raw_score_admitted else ""
+        )
         volume = _enum_value(getattr(trend_result, "volume_status", None))
-        score = _safe_float(getattr(trend_result, "signal_score", None))
+        score = (
+            _safe_float(getattr(trend_result, "signal_score", None))
+            if raw_score_admitted else None
+        )
         risk_factors = [
             str(item or "").strip()
             for item in (getattr(trend_result, "risk_factors", None) or [])
@@ -903,6 +914,29 @@ def _canonical_public_text(summary: Dict[str, Any], *, scope: str = "p0") -> Dic
     }
 
 
+def _bound_risk_material(summary: Dict[str, Any], brief: Any = None) -> Dict[str, Any]:
+    """Content-bound Product risk atoms, not another decision or risk scorer."""
+    candidate = summary.get("investor_brief") if brief is None else brief
+    if candidate is not None and not isinstance(candidate, dict):
+        raise ValueError("investor brief risk source has invalid type")
+
+    def risk_list(value: Any) -> Any:
+        if value is None:
+            return None  # Historical diagnostic is not invented risk evidence.
+        if not isinstance(value, list) or any(
+            not isinstance(item, str) or not item.strip() for item in value
+        ):
+            raise ValueError("risk material list is not a valid source projection")
+        return list(value)
+
+    return {
+        "factor_risk_notes": risk_list(summary.get("risk_notes")),
+        "brief_risk_notes": risk_list(
+            candidate.get("risk_notes") if isinstance(candidate, dict) else None
+        ),
+    }
+
+
 def canonical_factor_binding(summary: Any) -> Dict[str, Any]:
     """Bind one legal canonical decision to the current deterministic trace."""
 
@@ -930,6 +964,11 @@ def canonical_factor_binding(summary: Any) -> Dict[str, Any]:
         "runtime_trace_hash": runtime_trace_hash,
         "manifest_hash": manifest_hash,
         "data_snapshot_identity": trace.get("data_snapshot_identity"),
+        # Additive sub-binding in the SAME canonical identity: the decision
+        # tuple/Registry Manifest and accepted graph are unchanged. Old wire
+        # snapshots without this digest cannot pass a *current* Product gate.
+        "risk_material_binding_version": "factor-brief-risk-atoms-v1",
+        "risk_material_sha256": digest(_bound_risk_material(summary)),
     }
 
 
@@ -957,6 +996,8 @@ def validate_investor_brief_binding(
     expected = validate_canonical_factor_binding(summary)
     if candidate.get("canonical_binding") != expected:
         raise ValueError("investor brief canonical binding is missing or stale")
+    if digest(_bound_risk_material(summary, candidate)) != expected["risk_material_sha256"]:
+        raise ValueError("investor brief risk material identity is stale")
     return candidate
 
 
@@ -1881,6 +1922,40 @@ def build_stock_factor_decision_summary(
         None if regime_admission_reason else market_sector_regime
     )
 
+    # StockTrendAnalyzer.signal_score includes raw MACD/RSI components.
+    # A rejected native method cannot be silently represented by 0/50 or
+    # reweighted. Keep the legacy raw score only as a diagnostic observation.
+    native_momentum = _mapping(
+        _mapping(volatility_momentum_evidence.get("context")).get("momentum")
+    )
+    rejected_score_methods = [
+        method.upper()
+        for method in ("macd", "rsi")
+        if "admission" in _mapping(native_momentum.get(method))
+        and str(
+            _mapping(
+                _mapping(native_momentum.get(method)).get("admission")
+            ).get("status") or ""
+        ).upper() != "READY"
+    ]
+    if strict_receipts:
+        # An explicit strict execution policy must not regain score authority
+        # from the legacy analyzer when the actual MOMENTUM producer receipt
+        # is missing, forged, or rejected by the same Registry consumer.
+        for binding in EVIDENCE_BINDINGS:
+            if binding.requirement_id != "MOMENTUM":
+                continue
+            admitted_state, _ = method_observation(
+                binding,
+                volatility_momentum_evidence,
+                receipt=receipts.get("MOMENTUM"),
+                require_receipt=True,
+            )
+            if admitted_state not in {"READY", "PARTIAL"}:
+                rejected_score_methods.append("MOMENTUM_EXECUTION_RECEIPT")
+            break
+    qualified_legacy_score = not rejected_score_methods
+
     authority = _ETF_CANONICAL_AUTHORITY if asset_type == "etf" else _CANONICAL_AUTHORITY
     canonical_decision = (
         _canonical_decision(
@@ -1889,6 +1964,7 @@ def build_stock_factor_decision_summary(
             authority=authority,
             regime_admission_reason=regime_admission_reason,
             rejected_risk_methods=rejected_risk_methods,
+            raw_score_admitted=qualified_legacy_score,
         )
         if include_canonical
         else None
@@ -1917,11 +1993,32 @@ def build_stock_factor_decision_summary(
                 ])),
             }
     raw_score = _safe_float(getattr(trend_result, "signal_score", None))
-    score = (
+    raw_reference_score = (
         int(max(0, min(100, round(raw_score))))
         if raw_score is not None
-        else None if include_canonical else 0
+        else None
     )
+    score = (
+        (
+            raw_reference_score
+            if raw_reference_score is not None else None if include_canonical else 0
+        )
+        if qualified_legacy_score else None
+    )
+    score_admission = {
+        "schema_version": "stock-trend-reference-score-admission-v1",
+        "producer_scheme": "StockTrendAnalyzer.signal_score/legacy",
+        "status": (
+            "UNQUALIFIED_RECURSIVE_DEPENDENCY"
+            if not qualified_legacy_score else "LEGACY_REFERENCE_ONLY"
+        ),
+        "eligible_for_ranking": qualified_legacy_score,
+        "eligible_for_public_conclusion": qualified_legacy_score,
+        "blocked_methods": rejected_score_methods,
+        "raw_reference_score_audit": raw_reference_score,
+        "historical_win_rate": "NOT_PROVEN",
+        "calibrated_probability": "NOT_PROVEN",
+    }
     support, _ = _nearest_levels(trend_result)
     structured_context = _mapping(price_structure_evidence.get("context"))
     if "nearest_support" in structured_context:
@@ -2010,6 +2107,11 @@ def build_stock_factor_decision_summary(
         conclusion = "数据不足，暂不采取买卖动作；等待必需趋势、评分与量价证据完整。"
     elif canonical_decision and canonical_decision["action"] == "PASS":
         conclusion = "风险或弱势条件触发，当前回避新增仓位；等待条件修复后再评估。"
+    elif not qualified_legacy_score:
+        conclusion = (
+            "递归类指标尚未通过独立准入；保留已核验的趋势、量价和风险，"
+            "但不依据未经准入的旧综合评分作出强弱判断。"
+        )
     else:
         conclusion = _conclusion(trend_result, score if score is not None else 0)
 
@@ -2018,7 +2120,11 @@ def build_stock_factor_decision_summary(
         "asset_type": asset_type,
         "contract_version": "1.0",
         "composite_score": score,
+        "score_admission": score_admission,
         "score_note": (
+            "递归方法未准入：原技术分仅供审计，不能用于排序、公开强弱结论或策略；"
+            "也不代表胜率或概率。"
+            if not qualified_legacy_score else
             "现有技术参考分，仅用于排序和解释；不作为 canonical 独立证据投票，"
             "也不代表胜率或概率。"
         ),
@@ -2059,17 +2165,20 @@ def build_stock_factor_decision_summary(
     if canonical_decision is not None:
         summary["canonical_decision"] = canonical_decision
     if include_canonical:
-        # Actual producer: the same evidence objects feed the unchanged strict validator.
-        # Deferred 30m/quality/valuation/execution never become satisfied from prose.
+        # Actual producer: same accepted evidence and unchanged Registry.
+        # A risk fact must be sealed only AFTER both Product layers exist.
         summary["strategy_eligibility"] = build_strategy_eligibility(
             summary, schema_version=STRATEGY_ELIGIBILITY_SCHEMA_VERSION,
         )
         summary["evidence_traceability"] = build_runtime_trace(summary)
-        summary["canonical_decision_identity"] = canonical_factor_binding(summary)
         summary["evidence_product_coverage"] = compile_product_coverage(summary)
     summary["investor_brief"] = _build_asset_research_brief_v1(
         trend_result,
         summary,
         asset_type=asset_type,
     )
+    if include_canonical:
+        binding = canonical_factor_binding(summary)
+        summary["canonical_decision_identity"] = binding
+        summary["investor_brief"]["canonical_binding"] = dict(binding)
     return summary
