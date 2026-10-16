@@ -199,7 +199,11 @@ class TestPrefetchStockNames(unittest.TestCase):
         start = pd.Timestamp(fetch_args.kwargs["start_date"]).date()
         end = pd.Timestamp(fetch_args.kwargs["end_date"]).date()
         self.assertEqual(end, pd.Timestamp("2026-10-12").date())
-        self.assertEqual(start, pd.Timestamp("2023-06-01").date())
+        # B5 accepted independent method-window contract: 268 weekly bars
+        # and 140 monthly bars require the earlier completed XSHG history.
+        # The old 2023-06-01 name-prefetch fixture must not truncate MTF.
+        self.assertEqual(start, pd.Timestamp("2015-02-02").date())
+        self.assertLess(start, pd.Timestamp("2023-06-01").date())
         self.assertNotEqual((end - start).days, 1100)
 
     def test_pytdx_get_stock_name_reads_all_security_list_pages(self):

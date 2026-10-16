@@ -1442,7 +1442,7 @@ class BacktestServiceTestCase(unittest.TestCase):
                             },
                         ]
                     ),
-                    "ControlledFetcher",
+                    "test",  # Genuine synthetic bars; disposable SQLite only.
                 )
 
         with self.db.get_session() as session:
