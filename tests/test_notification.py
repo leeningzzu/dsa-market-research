@@ -69,6 +69,67 @@ def _make_response(status_code: int, json: Optional[dict] = None) -> requests.Re
     return response
 
 
+def _notification_canonical_5m(session_dates: list[date]):
+    """Build exact completed 5m fixture without importing the full Pipeline."""
+    import pandas as pd
+    from data_provider.intraday_data_identity import (
+        attach_intraday_data_identity,
+        build_intraday_data_identity,
+    )
+
+    observed = pd.Timestamp(
+        f"{session_dates[-1].isoformat()} 16:00:00", tz="Asia/Shanghai",
+    )
+    rows = []
+    for session_date in session_dates:
+        labels = list(pd.date_range(
+            f"{session_date.isoformat()} 09:35:00",
+            f"{session_date.isoformat()} 11:30:00",
+            freq="5min", tz="Asia/Shanghai",
+        ))
+        labels += list(pd.date_range(
+            f"{session_date.isoformat()} 13:05:00",
+            f"{session_date.isoformat()} 15:00:00",
+            freq="5min", tz="Asia/Shanghai",
+        ))
+        for index, bar_end in enumerate(labels):
+            close = 100.0 + index * 0.01
+            rows.append({
+                "code": "600519", "bar_end": bar_end,
+                "open": close - 0.1, "high": close + 0.5,
+                "low": close - 0.5, "close": close,
+                "volume": 1000.0 + index,
+                "session": (
+                    f"{session_date.isoformat()}:AM" if bar_end.hour < 12
+                    else f"{session_date.isoformat()}:PM"
+                ),
+                "available_at": observed,
+                "adjustflag": "2", "data_source": "BaostockFetcher",
+            })
+    frame = pd.DataFrame(rows)
+    identity = build_intraday_data_identity(
+        frame,
+        provider_identity="BaostockFetcher",
+        provider_route="unit.notification",
+        package_version="0.9.4",
+        query_identity={"code": "sh.600519", "frequency": "5", "adjustflag": "2"},
+        requested_adjustment_basis="qfq",
+        observed_adjustment_basis="qfq",
+        basis_evidence="unit-test",
+        timeframe="5m", timezone_name="Asia/Shanghai",
+        session_calendar="XSHG", currency="CNY",
+        volume_unit="UNKNOWN", amount_unit="UNKNOWN",
+        requested_start=session_dates[0].isoformat(),
+        requested_end=session_dates[-1].isoformat(),
+        identity_state="OBSERVED",
+        observed_at=observed.tz_convert("UTC").to_pydatetime(),
+        source_rows_sha256="7" * 64,
+    )
+    attach_intraday_data_identity(frame, identity)
+    frame["intraday_data_identity_hash"] = identity["identity_hash"]
+    return frame
+
+
 def _attach_decision_signal_summary(result: AnalysisResult) -> AnalysisResult:
     result.decision_signal_summary = {
         "action": "sell",
@@ -196,6 +257,428 @@ def _make_investor_brief_result() -> AnalysisResult:
 
 
 
+
+
+
+def test_formal_report_email_is_required_and_telegram_is_optional():
+    """Email is the required Product sink; legacy push must never substitute."""
+    samples = (
+        ("both", [NotificationChannel.WECHAT, NotificationChannel.TELEGRAM,
+                   NotificationChannel.EMAIL, NotificationChannel.CUSTOM],
+         [], True, True, "sent", True, ["email", "telegram"]),
+        ("tg_failure", [NotificationChannel.TELEGRAM, NotificationChannel.EMAIL,
+                         NotificationChannel.CUSTOM],
+         [], True, False, "partial_failed", True, ["email", "telegram"]),
+        ("email_failure", [NotificationChannel.TELEGRAM, NotificationChannel.EMAIL,
+                            NotificationChannel.WECHAT],
+         [], False, True, "partial_failed", False, ["email", "telegram"]),
+        ("no_email", [NotificationChannel.WECHAT, NotificationChannel.TELEGRAM,
+                       NotificationChannel.CUSTOM],
+         [], True, True, "email_required", False, []),
+        ("only_email", [NotificationChannel.EMAIL, NotificationChannel.WECHAT,
+                         NotificationChannel.CUSTOM],
+         ["custom"], True, True, "sent", True, ["email"]),
+    )
+    for name, installed, configured, email_ok, tg_ok, status, success, channels in samples:
+        with mock.patch("src.notification.get_config", return_value=_make_config(
+            notification_report_channels=configured,
+        )):
+            notifier = NotificationService()
+        notifier._available_channels = installed
+        notifier._markdown_to_image_channels = set()
+        notifier.send_to_context = mock.MagicMock(return_value=True)
+        notifier.should_broadcast_static_channels = mock.MagicMock(return_value=False)
+        notifier.evaluate_noise_control = mock.MagicMock(
+            return_value=SimpleNamespace(should_send=True, message="allowed")
+        )
+        notifier.record_noise_control = mock.MagicMock()
+        notifier.release_noise_control = mock.MagicMock()
+        notifier.send_to_email = mock.MagicMock(return_value=email_ok)
+        notifier.send_to_telegram = mock.MagicMock(return_value=tg_ok)
+        notifier.send_to_wechat = mock.MagicMock(return_value=True)
+        notifier.send_to_custom = mock.MagicMock(return_value=True)
+        receipt = notifier.send_with_results("SYNTHETIC_REPORT", route_type="report")
+        assert receipt.status == status, name
+        assert receipt.success is success, name
+        assert [item.channel for item in receipt.channel_results] == channels, name
+        notifier.send_to_context.assert_not_called()
+        notifier.send_to_wechat.assert_not_called()
+        notifier.send_to_custom.assert_not_called()
+        assert notifier.send_to_email.call_count == int("email" in channels)
+        assert notifier.send_to_telegram.call_count == int("telegram" in channels)
+
+
+def test_canonical_notification_send_with_results_keeps_email_and_telegram_text_not_image() -> None:
+    """Root consumer: a valid canonical report cannot be replaced by image-only content."""
+    with mock.patch("src.notification.get_config", return_value=_make_config()):
+        service = NotificationService()
+    channels = [NotificationChannel.EMAIL, NotificationChannel.TELEGRAM]
+    service._available_channels = channels
+    service._markdown_to_image_channels = {"email", "telegram"}
+    service._stock_email_groups = []
+    service.get_channels_for_route = mock.MagicMock(return_value=channels)
+    service.send_to_context = mock.MagicMock(return_value=False)
+    service.should_broadcast_static_channels = mock.MagicMock(return_value=True)
+    service.evaluate_noise_control = mock.MagicMock(return_value=SimpleNamespace(
+        should_send=True, message=""
+    ))
+    service.record_noise_control = mock.MagicMock()
+    service.release_noise_control = mock.MagicMock()
+    service.require_current_asset_data_for_send = mock.MagicMock()
+    service.send_to_email = mock.MagicMock(return_value=True)
+    service.send_to_telegram = mock.MagicMock(return_value=True)
+    service._send_email_with_inline_image = mock.MagicMock(return_value=True)
+    service._send_telegram_photo = mock.MagicMock(return_value=True)
+    material = "GLOBAL_UNKNOWN\\nSEVEN_TF\\nCOUNTEREVIDENCE\\nRISK_INVALIDATION\\nSOURCE_TIME"
+    with mock.patch("src.md2img.markdown_to_image", return_value=b"png") as converter:
+        delivery = service.send_with_results(
+            material, route_type="report", asset_results=[_make_investor_brief_result()]
+        )
+    assert delivery.success
+    service.send_to_email.assert_called_once_with(material, receivers=None)
+    service.send_to_telegram.assert_called_once_with(material)
+    service._send_email_with_inline_image.assert_not_called()
+    service._send_telegram_photo.assert_not_called()
+    converter.assert_not_called()
+    # Deliberate legacy compression config must be rejected before any channel.
+    service._report_summary_only = True
+    service.send_to_email.reset_mock()
+    service.send_to_telegram.reset_mock()
+    with mock.patch("src.md2img.markdown_to_image", return_value=b"png") as second_converter:
+        blocked = service.send_with_results(
+            material, route_type="report", asset_results=[_make_investor_brief_result()]
+        )
+    assert blocked.status == "invalid_report"
+    assert not blocked.success and not blocked.dispatched
+    service.send_to_email.assert_not_called()
+    service.send_to_telegram.assert_not_called()
+    second_converter.assert_not_called()
+
+
+
+def test_typed_completed_daily_5m_source_observations_survive_existing_full_email_leaf():
+    """Typed positive source receipts are projected as PARTIAL, never as fully usable PIT."""
+    from copy import deepcopy
+    from html.parser import HTMLParser
+    from src.notification import _append_complete_research_universe_appendix
+    from src.formatters import markdown_to_html_document
+    from src.services.evidence_traceability_registry import build_runtime_trace
+    from tests.test_evidence_traceability_registry import _closed_typed_stock_source_factor
+
+    class Reader(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.parts = []
+
+        def handle_data(self, item):
+            self.parts.append(item)
+
+    factor, minute = _closed_typed_stock_source_factor()
+    factor["evidence_traceability"] = build_runtime_trace(factor)
+    lines = []
+    _append_complete_research_universe_appendix(lines, factor, {"asset_type": "stock"})
+    document = "\n".join(lines)
+    reader = Reader()
+    reader.feed(markdown_to_html_document(document))
+    visible = "".join(reader.parts)
+    for item in ("P_DAILY", "P_5M", "PARTIAL", "2026-10", "PIT", "权利"):
+        assert item in document and item in visible
+    assert "量额单位未知" in visible
+    assert "不构成完整准入" in visible
+    assert "已完整准入" not in visible
+    assert "G_VIX" in visible and "UNKNOWN" in visible
+
+    unbound = deepcopy(factor)
+    del unbound["method_execution_receipts"]
+    unbound["evidence_traceability"] = build_runtime_trace(unbound)
+    blocked = []
+    _append_complete_research_universe_appendix(blocked, unbound, {"asset_type": "stock"})
+    assert "P_DAILY" in "\n".join(blocked)
+    blocked_scope = [line for line in blocked if "P_DAILY" in line or "P_5M" in line]
+    assert len(blocked_scope) == 2
+    assert all("PARTIAL／" not in line for line in blocked_scope)
+
+
+def test_b8_stale_current_risk_must_not_render_abbreviated_report_or_dispatch():
+    """Current signed risk facts fail closed at ALL existing Product exits."""
+    import pytest
+    from src.enums import ReportType
+
+    source = _make_investor_brief_result()
+    with mock.patch("src.notification.get_config", return_value=_make_config(
+        report_renderer_enabled=False, report_history_compare_n=0,
+        report_summary_only=False,
+    )):
+        service = NotificationService()
+        baseline = service.generate_aggregate_report(
+            [source], ReportType.FULL, "2026-10-14"
+        )
+        assert len(baseline) > 5000
+        assert "弱趋势仍未修复" in baseline
+
+        for target in ("factor", "brief"):
+            poisoned = deepcopy(source)
+            if target == "factor":
+                poisoned.dashboard["factor_decision"]["risk_notes"] = [
+                    "FORGED_CURRENT_FACTOR_RISK"
+                ]
+            else:
+                poisoned.dashboard["factor_decision"]["investor_brief"]["risk_notes"][0] = (
+                    "FORGED_CURRENT_BRIEF_RISK"
+                )
+            for factory in (
+                lambda: service.generate_aggregate_report(
+                    [poisoned], ReportType.FULL, "2026-10-14"
+                ),
+                lambda: service.generate_daily_report([poisoned], "2026-10-14"),
+                lambda: service.generate_brief_report([poisoned], "2026-10-14"),
+                lambda: service.generate_single_stock_report(poisoned),
+            ):
+                with pytest.raises(ValueError, match="canonical|material"):
+                    factory()
+
+            # Source/available-at veto runs first; risk-material veto follows,
+            # before any channel. No abbreviated report is an allowed fallback.
+            service.send_to_context = mock.MagicMock(return_value=False)
+            service.send_to_email = mock.MagicMock(return_value=True)
+            service.send_to_telegram = mock.MagicMock(return_value=True)
+            service.require_current_asset_data_for_send = mock.MagicMock()
+            blocked = service.send_with_results(
+                "FORGED_REPORT_MUST_NOT_SEND", route_type="report",
+                asset_results=[poisoned],
+            )
+            assert blocked.status == "invalid_report"
+            assert not blocked.success and not blocked.dispatched
+            service.send_to_context.assert_not_called()
+            service.send_to_email.assert_not_called()
+            service.send_to_telegram.assert_not_called()
+            service.require_current_asset_data_for_send.assert_called_once_with([poisoned])
+
+        # No canonical object: historical descriptive-only report remains
+        # readable without upgrading the old record to current authority.
+        legacy = AnalysisResult(
+            code="600519", name="historical-only", sentiment_score=50,
+            trend_prediction="数据不足", operation_advice="观望",
+            dashboard={}, report_language="zh",
+        )
+        historical = service.generate_dashboard_report([legacy], "2026-10-14")
+        assert "600519" in historical
+
+
+def test_b5_b8_seven_completed_timeframes_strict_mtf_to_canonical_full_report_html_no_send() -> None:
+    """One producer invocation, 7 frames, 76 product obligations, no source-rights laundering."""
+    from datetime import datetime, timezone
+    from html.parser import HTMLParser
+
+    import exchange_calendars as xcals
+    import numpy as np
+    import pandas as pd
+    import pytest
+
+    from data_provider.daily_data_identity import (
+        attach_daily_data_identity, build_daily_data_identity,
+    )
+    from src.services.intraday_bar_service import (
+        aggregate_completed_intraday_bars, validate_complete_cn_5m_sessions,
+    )
+    from src.services.multi_timeframe_structure_service import build_multi_timeframe_structure_context
+    from src.services.pit_identity import build_completed_history_identity
+    from src.services.evidence_traceability_registry import (
+        TraceabilityError, build_method_execution_receipt, build_runtime_trace,
+        validate_runtime_trace,
+    )
+    from src.services.factor_decision_summary import validate_canonical_factor_binding
+    from src.stock_analyzer import StockTrendAnalyzer
+    from src.enums import ReportType
+    from src.formatters import markdown_to_html_document
+    from tests.test_factor_decision_summary import _trend
+
+    # All dates are independently verified XSHG sessions, unlike the legacy
+    # 2026-09-25 holiday fixtures; no outside price feed or business database.
+    target = date(2026, 10, 15)
+    sessions = [d.date() for d in xcals.get_calendar("XSHG").sessions_in_range(
+        "2023-01-01", target.isoformat(),
+    )]
+    recent = sessions[-10:]
+    assert len(recent) == 10 and recent[-1] == target
+    x = np.arange(len(sessions), dtype=float)
+    closes = 90 + .065 * x + np.sin(x / 24) * 1.8
+    daily = pd.DataFrame({
+        "date": pd.to_datetime(sessions),
+        "open": closes - .2, "high": closes + .6,
+        "low": closes - .7, "close": closes,
+        "volume": 100000 + 9 * x,
+        "amount": closes * (100000 + 9 * x),
+        "data_source": "BaostockFetcher",
+    })
+    observed = datetime(2026, 10, 16, 2, tzinfo=timezone.utc)
+    source_identity = build_daily_data_identity(
+        daily, provider_identity="BaostockFetcher",
+        provider_route="fixture.offline.no_provider_call",
+        actual_response_branch="SYNTHETIC_ONLY;adjustflag=2",
+        requested_adjustment_basis="qfq", observed_adjustment_basis="qfq",
+        basis_evidence="SYNTHETIC_TEST_ONLY",
+        requested_start=sessions[0].isoformat(),
+        requested_end=target.isoformat(),
+        currency="CNY", volume_unit="share", amount_unit="CNY",
+        identity_state="OBSERVED", observed_at=observed,
+    )
+    attach_daily_data_identity(daily, source_identity)
+    # Match the actual BaoStock normalized adapter response: typed attrs
+    # retain original content identity, but there is no row data_source label.
+    daily = daily.drop(columns=["data_source"])
+    assert "data_source" not in daily.columns
+    assert "daily_data_identity" in daily.attrs
+    five = _notification_canonical_5m(recent)
+    assert validate_complete_cn_5m_sessions(
+        five, expected_session_dates=recent,
+    )["row_count"] == 480
+    intraday = {"5m": five}
+    for frequency in ("15m", "30m", "60m"):
+        intraday[frequency] = aggregate_completed_intraday_bars(
+            five, target_timeframe=frequency,
+        )
+    assert {k: len(v) for k, v in intraday.items()} == {
+        "5m": 480, "15m": 160, "30m": 80, "60m": 40,
+    }
+
+    analyzer = StockTrendAnalyzer()
+    mtf = build_multi_timeframe_structure_context(
+        stock_code="600519", history=daily, target_date=target,
+        market="cn", trend_analyzer=analyzer,
+        daily_trend_result=analyzer.analyze(daily.copy(), "600519"),
+        snapshot_observed_at=observed,
+        intraday_timeframes=intraday,
+    )
+    assert set(mtf["timeframes"]) == {
+        "monthly", "weekly", "daily", "60m", "30m", "15m", "5m",
+    }
+    input_identity = build_completed_history_identity(
+        daily, stock_code="600519", market="cn",
+        target_date=target, observed_at=observed,
+    )
+    input_identity.update(stock_code="600519", market="cn",
+                          target_date=target.isoformat())
+    receipt = build_method_execution_receipt(
+        "MTF", output=mtf, asset_route="STOCK", stock_code="600519",
+        market="cn", target_date=target, timeframe="multi",
+        input_identity=input_identity,
+    )
+    factor = build_stock_factor_decision_summary(
+        _trend(), include_canonical=True,
+        multi_timeframe_structure_context=mtf,
+        method_execution_receipts={"MTF": receipt},
+    )
+    trace = validate_runtime_trace(factor)
+    validate_canonical_factor_binding(factor)
+    mtf_observation = next(x for x in trace["observations"] if x["requirement_id"] == "MTF")
+    assert (mtf_observation["state"], mtf_observation["reason"]) == (
+        "READY", "METHOD_INVOCATION_VERIFIED",
+    )
+    assert factor["method_execution_receipt_policy"] == "REQUIRED"
+    assert factor["canonical_decision"]["action"] == "WAIT"
+    assert len(trace["timeframe_family_matrix"]["cells"]) == 56
+    objects = {x["dataset_id"]: x for x in
+               trace["complete_research_universe"]["data_objects"]}
+    assert len(objects) == 76
+    assert objects["P_DAILY"]["state"] == "PARTIAL"
+    assert objects["P_5M"]["state"] == "PARTIAL"
+    assert objects["G_VIX"]["state"] == "UNKNOWN"
+    assert objects["P_FIN_VINTAGE"]["state"] == "UNKNOWN"
+    assert objects["E_NAV_IOPV"]["state"] == "NOT_APPLICABLE"
+    assert all(not objects[k]["strategy_upgrade_authority"]
+               for k in ("P_DAILY", "P_5M", "G_VIX", "E_NAV_IOPV"))
+
+    result = _make_investor_brief_result()
+    result.dashboard["factor_decision"] = factor
+    apply_canonical_decision_to_result(result, factor, scope="production")
+    with mock.patch("src.notification.get_config", return_value=_make_config(
+        report_renderer_enabled=False, report_history_compare_n=0,
+    )):
+        notifier = NotificationService()
+        full = notifier.generate_aggregate_report(
+            [result], ReportType.FULL, report_date=target.isoformat(),
+        )
+        mail = notifier.generate_brief_report([result], target.isoformat())
+        single = notifier.generate_single_stock_report(result)
+    class Visible(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=True)
+            self.parts = []
+        def handle_data(self, text):
+            self.parts.append(text)
+    view = Visible()
+    view.feed(markdown_to_html_document(mail))
+    visible = "".join(view.parts)
+    assert len(full) > 5000 and len(mail) > 5000
+    # A seven-timeframe headline or a 56-cell static matrix does not provide
+    # actual MACD/RSI/MA evidence. Verify the current SAME producer's method
+    # detail survives FULL, required Email, single and HTML visible text.
+    for projection in (full, mail, single, visible):
+        assert "七周期逐指标方法明细" in projection
+        for label in ("月线", "周线", "日线", "60分钟", "30分钟", "15分钟", "5分钟"):
+            assert label + "：已完成K线" in projection
+        for method in ("MA5=", "MA10=", "MA20=", "MACD", "RSI",
+                       "量价", "价格结构", "形态", "Chan", "独立交易"):
+            assert method in projection, method
+        assert "RSI：MISSING" in projection
+        assert "尚无独立交易权限" in projection
+        # Exact *native* owner values must be the display values; no second
+        # MACD/RSI formula or LLM arithmetic in the report projection.
+        for tf in ("monthly", "weekly", "daily", "60m", "30m", "15m", "5m"):
+            row = mtf["timeframes"][tf]
+            ma = row.get("ma_structure") or {}
+            ma_readiness = (ma.get("readiness") or {}).get("level") or {}
+            if ma_readiness.get("status") == "READY" and ma.get("status") in {"READY", "PARTIAL"}:
+                for period in (5, 10, 20):
+                    assert "MA%d=%.3f" % (period, ma["ma_values"]["ma%d" % period]) in projection
+            macd = row.get("macd_startup_stability") or {}
+            if macd.get("status") == "READY":
+                endpoint = macd.get("native_endpoint_values") or {}
+                assert "DIF=%.3f" % endpoint["MACD_DIF"] in projection
+                assert "DEA=%.3f" % endpoint["MACD_DEA"] in projection
+                assert "BAR=%.3f" % endpoint["MACD_BAR"] in projection
+            rsi = row.get("rsi_startup_stability") or {}
+            if rsi.get("status") == "READY":
+                numbers = rsi.get("reference_values") or {}
+                for period in (6, 12, 24):
+                    assert "RSI%d=%.2f" % (
+                        period, numbers["RSI_%d_latest" % period],
+                    ) in projection
+    for dataset_id in objects:
+        assert chr(96) + dataset_id + chr(96) in full
+        assert chr(96) + dataset_id + chr(96) in mail
+        assert dataset_id in visible
+    for required in ("P_DAILY", "P_5M", "G_VIX", "E_NAV_IOPV",
+                     "P_FIN_VINTAGE", "UNKNOWN", "30m", "15m", "5m"):
+        assert all(required in output for output in (full, mail, single, visible))
+    assert "BUY" not in str(factor["canonical_decision"]["action"])
+    assert all(mtf["timeframes"][tf].get("strategy_admitted") is False
+               for tf in ("60m", "30m", "15m", "5m"))
+
+    # A tampered 5m complete-session proof invalidates its MTF parent.
+    # It may not leave P_DAILY / P_5M PARTIAL, nor preserve downstream READY.
+    broken = deepcopy(factor)
+    broken["multi_timeframe_structure_context"]["timeframes"]["5m"][
+        "completed_source_session_receipt"
+    ]["session_count"] = 9
+    poisoned = build_runtime_trace(broken)
+    bad_objects = {x["dataset_id"]: x for x in
+                   poisoned["complete_research_universe"]["data_objects"]}
+    assert bad_objects["P_DAILY"]["state"] == "UNKNOWN"
+    assert bad_objects["P_5M"]["state"] == "UNKNOWN"
+    with pytest.raises(TraceabilityError):
+        validate_runtime_trace(broken)
+
+    # Same graph, different ETF route: stock source can't forge ETF holdings
+    # or company-only financials into ETF facts.
+    etf = deepcopy(factor)
+    etf["asset_type"] = "ETF"
+    etf_objects = {x["dataset_id"]: x for x in
+                   build_runtime_trace(etf)["complete_research_universe"]["data_objects"]}
+    assert etf_objects["E_NAV_IOPV"]["state"] == "UNKNOWN"
+    assert etf_objects["P_FIN_VINTAGE"]["state"] == "NOT_APPLICABLE"
+    assert etf_objects["G_VIX"]["state"] == "UNKNOWN"
 
 
 def test_b8a_accepted_76_data_objects_survive_runtime_full_report_email_html():
@@ -404,6 +887,62 @@ def test_b8a_distinct_producer_factor_material_survives_report_email_html_and_si
     )):
         once = NotificationService().generate_brief_report([result], "2026-10-12")
     assert once.count(factor["investor_brief"]["trigger"]) == 1
+
+
+
+def test_b8a_fused_canonical_facts_preserve_literal_state_ids_in_html():
+    """Source-owned technical IDs must survive actual FULL-to-HTML rendering."""
+    from html.parser import HTMLParser
+    from src.enums import ReportType
+    from src.formatters import markdown_to_html_document
+    from src.services.factor_decision_summary import (
+        canonical_factor_binding,
+        validate_canonical_factor_binding,
+    )
+
+    atoms = (
+        "支持：当前仅有已完成bar研究证据；S_UP38",
+        "反证：上下周期冲突，不能独立计票；C_RT51",
+        "数据时点：2026-10-14完成，2026-10-15观察；T_CU72",
+        "缺口：分钟量额单位和使用权未知；U_QK94",
+        "结构状态：FAILED_UP_BREAKOUT；失效：COMPLETED_CLOSE_BELOW_BROKEN_RESISTANCE",
+    )
+    result = _make_investor_brief_result()
+    factor = result.dashboard["factor_decision"]
+    factor["investor_brief"]["fused_paragraph"] = "；".join(atoms)
+    factor["evidence_traceability"] = build_runtime_trace(factor)
+    factor["canonical_decision_identity"] = canonical_factor_binding(factor)
+    factor["investor_brief"]["canonical_binding"] = deepcopy(
+        factor["canonical_decision_identity"]
+    )
+    validate_canonical_factor_binding(factor)
+    with mock.patch(
+        "src.notification.get_config",
+        return_value=_make_config(report_renderer_enabled=False, report_history_compare_n=0),
+    ):
+        markdown = NotificationService().generate_aggregate_report(
+            [result], ReportType.FULL, "2026-10-14"
+        )
+
+    class VisibleHTML(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=True)
+            self.parts = []
+        def handle_data(self, text):
+            self.parts.append(text)
+
+    parser = VisibleHTML()
+    parser.feed(markdown_to_html_document(markdown))
+    visible = "".join(parser.parts)
+    for atom in atoms:
+        assert atom in markdown, atom
+        assert atom in visible, atom
+    assert factor["canonical_decision"]["action"] == "PASS"
+    assert factor["canonical_decision"]["hard_veto"] is True
+    assert "<em>斜体</em>" in markdown_to_html_document("合法 *斜体* 路径")
+    assert "<code>MA_COMPRESSION_RELEASE</code>" in markdown_to_html_document(
+        "已引用 " + chr(96) + "MA_COMPRESSION_RELEASE" + chr(96)
+    )
 
 
 def test_b8a_etf_legitimate_route_keeps_stock_object_not_applicable():
@@ -645,12 +1184,12 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
 
         self.assertFalse(result.dispatched)
         self.assertFalse(result.success)
-        self.assertEqual(result.status, "no_channel")
+        self.assertEqual(result.status, "email_required")
         self.assertEqual(result.channel_results, [])
         mock_custom.assert_not_called()
 
     @mock.patch("src.notification.get_config")
-    def test_send_route_empty_keeps_all_configured_channels(self, mock_get_config: mock.MagicMock):
+    def test_send_alert_route_empty_keeps_all_configured_channels(self, mock_get_config: mock.MagicMock):
         cfg = _make_config(
             wechat_webhook_url="https://wechat.example/hook",
             custom_webhook_urls=["https://example.com/webhook"],
@@ -661,7 +1200,7 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
 
         with mock.patch.object(service, "send_to_wechat", return_value=True) as mock_wechat, \
              mock.patch.object(service, "send_to_custom", return_value=True) as mock_custom:
-            ok = service.send("content", route_type="report")
+            ok = service.send("content", route_type="alert")
 
         self.assertTrue(ok)
         mock_wechat.assert_called_once_with("content")
@@ -672,6 +1211,9 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
         cfg = _make_config(
             wechat_webhook_url="https://wechat.example/hook",
             custom_webhook_urls=["https://example.com/webhook"],
+            email_sender="user@qq.com",
+            email_password="PASS",
+            email_receivers=["default@example.com"],
             notification_report_channels=["custom"],
         )
         mock_get_config.return_value = cfg
@@ -679,12 +1221,14 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
         service = NotificationService()
 
         with mock.patch.object(service, "send_to_wechat", return_value=True) as mock_wechat, \
-             mock.patch.object(service, "send_to_custom", return_value=True) as mock_custom:
+             mock.patch.object(service, "send_to_custom", return_value=True) as mock_custom, \
+             mock.patch.object(service, "send_to_email", return_value=True) as mock_email:
             ok = service.send("content", route_type="report")
 
         self.assertTrue(ok)
         mock_wechat.assert_not_called()
-        mock_custom.assert_called_once_with("content")
+        mock_custom.assert_not_called()
+        mock_email.assert_called_once_with("content", receivers=None)
 
     @mock.patch("src.notification.get_config")
     def test_send_alert_and_system_error_routes_filter_independently(self, mock_get_config: mock.MagicMock):
@@ -730,11 +1274,11 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
         )
         mock_get_config.return_value = cfg
 
-        service = NotificationService()
+        service = NotificationService(source_message=_make_dingtalk_message())
 
         with mock.patch.object(service, "send_to_context", return_value=True) as mock_context, \
              mock.patch.object(service, "send_to_custom", return_value=True) as mock_custom:
-            ok = service.send("content", route_type="report")
+            ok = service.send("content", route_type="alert")
 
         self.assertTrue(ok)
         mock_context.assert_called_once_with("content")
@@ -756,7 +1300,7 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
 
         with mock.patch.object(service, "_send_feishu_stream_reply", return_value=True) as mock_reply, \
              mock.patch.object(service, "send_to_feishu", return_value=True) as mock_webhook:
-            result = service.send_with_results(content, route_type="report")
+            result = service.send_with_results(content, route_type="alert")
 
         self.assertTrue(result.dispatched)
         self.assertTrue(result.success)
@@ -802,7 +1346,7 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
 
         with mock.patch.object(service, "_send_feishu_stream_reply", return_value=False), \
              mock.patch.object(service, "send_to_feishu", return_value=True) as mock_webhook:
-            result = service.send_with_results("content", route_type="report")
+            result = service.send_with_results("content", route_type="alert")
 
         self.assertTrue(result.dispatched)
         self.assertFalse(result.success)
@@ -823,7 +1367,7 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
 
         with mock.patch.object(service, "_send_dingtalk_chunked", return_value=True) as mock_dingtalk, \
              mock.patch.object(service, "send_to_wechat", return_value=True) as mock_wechat:
-            result = service.send_with_results("content", route_type="report")
+            result = service.send_with_results("content", route_type="alert")
 
         self.assertTrue(result.dispatched)
         self.assertTrue(result.success)
@@ -843,7 +1387,7 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
 
         with mock.patch.object(service, "send_to_telegram", return_value=True) as mock_telegram, \
              mock.patch.object(service, "send_to_wechat", return_value=True) as mock_wechat:
-            result = service.send_with_results("content", route_type="report")
+            result = service.send_with_results("content", route_type="alert")
 
         self.assertTrue(result.dispatched)
         self.assertTrue(result.success)
@@ -862,7 +1406,7 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
         service = NotificationService()
 
         with mock.patch.object(service, "send_to_feishu", return_value=True) as mock_webhook:
-            result = service.send_with_results("content", route_type="report")
+            result = service.send_with_results("content", route_type="alert")
 
         self.assertTrue(result.dispatched)
         self.assertTrue(result.success)
@@ -870,8 +1414,8 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
         mock_webhook.assert_called_once_with("content")
 
     @mock.patch("src.notification.get_config")
-    def test_feishu_send_as_file_route_report_calls_send_feishu_file(self, mock_get_config):
-        """When FEISHU_SEND_AS_FILE=true and route_type=report, use file sending."""
+    def test_formal_report_never_uses_feishu_file_without_required_email(self, mock_get_config):
+        """The accepted report contract blocks legacy Feishu-file-only delivery."""
         cfg = _make_config(
             feishu_webhook_url="https://feishu.example/hook",
             feishu_send_as_file=True,
@@ -881,12 +1425,13 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
         with mock.patch.object(service, "send_feishu_file", return_value=True) as mock_file, \
              mock.patch.object(service, "save_report_to_file", return_value="/tmp/report.md") as mock_save:
             result = service.send_with_results("report content", route_type="report")
-        self.assertTrue(result.success)
-        mock_file.assert_called_once()
-        mock_save.assert_called_once_with("report content", filename=mock.ANY)
+        self.assertFalse(result.success)
+        self.assertEqual(result.status, "email_required")
+        mock_file.assert_not_called()
+        mock_save.assert_not_called()
 
     @mock.patch("src.notification.get_config")
-    def test_feishu_send_as_file_route_report_strips_hidden_metadata_before_save(self, mock_get_config):
+    def test_formal_report_blocks_feishu_file_before_hidden_metadata_save(self, mock_get_config):
         cfg = _make_config(
             feishu_webhook_url="https://feishu.example/hook",
             feishu_send_as_file=True,
@@ -899,10 +1444,9 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
              mock.patch.object(service, "save_report_to_file", return_value="/tmp/report.md") as mock_save:
             result = service.send_with_results(content, route_type="report")
 
-        self.assertTrue(result.success)
-        saved_content = mock_save.call_args.args[0]
-        self.assertNotIn("[dsa-market-region]", saved_content)
-        self.assertIn("# 市场复盘", saved_content)
+        self.assertFalse(result.success)
+        self.assertEqual(result.status, "email_required")
+        mock_save.assert_not_called()
 
     @mock.patch("src.notification.get_config")
     def test_feishu_send_as_file_route_alert_calls_send_to_feishu(self, mock_get_config):
@@ -937,8 +1481,8 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
         mock_save.assert_not_called()
 
     @mock.patch("src.notification.get_config")
-    def test_feishu_send_as_file_false_uses_text_even_for_report(self, mock_get_config):
-        """When FEISHU_SEND_AS_FILE=false (default), report still uses text."""
+    def test_formal_report_never_uses_feishu_text_without_required_email(self, mock_get_config):
+        """Disabling file mode does not make Feishu a formal report sink."""
         cfg = _make_config(
             feishu_webhook_url="https://feishu.example/hook",
             feishu_send_as_file=False,
@@ -948,13 +1492,14 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
         with mock.patch.object(service, "send_to_feishu", return_value=True) as mock_text, \
              mock.patch.object(service, "save_report_to_file") as mock_save:
             result = service.send_with_results("report content", route_type="report")
-        self.assertTrue(result.success)
-        mock_text.assert_called_once_with("report content")
+        self.assertFalse(result.success)
+        self.assertEqual(result.status, "email_required")
+        mock_text.assert_not_called()
         mock_save.assert_not_called()
 
     @mock.patch("src.notification.get_config")
-    def test_feishu_send_as_file_alert_does_not_leak_into_other_channels(self, mock_get_config):
-        """FEISHU_SEND_AS_FILE only affects Feishu, not other channels."""
+    def test_feishu_send_as_file_alert_uses_text_and_does_not_leak_into_other_channels(self, mock_get_config):
+        """File mode does not affect alerts; all alert channels remain text."""
         cfg = _make_config(
             feishu_webhook_url="https://feishu.example/hook",
             custom_webhook_urls=["https://example.com/hook"],
@@ -962,13 +1507,16 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
         )
         mock_get_config.return_value = cfg
         service = NotificationService()
-        with mock.patch.object(service, "send_feishu_file", return_value=True) as mock_file, \
+        with mock.patch.object(service, "send_to_feishu", return_value=True) as mock_text, \
              mock.patch.object(service, "send_to_custom", return_value=True) as mock_custom, \
-             mock.patch.object(service, "save_report_to_file", return_value="/tmp/report.md"):
-            result = service.send_with_results("content", route_type="report")
+             mock.patch.object(service, "send_feishu_file", return_value=True) as mock_file, \
+             mock.patch.object(service, "save_report_to_file") as mock_save:
+            result = service.send_with_results("content", route_type="alert")
         self.assertTrue(result.success)
-        mock_file.assert_called_once()
+        mock_text.assert_called_once_with("content")
         mock_custom.assert_called_once_with("content")
+        mock_file.assert_not_called()
+        mock_save.assert_not_called()
 
     @mock.patch("src.notification.get_config")
     def test_feishu_send_as_file_system_error_uses_text(self, mock_get_config):
@@ -997,8 +1545,8 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
         service = NotificationService()
 
         with mock.patch.object(service, "send_to_custom", return_value=True) as mock_custom:
-            self.assertTrue(service.send("content at 12:00", route_type="report", dedup_key="report:aggregate:simple:600519"))
-            self.assertFalse(service.send("content at 12:01", route_type="report", dedup_key="report:aggregate:simple:600519"))
+            self.assertTrue(service.send("content at 12:00", route_type="alert", dedup_key="alert:600519"))
+            self.assertFalse(service.send("content at 12:01", route_type="alert", dedup_key="alert:600519"))
 
         mock_custom.assert_called_once_with("content at 12:00")
 
@@ -1016,15 +1564,15 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
             self.assertFalse(
                 service.send(
                     "content at 12:00",
-                    route_type="report",
-                    dedup_key="report:aggregate:simple:600519",
+                    route_type="alert",
+                    dedup_key="alert:600519",
                 )
             )
             self.assertTrue(
                 service.send(
                     "content at 12:01",
-                    route_type="report",
-                    dedup_key="report:aggregate:simple:600519",
+                    route_type="alert",
+                    dedup_key="alert:600519",
                 )
             )
 
@@ -1042,8 +1590,8 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
 
         with mock.patch.object(service, "send_to_context", return_value=True) as mock_context, \
              mock.patch.object(service, "send_to_custom", return_value=True) as mock_custom:
-            self.assertTrue(service.send("content at 12:00", route_type="report", dedup_key="report:aggregate:simple:600519"))
-            self.assertTrue(service.send("content at 12:01", route_type="report", dedup_key="report:aggregate:simple:600519"))
+            self.assertTrue(service.send("content at 12:00", route_type="alert", dedup_key="alert:600519"))
+            self.assertTrue(service.send("content at 12:01", route_type="alert", dedup_key="alert:600519"))
 
         self.assertEqual(mock_context.call_count, 2)
         mock_custom.assert_called_once_with("content at 12:00")
@@ -1057,7 +1605,7 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
 
         with mock.patch("src.notification_noise._evaluate_notification_noise", side_effect=RuntimeError("boom")), \
              mock.patch.object(service, "send_to_custom", return_value=True) as mock_custom:
-            ok = service.send("content", route_type="report")
+            ok = service.send("content", route_type="alert")
 
         self.assertTrue(ok)
         mock_custom.assert_called_once_with("content")
@@ -1171,16 +1719,30 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         }
 
         service = NotificationService()
-        full = service.generate_dashboard_report([result], report_date="2025-09-30")
-        brief = service.generate_brief_report([result], report_date="2025-09-30")
+        # Stronger than returning an abbreviated 'safe' report: the current
+        # canonical is invalid, so there is no Product text to contaminate.
+        with self.assertRaisesRegex(ValueError, "canonical report material binding invalid"):
+            service.generate_dashboard_report([result], report_date="2025-09-30")
+        with self.assertRaisesRegex(ValueError, "canonical report material binding invalid"):
+            service.generate_brief_report([result], report_date="2025-09-30")
 
-        for rendered in (full, brief):
-            self.assertIn("当前确定性证据摘要不可用，本次保持观望", rendered)
-            self.assertNotIn("LEGACY_STRONG_BULLISH", rendered)
-            self.assertNotIn("LEGACY_BUY_NOW", rendered)
-            self.assertNotIn("LEGACY_ANALYSIS_SUMMARY_MUST_NOT_RENDER", rendered)
-            self.assertNotIn("评分 99", rendered)
-            self.assertNotIn("评分:99", rendered)
+        # The original legacy-BUY contamination must not escape through direct
+        # dispatch either, even if the caller already supplied stale text.
+        service.send_to_context = mock.MagicMock(return_value=False)
+        service.send_to_email = mock.MagicMock(return_value=True)
+        service.send_to_telegram = mock.MagicMock(return_value=True)
+        service.require_current_asset_data_for_send = mock.MagicMock()
+        blocked = service.send_with_results(
+            "LEGACY_STRONG_BULLISH LEGACY_BUY_NOW LEGACY_ANALYSIS_SUMMARY_MUST_NOT_RENDER 评分 99",
+            route_type="report", asset_results=[result],
+        )
+        self.assertEqual(blocked.status, "invalid_report")
+        self.assertFalse(blocked.success)
+        self.assertFalse(blocked.dispatched)
+        service.send_to_context.assert_not_called()
+        service.send_to_email.assert_not_called()
+        service.send_to_telegram.assert_not_called()
+        service.require_current_asset_data_for_send.assert_called_once_with([result])
 
     def test_investor_brief_requires_current_canonical_trace_binding(self):
         result = _make_investor_brief_result()
@@ -1267,6 +1829,13 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         remaining_brief["fused_paragraph"] = "R004_REMAINING_REASON"
         remaining_brief["risk_notes"] = ["R004_REMAINING_RISK"]
         remaining_brief["invalidation"] = "R004_REMAINING_INVALIDATION"
+        # Current AUTO fixture facts are authored BEFORE canonical sealing.
+        # Preserve all existing display assertions; never trust stale bytes.
+        remaining_factor = remaining.dashboard["factor_decision"]
+        remaining_factor["canonical_decision_identity"] = canonical_factor_binding(remaining_factor)
+        remaining_brief["canonical_binding"] = deepcopy(
+            remaining_factor["canonical_decision_identity"]
+        )
 
         out = service.generate_brief_report(
             [focus, remaining],
@@ -1889,6 +2458,67 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
                 self.assertIn("5分钟：量能继续收缩", rendered)
             self.assertIn("60分钟：回踩结构未破", full)
             self.assertNotIn("- 60m：", full)
+
+    @mock.patch("src.notification.get_config")
+    def test_direct_full_canonical_reports_reject_legacy_summary_only_at_renderer_owner(
+        self, mock_get_config: mock.MagicMock,
+    ):
+        """Full Report itself must fail-closed, not rely on Pipeline/SMTP guards."""
+        from src.schemas.decision_action import has_canonical_action_authority_for_result
+
+        result = _make_investor_brief_result()
+        factor = result.dashboard["factor_decision"]
+        brief = factor["investor_brief"]
+        factor.update({
+            "conclusion": brief["one_line_conclusion"],
+            "action_condition": brief["trigger"],
+            "invalidation_condition": brief["invalidation"],
+            "canonical_decision": {
+                "authority": "stock_trend_quality_pullback_v1",
+                "action": "PASS", "public_action": "avoid",
+                "evidence_state": "PROVEN", "hard_veto": True,
+                "reason_codes": ["WEAK_TREND"],
+            },
+        })
+        apply_canonical_decision_to_result(result, factor, scope="production")
+        assert_canonical_consumer_consistency(result, scope="production")
+        self.assertTrue(has_canonical_action_authority_for_result(result))
+        for renderer_enabled in (False, True):
+            mock_get_config.return_value = _make_config(
+                report_renderer_enabled=renderer_enabled,
+                report_summary_only=True,
+            )
+            notifier = NotificationService()
+            for generator in (notifier.generate_dashboard_report, notifier.generate_daily_report):
+                with self.subTest(renderer_enabled=renderer_enabled, generator=generator.__name__):
+                    with self.assertRaisesRegex(ValueError, "canonical research cannot use report_summary_only"):
+                        generator([result], report_date="2026-10-14")
+
+    @mock.patch("src.notification.get_config")
+    def test_direct_noncanonical_legacy_summary_only_retains_independent_legal_route(
+        self, mock_get_config: mock.MagicMock,
+    ):
+        """The old noncanonical compact feature is not globally removed."""
+        from src.schemas.decision_action import has_canonical_action_authority_for_result
+
+        result = AnalysisResult(
+            code="600519", name="贵州茅台",
+            sentiment_score=48, trend_prediction="震荡",
+            operation_advice="观望", analysis_summary="仅历史简报",
+            report_language="zh",
+        )
+        self.assertFalse(has_canonical_action_authority_for_result(result))
+        for renderer_enabled in (False, True):
+            mock_get_config.return_value = _make_config(
+                report_renderer_enabled=renderer_enabled,
+                report_summary_only=True,
+            )
+            notifier = NotificationService()
+            for generator in (notifier.generate_dashboard_report, notifier.generate_daily_report):
+                with self.subTest(renderer_enabled=renderer_enabled, generator=generator.__name__):
+                    rendered = generator([result], report_date="2026-10-14")
+                    self.assertIsInstance(rendered, str)
+                    self.assertIn("600519", rendered)
 
     @mock.patch("src.notification.get_config")
     def test_full_and_compact_reports_preserve_canonical_material_fact_parity(

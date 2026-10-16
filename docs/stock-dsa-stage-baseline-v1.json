@@ -1,0 +1,149 @@
+{
+  "schema_version": "stock-dsa-stage-baseline-v1",
+  "baseline_id": "STOCK_DSA_GITHUB_7TF_FULL_PRODUCT_BASELINE_V1",
+  "authority": "CI_DERIVED_GUARDRAIL_ONLY_NOT_RUNTIME_PROOF",
+  "production_shell": "DSA/daily_stock_analysis",
+  "acceptance": {
+    "state": "CANDIDATE_UNTIL_GITHUB_PR_CI_AND_EXPLICIT_MERGE",
+    "remote_branch": "main",
+    "required_checks": [
+      "ai-governance",
+      "backend-gate",
+      "docker-build"
+    ],
+    "direct_main_push": false
+  },
+  "immutable_contracts": {
+    "accepted_machine_graph_sha256": "b4f69f76807ac44bc0fea1a03f9aa38484b6083ca574a3699220b0564ac55aed",
+    "accepted_machine_graph_bytes": 149628,
+    "accepted_machine_graph_edges": 775,
+    "v2_5_baseline_sha256": "039ca6394baf9cf39494cc29f512802b114c8227f8c965723197a8df4b9de823",
+    "v2_5_baseline_bytes": 125919,
+    "requirements": 26,
+    "method_profiles": 43,
+    "methods_existing_reused": 26,
+    "methods_deferred_with_owner": 17,
+    "strategy_bindings": 13,
+    "technical_matrix_cells": 56,
+    "data_obligations": 76,
+    "timeframes": ["monthly", "weekly", "daily", "60m", "30m", "15m", "5m"],
+    "evidence_families": ["REGIME", "TREND_RS", "SUPPLY", "COST", "STRUCTURE", "MOMENTUM", "PATTERN", "MTF"]
+  },
+  "product_invariants": {
+    "automatic_trading": false,
+    "llm_generates_metrics_or_probability": false,
+    "same_source_same_swing_double_vote": false,
+    "green_global_or_market_state_independently_upgrades_buy": false,
+    "formal_report_email_required": true,
+    "formal_report_telegram_optional": true,
+    "other_chat_or_webhook_channels_are_formal_report_substitutes": false,
+    "source_identity_implies_storage_or_training_rights": false,
+    "future_outcome_backfills_historical_evidence": false
+  },
+  "screening_contract": {
+    "stage": "BOUNDED_L3_AFTER_CHEAP_L1_L2",
+    "asset_routes": ["stock", "etf"],
+    "strict_mtf_receipt_required": true,
+    "canonical_binding_required": true,
+    "role_groups": ["context", "setup", "bridge_structure", "confirmation_timing"],
+    "delta_min": -6.0,
+    "delta_max": 4.0,
+    "low_timeframe_independent_upgrade": false,
+    "cross_timeframe_vote_counting": false,
+    "independent_action_authority": false
+  },
+  "vertical_alignment": {
+    "program": "合法known-at数据到白盒证据、唯一canonical、完整交付、合法Outcome/PIT、独立校准和显式Promotion",
+    "product": "Global到A股市场和行业、ETF与股票、七周期全材料、风险和执行veto、FULL Report/Email",
+    "current_lane": "M2多资产known-at与B5七周期证据进入同一筛选、canonical和B8完整报告",
+    "current_milestone": "严格MTF回执按四个层级角色组进入股票/ETF有界L3筛选，同时保留完整76项研究义务",
+    "atomic_rule": "只复用现有Owner、消费者、测试和拒绝条件，不新建并行Shell或权威"
+  },
+  "stage_ladder": [
+    {
+      "id": "G0_GITHUB_BASELINE",
+      "scope": "准确origin/main、PR、required CI、可回滚commit身份",
+      "exit": "PR所有阻断检查通过并经显式merge",
+      "proof_ceiling": "GitHub代码基线，不证明真实数据或产品外部交付"
+    },
+    {
+      "id": "B1_SOURCE_RIGHTS",
+      "scope": "StockDaily/AnalysisHistory/Ledger最早写入拒绝未知存储和训练权利",
+      "exit": "合法来源许可和写后读回独立证明",
+      "proof_ceiling": "只读研究可继续，未知权利不得持久化或训练"
+    },
+    {
+      "id": "B5_7TF_METHOD_PRODUCT",
+      "scope": "七周期完成bar、动态窗口、来源身份、原生指标、方法回执、逐项展示和有界L3筛选偏好",
+      "exit": "现有准入方法对合法输入无损进入同一筛选、canonical和报告",
+      "proof_ceiling": "不等于43方法全部READY或独立交易资格"
+    },
+    {
+      "id": "B8_FULL_DELIVERY_NO_SEND",
+      "scope": "76项义务、风险和反证进入FULL Report/Email/HTML，发送前正文身份不变",
+      "exit": "本地无发送消费者和负例通过",
+      "proof_ceiling": "不等于SMTP或收件客户端验收"
+    },
+    {
+      "id": "M2_MULTI_ASSET_KNOWN_AT",
+      "scope": "A股市场、行业和ETF独立来源、known-at时点、资产适用性和veto",
+      "exit": "合法非股票证据与股票七周期共用同一canonical和完整报告",
+      "proof_ceiling": "Global或市场绿灯不得独立升级BUY",
+      "next_primary": true
+    },
+    {
+      "id": "L1_LEGAL_LEDGER_OUTCOME_PIT",
+      "scope": "TAKE/PASS/WAIT/veto/未触发/未成交及成熟Outcome、冻结PIT manifest",
+      "exit": "权利、as-of、vintage、label和不可变字节均合法",
+      "blocked_by": "B1_SOURCE_RIGHTS"
+    },
+    {
+      "id": "M3_CALIBRATION_SHADOW",
+      "scope": "白盒Logistic、仅有样本外增量才LightGBM、独立校准、冻结Shadow",
+      "exit": "walk-forward、独立校准和冻结模型身份全部通过",
+      "blocked_by": "L1_LEGAL_LEDGER_OUTCOME_PIT"
+    },
+    {
+      "id": "P1_PROMOTION_RELEASE",
+      "scope": "exact model/dataset/schema/strategy/code/calibrator和完整交付的显式Promotion",
+      "exit": "独立批准和GitHub发布证据",
+      "blocked_by": "M3_CALIBRATION_SHADOW"
+    }
+  ],
+  "route_decision": {
+    "next_primary": "M2_MULTI_ASSET_KNOWN_AT",
+    "reason": "七周期核心已进入严格报告和有界股票/ETF筛选消费者；主路线继续市场、行业、ETF known-at，同时只按产品触发补技术指标",
+    "bounded_indicator_sub_lanes": [
+      "MONTHLY_RSI_HISTORY_IF_LEGAL",
+      "15M_CONFIRMATION",
+      "5M_EXECUTION_TIMING",
+      "MINUTE_VOLUME_AMOUNT_UNITS"
+    ],
+    "deferred_until_product_trigger": [
+      "ADX_DMI",
+      "BOLLINGER",
+      "KDJ",
+      "OBV_ADL",
+      "MFI",
+      "VWAP_AVWAP_VOLUME_PROFILE",
+      "CHAN_WAVE"
+    ]
+  },
+  "mature_reuse_route": [
+    "EXACT_DSA_CAPABILITY",
+    "DSA_UPSTREAM",
+    "ACCEPTED_FREQTRADE_RECURSIVE_AND_LOOKAHEAD_PATTERNS",
+    "ACCEPTED_LEAN_WARMUP_AND_RESOLUTION_PATTERNS",
+    "QLIB_ONLY_AFTER_LEGAL_PIT_DATASET",
+    "CZSC_ONLY_AS_NARROW_CHAN_FEATURE_ADAPTER",
+    "NO_PARALLEL_SHELL_DATABASE_SCHEDULER_OR_REPORT_AUTHORITY"
+  ],
+  "regression_policy": {
+    "static_counts_never_prove_runtime_ready": true,
+    "runtime_method_receipts_required_for_strict_current_research": true,
+    "mtf_screening_requires_strict_receipt_and_canonical_binding": true,
+    "negative_tests_must_cover_missing_units_wrong_clock_stale_identity_future_backfill_and_channel_substitution": true,
+    "accepted_goldens_may_not_be_changed_to_match_candidate_output": true,
+    "baseline_changes_require_machine_graph_or_product_contract_delta": true
+  }
+}

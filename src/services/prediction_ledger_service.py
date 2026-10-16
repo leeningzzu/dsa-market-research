@@ -128,6 +128,20 @@ class PredictionLedgerService:
 
         dashboard = self._mapping(getattr(result, "dashboard", None))
         factor_decision = self._mapping(dashboard.get("factor_decision"))
+        # B1 legal authority is independent of typed source, PIT clocks and
+        # content hashes. No current strict vendor source has an independently
+        # accepted use/store/training-rights grant in the DSA evidence register.
+        # Never persist current strict source-derived evidence on a self-asserted
+        # runtime field ("GRANTED" text is not an accepted license). Existing
+        # historical ledger snapshots remain readable and keep frozen identities.
+        # Re-entry requires an exact verified grant and a separate evidence gate;
+        # changing this guard is not an automatic promotion or a data backfill.
+        if factor_decision.get("method_execution_receipt_policy") == "REQUIRED":
+            return self._typed_outcome(
+                "LAWFULLY_REJECTED",
+                "SOURCE_STORAGE_RIGHTS_NOT_ADMITTED",
+            )
+
         strategy_id = self._text(factor_decision.get("strategy_id"))
         if not strategy_id:
             return self._typed_outcome(

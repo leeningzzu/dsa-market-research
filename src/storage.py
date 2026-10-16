@@ -18,6 +18,8 @@ import json
 import logging
 import threading
 import time
+import tempfile
+from pathlib import Path
 from datetime import datetime, date, timedelta, timezone
 from typing import Optional, List, Dict, Any, TYPE_CHECKING, Tuple, Callable, TypeVar, Union, Mapping
 
@@ -75,6 +77,81 @@ Base = declarative_base()
 
 if TYPE_CHECKING:
     from src.search_service import SearchResponse
+
+
+# No independent vendor-data storage grant is accepted. Native synthetic
+# regression writes are isolated from business databases by their actual
+# temporary SQLite destination, not by a forgeable PYTEST_CURRENT_TEST value.
+_SYNTHETIC_NATIVE_TEST_SOURCES = frozenset({
+    "test", "testdata", "testsource", "unit-test", "batch-1", "batch-2",
+    "portfolio-api-test", "portfolio-pr2-test",
+})
+
+
+def _isolated_synthetic_sqlite_fixture(db_manager: Any) -> bool:
+    """A disposable SQLite test sink is not a vendor license or PIT dataset."""
+    engine = getattr(db_manager, "_engine", None)
+    url = getattr(engine, "url", None)
+    try:
+        if url is None or url.get_backend_name() != "sqlite":
+            return False
+        filename = url.database
+        if filename in (None, "", ":memory:"):
+            return True
+        destination = Path(filename).resolve(strict=True)
+        temp_root = Path(tempfile.gettempdir()).resolve(strict=True)
+        return destination != temp_root and destination.is_relative_to(temp_root)
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def _require_current_source_storage_admission(
+    *, db_manager: Any, data_source: Optional[str] = None,
+    frame: Optional[pd.DataFrame] = None, result: Any = None,
+    context_snapshot: Optional[Mapping[str, Any]] = None,
+) -> None:
+    """Refuse rights-unknown vendor history and price bytes before first DB I/O."""
+    isolated_fixture = _isolated_synthetic_sqlite_fixture(db_manager)
+    if data_source is not None:
+        source = str(data_source).strip().casefold()
+        if isolated_fixture and source in _SYNTHETIC_NATIVE_TEST_SOURCES:
+            # A typed real provider must not be relabelled "test": the old
+            # mismatch fallback erased lineage then persisted vendor bytes.
+            try:
+                identity_json, _ = daily_data_identity_storage_values(frame)
+                if identity_json:
+                    provider = str(
+                        json.loads(identity_json).get("provider_identity") or ""
+                    ).strip().casefold()
+                    if provider != source:
+                        raise PermissionError("SOURCE_STORAGE_RIGHTS_NOT_ADMITTED")
+            except (DailyDataIdentityError, ValueError, TypeError) as exc:
+                raise PermissionError("SOURCE_STORAGE_RIGHTS_NOT_ADMITTED") from exc
+            return
+        raise PermissionError("SOURCE_STORAGE_RIGHTS_NOT_ADMITTED")
+
+    dashboard = getattr(result, "dashboard", None)
+    factor = dashboard.get("factor_decision") if isinstance(dashboard, dict) else None
+    if isinstance(factor, Mapping) and (
+        str(factor.get("method_execution_receipt_policy") or "").upper() == "REQUIRED"
+    ):
+        raise PermissionError("SOURCE_STORAGE_RIGHTS_NOT_ADMITTED")
+
+    # Never infer rights from absence of a strict-current marker. Business
+    # Stock/Agent/MarketReview history, snapshots and pending Journal must STOP.
+    # Historical audits remain readable; only isolated *synthetic* legacy
+    # fixtures without vendor material retain a temporary write nontrigger.
+    known_test_origin = str(getattr(result, "data_sources", "") or "").strip().casefold()
+    if (
+        isolated_fixture
+        and known_test_origin in ("", "test", "mock", "synthetic")
+        and not (
+            isinstance(context_snapshot, Mapping)
+            and "market_light_snapshots" in context_snapshot
+        )
+    ):
+        return
+    raise PermissionError("SOURCE_STORAGE_RIGHTS_NOT_ADMITTED")
 
 
 def utc_naive_now() -> datetime:
@@ -2851,6 +2928,10 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         """
         if result is None:
             return 0
+        _require_current_source_storage_admission(
+            db_manager=self, result=result, context_snapshot=context_snapshot,
+        )
+
 
         sniper_points = self._extract_sniper_points(result)
         raw_result = self._build_raw_result(result)
@@ -3399,6 +3480,10 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         if df is None or df.empty:
             logger.warning(f"保存数据为空，跳过 {code}")
             return 0
+        _require_current_source_storage_admission(
+            db_manager=self, data_source=data_source, frame=df,
+        )
+
 
         try:
             identity_json, identity_hash = daily_data_identity_storage_values(df)

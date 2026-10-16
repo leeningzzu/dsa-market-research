@@ -199,20 +199,38 @@ class TestReportRenderer(unittest.TestCase):
             self.assertNotIn("LEGACY_BUY_REASON_MUST_NOT_RENDER", out)
             self.assertNotIn("LEGACY_TREND_ANALYSIS_MUST_NOT_RENDER", out)
 
+    def test_b8_direct_renderer_rejects_post_signing_risk_mutation(self) -> None:
+        """Direct Jinja consumers cannot evade existing canonical risk identity."""
+        source = _make_canonical_wait_result()
+        for platform in ("markdown", "brief", "wechat"):
+            legitimate = render(platform, [source], report_date="2025-09-30")
+            self.assertIsNotNone(legitimate)
+            self.assertIn("CANONICAL_RISK", legitimate)
+            for target in ("factor", "brief"):
+                poisoned = deepcopy(source)
+                factor = poisoned.dashboard["factor_decision"]
+                if target == "factor":
+                    factor["risk_notes"] = ["FORGED_FACTOR_RISK_AFTER_BINDING"]
+                else:
+                    factor["investor_brief"]["risk_notes"] = [
+                        "FORGED_BRIEF_RISK_AFTER_BINDING"
+                    ]
+                with self.assertRaisesRegex(ValueError, "canonical report material"):
+                    render(platform, [poisoned], report_date="2025-09-30")
+
     def test_stale_canonical_brief_fails_closed_instead_of_falling_back_to_legacy(self) -> None:
         result = _make_canonical_wait_result()
         result.dashboard["factor_decision"]["investor_brief"]["canonical_binding"] = {
             "stale": True
         }
 
+        # A stale current canonical is not an authorized short report.
+        # Preserve the deliberately poisoned legacy fields as negative inputs;
+        # fail BEFORE any direct Jinja template can render them.
+        self.assertEqual(result.analysis_summary, "LEGACY_ANALYSIS_SUMMARY_MUST_NOT_RENDER")
         for platform in ("markdown", "brief", "wechat"):
-            out = render(platform, [result], report_date="2025-09-30")
-            self.assertIsNotNone(out)
-            self.assertIn("当前确定性证据摘要不可用，本次保持观望", out)
-            self.assertNotIn("评分 99", out)
-            self.assertNotIn("评分:99", out)
-            self.assertNotIn("看多", out)
-            self.assertNotIn("LEGACY_ANALYSIS_SUMMARY_MUST_NOT_RENDER", out)
+            with self.assertRaisesRegex(ValueError, "canonical report material"):
+                render(platform, [result], report_date="2025-09-30")
 
     def test_render_markdown_full(self) -> None:
         """Markdown platform renders full report."""

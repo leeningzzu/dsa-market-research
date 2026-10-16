@@ -40,7 +40,7 @@ def _trend_projection():
 
 
 def test_ready_context_reuses_existing_formulas_and_keeps_process_diagnostics_observational():
-    history = _history()
+    history = _history(periods=320)
     target = history.iloc[-1]["date"].date()
     trend = _trend_projection()
 
@@ -73,6 +73,95 @@ def test_ready_context_reuses_existing_formulas_and_keeps_process_diagnostics_ob
     assert "GARCH" in diagnostics["deferred_models"]
 
 
+def _recursive_seed_counterexample():
+    """Identical latest 80 completed bars, different older historical seeds."""
+    import math
+
+    dates = pd.bdate_range(end="2026-10-12", periods=280)
+    recent = [100.0 + .3 * math.sin(i * .3) + i * .01 for i in range(80)]
+    earlier = [60.0 + .4 * math.sin(i * .37) for i in range(200)]
+
+    def rows(values, selected_dates):
+        prefix = len(values) - 80
+        return pd.DataFrame([
+            {
+                "date": dt, "open": v,
+                "high": v + (20.0 if i < prefix else .8),
+                "low": v - (20.0 if i < prefix else .8),
+                "close": v, "volume": 400_000.0,
+                "data_source": "SYNTHETIC_NO_MARKET_RIGHTS",
+            }
+            for i, (dt, v) in enumerate(zip(selected_dates, values))
+        ])
+
+    return rows(recent, dates[-80:]), rows(earlier + recent, dates)
+
+
+def _native_recursive_context(frame):
+    from src.stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult
+
+    analyzer = StockTrendAnalyzer()
+    computed = analyzer._calculate_rsi(analyzer._calculate_macd(frame))
+    trend = TrendAnalysisResult(code="SYN")
+    analyzer._analyze_macd(computed, trend)
+    analyzer._analyze_rsi(computed, trend)
+    return build_volatility_momentum_context(
+        stock_code="SYN", history=frame,
+        target_date=frame.iloc[-1]["date"].date(), market="cn",
+        trend_result=trend,
+    )
+
+
+def test_daily_recursive_short_seed_does_not_certify_whole_family_or_trading() -> None:
+    """A formula has a value at 80 bars, not necessarily numerical READY."""
+    short, _ = _recursive_seed_counterexample()
+    item = _native_recursive_context(short)
+    assert item["status"] == "PARTIAL"
+    for method in ("macd", "rsi"):
+        assert item["momentum"][method]["admission"]["status"] != "READY"
+        assert item["momentum"][method]["status"] is None
+    assert item["volatility"]["atr_wilder_admission"]["status"] != "READY"
+    assert item["volatility"]["atr_wilder_14"] is None
+    assert item["momentum"]["roc_20_pct"] is not None
+    assert item["volatility"]["true_range_sma_20_pct"] is not None
+    assert item["independent_action_authority"] is False
+    assert item["historical_replay_eligible"] is False
+
+
+def test_daily_rsi_cross_threshold_under_same_last_80_requires_owner_receipt() -> None:
+    """Previously both histories became READY even though native RSI state differs."""
+    short, full = _recursive_seed_counterexample()
+    a = _native_recursive_context(short)
+    b = _native_recursive_context(full)
+    short_native_state = a["momentum"]["rsi"]["raw_observation"]["status"]
+    long_native_state = (
+        b["momentum"]["rsi"]["status"]
+        if b["momentum"]["rsi"]["admission"]["status"] == "READY"
+        else b["momentum"]["rsi"]["raw_observation"]["status"]
+    )
+    assert short_native_state != long_native_state
+    assert not (
+        a["momentum"]["rsi"]["admission"]["status"] == "READY"
+        and b["momentum"]["rsi"]["admission"]["status"] == "READY"
+        and a["momentum"]["rsi"]["status"] != b["momentum"]["rsi"]["status"]
+    )
+    assert a["momentum"]["rsi"]["admission"]["status"] != "READY"
+
+
+def test_long_independent_daily_recursive_nontrigger_keeps_admitted_values() -> None:
+    """Benign 320 bars retain native recursive values without action authority."""
+    hist = _history(periods=320)
+    actual = _native_recursive_context(hist)
+    assert actual["status"] == "READY"
+    assert actual["momentum"]["macd"]["admission"]["status"] == "READY"
+    assert actual["momentum"]["rsi"]["admission"]["status"] == "READY"
+    assert actual["volatility"]["atr_wilder_admission"]["status"] == "READY"
+    assert actual["volatility"]["atr_wilder_14"] is not None
+    assert actual["momentum"]["roc_20_pct"] is not None
+    assert actual["hard_veto"] is False
+    assert actual["independent_action_authority"] is False
+
+
 def test_wilder_atr14_is_recursive_distinct_from_tr_sma_and_future_safe():
     history = _history(periods=90)
     target_index = 70
@@ -102,14 +191,17 @@ def test_wilder_atr14_is_recursive_distinct_from_tr_sma_and_future_safe():
         expected = (expected * 13.0 + float(value)) / 14.0
     expected_pct = expected / float(close.iloc[-1]) * 100.0
 
-    assert abs(volatility["atr_wilder_14"] - expected) < 1e-12
-    assert abs(volatility["atr_wilder_14_pct"] - expected_pct) < 1e-12
+    assert volatility["atr_wilder_14"] is None
+    assert volatility["atr_wilder_admission"]["status"] == "MISSING"
+    # Original Wilder formula oracle is exact in diagnostic observation only.
+    assert abs(volatility["atr_wilder_raw_observation"]["value"] - expected) < 1e-12
+    assert abs(volatility["atr_wilder_raw_observation"]["pct"] - expected_pct) < 1e-12
     assert volatility["atr_wilder_period"] == 14
     assert volatility["atr_wilder_semantics"] == (
         "TR_TRANSITIONS_1_TO_14_MEAN_THEN_WILDER_RMA_ALPHA_1_OVER_14"
     )
     tr_sma_value = volatility["true_range_sma_20_pct"] * float(close.iloc[-1]) / 100.0
-    assert abs(volatility["atr_wilder_14"] - tr_sma_value) > 1e-9
+    assert abs(volatility["atr_wilder_raw_observation"]["value"] - tr_sma_value) > 1e-9
 
     future = history.copy()
     future.loc[len(future)] = {
@@ -131,6 +223,7 @@ def test_wilder_atr14_is_recursive_distinct_from_tr_sma_and_future_safe():
     )
     assert future_context["volatility"]["atr_wilder_14"] == volatility["atr_wilder_14"]
     assert future_context["volatility"]["atr_wilder_14_pct"] == volatility["atr_wilder_14_pct"]
+    assert future_context["volatility"]["atr_wilder_raw_observation"] == volatility["atr_wilder_raw_observation"]
 
 
 def test_missing_mixed_source_and_target_date_fail_closed():

@@ -60,6 +60,56 @@ class GetLatestDataTestCase(unittest.TestCase):
         }])
         self.db.save_daily_data(df, code, data_source="TestData")
 
+    def test_current_vendor_daily_rights_unknown_never_enter_stockdaily(self) -> None:
+        """Typed provider + correct qfq/hash does not license a durable UPSERT."""
+        target = date(2026, 10, 14)
+        df = pd.DataFrame([{
+            "date": target, "open": 100.0, "high": 102.0, "low": 99.0,
+            "close": 101.0, "volume": 10000.0, "amount": 1010000.0, "pct_chg": 1.0,
+        }])
+        typed = build_daily_data_identity(
+            df, provider_identity="BaostockFetcher",
+            provider_route="baostock.query_history_k_data_plus",
+            actual_response_branch="frequency=d;adjustflag=2",
+            requested_adjustment_basis="qfq", observed_adjustment_basis="qfq",
+            basis_evidence="observed-response:adjustflag=2",
+            requested_start=target.isoformat(), requested_end=target.isoformat(),
+            currency="CNY", volume_unit="share", amount_unit="CNY",
+            identity_state="OBSERVED",
+        )
+        attach_daily_data_identity(df, typed)
+        with self.assertRaisesRegex(PermissionError, "SOURCE_STORAGE_RIGHTS_NOT_ADMITTED"):
+            self.db.save_daily_data(df, "600519", data_source="BaostockFetcher")
+        # An untrusted caller-asserted license string is NOT a signed vendor grant.
+        df.attrs["data_rights"] = {"storage": "GRANTED"}
+        with self.assertRaisesRegex(PermissionError, "SOURCE_STORAGE_RIGHTS_NOT_ADMITTED"):
+            self.db.save_daily_data(df, "600519", data_source="BaostockFetcher")
+        self.assertEqual(self.db.get_latest_data("600519", days=5), [])
+
+    def test_current_vendor_identity_cannot_be_laundered_as_synthetic_test_source(self) -> None:
+        """Test label must not drop verified BaoStock lineage and commit its bars."""
+        target = date(2026, 10, 14)
+        df = pd.DataFrame([{
+            "date": target, "open": 100.0, "high": 102.0, "low": 99.0,
+            "close": 101.0, "volume": 10000.0, "amount": 1010000.0,
+        }])
+        typed = build_daily_data_identity(
+            df, provider_identity="BaostockFetcher",
+            provider_route="baostock.query_history_k_data_plus",
+            actual_response_branch="frequency=d;adjustflag=2",
+            requested_adjustment_basis="qfq", observed_adjustment_basis="qfq",
+            basis_evidence="observed-response:adjustflag=2",
+            requested_start=target.isoformat(), requested_end=target.isoformat(),
+            currency="CNY", volume_unit="share", amount_unit="CNY",
+            identity_state="OBSERVED",
+        )
+        attach_daily_data_identity(df, typed)
+        with self.assertRaisesRegex(
+            PermissionError, "SOURCE_STORAGE_RIGHTS_NOT_ADMITTED"
+        ):
+            self.db.save_daily_data(df, "600519", data_source="TestData")
+        self.assertEqual(self.db.get_latest_data("600519", days=5), [])
+
     def test_get_latest_data_returns_empty_when_no_data(self) -> None:
         """无数据时返回空列表"""
         result = self.db.get_latest_data("999999", days=2)

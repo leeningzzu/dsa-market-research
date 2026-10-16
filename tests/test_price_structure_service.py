@@ -69,6 +69,72 @@ def test_breakout_retest_and_failed_breakout_are_completed_close_states():
     assert failed["independent_action_authority"] is False
 
 
+
+def test_completed_30m_breakout_retest_failure_preserves_source_known_at() -> None:
+    """The accepted daily geometry is reused on 30m bar-end timestamps."""
+    from src.services.price_structure_service import build_confirmed_30m_structure_context
+
+    frame = _event_history()
+    bar_ends = pd.date_range("2026-10-14T01:30:00Z", periods=len(frame), freq="30min")
+    frame["date"] = bar_ends
+    frame["available_at"] = bar_ends + pd.Timedelta(minutes=7)
+
+    breakout = build_confirmed_30m_structure_context(frame.iloc[:10].copy())
+    retest = build_confirmed_30m_structure_context(frame.iloc[:11].copy())
+    failed = build_confirmed_30m_structure_context(frame.iloc[:12].copy())
+    assert [x["structure_event"]["state"] for x in (breakout, retest, failed)] == [
+        "UP_BREAKOUT", "UP_BREAKOUT_RETEST_HOLD", "FAILED_UP_BREAKOUT",
+    ]
+    pivot = next(p for p in failed["pivots"] if p["kind"] == "HIGH" and p["price"] == 12.0)
+    assert pivot["origin_time"] == bar_ends[5].isoformat()
+    assert pivot["confirmed_at"] == bar_ends[7].isoformat()
+    assert pivot["confirmed_available_at"] == (bar_ends[7] + pd.Timedelta(minutes=7)).isoformat()
+    assert pivot["provisional"] is False
+    assert pivot["invalidation"]["state"] == "TRIGGERED"
+    assert failed["structure_event"]["event_available_at"] == (
+        bar_ends[11] + pd.Timedelta(minutes=7)
+    ).isoformat()
+    assert failed["strategy_admitted"] is False
+    assert failed["historical_replay_eligible"] is False
+    assert "FAILED_UP_BREAKOUT" in failed["summary"]
+    assert "COMPLETED_CLOSE_BELOW_BROKEN_RESISTANCE" in failed["summary"]
+    assert bar_ends[11].isoformat() in failed["summary"]
+    assert (bar_ends[11] + pd.Timedelta(minutes=7)).isoformat() in failed["summary"]
+
+
+
+def test_completed_30m_machine_event_and_invalidation_survive_existing_email_html() -> None:
+    """Accepted event state, source times and rule survive the real Markdown->HTML consumer."""
+    from html.parser import HTMLParser
+    from src.formatters import markdown_to_html_document
+    from src.services.price_structure_service import build_confirmed_30m_structure_context
+
+    class VisibleText(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.parts = []
+
+        def handle_data(self, value):
+            self.parts.append(value)
+
+    frame = _event_history()
+    ends = pd.date_range("2026-10-14T01:30:00Z", periods=len(frame), freq="30min")
+    frame["date"] = ends
+    frame["available_at"] = ends + pd.Timedelta(minutes=7)
+    current = build_confirmed_30m_structure_context(frame.iloc[:12].copy())
+    event = current["structure_event"]
+    assert event["state"] == "FAILED_UP_BREAKOUT"
+
+    visible = VisibleText()
+    visible.feed(markdown_to_html_document("**30m结构观察**: " + current["summary"]))
+    text = "".join(visible.parts)
+    assert event["state"] in text
+    assert event["invalidation"] in text
+    assert event["event_time"] in text
+    assert event["event_available_at"] in text
+    assert "仅为价格结构观察，不构成独立交易触发" in text
+
+
 def test_missing_or_mixed_source_never_claims_ready_structure():
     missing_source = _event_history(source=None)
     target = missing_source.iloc[-1]["date"].date()

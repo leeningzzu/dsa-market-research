@@ -1205,7 +1205,14 @@ def run_full_analysis(
         if merge_notification and (results or market_report) and not args.no_notify:
             investor_content = ""
             if results:
-                investor_content = pipeline.notifier.generate_brief_report(results)
+                from src.enums import ReportType
+                from src.schemas.decision_action import has_canonical_action_authority_for_result
+                if any(has_canonical_action_authority_for_result(item) for item in results):
+                    investor_content = pipeline.notifier.generate_aggregate_report(
+                        results, ReportType.FULL,
+                    )
+                else:
+                    investor_content = pipeline.notifier.generate_brief_report(results)
                 if not isinstance(investor_content, str) or not investor_content.strip():
                     raise ValueError("merged investor notification projection is empty")
             combined_content = _compose_fused_research_notification(

@@ -11,6 +11,7 @@ from __future__ import annotations
 from datetime import date
 from hashlib import sha256
 import json
+import math
 from math import isfinite
 from typing import Any, Dict, List, Optional
 
@@ -25,6 +26,8 @@ SOURCE_ALIGNMENT_WINDOW = 61
 DIAGNOSTIC_RETURN_WINDOW = 60
 VARIANCE_SCALE = 5
 WILDER_ATR_PERIOD = 14
+_RECURSIVE_STARTUP_POLICY_VERSION = "bounded-native-recursive-startup-v1"
+_RECURSIVE_SEED_RESIDUAL_BOUND = 0.01
 
 _CONFIG = {
     "algorithm_version": ALGORITHM_VERSION,
@@ -176,6 +179,165 @@ def _wilder_atr(frame: pd.DataFrame, period: int = WILDER_ATR_PERIOD) -> tuple[O
     if last_close is None or last_close <= 0:
         return None, None
     return atr, atr / last_close * 100.0
+
+
+def _wilder_seed_history_per_start(period: int) -> int:
+    """Observed minimum from the method's own RMA decay, not a global window."""
+    if period <= 1:
+        raise ValueError("WILDER_PERIOD_INVALID")
+    return period + 1 + math.ceil(
+        math.log(_RECURSIVE_SEED_RESIDUAL_BOUND) / math.log1p(-1.0 / period)
+    )
+
+
+def rsi_startup_comparison_required_bars() -> int:
+    from src.stock_analyzer import StockTrendAnalyzer
+
+    return 2 * _wilder_seed_history_per_start(StockTrendAnalyzer.RSI_LONG)
+
+
+def atr_startup_comparison_required_bars() -> int:
+    return 2 * _wilder_seed_history_per_start(WILDER_ATR_PERIOD)
+
+
+def _recursive_numeric_startup_receipt(
+    frame: pd.DataFrame, *, method: str,
+    required_observations: int, compute: Any,
+    absolute_tolerance: Optional[float] = None,
+    relative_tolerance: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Compare three native suffix starts to full completed observed history.
+
+    Comparison never certifies unseen prehistory, provider rights, vintage,
+    point-in-time knowledge, independent actions, or model eligibility.
+    """
+    observations = len(frame)
+    receipt = {
+        "policy_version": _RECURSIVE_STARTUP_POLICY_VERSION,
+        "method": method,
+        "status": "MISSING",
+        "reason": method + "_STARTUP_HISTORY_INSUFFICIENT",
+        "required_observations": required_observations,
+        "observations": observations,
+        "evaluated_startup_lengths": [],
+        "max_endpoint_difference": None,
+        "absolute_tolerance": None,
+        "numeric_agreement": None,
+        "state_agreement": None,
+        "readiness_scope": "OBSERVED_COMPLETED_SUFFIXES_ONLY",
+        "unobserved_prehistory_convergence": "NOT_PROVEN",
+        "strategy_admitted": False,
+        "learning_admitted": False,
+    }
+    if observations < required_observations:
+        return receipt
+    lengths = tuple((observations * fraction) // 6 for fraction in (3, 4, 5))
+    if len(set(lengths)) != 3 or min(lengths) < required_observations // 2:
+        return {**receipt, "reason": method + "_DISTINCT_STARTS_INSUFFICIENT"}
+    try:
+        reference, reference_state = compute(frame)
+        if not reference or any(
+            value is None or not math.isfinite(float(value))
+            for value in reference.values()
+        ):
+            raise ValueError("RECURSIVE_REFERENCE_INVALID")
+        tolerance = (
+            float(absolute_tolerance) if absolute_tolerance is not None
+            else max(
+                1e-10, float(relative_tolerance) *
+                max(abs(float(v)) for v in reference.values()),
+            )
+        )
+        if not math.isfinite(tolerance) or tolerance <= 0:
+            raise ValueError("RECURSIVE_TOLERANCE_INVALID")
+        numeric_match = True
+        state_match = True
+        max_delta = 0.0
+        for length in lengths:
+            values, state = compute(frame.iloc[-length:].reset_index(drop=True))
+            if set(values) != set(reference):
+                raise ValueError("RECURSIVE_SCHEMA_MISMATCH")
+            delta = max(
+                abs(float(reference[key]) - float(values[key]))
+                for key in reference
+            )
+            if not math.isfinite(delta):
+                raise ValueError("RECURSIVE_VALUE_NONFINITE")
+            max_delta = max(max_delta, delta)
+            numeric_match = numeric_match and delta <= tolerance
+            state_match = state_match and state == reference_state
+    except (KeyError, TypeError, ValueError, ArithmeticError, IndexError):
+        return {
+            **receipt, "status": "UNKNOWN",
+            "reason": method + "_STARTUP_NATIVE_INVALID",
+        }
+    admitted = numeric_match and state_match
+    return {
+        **receipt,
+        "status": "READY" if admitted else "UNKNOWN",
+        "reason": (
+            method + "_OBSERVED_STARTS_AGREE"
+            if admitted else method + "_STARTUP_NUMERIC_OR_STATE_DRIFT"
+        ),
+        "evaluated_startup_lengths": [*lengths, observations],
+        "max_endpoint_difference": max_delta,
+        "absolute_tolerance": tolerance,
+        "numeric_agreement": numeric_match,
+        "state_agreement": state_match,
+        "reference_state": reference_state,
+        # These numbers come from this exact native reference computation
+        # only after its independent suffix-start numeric+state agreement.
+        "reference_values": (
+            {key: float(value) for key, value in reference.items()}
+            if admitted else None
+        ),
+    }
+
+
+def _rsi_startup_stability(frame: pd.DataFrame, analyzer: Any) -> Dict[str, Any]:
+    from src.stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult
+
+    required = rsi_startup_comparison_required_bars()
+    if not isinstance(analyzer, StockTrendAnalyzer):
+        return {
+            "method": "RSI", "status": "UNKNOWN",
+            "reason": "NATIVE_RSI_OWNER_UNAVAILABLE",
+            "required_observations": required,
+            "readiness_scope": "OBSERVED_COMPLETED_SUFFIXES_ONLY",
+            "strategy_admitted": False, "learning_admitted": False,
+        }
+
+    def calculate(part: pd.DataFrame):
+        close = pd.to_numeric(part["close"], errors="raise")
+        if close.isna().any() or bool((close <= 0).any()):
+            raise ValueError("INVALID_CLOSE")
+        values = analyzer._calculate_rsi(pd.DataFrame({"close": close}))
+        projection = TrendAnalysisResult(code="RSI_NATIVE_STARTUP_AUDIT")
+        analyzer._analyze_rsi(values, projection)
+        result = {
+            f"RSI_{period}_{side}": float(values.iloc[index][f"RSI_{period}"])
+            for period in (analyzer.RSI_SHORT, analyzer.RSI_MID, analyzer.RSI_LONG)
+            for side, index in (("latest", -1), ("previous", -2))
+        }
+        return result, getattr(getattr(projection, "rsi_status", None), "name", None)
+
+    return _recursive_numeric_startup_receipt(
+        frame, method="RSI", required_observations=required,
+        compute=calculate, absolute_tolerance=0.5,
+    )
+
+
+def _atr_startup_stability(frame: pd.DataFrame) -> Dict[str, Any]:
+    def calculate(part: pd.DataFrame):
+        now, _ = _wilder_atr(part)
+        previous, _ = _wilder_atr(part.iloc[:-1])
+        return {"atr": now, "previous_atr": previous}, None
+
+    return _recursive_numeric_startup_receipt(
+        frame, method="ATR_WILDER",
+        required_observations=atr_startup_comparison_required_bars(),
+        compute=calculate, relative_tolerance=0.01,
+    )
 
 
 def _lag1_corr(series: pd.Series) -> Optional[float]:
@@ -399,37 +561,83 @@ def build_volatility_momentum_context(
     roc20 = _roc_pct(close, 20)
     roc60 = _roc_pct(close, 60)
 
+    # Distinct native recursive methods must not promote one another.
+    from src.stock_analyzer import StockTrendAnalyzer
+    from src.services.multi_timeframe_structure_service import _macd_startup_stability
+
+    owner = StockTrendAnalyzer()
+    recursive = {
+        "macd": _macd_startup_stability(frame, owner),
+        "rsi": _rsi_startup_stability(frame, owner),
+        "atr_wilder": _atr_startup_stability(frame),
+    }
+    same_observed_source = (
+        "data_source" in frame.columns
+        and bool(frame["data_source"].notna().all())
+        and bool((frame["data_source"].astype(str).str.strip() != "").all())
+        and frame["data_source"].astype(str).nunique() == 1
+    )
+    if not same_observed_source:
+        recursive = {
+            method: (
+                {**item, "status": "UNKNOWN",
+                 "reason": "RECURSIVE_SOURCE_IDENTITY_INCONSISTENT"}
+                if item["status"] == "READY" else item
+            )
+            for method, item in recursive.items()
+        }
+    macd_receipt = recursive["macd"]
+    rsi_receipt = recursive["rsi"]
+    atr_receipt = recursive["atr_wilder"]
+    macd_admitted = macd_receipt["status"] == "READY"
+    rsi_admitted = rsi_receipt["status"] == "READY"
+    atr_admitted = atr_receipt["status"] == "READY"
     macd_status = getattr(getattr(trend_result, "macd_status", None), "value", None)
     rsi_status = getattr(getattr(trend_result, "rsi_status", None), "value", None)
     latest = indicators.iloc[-1]
     momentum = {
-        "status": "READY" if trend_result is not None else "PARTIAL",
+        "status": (
+            "READY" if trend_result is not None and macd_admitted and rsi_admitted
+            else "PARTIAL"
+        ),
         "roc_20_pct": roc20,
         "roc_60_pct": roc60,
         "macd": {
-            "dif": _safe_float(latest.get("MACD_DIF")),
-            "dea": _safe_float(latest.get("MACD_DEA")),
-            "bar": _safe_float(latest.get("MACD_BAR")),
-            "status": macd_status,
+            "dif": _safe_float(latest.get("MACD_DIF")) if macd_admitted else None,
+            "dea": _safe_float(latest.get("MACD_DEA")) if macd_admitted else None,
+            "bar": _safe_float(latest.get("MACD_BAR")) if macd_admitted else None,
+            "status": macd_status if macd_admitted else None,
             "formula_owner": "StockTrendAnalyzer._calculate_macd",
+            "admission": macd_receipt,
+            "raw_observation": {"status": macd_status, "admitted": False}
+            if not macd_admitted else None,
         },
         "rsi": {
-            "rsi_6": _safe_float(latest.get("RSI_6")),
-            "rsi_12": _safe_float(latest.get("RSI_12")),
-            "rsi_24": _safe_float(latest.get("RSI_24")),
-            "status": rsi_status,
+            "rsi_6": _safe_float(latest.get("RSI_6")) if rsi_admitted else None,
+            "rsi_12": _safe_float(latest.get("RSI_12")) if rsi_admitted else None,
+            "rsi_24": _safe_float(latest.get("RSI_24")) if rsi_admitted else None,
+            "status": rsi_status if rsi_admitted else None,
             "formula_owner": "StockTrendAnalyzer._calculate_rsi",
+            "admission": rsi_receipt,
+            "raw_observation": {"status": rsi_status, "admitted": False}
+            if not rsi_admitted else None,
         },
     }
     volatility = {
-        "status": "READY" if all(
-            value is not None for value in (realized_vol, tr_sma_pct, atr_wilder, atr_wilder_pct)
+        "status": "READY" if (
+            atr_admitted and all(
+                v is not None for v in (realized_vol, tr_sma_pct)
+            )
         ) else "PARTIAL",
         "realized_volatility_20d_annualized_pct": realized_vol,
         "true_range_sma_20_pct": tr_sma_pct,
         "true_range_semantics": "SIMPLE_MEAN_TRUE_RANGE_20_NOT_WILDER_ATR",
-        "atr_wilder_14": atr_wilder,
-        "atr_wilder_14_pct": atr_wilder_pct,
+        "atr_wilder_14": atr_wilder if atr_admitted else None,
+        "atr_wilder_14_pct": atr_wilder_pct if atr_admitted else None,
+        "atr_wilder_admission": atr_receipt,
+        "atr_wilder_raw_observation": {
+            "value": atr_wilder, "pct": atr_wilder_pct, "admitted": False,
+        } if not atr_admitted else None,
         "atr_wilder_period": WILDER_ATR_PERIOD,
         "atr_wilder_semantics": "TR_TRANSITIONS_1_TO_14_MEAN_THEN_WILDER_RMA_ALPHA_1_OVER_14",
         "legacy_screening_alias_note": "screening atr_20_pct uses the same TR-SMA/close formula",
@@ -450,7 +658,18 @@ def build_volatility_momentum_context(
             "independent_confirmation_group_count": 0,
         }
     else:
-        divergence = _confirmed_divergence(indicators, price_structure_context)
+        admissible_indicators = indicators.copy()
+        if not macd_admitted:
+            admissible_indicators["MACD_DIF"] = float("nan")
+        if not rsi_admitted:
+            admissible_indicators["RSI_12"] = float("nan")
+        divergence = _confirmed_divergence(admissible_indicators, price_structure_context)
+        if not (macd_admitted or rsi_admitted):
+            divergence = {
+                "status": "MISSING", "state": "NONE", "signals": [],
+                "reason": "RECURSIVE_OSCILLATORS_NOT_ADMITTED",
+                "independent_confirmation_group_count": 0,
+            }
 
     if alignment["status"] != "SINGLE_SOURCE":
         status = "PARTIAL"
@@ -461,6 +680,9 @@ def build_volatility_momentum_context(
     elif trend_result is None:
         status = "PARTIAL"
         reason = "CANONICAL_TREND_PROJECTION_MISSING"
+    elif not (macd_admitted and rsi_admitted and atr_admitted):
+        status = "PARTIAL"
+        reason = "RECURSIVE_METHOD_ADMISSION_INCOMPLETE"
     else:
         status = "READY"
         reason = "VOLATILITY_MOMENTUM_READY"
@@ -475,6 +697,7 @@ def build_volatility_momentum_context(
         "source_alignment": alignment,
         "volatility": volatility,
         "momentum": momentum,
+        "recursive_startup_admission": recursive,
         "confirmed_divergence": divergence,
         "process_diagnostics": process,
         "historical_replay_eligible": status == "READY",

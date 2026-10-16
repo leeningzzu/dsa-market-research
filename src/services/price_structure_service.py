@@ -102,12 +102,16 @@ def _invalidation(frame: pd.DataFrame, *, pivot: Dict[str, Any]) -> Dict[str, An
     else:
         rule = "COMPLETED_CLOSE_BELOW_LEVEL"
         predicate = lambda value: value < level
+    # Preserve completed-close invalidation, but avoid rebuilding a full
+    # pandas row for every later bar and every confirmed pivot.
+    closes = frame["close"].to_numpy(copy=False)
+    dates = frame["date"].tolist()
     for index in range(confirm_index + 1, len(frame)):
-        if predicate(float(frame.iloc[index]["close"])):
+        if predicate(float(closes[index])):
             return {
                 "rule": rule,
                 "state": "TRIGGERED",
-                "triggered_at": frame.iloc[index]["date"].isoformat(),
+                "triggered_at": dates[index].isoformat(),
             }
     return {"rule": rule, "state": "ACTIVE", "triggered_at": None}
 
@@ -116,12 +120,15 @@ def _confirmed_pivots(frame: pd.DataFrame) -> List[Dict[str, Any]]:
     pivots: List[Dict[str, Any]] = []
     left = PIVOT_LEFT_BARS
     right = PIVOT_RIGHT_BARS
+    highs = frame["high"].to_numpy(copy=False)
+    lows = frame["low"].to_numpy(copy=False)
+    dates = frame["date"].tolist()
     for index in range(left, len(frame) - right):
-        center_high = float(frame.iloc[index]["high"])
-        center_low = float(frame.iloc[index]["low"])
+        center_high = float(highs[index])
+        center_low = float(lows[index])
         neighbor_indices = list(range(index - left, index)) + list(range(index + 1, index + right + 1))
-        is_high = all(center_high > float(frame.iloc[item]["high"]) for item in neighbor_indices)
-        is_low = all(center_low < float(frame.iloc[item]["low"]) for item in neighbor_indices)
+        is_high = all(center_high > float(highs[item]) for item in neighbor_indices)
+        is_low = all(center_low < float(lows[item]) for item in neighbor_indices)
         # A single outside bar can be both a local high and low. V1 treats that
         # geometry as ambiguous instead of inventing an intra-bar ordering.
         if is_high and is_low:
@@ -133,8 +140,8 @@ def _confirmed_pivots(frame: pd.DataFrame) -> List[Dict[str, Any]]:
         record: Dict[str, Any] = {
             "kind": kind,
             "price": round(price, 6),
-            "origin_time": frame.iloc[index]["date"].isoformat(),
-            "confirmed_at": frame.iloc[index + right]["date"].isoformat(),
+            "origin_time": dates[index].isoformat(),
+            "confirmed_at": dates[index + right].isoformat(),
             "provisional": False,
             "algorithm_version": PIVOT_ALGORITHM_VERSION,
             "config_hash": CONFIG_HASH,
@@ -192,10 +199,14 @@ def _swings(pivots: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 def _event_for_pivot(frame: pd.DataFrame, pivot: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     level = float(pivot["price"])
     confirm_index = int(pivot["_confirmed_index"])
+    closes = frame["close"].to_numpy(copy=False)
+    highs = frame["high"].to_numpy(copy=False)
+    lows = frame["low"].to_numpy(copy=False)
+    dates = frame["date"].tolist()
     break_index: Optional[int] = None
     for index in range(confirm_index + 1, len(frame)):
-        previous_close = float(frame.iloc[index - 1]["close"])
-        close = float(frame.iloc[index]["close"])
+        previous_close = float(closes[index - 1])
+        close = float(closes[index])
         crossed = (
             previous_close <= level and close > level
             if pivot["kind"] == "HIGH"
@@ -216,14 +227,13 @@ def _event_for_pivot(frame: pd.DataFrame, pivot: Dict[str, Any]) -> Optional[Dic
     event_index = break_index
 
     for index in range(break_index + 1, len(frame)):
-        row = frame.iloc[index]
-        close = float(row["close"])
+        close = float(closes[index])
         if pivot["kind"] == "HIGH":
             if close < level:
                 state = "FAILED_UP_BREAKOUT"
                 event_index = index
                 break
-            if float(row["low"]) <= level <= close:
+            if float(lows[index]) <= level <= close:
                 state = "UP_BREAKOUT_RETEST_HOLD"
                 event_index = index
         else:
@@ -231,7 +241,7 @@ def _event_for_pivot(frame: pd.DataFrame, pivot: Dict[str, Any]) -> Optional[Dic
                 state = "FAILED_DOWN_BREAKDOWN"
                 event_index = index
                 break
-            if close <= level <= float(row["high"]):
+            if close <= level <= float(highs[index]):
                 state = "DOWN_BREAKDOWN_RETEST_REJECT"
                 event_index = index
 
@@ -241,7 +251,7 @@ def _event_for_pivot(frame: pd.DataFrame, pivot: Dict[str, Any]) -> Optional[Dic
         "level_kind": pivot["kind"],
         "level_origin_time": pivot["origin_time"],
         "level_confirmed_at": pivot["confirmed_at"],
-        "event_time": frame.iloc[event_index]["date"].isoformat(),
+        "event_time": dates[event_index].isoformat(),
         "provisional": False,
         "invalidation": invalidation_rule,
         "algorithm_version": PIVOT_ALGORITHM_VERSION,
@@ -284,6 +294,96 @@ def _active_level(pivots: List[Dict[str, Any]], *, kind: str, close: float) -> O
 
 def _public_pivot(pivot: Dict[str, Any]) -> Dict[str, Any]:
     return {key: value for key, value in pivot.items() if not key.startswith("_")}
+
+
+
+def build_confirmed_intraday_structure_context(
+    frame: pd.DataFrame, *, timeframe: str,
+) -> Dict[str, Any]:
+    """One confirmed-pivot producer for completed 60m/30m descriptive context.
+
+    MTF admission owns clock, source, price basis and complete-bar verification.
+    No strategy trigger, historical PIT or independent action is granted.
+    """
+    if timeframe not in {"60m", "30m"}:
+        raise ValueError("UNSUPPORTED_CONFIRMED_INTRADAY_STRUCTURE_TIMEFRAME")
+    base = {
+        "schema_version": PRICE_STRUCTURE_SCHEMA_VERSION,
+        "timeframe": timeframe,
+        "completed_bar_only": True,
+        "algorithm_version": PIVOT_ALGORITHM_VERSION,
+        "config_hash": CONFIG_HASH,
+        "pivot_left_bars": PIVOT_LEFT_BARS,
+        "pivot_right_bars": PIVOT_RIGHT_BARS,
+        "provisional_candidates_excluded": True,
+        "independent_action_authority": False,
+        "strategy_admitted": False,
+        "learning_admitted": False,
+        "historical_replay_eligible": False,
+    }
+    if len(frame) < MIN_OBSERVATIONS:
+        return {**base, "status": "MISSING", "reason": "WARMUP_INSUFFICIENT",
+                "pivots": [], "swings": [],
+                "structure_event": {"state": "NONE", "provisional": False}}
+    if _invalid_ohlc(frame) or _source_alignment(frame)["status"] != "SINGLE_SOURCE":
+        return {**base, "status": "UNKNOWN", "reason": f"INVALID_OR_MIXED_SOURCE_{timeframe.upper()}",
+                "pivots": [], "swings": [],
+                "structure_event": {"state": "NONE", "provisional": False}}
+
+    # Existing pivot geometry uses date=bar_end, not a truncated trading date.
+    # Keep the confirmation bar time and record the provider-known time
+    # separately; a late observation never becomes an earlier PIT label.
+    known_at = {
+        bar_end.isoformat(): available.isoformat()
+        for bar_end, available in zip(frame["date"], frame["available_at"])
+    }
+    pivots = _confirmed_pivots(frame)
+    for pivot in pivots:
+        pivot["confirmed_available_at"] = known_at[pivot["confirmed_at"]]
+        invalidation_at = pivot["invalidation"].get("triggered_at")
+        if invalidation_at is not None:
+            pivot["invalidation"]["triggered_available_at"] = known_at[invalidation_at]
+    swings = _swings(pivots)
+    for swing in swings:
+        swing["confirmed_available_at"] = known_at[swing["confirmed_at"]]
+    close = float(frame.iloc[-1]["close"])
+    event = _latest_event(frame, pivots)
+    if event.get("event_time"):
+        event["event_available_at"] = known_at[event["event_time"]]
+    support = _active_level(pivots, kind="LOW", close=close)
+    resistance = _active_level(pivots, kind="HIGH", close=close)
+    context_parts = [f"{timeframe}已确认枢轴{len(pivots)}个"] if pivots else []
+    if event.get("state") != "NONE":
+        context_parts.append(
+            f"结构事件`{event['state']}`，关键位{event['level']}，"
+            f"完成K线时间{event['event_time']}，本次数据可用时间{event['event_available_at']}，"
+            f"失效规则`{event['invalidation']}`"
+        )
+    if support is not None:
+        context_parts.append(f"已确认支撑{support['price']}（确认于{support['confirmed_at']}）")
+    if resistance is not None:
+        context_parts.append(f"已确认压力{resistance['price']}（确认于{resistance['confirmed_at']}）")
+    if pivots:
+        context_parts.append("仅为价格结构观察，不构成独立交易触发")
+    return {
+        **base,
+        "status": "READY" if pivots else "MISSING",
+        "reason": "CONFIRMED_PIVOTS_READY" if pivots else "NO_CONFIRMED_PIVOTS",
+        "observations": int(len(frame)),
+        "source_alignment": _source_alignment(frame),
+        "pivots": [_public_pivot(item) for item in pivots[-20:]],
+        "swings": swings[-12:],
+        "nearest_support": support or {"status": "MISSING"},
+        "nearest_resistance": resistance or {"status": "MISSING"},
+        "structure_event": event,
+        "current_close": round(close, 6),
+        "summary": "；".join(context_parts) if pivots else None,
+    }
+
+
+def build_confirmed_30m_structure_context(frame: pd.DataFrame) -> Dict[str, Any]:
+    """Legacy 30m alias; both intervals share one identical pivot algorithm."""
+    return build_confirmed_intraday_structure_context(frame, timeframe="30m")
 
 
 def build_price_structure_context(

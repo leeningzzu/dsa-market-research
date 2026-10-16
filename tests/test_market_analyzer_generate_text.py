@@ -3300,6 +3300,243 @@ Index text.
         assert "URL: https://example.com/redirect?" in prompt
         assert ("x" * 220) not in prompt
 
+
+
+
+    def test_cn_daily_review_actually_routes_completed_index_source_into_payload(self):
+        """M2 must execute the existing source-only producer, not leave it test-only."""
+        from src.market_analyzer import MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value="review")
+        ma.region = "cn"
+        overview = MarketOverview(date="2026-10-14")
+        sentinel = object()
+        with (
+            patch.object(ma, "get_market_overview", return_value=overview),
+            patch.object(ma, "search_market_news", return_value=[]),
+            patch.object(ma, "_merge_persisted_market_intelligence", return_value=[]),
+            patch.object(ma, "generate_market_review", return_value="## A股复盘\n\n完整材料。"),
+            patch.object(ma, "build_market_light_snapshot", return_value={"status": "yellow", "data_quality": "partial"}),
+            patch.object(ma, "build_market_review_payload", return_value={"region": "cn"}) as build_payload,
+            patch("data_provider.baostock_fetcher.BaostockFetcher.get_cn_index_completed_close_source", return_value=sentinel) as get_source,
+        ):
+            result = ma._run_daily_review_parts()
+
+        assert result.structured_payload == {"region": "cn"}
+        get_source.assert_called_once()
+        kwargs = get_source.call_args.kwargs
+        assert kwargs["end_date"] == "2026-10-14"
+        assert kwargs["start_date"] < kwargs["end_date"]
+        assert build_payload.call_args.kwargs["cn_index_completed_close_source"] is sentinel
+
+    def test_non_cn_daily_review_never_requests_cn_completed_index_source(self):
+        from src.market_analyzer import MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value="review")
+        ma.region = "us"
+        with (
+            patch.object(ma, "get_market_overview", return_value=MarketOverview(date="2026-10-14")),
+            patch.object(ma, "search_market_news", return_value=[]),
+            patch.object(ma, "_merge_persisted_market_intelligence", return_value=[]),
+            patch.object(ma, "generate_market_review", return_value="## US review"),
+            patch.object(ma, "build_market_light_snapshot", return_value={"status": "yellow", "data_quality": "partial"}),
+            patch.object(ma, "build_market_review_payload", return_value={"region": "us"}),
+            patch("data_provider.baostock_fetcher.BaostockFetcher.get_cn_index_completed_close_source") as get_source,
+        ):
+            ma._run_daily_review_parts()
+
+        get_source.assert_not_called()
+
+    def test_cn_index_completed_source_receipt_reaches_market_full_report_without_new_vote(self):
+        """Actual existing Market review renderer consumes source-only PARTIAL, not index value."""
+        from data_provider.baostock_fetcher import BaostockFetcher
+        from tests.test_baostock_fetcher import (
+            _FakeBaostock, _IndexDailyResult, _IndexAfterCloseClock,
+            _complete_index_rows, _session,
+        )
+        from src.market_analyzer import MarketIndex, MarketOverview
+        from src.core.market_review import render_market_review_region_projection
+        from src.services.factor_decision_summary import build_stock_factor_decision_summary
+        from src.services.evidence_traceability_registry import compile_complete_research_universe_view
+        from tests.test_factor_decision_summary import _trend
+
+        fake = _FakeBaostock(_IndexDailyResult(_complete_index_rows()))
+        fetcher = BaostockFetcher()
+        with (
+            patch.object(fetcher, "_baostock_session", side_effect=lambda: _session(fake)),
+            patch("data_provider.baostock_fetcher.datetime", _IndexAfterCloseClock),
+        ):
+            source = fetcher.get_cn_index_completed_close_source(
+                "sh.000001", start_date="2026-10-12", end_date="2026-10-14",
+            )
+        overview = MarketOverview(
+            date="2026-10-14",
+            indices=[MarketIndex(code="000001", name="上证指数", current=3030, change_pct=0.0)],
+            up_count=200, down_count=400, limit_up_count=2, limit_down_count=8,
+        )
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value="review")
+        regular = ma.build_market_review_payload(
+            overview, [], "## A股复盘\n\n完整指数、宽度、行业、反证保留。",
+        )
+        with_source = ma.build_market_review_payload(
+            overview, [], "## A股复盘\n\n完整指数、宽度、行业、反证保留。",
+            cn_index_completed_close_source=source,
+        )
+        observation = with_source["cn_index_completed_close_source"]
+        receipt = source.attrs["cn_index_completed_close_source"]
+        assert observation["dataset_id"] == "M_INDEX_CURRENT"
+        assert observation["source_state"] == "PARTIAL"
+        assert observation["source_code"] == "sh.000001"
+        assert observation["identity_hash"] == receipt["identity_hash"]
+        assert observation["content_sha256"] == receipt["content_sha256"]
+        assert observation["observed_at"] == receipt["observed_at"]
+        assert observation["independent_source_value_admitted"] is False
+        assert observation["strategy_upgrade_authority"] is False
+        assert observation["historical_pit_eligible"] is False
+        assert observation["source_data_rights"] == "UNKNOWN"
+        assert regular.get("cn_index_completed_close_source") is None
+        assert regular["market_light"] == with_source["market_light"]
+        full = render_market_review_region_projection(with_source, regions=["cn"])
+        assert "完整指数、宽度、行业、反证保留" in full
+        assert "M_INDEX_CURRENT" in full
+        assert receipt["identity_hash"] in full
+        assert receipt["observed_at"] in full
+        assert "PARTIAL" in full and "UNKNOWN" in full
+        assert "证券来源未准入" in full
+        assert not any(key in observation for key in ("value", "close", "change_pct", "score", "probability"))
+
+        # The source-only appendix is not a price, regime, probability, or veto.
+        factor = build_stock_factor_decision_summary(
+            _trend(signal_score=99),
+            daily_market_context={"market_light": with_source["market_light"]},
+            include_canonical=True,
+        )
+        base_factor = build_stock_factor_decision_summary(
+            _trend(signal_score=99),
+            daily_market_context={"market_light": regular["market_light"]},
+            include_canonical=True,
+        )
+        assert factor["canonical_decision"] == base_factor["canonical_decision"]
+        index_item = next(
+            row for row in compile_complete_research_universe_view(factor)["data_objects"]
+            if row["dataset_id"] == "M_INDEX_CURRENT"
+        )
+        assert index_item["state"] == "UNKNOWN"
+        assert index_item["independent_source_value_admitted"] is False
+
+    def test_cn_index_completed_source_consumer_rejects_forged_receipt_and_wrong_clock(self):
+        from data_provider.baostock_fetcher import BaostockFetcher
+        from tests.test_baostock_fetcher import (
+            _FakeBaostock, _IndexDailyResult, _IndexAfterCloseClock,
+            _complete_index_rows, _session,
+        )
+        from src.market_analyzer import MarketOverview
+
+        fake = _FakeBaostock(_IndexDailyResult(_complete_index_rows()))
+        fetcher = BaostockFetcher()
+        with (
+            patch.object(fetcher, "_baostock_session", side_effect=lambda: _session(fake)),
+            patch("data_provider.baostock_fetcher.datetime", _IndexAfterCloseClock),
+        ):
+            source = fetcher.get_cn_index_completed_close_source(
+                "sh.000001", start_date="2026-10-12", end_date="2026-10-14",
+            )
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value="review")
+        wrong_date = MarketOverview(date="2026-10-15")
+        with pytest.raises(ValueError, match="INDEX_SOURCE_TARGET_DATE_MISMATCH"):
+            ma.build_market_review_payload(
+                wrong_date, [], "## 复盘\n\n完整报告。",
+                cn_index_completed_close_source=source,
+            )
+        overview = MarketOverview(date="2026-10-14")
+        # A recomputed identity cannot forge READY, entitlement or a valid region.
+        from data_provider.daily_data_identity import sha256_payload
+        original_receipt = dict(source.attrs["cn_index_completed_close_source"])
+        forged_receipt = {**original_receipt, "source_state": "READY"}
+        forged_receipt["identity_hash"] = sha256_payload({
+            key: value for key, value in forged_receipt.items()
+            if key != "identity_hash"
+        })
+        source.attrs["cn_index_completed_close_source"] = forged_receipt
+        with pytest.raises(ValueError, match="INDEX_SOURCE_IDENTITY_MISMATCH"):
+            ma.build_market_review_payload(
+                overview, [], "## 复盘\n\n完整报告。",
+                cn_index_completed_close_source=source,
+            )
+        source.attrs["cn_index_completed_close_source"] = original_receipt
+        ma.region = "us"
+        with pytest.raises(ValueError, match="INDEX_SOURCE_REGION_MISMATCH"):
+            ma.build_market_review_payload(
+                overview, [], "## 复盘\n\n完整报告。",
+                cn_index_completed_close_source=source,
+            )
+        ma.region = "cn"
+        source.loc[source.index[-1], "close"] = "9999"
+        with pytest.raises(ValueError, match="INDEX_SOURCE_IDENTITY_MISMATCH"):
+            ma.build_market_review_payload(
+                overview, [], "## 复盘\n\n完整报告。",
+                cn_index_completed_close_source=source,
+            )
+    def test_market_index_zero_filled_quote_is_not_a_ready_index_vote_or_r004_role(self):
+        """All-zero fallback is not an observed index; valid breadth/limit stay available."""
+        from src.market_analyzer import MarketIndex, MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value="review")
+        overview = MarketOverview(
+            date="2026-10-14",
+            indices=[
+                MarketIndex(
+                    code="000001", name="上证指数",
+                    current=0.0, prev_close=0.0, change_pct=0.0,
+                )
+            ],
+            up_count=200, down_count=400,
+            limit_up_count=2, limit_down_count=8,
+        )
+        light = ma.build_market_light_snapshot(overview)
+        regime = ma._build_market_regime_brief(overview)
+        roles = regime["representative_index_roles"]
+        assert light["dimensions"]["breadth"]["available"] is True
+        assert light["dimensions"]["limit"]["available"] is True
+        assert light["dimensions"]["index"] == {"score": 50, "available": False}
+        assert light["data_quality"] == "partial"
+        from src.services.factor_decision_summary import build_stock_factor_decision_summary
+        from tests.test_factor_decision_summary import _trend
+        factor = build_stock_factor_decision_summary(
+            _trend(signal_score=99),
+            daily_market_context={"market_light": light},
+            include_canonical=True,
+        )
+        assert factor["market_sector_regime"]["market"]["state"] == "CAUTION"
+        assert factor["market_sector_regime"]["hard_veto"] is False
+        assert "MARKET_REGIME_RISK_OFF" not in factor["canonical_decision"]["reason_codes"]
+        assert roles["status"] == "MISSING"
+        assert roles["roles"]["broad_all_market"]["status"] == "MISSING"
+        assert not any("权益指数平均涨跌幅" in reason for reason in light["reasons"])
+
+    def test_market_index_genuine_flat_zero_pct_retains_eligible_index_vote(self):
+        """A 0% return is legitimate when supported by a positive index level."""
+        from src.market_analyzer import MarketIndex, MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value="review")
+        overview = MarketOverview(
+            date="2026-10-14",
+            indices=[
+                MarketIndex(
+                    code="000001", name="上证指数",
+                    current=3000.0, prev_close=3000.0, change_pct=0.0,
+                )
+            ],
+            up_count=200, down_count=400,
+            limit_up_count=2, limit_down_count=8,
+        )
+        light = ma.build_market_light_snapshot(overview)
+        roles = ma._build_market_regime_brief(overview)["representative_index_roles"]
+        assert light["dimensions"]["index"] == {"score": 50, "available": True}
+        assert light["data_quality"] == "ok"
+        assert roles["roles"]["broad_all_market"]["status"] == "READY"
+        assert any("权益指数平均涨跌幅 +0.00%" in reason for reason in light["reasons"])
+
     def test_market_light_snapshot_marks_defensive_market_red(self):
         from src.market_analyzer import MarketIndex, MarketOverview
 

@@ -116,7 +116,7 @@ def markdown_to_html_document(markdown_text: str) -> str:
     """
     html_content = markdown2.markdown(
         markdown_text,
-        extras=["tables", "fenced-code-blocks", "break-on-newline", "cuddled-lists"],
+        extras=["tables", "fenced-code-blocks", "break-on-newline", "cuddled-lists", "code-friendly"],
         safe_mode="escape",
     )
 

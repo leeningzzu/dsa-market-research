@@ -154,11 +154,13 @@ def test_product_coverage_consumes_the_trace_matrix_for_actual_weekly_structure_
         "technical_matrix_cells": 56,
     }
     assert rows["detail.timeframe.price_structure"]["timeframe_states"]["weekly"] == "EVIDENCE_AVAILABLE"
-    assert rows["detail.timeframe.momentum_divergence"]["timeframe_states"]["weekly"] == "EVIDENCE_AVAILABLE"
-    assert any(
-        path.startswith("multi_timeframe_structure_context.timeframes.weekly")
-        for path in rows["detail.timeframe.momentum_divergence"]["timeframe_canonical_paths"]["weekly"]
-    )
+    # Complete weekly structures and volume remain material; unverified
+    # recursive oscillator output must not create weekly MOMENTUM coverage.
+    weekly = factor["multi_timeframe_structure_context"]["timeframes"]["weekly"]
+    assert weekly["macd_startup_stability"]["status"] == "MISSING"
+    assert weekly["rsi_startup_stability"]["status"] == "MISSING"
+    assert rows["detail.timeframe.momentum_divergence"]["timeframe_states"]["weekly"] == "DATA_INSUFFICIENT"
+    assert rows["detail.timeframe.momentum_divergence"]["timeframe_canonical_paths"]["weekly"] == ()
     assert rows["detail.timeframe.trend_ma"]["timeframe_states"]["weekly"] == "EVIDENCE_AVAILABLE"
     assert rows["detail.timeframe.volume_price"]["timeframe_states"]["weekly"] == "EVIDENCE_AVAILABLE"
     assert rows["detail.timeframe.cost_structure"]["timeframe_states"]["weekly"] == "DATA_INSUFFICIENT"

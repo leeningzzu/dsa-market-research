@@ -33,6 +33,20 @@ class PipelineFetchErrorTestCase(unittest.TestCase):
         pipeline.db = MagicMock()
         pipeline.fetcher_manager.get_stock_name.return_value = "贵州茅台"
         pipeline.db.has_today_data.return_value = True
+        # A genuine resume nontrigger needs the complete *current method*
+        # history, not just a mocked latest-date flag.
+        import exchange_calendars as xcals
+        from types import SimpleNamespace
+        from src.core.pipeline import _current_daily_window_plan
+
+        effective = date(2026, 3, 27)
+        window = _current_daily_window_plan(market="cn", target_date=effective)
+        sessions = xcals.get_calendar("XSHG").sessions_in_range(
+            window["start_date"], effective,
+        )
+        pipeline.db.get_data_range.return_value = [
+            SimpleNamespace(date=value.date()) for value in sessions
+        ]
         current_time = datetime(2026, 3, 28, 1, 0, tzinfo=timezone.utc)
 
         success, error = StockAnalysisPipeline.fetch_and_save_stock_data(
@@ -45,6 +59,9 @@ class PipelineFetchErrorTestCase(unittest.TestCase):
         self.assertIsNone(error)
         _mock_target.assert_called_once_with("600519", current_time=current_time)
         pipeline.db.has_today_data.assert_called_once_with("600519", date(2026, 3, 27))
+        pipeline.db.get_data_range.assert_called_once_with(
+            "600519", window["start_date"], effective,
+        )
         pipeline.fetcher_manager.get_daily_data.assert_not_called()
 
     def test_resolve_resume_target_date_normalizes_supported_a_share_formats(self):

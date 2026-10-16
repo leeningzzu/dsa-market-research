@@ -1298,5 +1298,138 @@ class TestStorage(unittest.TestCase):
             DatabaseManager.reset_instance()
             temp_dir.cleanup()
 
+    def test_b1_first_stockdaily_and_history_gate_rejects_vendor_before_db_transaction(self):
+        """Reject unsupported vendor rights at real DatabaseManager, not a mocked DB."""
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+
+        db = DatabaseManager.__new__(DatabaseManager)
+        db._run_write_transaction = Mock(
+            side_effect=AssertionError("unadmitted database transaction reached")
+        )
+        frame = pd.DataFrame([{
+            "date": date(2026, 10, 14),
+            "open": 100.0, "high": 102.0, "low": 99.0,
+            "close": 101.0, "volume": 1_000.0, "amount": 101_000.0,
+        }])
+        for source in ("BaostockFetcher", "Unknown", "SYNTHETIC_FORGED_LICENSE"):
+            with self.subTest(source=source):
+                with self.assertRaisesRegex(
+                    PermissionError, "SOURCE_STORAGE_RIGHTS_NOT_ADMITTED"
+                ):
+                    db.save_daily_data(frame, "600519", data_source=source)
+        strict = SimpleNamespace(
+            dashboard={"factor_decision": {
+                "method_execution_receipt_policy": "REQUIRED",
+                "data_rights": {"storage": "GRANTED", "source": "SELF_ASSERTED"},
+            }}
+        )
+        with self.assertRaisesRegex(
+            PermissionError, "SOURCE_STORAGE_RIGHTS_NOT_ADMITTED"
+        ):
+            db.save_analysis_history(
+                strict, query_id="synthetic", report_type="FULL",
+                news_content=None,
+            )
+        db._run_write_transaction.assert_not_called()
+
+        # Stronger lawful nontrigger: genuine insert + readback in disposable
+        # SQLite. A pytest flag or mocked business transaction is NOT a grant.
+        DatabaseManager.reset_instance()
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir:
+            db_path = os.path.join(temp_dir, "synthetic_daily_test.sqlite")
+            isolated = DatabaseManager(db_url=f"sqlite:///{db_path}")
+            try:
+                self.assertEqual(
+                    isolated.save_daily_data(frame, "600519", data_source="test"),
+                    1,
+                )
+                rows = isolated.get_latest_data("600519", days=5)
+                self.assertEqual(len(rows), 1)
+                self.assertEqual(rows[0].data_source, "test")
+                self.assertAlmostEqual(rows[0].close, 101.0)
+            finally:
+                DatabaseManager.reset_instance()
+
+
+    def test_b1_unmarked_market_review_vendor_context_cannot_write_history(self):
+        """Legacy/missing strict flag must not license source-bearing market history."""
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+
+        db = DatabaseManager.__new__(DatabaseManager)
+        db._run_write_transaction = Mock(return_value=73)
+        result = SimpleNamespace(
+            code="MARKET", dashboard={}, data_sources="market_review",
+        )
+        with self.assertRaisesRegex(
+            PermissionError, "SOURCE_STORAGE_RIGHTS_NOT_ADMITTED"
+        ):
+            db.save_analysis_history(
+                result, query_id="b1-unmarked-market-source",
+                report_type="market_review", news_content=None,
+                context_snapshot={"market_light_snapshots": {
+                    "source": "BaostockFetcher",
+                    "raw_ohlcv": "SYNTHETIC_UNLICENSED",
+                }},
+            )
+        db._run_write_transaction.assert_not_called()
+
+    def test_b1_forged_pytest_marker_and_test_source_cannot_write_business_db(self):
+        """A process environment value and caller-controlled label are no grant."""
+        from unittest.mock import Mock
+
+        db = DatabaseManager.__new__(DatabaseManager)
+        db._run_write_transaction = Mock(return_value=1)
+        frame = pd.DataFrame([{
+            "date": date(2026, 10, 14),
+            "open": 100.0, "high": 102.0, "low": 99.0,
+            "close": 101.0, "volume": 1000.0, "amount": 101000.0,
+        }])
+        with patch.dict(os.environ, {"PYTEST_CURRENT_TEST": "forged"}, clear=False):
+            with self.assertRaisesRegex(
+                PermissionError, "SOURCE_STORAGE_RIGHTS_NOT_ADMITTED"
+            ):
+                db.save_daily_data(frame, "600519", data_source="test")
+        db._run_write_transaction.assert_not_called()
+
+    def test_b1_synthetic_legacy_history_isolated_sqlite_readback_nontrigger(self):
+        """Retain genuine synthetic history readback, not vendor-write rights."""
+        from types import SimpleNamespace
+        from src.storage import AnalysisHistory, LearningRecordingRecord
+
+        DatabaseManager.reset_instance()
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir:
+            db_path = os.path.join(temp_dir, "synthetic_history_test.sqlite")
+            isolated = DatabaseManager(db_url=f"sqlite:///{db_path}")
+            fixture = SimpleNamespace(
+                code="600519", name="SYNTHETIC_FIXTURE", sentiment_score=50,
+                operation_advice="WAIT", trend_prediction="UNKNOWN",
+                analysis_summary="SYNTHETIC_RESEARCH_NOT_MARKET_FACT",
+                dashboard={}, data_sources="", raw_response=None,
+            )
+            try:
+                saved = isolated.save_analysis_history(
+                    result=fixture, query_id="synthetic-history-only",
+                    report_type="simple", news_content=None,
+                    context_snapshot={"synthetic_fixture": True},
+                    save_snapshot=True,
+                )
+                self.assertGreater(saved, 0)
+                with isolated.get_session() as session:
+                    row = session.query(AnalysisHistory).filter(
+                        AnalysisHistory.id == saved
+                    ).one()
+                    self.assertEqual(
+                        row.analysis_summary,
+                        "SYNTHETIC_RESEARCH_NOT_MARKET_FACT",
+                    )
+                    self.assertIn("synthetic_fixture", row.context_snapshot)
+                    self.assertEqual(
+                        session.query(LearningRecordingRecord).count(), 0,
+                    )
+            finally:
+                DatabaseManager.reset_instance()
+
 if __name__ == '__main__':
     unittest.main()

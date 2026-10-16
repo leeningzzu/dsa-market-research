@@ -209,13 +209,143 @@ def test_canonical_intraday_bars_fill_partial_trend_ma_slots_without_claiming_st
         assert item["trend"]["status"] == "READY"
         assert item["ma_structure"]["status"] in {"READY", "PARTIAL"}
         assert item["price_structure"]["status"] == "MISSING"
-        assert item["price_structure"]["reason"] == "INTRADAY_PRICE_STRUCTURE_NOT_ADMITTED"
+        assert item["price_structure"]["reason"] == (
+            "NO_CONFIRMED_PIVOTS" if key in {"60m", "30m"}
+            else "INTRADAY_PRICE_STRUCTURE_NOT_ADMITTED"
+        )
         assert item["pattern_trigger"]["status"] == "MISSING"
         assert item["independent_action_authority"] is False
         assert item["strategy_admitted"] is False
         assert item["learning_admitted"] is False
         assert item["historical_replay_eligible"] is False
-        assert "分钟价格结构/形态尚未准入" in item["summary"]
+        assert (
+            f"{key}尚无已确认枢轴" if key in {"60m", "30m"}
+            else "分钟价格结构/形态尚未准入"
+        ) in item["summary"]
+
+
+
+def test_confirmed_60m_bridge_structure_reuses_pivots_without_trading_or_volume_authority() -> None:
+    """Completed sixty-minute pivot confirmation must reach the existing MTF Registry."""
+    from src.services.evidence_traceability_registry import compile_timeframe_family_matrix
+    from src.services.price_structure_service import _confirmed_pivots
+
+    history = _history()
+    target = history.iloc[-1]["date"].date()
+    closes = [100.0 + index * 0.01 for index in range(40)]
+    closes[25] = 113.0  # A confirmed HIGH only once future completed bars exist.
+    minute = _intraday_fixture(
+        "60m", target, periods=len(closes), closes=closes, volume_unit="UNKNOWN",
+    )
+    weekly_end = history.iloc[-5]["date"].date()
+    monthly_end = history.iloc[-21]["date"].date()
+
+    def completed(_market, _target, timeframe):
+        return weekly_end if timeframe == "1w" else monthly_end
+
+    with patch(
+        "src.services.multi_timeframe_structure_service.resolve_completed_timeframe_bar_date",
+        side_effect=completed,
+    ):
+        parent = build_multi_timeframe_structure_context(
+            stock_code="600519", history=history, target_date=target,
+            market="cn", trend_analyzer=_FakeTrendAnalyzer(),
+            daily_trend_result=_daily_trend(history, len(history)-1),
+            daily_price_structure_context={"historical_replay_eligible": True},
+            snapshot_observed_at=datetime.combine(
+                target, datetime.max.time(), tzinfo=timezone.utc,
+            ),
+            intraday_timeframes={"60m": minute},
+        )
+    item = parent["timeframes"]["60m"]
+    structure = item["price_structure"]
+    assert structure["status"] == "READY"
+    assert structure["timeframe"] == "60m"
+    assert structure["independent_action_authority"] is False
+    assert structure["historical_replay_eligible"] is False
+    assert "PRICE_STRUCTURE" in item["admitted_methods"]
+    assert "VOLUME" not in item["admitted_methods"]
+    assert item["status"] == "PARTIAL"
+    assert item["strategy_admitted"] is False and item["learning_admitted"] is False
+    assert item["independent_action_authority"] is False
+    assert "60m已确认枢轴" in item["summary"]
+
+    frame = minute.rename(columns={"bar_end": "date"})
+    pivot_date = minute.iloc[25]["bar_end"].isoformat()
+    assert all(
+        p["origin_time"] != pivot_date
+        for p in _confirmed_pivots(frame.iloc[:27])
+    )
+    assert any(
+        p["origin_time"] == pivot_date
+        for p in _confirmed_pivots(frame.iloc[:28])
+    )
+    pivot = next(
+        p for p in structure["pivots"]
+        if pd.Timestamp(p["origin_time"]) == pd.Timestamp(pivot_date)
+    )
+    assert pivot["confirmed_available_at"] >= pivot["confirmed_at"]
+    matrix = compile_timeframe_family_matrix({
+        "multi_timeframe_structure_context": {"timeframes": {"60m": item}},
+    })
+    cell = next(c for c in matrix["cells"]
+                if c["timeframe"] == "60m" and c["family"] == "STRUCTURE")
+    method = next(m for m in cell["method_coverage"]
+                  if m["method_id"] == "MTF_PRICE_STRUCTURE")
+    assert method["state"] == "READY"
+    assert method["independent_action_authority"] is False
+
+
+def test_30m_confirmed_pivot_reaches_registered_structure_without_action_authority() -> None:
+    """The same completed native 30m bars must reach the Registry, not just a new JSON field."""
+    from src.services.evidence_traceability_registry import compile_timeframe_family_matrix
+    from src.services.price_structure_service import _confirmed_pivots
+    from tests.test_multi_timeframe_structure_service import _intraday_fixture
+
+    closes = [100.0 + index * .01 for index in range(40)]
+    closes[25] = 113.0
+    item = _volume_unit_intraday_context("UNKNOWN", closes=closes)
+    structure = item["price_structure"]
+
+    assert structure["status"] == "READY"
+    assert structure["timeframe"] == "30m"
+    assert structure["completed_bar_only"] is True
+    assert structure["independent_action_authority"] is False
+    assert item["strategy_admitted"] is False
+    assert item["learning_admitted"] is False
+    high = next(pivot for pivot in structure["pivots"] if pivot["kind"] == "HIGH")
+    assert high["provisional"] is False
+    assert pd.Timestamp(high["confirmed_at"]) > pd.Timestamp(high["origin_time"])
+    assert high["invalidation"]["state"] in {"ACTIVE", "TRIGGERED"}
+
+    target = _history().iloc[-1]["date"].date()
+    minute = _intraday_fixture("30m", target, closes=closes)
+    price_frame = pd.DataFrame({
+        "date": minute["bar_end"],
+        "high": minute["high"],
+        "low": minute["low"],
+        "close": minute["close"],
+    })
+    origin = minute.iloc[25]["bar_end"].isoformat()
+    assert not any(
+        pivot["origin_time"] == origin
+        for pivot in _confirmed_pivots(price_frame.iloc[:27])
+    )
+    assert any(
+        pivot["origin_time"] == origin
+        for pivot in _confirmed_pivots(price_frame.iloc[:28])
+    )
+
+    matrix = compile_timeframe_family_matrix({
+        "multi_timeframe_structure_context": {"timeframes": {"30m": item}},
+    })
+    cell = next(cell for cell in matrix["cells"]
+                if cell["timeframe"] == "30m" and cell["family"] == "STRUCTURE")
+    method = next(method for method in cell["method_coverage"]
+                  if method["method_id"] == "MTF_PRICE_STRUCTURE")
+    assert method["state"] == "READY"
+    assert method["independent_action_authority"] is False
+    assert cell["state"] in {"READY", "PARTIAL"}
 
 
 def test_intraday_unknown_volume_unit_does_not_reach_volume_evidence_consumer() -> None:
@@ -223,8 +353,11 @@ def test_intraday_unknown_volume_unit_does_not_reach_volume_evidence_consumer() 
     assert item["status"] == "PARTIAL"
     assert item["trend"]["status"] == "READY"
     assert item["trend"]["ma_alignment"]
-    assert item["trend"]["macd_status"] == "多头"
-    assert item["trend"]["rsi_signal"]
+    assert item["trend"]["macd_status"] is None
+    assert item["trend"]["macd_raw_observation"]["status"] == "多头"
+    assert item["trend"]["rsi_status"] is None
+    assert item["trend"]["rsi_raw_observation"]["signal"]
+    assert "RSI" not in item["admitted_methods"]
     assert item["trend"]["volume_status"] is None
     assert item["trend"]["volume_ratio_5bar"] is None
     assert item["ma_structure"].get("volume_price_context") is None
@@ -262,8 +395,10 @@ def test_intraday_real_trend_analyzer_cannot_resurrect_unknown_volume() -> None:
     assert item["status"] == "PARTIAL"
     assert item["trend"]["status"] == "READY"
     assert item["trend"]["ma_alignment"]
-    assert item["trend"]["macd_status"]
-    assert item["trend"]["rsi_status"]
+    assert item["trend"]["macd_status"] is None
+    assert item["trend"]["rsi_status"] is None
+    assert item["trend"]["macd_raw_observation"]["status"]
+    assert item["trend"]["rsi_raw_observation"]["status"]
     assert item["trend"]["volume_status"] is None
     assert item["trend"]["volume_ratio_5bar"] is None
     assert item["ma_structure"].get("volume_price_context") is None
@@ -276,7 +411,8 @@ def test_intraday_macd_40_bar_formula_minimum_does_not_certify_recursive_startup
     """The real MACD producer may describe 40 bars, but cannot self-certify its seed."""
     item = _volume_unit_intraday_context("UNKNOWN", analyzer=StockTrendAnalyzer())
     assert item["status"] == "PARTIAL"
-    assert item["trend"]["macd_status"]  # Raw observed state remains inspectable.
+    assert item["trend"]["macd_status"] is None
+    assert item["trend"]["macd_raw_observation"]["status"]  # Native raw audit retained.
     assert item["macd_startup_stability"]["status"] == "MISSING"
     assert item["macd_startup_stability"]["formula_minimum_bars"] == (
         StockTrendAnalyzer.MACD_SLOW + StockTrendAnalyzer.MACD_SIGNAL
@@ -285,11 +421,44 @@ def test_intraday_macd_40_bar_formula_minimum_does_not_certify_recursive_startup
         StockTrendAnalyzer.MACD_SLOW + StockTrendAnalyzer.MACD_SIGNAL
     )
     assert "MACD" not in item["admitted_methods"]
-    assert "RSI" in item["admitted_methods"]
+    assert "RSI" not in item["admitted_methods"]
+    assert item["rsi_startup_stability"]["status"] == "MISSING"
     assert item["trend"]["macd_signal"] is None
     assert "MACD递归" in item["summary"]
     assert item["price_structure"]["status"] == "MISSING"
     assert item["strategy_admitted"] is False
+
+
+def test_b5_native_recursive_ready_exposes_exact_owner_endpoints_only_when_converged() -> None:
+    """Render values only from a READY multi-start owner, never raw 40-bar guesses."""
+    from src.services.multi_timeframe_structure_service import _macd_startup_stability
+    from src.services.volatility_momentum_service import _rsi_startup_stability
+
+    frame = _history(periods=360)
+    analyzer = StockTrendAnalyzer()
+    macd = _macd_startup_stability(frame, analyzer)
+    rsi = _rsi_startup_stability(frame, analyzer)
+    assert macd["status"] == rsi["status"] == "READY"
+    native_macd = analyzer._calculate_macd(frame)
+    native_rsi = analyzer._calculate_rsi(frame)
+    assert macd["native_endpoint_values"] == pytest.approx({
+        key: float(native_macd.iloc[-1][key])
+        for key in ("MACD_DIF", "MACD_DEA", "MACD_BAR")
+    })
+    assert rsi["reference_values"] == pytest.approx({
+        f"RSI_{period}_{side}": float(native_rsi.iloc[index][f"RSI_{period}"])
+        for period in (analyzer.RSI_SHORT, analyzer.RSI_MID, analyzer.RSI_LONG)
+        for side, index in (("latest", -1), ("previous", -2))
+    })
+    assert macd["strategy_admitted"] is rsi["strategy_admitted"] is False
+    assert macd["learning_admitted"] is rsi["learning_admitted"] is False
+
+    short = _history(periods=40)
+    short_macd = _macd_startup_stability(short, analyzer)
+    short_rsi = _rsi_startup_stability(short, analyzer)
+    assert short_macd["status"] == short_rsi["status"] == "MISSING"
+    assert not short_macd.get("native_endpoint_values")
+    assert not short_rsi.get("reference_values")
 
 
 def test_long_intraday_macd_prefix_agreement_keeps_only_descriptive_nontrigger() -> None:
@@ -306,12 +475,55 @@ def test_long_intraday_macd_prefix_agreement_keeps_only_descriptive_nontrigger()
     assert stability["startup_state_agreement"] is True
     assert stability["max_endpoint_difference"] <= stability["absolute_tolerance"]
     assert "MACD" in item["admitted_methods"]
-    assert "RSI" in item["admitted_methods"]
+    assert "RSI" not in item["admitted_methods"]
+    assert item["rsi_startup_stability"]["status"] == "MISSING"
     assert "VOLUME" not in item["admitted_methods"]
     assert item["price_structure"]["status"] == "MISSING"
     assert item["pattern_trigger"]["status"] == "MISSING"
     assert item["strategy_admitted"] is False
     assert item["learning_admitted"] is False
+
+
+def test_weekly_native_recursive_macd_rsi_not_promoted_without_own_completed_history() -> None:
+    """Valid weekly MA remains informative when native recursive seeds are unproven."""
+    from src.services.multi_timeframe_structure_service import _build_higher_timeframe
+
+    history = _history(periods=410)
+    dates = pd.to_datetime(history["date"])
+    last_friday = dates[dates.dt.weekday == 4].iloc[-1].date()
+    history = history[dates.dt.date <= last_friday].copy()
+    history["date"] = pd.to_datetime(history["date"]).dt.date
+    with patch(
+        "src.services.multi_timeframe_structure_service.resolve_completed_timeframe_bar_date",
+        return_value=last_friday,
+    ):
+        weekly = _build_higher_timeframe(
+            key="weekly", timeframe="1w", period_freq="W-FRI",
+            stock_code="600519", market="cn", target_date=last_friday,
+            daily_frame=history, trend_analyzer=StockTrendAnalyzer(),
+        )
+    assert 40 <= weekly["observations"] < 140
+    assert weekly["macd_startup_stability"]["status"] == "MISSING"
+    assert weekly["rsi_startup_stability"]["status"] == "MISSING"
+    assert weekly["trend"]["macd_status"] is None
+    assert weekly["trend"]["rsi_status"] is None
+    assert weekly["trend"]["macd_raw_observation"]["admitted"] is False
+    assert weekly["trend"]["ma_alignment"]
+    assert "MACD DIF/DEA" not in (weekly["summary"] or "")
+    assert weekly["independent_action_authority"] is False
+
+
+def test_verified_long_intraday_rsi_keeps_legitimate_descriptive_nontrigger() -> None:
+    """The native method meets its own input rule, without 30m action promotion."""
+    item = _volume_unit_intraday_context(
+        "UNKNOWN", analyzer=StockTrendAnalyzer(), periods=320,
+    )
+    assert item["rsi_startup_stability"]["status"] == "READY"
+    assert item["trend"]["rsi_status"]
+    assert "RSI" in item["admitted_methods"]
+    assert item["strategy_admitted"] is False
+    assert item["learning_admitted"] is False
+    assert item["price_structure"]["status"] == "MISSING"
 
 
 def test_same_last_40_bars_can_flip_native_macd_cross_under_different_prior_seed() -> None:
@@ -359,14 +571,16 @@ def test_unverified_minute_gold_cross_never_becomes_narrative_confirmation() -> 
     frame = _volume_unit_intraday_context(
         "UNKNOWN", analyzer=StockTrendAnalyzer(), closes=closes,
     )
-    assert frame["trend"]["macd_status"] == "零轴上金叉"  # Original audit observation
+    assert frame["trend"]["macd_status"] is None
+    assert frame["trend"]["macd_raw_observation"]["status"] == "零轴上金叉"  # Original raw audit retained.
     assert frame["trend"]["macd_raw_observation"]["status"] == "零轴上金叉"
     assert frame["macd_startup_stability"]["status"] == "MISSING"
     assert frame["trend"]["macd_signal"] is None
     assert "零轴上金叉" not in frame["summary"]
     assert "MACD递归启动稳定性未验证" in frame["summary"]
     assert "MACD" not in frame["admitted_methods"]
-    assert "RSI" in frame["admitted_methods"]
+    assert "RSI" not in frame["admitted_methods"]
+    assert frame["rsi_startup_stability"]["status"] == "MISSING"
     assert frame["strategy_admitted"] is False
 
 
@@ -967,6 +1181,199 @@ def test_missing_source_and_unproven_period_fail_closed():
     assert context["timeframes"]["daily"]["ma_structure"]["reason"] == "SOURCE_ALIGNMENT_UNPROVEN"
     assert context["timeframes"]["weekly"]["reason"] == "COMPLETED_PERIOD_UNPROVEN"
     assert context["timeframes"]["monthly"]["reason"] == "COMPLETED_PERIOD_UNPROVEN"
+
+
+def test_b5_raw_baostock_typed_identity_without_row_source_closes_strict_pit_to_mtf_receipt() -> None:
+    """Real direct BaoStock leaves source in typed attrs; input and MTF must agree."""
+    from src.services.evidence_traceability_registry import (
+        build_method_execution_receipt, build_runtime_trace,
+    )
+    from src.services.multi_timeframe_structure_service import _normalize_daily_history
+    from data_provider.daily_data_identity import canonical_identity_json
+
+    rows = _history(periods=90)
+    rows["amount"] = rows["volume"] * rows["close"]
+    rows["pct_chg"] = [float(i % 7) / 100.0 for i in range(len(rows))]
+    typed = _with_observed_identity(rows, provider="BaostockFetcher")
+    direct = typed.drop(columns=["data_source"])
+    assert "daily_data_identity" in direct.attrs
+    assert "data_source" not in direct.columns
+    target = direct.iloc[-1]["date"].date()
+    observed = datetime(2026, 10, 13, 10, tzinfo=timezone.utc)
+    source = build_completed_history_identity(
+        direct, stock_code="600519", market="cn",
+        target_date=target, observed_at=observed,
+    )
+    normalized = _normalize_daily_history(direct, target_date=target)
+    consumed = build_completed_history_identity(
+        normalized, stock_code="600519", market="cn",
+        target_date=target, observed_at=observed,
+    )
+    assert source["provider_identity"] == "BaostockFetcher"
+    assert source["adjustment_basis"] == "qfq"
+    assert source["price_identity_reasons"] == []
+    assert source["daily_data_identity_hash"] == consumed["daily_data_identity_hash"]
+    assert source["data_snapshot_identity"] == consumed["data_snapshot_identity"]
+    assert source["available_at_max"] >= "2026-10-13T10:00:00"
+
+    with patch(
+        "src.services.multi_timeframe_structure_service.resolve_completed_timeframe_bar_date",
+        return_value=None,
+    ):
+        mtf = build_multi_timeframe_structure_context(
+            stock_code="600519", history=direct, target_date=target,
+            market="cn", trend_analyzer=_FakeTrendAnalyzer(),
+            daily_trend_result=_trend_result(),
+            snapshot_observed_at=observed,
+        )
+    assert mtf["data_snapshot_identity"] == source["data_snapshot_identity"]
+    receipt = build_method_execution_receipt(
+        "MTF", output=mtf, asset_route="STOCK", stock_code="600519",
+        market="cn", target_date=target, timeframe="multi",
+        input_identity={**source, "stock_code": "600519", "market": "cn",
+                        "target_date": target.isoformat()},
+    )
+    factor = {
+        "asset_type": "stock",
+        "multi_timeframe_structure_context": mtf,
+        "method_execution_receipt_policy": "REQUIRED",
+        "method_execution_receipts": {"MTF": receipt},
+    }
+    trace = build_runtime_trace(factor)
+    parent = next(x for x in trace["observations"] if x["requirement_id"] == "MTF")
+    assert parent["reason"] == "METHOD_INVOCATION_VERIFIED"
+    assert parent["state"] in ("READY", "PARTIAL")
+
+    # Source label laundering or stale attrs must be rejected, not reissued.
+    for broken in ("forged_row_source", "stale_price", "mixed_persisted_identity"):
+        changed = direct.copy()
+        if broken == "forged_row_source":
+            changed["data_source"] = "TestData"
+        elif broken == "stale_price":
+            changed.loc[0, "close"] += 0.3
+        else:
+            identity = changed.attrs["daily_data_identity"]
+            changed["data_identity_json"] = canonical_identity_json(identity)
+            changed["data_identity_hash"] = identity["identity_hash"]
+            changed.loc[11, "data_identity_hash"] = "f" * 64
+        proof = build_completed_history_identity(
+            changed, stock_code="600519", market="cn",
+            target_date=target, observed_at=observed,
+        )
+        assert proof["provider_identity"] is None, broken
+        assert proof["adjustment_basis"] is None, broken
+        assert proof["price_identity_reasons"], broken
+        assert proof["data_snapshot_identity"] != source["data_snapshot_identity"]
+
+    # An old plain source string remains descriptive only.
+    legacy = build_completed_history_identity(
+        rows, stock_code="600519", market="cn",
+        target_date=target, observed_at=observed,
+    )
+    assert legacy["provider_identity"] == "FixtureFetcher"
+    assert legacy["adjustment_basis"] is None
+    assert legacy["price_identity_reasons"]
+
+
+def test_b5_valid_typed_daily_source_without_row_label_reaches_monthly_consumer():
+    """A complete 1d typed identity, not a fabricated row label, owns M/W source."""
+    from src.services.multi_timeframe_structure_service import (
+        _aggregate_completed_bars,
+        _normalize_daily_history,
+        _source_alignment,
+    )
+
+    original = _with_observed_identity(_history(periods=150), provider="BaostockFetcher")
+    unlabeled = original.drop(columns=["data_source"])
+    assert "daily_data_identity" in unlabeled.attrs
+    target = unlabeled.iloc[-1]["date"].date()
+    normalized = _normalize_daily_history(unlabeled, target_date=target)
+    monthly = _aggregate_completed_bars(
+        normalized, completed_through=target, period_freq="M",
+    )
+    assert _source_alignment(normalized)["status"] == "SINGLE_SOURCE"
+    assert _source_alignment(normalized)["sources"] == ["BaostockFetcher"]
+    assert _source_alignment(monthly)["status"] == "SINGLE_SOURCE"
+
+
+def test_b5_typed_daily_source_rejects_forged_or_mixed_row_labels():
+    """A plain data_source string cannot override a different typed provider."""
+    from src.services.multi_timeframe_structure_service import (
+        _normalize_daily_history,
+        _source_alignment,
+    )
+
+    history = _with_observed_identity(_history(periods=90), provider="BaostockFetcher")
+    target = history.iloc[-1]["date"].date()
+    for forgery in ("all_wrong", "alternating", "case_variant"):
+        corrupted = history.copy()
+        if forgery == "case_variant":
+            corrupted = corrupted.drop(columns=["data_source"])
+            corrupted["Data_Source"] = "FORGED_SOURCE"
+        else:
+            corrupted["data_source"] = (
+                "FORGED_SOURCE" if forgery == "all_wrong"
+                else ["BaostockFetcher" if i % 2 else "FORGED_SOURCE"
+                      for i in range(len(corrupted))]
+            )
+        projected = _normalize_daily_history(corrupted, target_date=target)
+        assert _source_alignment(projected)["status"] == "UNPROVEN", forgery
+
+
+def test_b5_typed_daily_source_rejects_modified_values_with_stale_identity():
+    """Rebinding a stale attr must not launder changed OHLCV into valid source."""
+    from data_provider.daily_data_identity import extract_daily_data_identity
+    from src.services.multi_timeframe_structure_service import (
+        _normalize_daily_history,
+        _source_alignment,
+    )
+
+    original = _with_observed_identity(_history(periods=90), provider="BaostockFetcher")
+    altered = original.copy()
+    altered.loc[0, "close"] = float(altered.loc[0, "close"]) + 0.125
+    projected = _normalize_daily_history(
+        altered, target_date=original.iloc[-1]["date"].date(),
+    )
+    assert _source_alignment(projected)["status"] == "UNPROVEN"
+    assert extract_daily_data_identity(projected, strict=False) is None
+
+
+def test_b5_persisted_daily_identity_rows_must_match_attached_identity():
+    """Mixed persisted JSON/hash records cannot inherit a clean frame attr."""
+    from data_provider.daily_data_identity import canonical_identity_json
+    from src.services.multi_timeframe_structure_service import (
+        _normalize_daily_history,
+        _source_alignment,
+    )
+
+    source = _with_observed_identity(_history(periods=90), provider="BaostockFetcher")
+    identity = source.attrs["daily_data_identity"]
+    source["data_identity_json"] = canonical_identity_json(identity)
+    source["data_identity_hash"] = identity["identity_hash"]
+    target = source.iloc[-1]["date"].date()
+    valid = _normalize_daily_history(source, target_date=target)
+    assert _source_alignment(valid)["status"] == "SINGLE_SOURCE"
+
+    corrupted = source.copy()
+    corrupted.loc[10, "data_identity_hash"] = "f" * 64
+    projected = _normalize_daily_history(corrupted, target_date=target)
+    assert _source_alignment(projected)["status"] == "UNPROVEN"
+
+
+def test_b5_legacy_row_only_input_is_not_fabricated_as_typed_source():
+    """Preserve legacy descriptive source rows; do not invent a DataIdentity."""
+    from data_provider.daily_data_identity import extract_daily_data_identity
+    from src.services.multi_timeframe_structure_service import (
+        _normalize_daily_history,
+        _source_alignment,
+    )
+
+    history = _history(periods=90)
+    projected = _normalize_daily_history(
+        history, target_date=history.iloc[-1]["date"].date(),
+    )
+    assert _source_alignment(projected)["status"] == "SINGLE_SOURCE"
+    assert extract_daily_data_identity(projected, strict=False) is None
 
 
 def test_completed_history_identity_is_prefix_safe_and_changes_with_consumed_bytes():

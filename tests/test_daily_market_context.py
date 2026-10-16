@@ -1028,6 +1028,68 @@ def test_force_refresh_runs_market_review_without_notification() -> None:
     assert kwargs["save_report_file"] is False
 
 
+
+def _m2_index_source_observation(trade_date: str = "2026-10-14") -> dict:
+    return {
+        "dataset_id": "M_INDEX_CURRENT",
+        "source_code": "sh.000001",
+        "source_state": "PARTIAL",
+        "provider_identity": "BaostockFetcher",
+        "completed_through": trade_date,
+        "observed_at": "2026-10-15T08:00:00+00:00",
+        "content_sha256": "a" * 64,
+        "identity_hash": "b" * 64,
+        "source_data_rights": "UNKNOWN",
+        "volume_unit": "UNKNOWN",
+        "amount_unit": "UNKNOWN",
+        "historical_pit_eligible": False,
+        "independent_source_value_admitted": False,
+        "strategy_upgrade_authority": False,
+    }
+
+
+def test_m2_runtime_market_context_carries_verified_index_source_but_history_does_not() -> None:
+    service = DailyMarketContextService(db_manager=MagicMock(), today_fn=lambda: date(2026, 10, 14))
+    observation = _m2_index_source_observation()
+
+    runtime = service._build_context_from_payload(
+        region="cn",
+        trade_date=date(2026, 10, 14),
+        payload={
+            "summary": "市场震荡，等待确认。",
+            "cn_index_completed_close_source": observation,
+        },
+        source="market_review_runtime",
+    )
+    assert runtime is not None
+    assert runtime.cn_index_completed_close_source == observation
+    assert runtime.to_safe_dict()["cn_index_completed_close_source"] == observation
+
+    historical = service._build_context_from_payload(
+        region="cn",
+        trade_date=date(2026, 10, 14),
+        payload={
+            "summary": "市场震荡，等待确认。",
+            "cn_index_completed_close_source": observation,
+        },
+        source="analysis_history",
+    )
+    assert historical is not None
+    assert historical.cn_index_completed_close_source is None
+    assert "cn_index_completed_close_source" not in historical.to_safe_dict()
+
+    forged = service._build_context_from_payload(
+        region="cn",
+        trade_date=date(2026, 10, 14),
+        payload={
+            "summary": "市场震荡，等待确认。",
+            "cn_index_completed_close_source": {**observation, "source_state": "READY"},
+        },
+        source="market_review_runtime",
+    )
+    assert forged is not None
+    assert forged.cn_index_completed_close_source is None
+
 def test_prompt_section_is_low_sensitivity_and_region_scoped() -> None:
     context = DailyMarketContextService(
         db_manager=MagicMock(),

@@ -12,11 +12,13 @@ from typing import Any, Dict, Optional, Sequence
 
 from data_provider.base import normalize_stock_code
 from data_provider.daily_data_identity import (
+    DAILY_DATA_IDENTITY_FRAME_ATTR,
     DailyDataIdentityError,
     extract_daily_data_identity,
     extract_daily_data_identity_from_records,
     identity_is_durable_price_ready,
     validate_daily_data_identity,
+    verified_observed_daily_frame_provider,
 )
 from src.services.stock_code_utils import _infer_cn_exchange
 from src.utils.analysis_metadata import RESEARCH_SELECTION_SOURCES
@@ -124,6 +126,25 @@ def build_completed_history_identity(
         else None
     )
     identity = extract_daily_data_identity(frame, strict=False)
+    # A direct BaoStock normalized frame has a typed observed price identity
+    # but no data_source column. Consume the same content-bound validator as
+    # the MTF producer, never a forgeable row label or caller-supplied GRANTED.
+    typed_claim = (
+        DAILY_DATA_IDENTITY_FRAME_ATTR in getattr(frame, "attrs", {})
+        or any(str(column).lower() in {"data_identity_json", "data_identity_hash"}
+               for column in getattr(frame, "columns", ()))
+    )
+    if typed_claim:
+        verified_provider = verified_observed_daily_frame_provider(frame)
+        if verified_provider is not None:
+            provider_identity = verified_provider
+            for record in rows:
+                record["data_source"] = verified_provider
+        else:
+            # A bad typed claim must not be rescued by a plausible legacy
+            # string, and may not retain its qfq/other basis as authority.
+            provider_identity = None
+            identity = None
     reasons = _daily_identity_reasons(identity, provider_identity)
     adjustment_basis = proven_adjustment_basis(provider_identity, identity)
     payload = {

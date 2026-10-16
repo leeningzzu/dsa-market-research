@@ -217,6 +217,66 @@ def _get_valid_investor_brief(factor: Any, report_language: str) -> Optional[Dic
     return brief
 
 
+def _require_current_canonical_product_material(
+    results: List[Any], *, allow_bare_legacy: bool = False,
+) -> bool:
+    """Validate current Product and flag historical read-only placeholder."""
+    historical_bare = False
+    for result in results:
+        if not has_canonical_action_authority_for_result(result):
+            continue  # Historical noncanonical descriptive output stays readable.
+        dashboard = getattr(result, "dashboard", None)
+        factor = dashboard.get("factor_decision") if isinstance(dashboard, dict) else None
+        if allow_bare_legacy and (
+            not isinstance(factor, dict)
+            or not isinstance(factor.get("investor_brief"), dict)
+        ):
+            historical_bare = True
+            continue  # SAFE historical read-only; never a dispatch permit.
+        try:
+            validate_investor_brief_binding(factor)
+        except (TypeError, ValueError) as exc:
+            # Never substitute the 197-character legacy-safe placeholder for
+            # a corrupt current *complete* research report.
+            raise ValueError("canonical report material binding invalid") from exc
+    return historical_bare
+
+
+def _strict_current_report_key(results: List[Any]) -> Optional[Tuple[Any, ...]]:
+    """Bounded runtime-only transport key for current STRICT DSA research.
+
+    Existing canonical and source identities own facts and authorization.
+    This key only prevents swapping the generated FULL Markdown after that.
+    It is not a new decision, data-provenance, or persisted signature.
+    """
+    if not results:
+        return None
+    parts = []
+    strict_present = False
+    for result in results:
+        dashboard = getattr(result, "dashboard", None)
+        factor = dashboard.get("factor_decision") if isinstance(dashboard, dict) else None
+        if not isinstance(factor, dict) or "canonical_decision" not in factor:
+            parts.append(None)
+            continue
+        if factor.get("method_execution_receipt_policy") != "REQUIRED":
+            parts.append(None)
+            continue
+        strict_present = True
+        brief = validate_investor_brief_binding(factor)
+        binding = brief["canonical_binding"]
+        parts.append((
+            id(result), str(getattr(result, "code", "")),
+            binding["runtime_trace_hash"], binding["risk_material_sha256"],
+            binding.get("data_snapshot_identity"),
+        ))
+    if not strict_present:
+        return None
+    if any(item is None for item in parts):
+        raise ValueError("mixed strict and unbound Product report is not admissible")
+    return tuple(parts)
+
+
 def _has_any_canonical_authority(results: List[AnalysisResult]) -> bool:
     return any(has_canonical_action_authority_for_result(result) for result in results)
 
@@ -266,6 +326,266 @@ def _format_etf_asset_specific_items(brief: Dict[str, Any]) -> List[str]:
         rendered.append(summary if summary.startswith(label) else f"{label}：{summary}")
     return rendered
 
+
+
+def _append_current_seven_timeframe_method_details(
+    lines: List[str], factor: Any, trace: Any,
+) -> None:
+    """Project the SAME strictly verified MTF method output; never calculate facts.
+
+    Missing source/receipt evidence is still displayed, but numeric values
+    and claimed READY statuses must not leak through an unverified parent.
+    The canonical action and each method's individual admission are unchanged.
+    """
+    if (
+        not isinstance(factor, dict)
+        or factor.get("method_execution_receipt_policy") != "REQUIRED"
+        or not isinstance(trace, dict)
+    ):
+        return
+
+    from math import isfinite
+
+    def obj(value: Any) -> Dict[str, Any]:
+        return value if isinstance(value, dict) else {}
+
+    def state(value: Any, *, default: str = "MISSING") -> str:
+        text = str(value or default).strip().upper()
+        return text if text in {"READY", "PARTIAL", "MISSING", "UNKNOWN", "NOT_ADMITTED", "NOT_APPLICABLE"} else "UNKNOWN"
+
+    def number(value: Any, digits: int = 3) -> Optional[str]:
+        if isinstance(value, bool):
+            return None
+        n = _safe_float(value)
+        return f"{n:.{digits}f}" if n is not None and isfinite(n) else None
+
+    def why(value: Any) -> str:
+        text = str(value or "").strip()
+        return "；原因：" + text if text else ""
+
+    accepted = next(
+        (item for item in trace.get("observations", ())
+         if isinstance(item, dict) and item.get("requirement_id") == "MTF"),
+        {},
+    )
+    verified = (
+        accepted.get("reason") == "METHOD_INVOCATION_VERIFIED"
+        and accepted.get("state") in {"READY", "PARTIAL"}
+    )
+    mtf = obj(factor.get("multi_timeframe_structure_context"))
+    verified = (
+        verified and bool(mtf.get("data_snapshot_identity"))
+        and bool(mtf.get("provider_identity"))
+        and bool(mtf.get("adjustment_basis"))
+        and not mtf.get("price_identity_reasons")
+    )
+    labels = (
+        ("monthly", "月线", "LONG_TERM_CONTEXT"),
+        ("weekly", "周线", "PRIMARY_TREND_CONTEXT"),
+        ("daily", "日线", "PRIMARY_SETUP"),
+        ("60m", "60分钟", "BRIDGE"),
+        ("30m", "30分钟", "PRIMARY_STRUCTURE"),
+        ("15m", "15分钟", "CONFIRMATION"),
+        ("5m", "5分钟", "TIMING"),
+    )
+    lines.extend([
+        "",
+        "**七周期逐指标方法明细（只读执行证据／非独立投票）**:",
+        "以下区分方法是否已经计算、递归数值是否稳定、结构是否确认及可否进入策略。"
+        "已完成K线不等于所有指标READY；缺失或未准入的项目不删除。",
+    ])
+    if not verified:
+        reason = str(accepted.get("reason") or "METHOD_INVOCATION_RECEIPT_MISSING")
+        lines.append(
+            "MTF严格执行回执未通过（" + reason + "），不能展示未经证明的指标数值。"
+        )
+        for _, label, role in labels:
+            lines.append(
+                "- " + label + "：已完成K线未核；MACD：UNKNOWN；RSI：UNKNOWN；"
+                "结构：UNKNOWN；量价：UNKNOWN；形态/Chan：NOT_ADMITTED；"
+                "独立交易：尚无独立交易权限；职责：" + role
+            )
+        return
+
+    timeframes = obj(mtf.get("timeframes"))
+    matrix = obj(trace.get("timeframe_family_matrix"))
+    cell_states = {
+        (str(item.get("timeframe")), str(item.get("family"))):
+            state(item.get("state"))
+        for item in matrix.get("cells", ())
+        if isinstance(item, dict)
+    }
+    observations = {
+        str(item.get("requirement_id")): item
+        for item in trace.get("observations", ())
+        if isinstance(item, dict)
+    }
+    families = ("REGIME", "TREND_RS", "SUPPLY", "COST", "STRUCTURE", "MOMENTUM", "PATTERN", "MTF")
+    lines.append(
+        "来源：" + str(mtf.get("provider_identity"))
+        + "；复权：" + str(mtf.get("adjustment_basis"))
+        + "；快照观测：" + str(mtf.get("available_at_max") or "UNKNOWN")
+        + "；来源可追不等于原始数据版权、历史PIT或模型训练准入。"
+    )
+    for timeframe, label, role in labels:
+        row = obj(timeframes.get(timeframe))
+        observations_count = row.get("observations")
+        count_text = (
+            str(observations_count) + "根"
+            if isinstance(observations_count, int) and not isinstance(observations_count, bool)
+            else "未核"
+        )
+        through = (
+            row.get("completed_through")
+            or row.get("latest_bar_end")
+            or row.get("latest_bar_date")
+            or "UNKNOWN"
+        )
+        lines.append(
+            "- " + label + "：已完成K线 " + count_text
+            + "；完成至：" + str(through)
+            + "；职责：" + role
+            + "；周期状态：" + state(row.get("status"))
+            + why(row.get("reason"))
+        )
+        alignment = obj(row.get("source_alignment"))
+        source_ok = alignment.get("status") == "SINGLE_SOURCE"
+        ma = obj(row.get("ma_structure"))
+        readiness = obj(obj(ma.get("readiness")).get("level"))
+        ma_ready = (
+            source_ok and state(ma.get("status")) in {"READY", "PARTIAL"}
+            and readiness.get("status") == "READY"
+        )
+        ma_values = obj(ma.get("ma_values")) if ma_ready else {}
+        levels = [
+            "MA" + str(period) + "=" + (number(ma_values.get("ma" + str(period))) or "MISSING")
+            for period in (5, 10, 20)
+        ]
+        lines.append(
+            "  - MA：" + state(ma.get("status"))
+            + "；" + "／".join(levels)
+            + "；均线结构：" + str(ma.get("state") or "UNKNOWN")
+            + why(ma.get("reason"))
+        )
+
+        macd = obj(row.get("macd_startup_stability"))
+        macd_state = state(macd.get("status"))
+        endpoints = obj(macd.get("native_endpoint_values")) if macd_state == "READY" and source_ok else {}
+        macd_values = [
+            name + "=" + (number(endpoints.get(field)) or "MISSING")
+            for name, field in (("DIF", "MACD_DIF"), ("DEA", "MACD_DEA"), ("BAR", "MACD_BAR"))
+        ]
+        lines.append(
+            "  - MACD：" + macd_state + "；" + "／".join(macd_values)
+            + "；指标值为原生价格基准单位，不是估值或交易价位"
+            + why(macd.get("reason"))
+        )
+
+        rsi = obj(row.get("rsi_startup_stability"))
+        rsi_state = state(rsi.get("status"))
+        rsi_values = obj(rsi.get("reference_values")) if rsi_state == "READY" and source_ok else {}
+        rsi_parts = [
+            "RSI" + str(period) + "="
+            + (number(rsi_values.get("RSI_" + str(period) + "_latest"), 2) or "MISSING")
+            for period in (6, 12, 24)
+        ]
+        lines.append(
+            "  - RSI：" + rsi_state + "；" + "／".join(rsi_parts)
+            + why(rsi.get("reason"))
+        )
+
+        trend = obj(row.get("trend"))
+        method_ids = row.get("admitted_methods") if isinstance(row.get("admitted_methods"), list) else []
+        if timeframe in {"60m", "30m", "15m", "5m"}:
+            volume_status = (
+                "PARTIAL／" + str(trend.get("volume_status"))
+                if "VOLUME" in method_ids and trend.get("volume_status")
+                else "UNKNOWN／分钟量价单位未准入或无完整证据"
+            )
+        elif timeframe == "daily":
+            supply = obj(factor.get("supply_demand_volume_price"))
+            supply_receipt = obj(observations.get("SUPPLY"))
+            volume_status = (
+                state(supply.get("status")) + "／日线供需另由SUPPLY方法消费"
+                if supply_receipt.get("reason") == "METHOD_INVOCATION_VERIFIED"
+                else "UNKNOWN／独立SUPPLY回执未核"
+            )
+        else:
+            volume_status = (
+                "PARTIAL／" + str(trend.get("volume_status"))
+                if source_ok and trend.get("volume_status")
+                else "UNKNOWN／量价来源尚未满足条件"
+            )
+        lines.append("  - 量价：" + volume_status + "；不以未知单位换算成交量/额")
+
+        structure = obj(row.get("price_structure"))
+        structure_state = state(structure.get("status"))
+        event = obj(structure.get("structure_event"))
+        confirmed = [
+            item for item in structure.get("pivots", ())
+            if isinstance(item, dict) and item.get("confirmed_at")
+            and item.get("provisional") is False
+        ] if structure_state == "READY" else []
+        event_state = (
+            str(event.get("state") or "NONE")
+            if structure_state == "READY" else "NOT_CONFIRMED"
+        )
+        last_confirmed = (
+            str(confirmed[-1].get("confirmed_at")) if confirmed else "MISSING"
+        )
+        lines.append(
+            "  - 价格结构：" + structure_state
+            + "；确认事件：" + event_state
+            + "；最近已确认枢轴时间：" + last_confirmed
+            + why(structure.get("reason"))
+        )
+
+        if timeframe == "daily":
+            pattern_row = obj(obj(factor.get("pattern_trigger_evidence")).get("context"))
+            pattern_ok = obj(observations.get("PATTERN")).get("reason") == "METHOD_INVOCATION_VERIFIED"
+            pattern_state = state(pattern_row.get("status")) if pattern_ok else "UNKNOWN"
+            pattern_reason = pattern_row.get("reason") if pattern_ok else "PATTERN_METHOD_INVOCATION_NOT_VERIFIED"
+        else:
+            pattern_row = obj(row.get("pattern_trigger"))
+            pattern_state = state(pattern_row.get("status"), default="NOT_ADMITTED")
+            pattern_reason = pattern_row.get("reason") or "TIMEFRAME_PATTERN_NOT_ADMITTED"
+        lines.append(
+            "  - 形态：" + pattern_state + why(pattern_reason)
+            + "；Chan：NOT_ADMITTED（普通确认枢轴不等同缠论背驰／笔段）"
+        )
+        if timeframe == "daily":
+            momentum = obj(obj(factor.get("volatility_momentum_evidence")).get("context"))
+            daily_momentum_verified = (
+                obj(observations.get("MOMENTUM")).get("reason")
+                == "METHOD_INVOCATION_VERIFIED"
+            )
+            moc = obj(momentum.get("momentum")) if daily_momentum_verified else {}
+            vol = obj(momentum.get("volatility")) if daily_momentum_verified else {}
+            lines.append(
+                "  - 日线附加ROC/ATR：ROC20="
+                + (number(moc.get("roc_20_pct"), 2) + "%" if number(moc.get("roc_20_pct"), 2) else "MISSING")
+                + "；ROC60="
+                + (number(moc.get("roc_60_pct"), 2) + "%" if number(moc.get("roc_60_pct"), 2) else "MISSING")
+                + "；ATR_WILDER="
+                + state(obj(vol.get("atr_wilder_admission")).get("status"))
+                + "；确认背离="
+                + state(obj(momentum.get("confirmed_divergence")).get("status"))
+            )
+        else:
+            lines.append("  - ROC/ATR/确认背离：NOT_ADMITTED／当前周期无独立原生执行回执")
+        eight = "／".join(
+            family + "=" + cell_states.get((timeframe, family), "UNKNOWN")
+            for family in families
+        )
+        lines.append(
+            "  - 八证据族：" + eight
+            + "；独立交易：尚无独立交易权限（相关指标不重复计票）。"
+        )
+    lines.append(
+        "周期职责：月周环境、日线setup、60m桥接、30m结构、15m确认、5m时点。"
+        "实际策略必须另经全局/市场/ETF适用性/流动性与执行veto；"
+        "任何MISSING／UNKNOWN／NOT_ADMITTED不得补成BUY或校准概率。"
+    )
 
 
 def _append_complete_research_universe_appendix(
@@ -351,7 +671,8 @@ def _append_complete_research_universe_appendix(
                 validate_runtime_trace,
             )
             try:
-                expected_scope = validate_runtime_trace(factor)[
+                validated_trace = validate_runtime_trace(factor)
+                expected_scope = validated_trace[
                     "complete_research_universe"
                 ]["data_objects"]
             except (TraceabilityError, KeyError, TypeError) as exc:
@@ -382,11 +703,22 @@ def _append_complete_research_universe_appendix(
                     lines.append(f"- **{domain_labels.get(domain, domain)}**")
                     previous_domain = domain
                 state = str(item.get("state") or "UNKNOWN")
-                state_text = (
-                    "当前资产路径不适用"
-                    if state == "NOT_APPLICABLE"
-                    else "UNKNOWN／缺独立来源、单位、时点及权利回执"
-                )
+                if state == "PARTIAL" and item.get("dataset_id") in {"P_DAILY", "P_5M"}:
+                    minute_unknown = "UNITS_UNKNOWN" in str(item.get("reason") or "")
+                    state_text = "PARTIAL／仅完成bar与来源身份、复权及时点已核"
+                    if minute_unknown:
+                        state_text += "；量额单位未知，量价数值未准入"
+                    state_text += (
+                        "；第三方存储/训练权利、历史PIT未证明，不构成完整准入"
+                        f"；来源观测于{item['source_observed_at']}"
+                        f"；来源身份：{item['source_identity_hash']}"
+                    )
+                else:
+                    state_text = (
+                        "当前资产路径不适用"
+                        if state == "NOT_APPLICABLE"
+                        else "UNKNOWN／缺独立来源、单位、时点及权利回执"
+                    )
                 lines.append(
                     f"  - {chr(96)}{item['dataset_id']}{chr(96)} "
                     f"｜{item['fact_or_fields']} "
@@ -398,6 +730,11 @@ def _append_complete_research_universe_appendix(
             # Compatibility reader: old snapshots are readable as history,
             # but cannot be reinterpreted as complete present-day research.
             lines.append("**76项数据对象状态**: 旧版本无逐项绑定；不得宣称完整交付。")
+        # This is one projection of the same strictly verified MTF producer,
+        # not a new method/signal or parallel canonical/report authority.
+        _append_current_seven_timeframe_method_details(
+            lines, factor, validated_trace if isinstance(data_objects, list) else {},
+        )
         lines.append(
             "以上是范围、方法与数据准入状态，不以标题或文字替代未完成的指标计算；"
             "缺少时点/财务版本/分钟数据不会升级策略，研究/模型不参与重复计票。"
@@ -1156,6 +1493,43 @@ class NotificationService(
         self._history_compare_cache[cache_key] = history_by_code
         return {"history_by_code": history_by_code}
 
+    def _record_current_report_payload(
+        self, content: str, results: List[AnalysisResult],
+    ) -> str:
+        key = _strict_current_report_key(results)
+        if key is None:
+            return content
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("strict current FULL report is empty")
+        from hashlib import sha256
+
+        # Per-notifier bounded in-memory receipts: no new DB, scheduler, file,
+        # raw market data or independent canonical/strategy decision authority.
+        entries = getattr(self, "_current_report_payload_receipts", None)
+        if entries is None:
+            entries = []
+            self._current_report_payload_receipts = entries
+        entries.append((key, sha256(content.encode("utf-8")).hexdigest()))
+        del entries[:-64]
+        return content
+
+    def require_current_report_payload(
+        self, content: str, results: List[AnalysisResult],
+    ) -> None:
+        """Require exactly the FULL material generated by this DSA notifier."""
+        key = _strict_current_report_key(results)
+        if key is None:
+            return  # Historical descriptive routes cannot gain STRICT authority.
+        from hashlib import sha256
+
+        if not isinstance(content, str) or not content.strip() or not any(
+            item_key == key and current_hash == sha256(content.encode("utf-8")).hexdigest()
+            for item_key, current_hash in getattr(
+                self, "_current_report_payload_receipts", ()
+            )
+        ):
+            raise ValueError("strict canonical report payload is missing or altered")
+
     def generate_aggregate_report(
         self,
         results: List[AnalysisResult],
@@ -1164,9 +1538,13 @@ class NotificationService(
     ) -> str:
         """Generate the aggregate report content used by merge/save/push paths."""
         normalized_type = self._normalize_report_type(report_type)
+        if _strict_current_report_key(results) is not None:
+            normalized_type = ReportType.FULL
         if normalized_type == ReportType.BRIEF:
-            return self.generate_brief_report(results, report_date=report_date)
-        return self.generate_dashboard_report(results, report_date=report_date)
+            body = self.generate_brief_report(results, report_date=report_date)
+        else:
+            body = self.generate_dashboard_report(results, report_date=report_date)
+        return self._record_current_report_payload(body, results)
 
     def _collect_models_used(self, results: List[AnalysisResult]) -> List[str]:
         if not self._should_show_llm_model():
@@ -1324,6 +1702,21 @@ class NotificationService(
             return target_channels
 
         configured_route_channels = getattr(self._config, route_config["config_attr"], []) or []
+        # Formal research is an Email Product. Telegram is optional, while
+        # configured chatbots/webhooks cannot substitute for the mail sink.
+        # A report route list may opt in to Telegram, but cannot remove Email.
+        if route_type == "report":
+            telegram_requested = (
+                not configured_route_channels
+                or "telegram" in split_notification_route_channels(configured_route_channels)[0]
+            )
+            return [
+                channel
+                for channel in (NotificationChannel.EMAIL, NotificationChannel.TELEGRAM)
+                if channel in target_channels
+                and (channel == NotificationChannel.EMAIL or telegram_requested)
+            ]
+
         if not configured_route_channels:
             return target_channels
 
@@ -1634,6 +2027,9 @@ class NotificationService(
         Returns:
             Markdown 格式的日报内容
         """
+        _require_current_canonical_product_material(results, allow_bare_legacy=True)
+        if self._report_summary_only and _has_any_canonical_authority(results):
+            raise ValueError("canonical research cannot use report_summary_only")
         if report_date is None:
             report_date = datetime.now().strftime('%Y-%m-%d')
         report_language = self._get_report_language(results)
@@ -2223,6 +2619,11 @@ class NotificationService(
         Returns:
             Markdown 格式的决策仪表盘日报
         """
+        historical_bare = _require_current_canonical_product_material(
+            results, allow_bare_legacy=True,
+        )
+        if self._report_summary_only and _has_any_canonical_authority(results):
+            raise ValueError("canonical research cannot use report_summary_only")
         config = get_config()
         report_language = self._get_report_language(results)
         labels = get_report_labels(report_language)
@@ -2244,7 +2645,8 @@ class NotificationService(
         ma_label = _nlabel("Moving Averages", "均线", "이동평균")
         volume_analysis_label = _nlabel("Volume", "量能", "거래량")
         news_heading = _nlabel("News Flow", "消息面", "뉴스 흐름")
-        if getattr(config, 'report_renderer_enabled', False) and results:
+        if (getattr(config, 'report_renderer_enabled', False)
+                and results and not historical_bare):
             from src.services.report_renderer import render
             out = render(
                 platform='markdown',
@@ -2943,6 +3345,9 @@ class NotificationService(
         Returns:
             Brief markdown content.
         """
+        historical_bare = _require_current_canonical_product_material(
+            results, allow_bare_legacy=True,
+        )
         if report_date is None:
             report_date = datetime.now().strftime('%Y-%m-%d')
         report_language = self._get_report_language(results)
@@ -2952,7 +3357,8 @@ class NotificationService(
             report_language,
         )
         config = get_config()
-        if getattr(config, 'report_renderer_enabled', False) and detail_results:
+        if (getattr(config, 'report_renderer_enabled', False)
+                and detail_results and not historical_bare):
             from src.services.report_renderer import render
             out = render(
                 platform='brief',
@@ -3032,6 +3438,7 @@ class NotificationService(
         Returns:
             Markdown 格式的单股报告
         """
+        _require_current_canonical_product_material([result], allow_bare_legacy=True)
         report_date = datetime.now().strftime('%Y-%m-%d %H:%M')
         report_language = self._get_report_language(result)
         labels = get_report_labels(report_language)
@@ -3768,6 +4175,21 @@ class NotificationService(
         Returns:
             Structured dispatch diagnostics.
         """
+        canonical_research_report = (
+            route_type == "report"
+            and bool(asset_results)
+            and any(
+                has_canonical_action_authority_for_result(item)
+                for item in asset_results
+            )
+        )
+        if canonical_research_report and self._report_summary_only:
+            logger.error("Canonical research cannot be delivered with report_summary_only")
+            return NotificationDispatchResult(
+                dispatched=False, success=False, status="invalid_report",
+                message="canonical research would lose material detail",
+            )
+
         if route_type not in {"alert", "system_error"} and asset_results is not None:
             try:
                 self.require_current_asset_data_for_send(asset_results)
@@ -3778,8 +4200,37 @@ class NotificationService(
                     message="asset report is not current at delivery time",
                 )
 
-        context_success = self.send_to_context(content)
-        if not self.should_broadcast_static_channels():
+        if route_type == "report" and asset_results:
+            try:
+                _require_current_canonical_product_material(asset_results)
+            except ValueError as exc:
+                logger.warning("Canonical report blocked before dispatch: %s", exc)
+                return NotificationDispatchResult(
+                    dispatched=False, success=False, status="invalid_report",
+                    message="canonical report material identity is invalid",
+                )
+            try:
+                self.require_current_report_payload(content, asset_results)
+            except ValueError as exc:
+                logger.warning("Full canonical payload mismatch before dispatch: %s", exc)
+                return NotificationDispatchResult(
+                    dispatched=False, success=False, status="invalid_report",
+                    message="final research text is not the signed canonical FULL report",
+                )
+
+
+        if (route_type == "report" and NotificationChannel.EMAIL
+                not in self.get_channels_for_route("report")):
+            logger.warning("Formal research report has no configured Email channel")
+            return NotificationDispatchResult(
+                dispatched=False, success=False, status="email_required",
+                message="Email is required for research report delivery",
+            )
+
+        # Formal report delivery is not an interactive reply, and a context
+        # push never substitutes for Email even when it succeeds.
+        context_success = False if route_type == "report" else self.send_to_context(content)
+        if route_type != "report" and not self.should_broadcast_static_channels():
             if context_success:
                 logger.info("已通过上下文会话完成推送，跳过静态通知渠道")
                 return NotificationDispatchResult(
@@ -3865,6 +4316,10 @@ class NotificationService(
             ch for ch in target_channels
             if ch.value in self._markdown_to_image_channels
             and ch not in {NotificationChannel.NTFY, NotificationChannel.GOTIFY}
+            and not (
+                canonical_research_report
+                and ch in {NotificationChannel.EMAIL, NotificationChannel.TELEGRAM}
+            )
         }
         if channels_needing_image:
             from src.md2img import markdown_to_image
@@ -3955,17 +4410,21 @@ class NotificationService(
                 )
 
         logger.info(f"通知发送完成：成功 {success_count} 个，失败 {fail_count} 个")
-        if success_count > 0:
+        email_success = any(
+            item.channel == NotificationChannel.EMAIL.value and item.success
+            for item in channel_results
+        )
+        if (email_success if route_type == "report" else success_count > 0):
             self.record_noise_control(noise_decision)
         else:
             self.release_noise_control(noise_decision)
-        success = success_count > 0 or context_success
+        success = email_success if route_type == "report" else (success_count > 0 or context_success)
         if stale_during_fanout:
             status = "partial_failed" if (success_count or context_success) else "data_stale"
         elif success_count > 0 and fail_count > 0:
             status = "partial_failed"
         elif success_count > 0 or context_success:
-            status = "sent"
+            status = "sent" if success else "partial_failed"
         else:
             status = "all_failed"
         if context_success:

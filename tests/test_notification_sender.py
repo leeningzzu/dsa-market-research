@@ -1986,6 +1986,30 @@ class TestTelegramSender(unittest.TestCase):
         self.assertIn("🎯 Market Review", payload["text"])
         self.assertIn("Body", payload["text"])
 
+
+    @mock.patch.object(TelegramSender, "_send_telegram_message", return_value=True)
+    def test_full_report_chunks_keep_section_delimiters_and_final_invalidation(self, sent):
+        """Independent transport negative: chunking cannot silently delete material boundaries."""
+        cfg = _config(telegram_bot_token="BOT", telegram_chat_id="CHAT")
+        sender = TelegramSender(cfg)
+        content = (
+            "真实支持证据 " + ("A" * 2700)
+            + "\n---\n"
+            + "独立反证 " + ("B" * 2800)
+            + "\n---\n"
+            + "失效条件必须保留 " + ("C" * 350)
+        )
+        expected = sender._convert_to_telegram_markdown(content)
+        assert len(expected) > 4096
+
+        assert sender.send_to_telegram(content)
+        chunks = [call.args[2] for call in sent.call_args_list]
+        assert len(chunks) >= 2
+        assert all(0 < len(chunk) <= 4096 for chunk in chunks)
+        assert "".join(chunks) == expected
+        assert "失效条件必须保留" in "".join(chunks)
+
+
     @mock.patch.object(TelegramSender, "_send_telegram_message", return_value=True)
     def test_send_telegram_chunked_splits_large_reason_without_delimiter(self, mock_send_telegram_message):
         cfg = _config(telegram_bot_token="BOT", telegram_chat_id="CHAT")

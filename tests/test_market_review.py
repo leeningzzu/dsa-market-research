@@ -42,7 +42,11 @@ sys.modules.update(_build_optional_module_stubs())
 import src.core.market_review as market_review_module
 from src.config import Config
 from src.llm.generation_backend import GenerationError, GenerationErrorCode
-from src.services.run_diagnostics import activate_run_diagnostic_context, reset_run_diagnostic_context
+from src.services.run_diagnostics import (
+    activate_run_diagnostic_context,
+    current_diagnostic_snapshot,
+    reset_run_diagnostic_context,
+)
 from src.storage import AnalysisHistory, DatabaseManager
 
 run_market_review = market_review_module.run_market_review
@@ -1137,7 +1141,7 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
         self.assertNotIn("+3.25% |## HK Market", markdown)
         self.assertNotIn("+2.18% |---", markdown)
 
-    def test_persist_market_review_history_saves_markdown_report(self) -> None:
+    def test_market_review_source_bearing_history_is_denied_without_storage_rights(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             old_db_path = os.environ.get("DATABASE_PATH")
             os.environ["DATABASE_PATH"] = os.path.join(temp_dir, "market_review_history.db")
@@ -1176,26 +1180,18 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
                     },
                 )
 
-                self.assertGreater(saved, 0)
+                # B1 rights gate supersedes the legacy unconditional
+                # market-review write. The source-bearing light snapshot has
+                # no independent storage grant even in a temp SQLite.
+                self.assertEqual(saved, 0)
                 db = DatabaseManager.get_instance()
                 with db.get_session() as session:
-                    row = session.query(AnalysisHistory).filter(
-                        AnalysisHistory.query_id == "market-task-001"
-                    ).first()
-                    self.assertIsNotNone(row)
-                    self.assertEqual(row.id, saved)
-                    self.assertEqual(row.code, market_review_module.MARKET_REVIEW_HISTORY_CODE)
-                    self.assertEqual(row.name, "大盘复盘")
-                    self.assertEqual(row.report_type, market_review_module.MARKET_REVIEW_REPORT_TYPE)
-                    self.assertEqual(row.news_content, "## 今日大盘\n\n复盘正文")
-                    self.assertIn("# 🎯 大盘复盘", row.raw_result)
-                    self.assertIn('"market_light_snapshots"', row.context_snapshot)
-                    self.assertIn('"market_review_payload"', row.context_snapshot)
-                    self.assertIn('"trade_date": "2026-03-06"', row.context_snapshot)
-                    snapshot = json.loads(row.context_snapshot or "{}")
-                    self.assertEqual(snapshot["market_review_region"], "cn")
-                    self.assertEqual(snapshot["market_review_payload"]["region"], "cn")
-                    self.assertIn("analysis_context_pack_overview", snapshot)
+                    self.assertIsNone(
+                        session.query(AnalysisHistory).filter(
+                            AnalysisHistory.query_id == "market-task-001"
+                        ).first()
+                    )
+                    self.assertEqual(session.query(AnalysisHistory).count(), 0)
             finally:
                 DatabaseManager.reset_instance()
                 Config._instance = None
@@ -1204,7 +1200,7 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
                 else:
                     os.environ["DATABASE_PATH"] = old_db_path
 
-    def test_run_market_review_persists_notification_diagnostics_after_history_save(self) -> None:
+    def test_run_market_review_keeps_notification_diagnostics_when_history_denied(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             old_db_path = os.environ.get("DATABASE_PATH")
             os.environ["DATABASE_PATH"] = os.path.join(temp_dir, "market_review_notification.db")
@@ -1240,11 +1236,21 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
                     row = session.query(AnalysisHistory).filter(
                         AnalysisHistory.query_id == query_id
                     ).first()
-                    self.assertIsNotNone(row)
-                    context_snapshot = json.loads(row.context_snapshot)
-                    notification_runs = context_snapshot["diagnostics"]["notification_runs"]
-                    self.assertEqual(notification_runs[-1]["status"], "success")
-                    self.assertTrue(notification_runs[-1]["success"])
+                    self.assertIsNone(row)
+                    self.assertEqual(session.query(AnalysisHistory).count(), 0)
+                # The notification remains observable in the current run even
+                # when durable vendor-derived history is independently vetoed.
+                diagnostic = current_diagnostic_snapshot()
+                self.assertIsNotNone(diagnostic)
+                self.assertEqual(diagnostic["query_id"], query_id)
+                self.assertFalse(diagnostic["history_runs"][-1]["report_saved"])
+                self.assertIn(
+                    "SOURCE_STORAGE_RIGHTS_NOT_ADMITTED",
+                    diagnostic["history_runs"][-1]["error_message_sanitized"],
+                )
+                self.assertEqual(diagnostic["notification_runs"][-1]["status"], "success")
+                self.assertTrue(diagnostic["notification_runs"][-1]["success"])
+                notifier.send.assert_called_once()
             finally:
                 reset_run_diagnostic_context(token)
                 DatabaseManager.reset_instance()
@@ -1254,7 +1260,7 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
                 else:
                     os.environ["DATABASE_PATH"] = old_db_path
 
-    def test_run_market_review_reuses_generated_query_id_for_notification_diagnostics(self) -> None:
+    def test_market_review_reuses_generated_query_id_when_history_denied(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             old_db_path = os.environ.get("DATABASE_PATH")
             os.environ["DATABASE_PATH"] = os.path.join(temp_dir, "market_review_generated_query.db")
@@ -1273,7 +1279,15 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
                 trigger_source="cli",
             )
             try:
-                with patch.object(market_review_module, "MarketAnalyzer", return_value=market_analyzer):
+                with patch.object(
+                    market_review_module, "MarketAnalyzer", return_value=market_analyzer,
+                ), patch.object(
+                    market_review_module, "_persist_market_review_history",
+                    wraps=market_review_module._persist_market_review_history,
+                ) as persist_call, patch.object(
+                    market_review_module, "_record_market_review_notification_run",
+                    wraps=market_review_module._record_market_review_notification_run,
+                ) as notification_call:
                     result = run_market_review(
                         notifier,
                         config=SimpleNamespace(report_language="zh", market_review_region="cn"),
@@ -1282,16 +1296,22 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
                     )
 
                 self.assertEqual(result, "## 今日大盘\n\n复盘正文")
+                persist_call.assert_called_once()
+                notification_call.assert_called_once()
+                generated_query_id = persist_call.call_args.kwargs["query_id"]
+                self.assertTrue(generated_query_id.startswith("market_review_"))
+                self.assertEqual(
+                    notification_call.call_args.kwargs["query_id"],
+                    generated_query_id,
+                )
                 db = DatabaseManager.get_instance()
                 with db.get_session() as session:
-                    rows = session.query(AnalysisHistory).all()
-                    self.assertEqual(len(rows), 1)
-                    row = rows[0]
-                    self.assertTrue(row.query_id.startswith("market_review_"))
-                    context_snapshot = json.loads(row.context_snapshot)
-                    notification_runs = context_snapshot["diagnostics"]["notification_runs"]
-                    self.assertEqual(notification_runs[-1]["status"], "success")
-                    self.assertTrue(notification_runs[-1]["success"])
+                    self.assertEqual(session.query(AnalysisHistory).count(), 0)
+                diagnostic = current_diagnostic_snapshot()
+                self.assertIsNotNone(diagnostic)
+                self.assertFalse(diagnostic["history_runs"][-1]["report_saved"])
+                self.assertEqual(diagnostic["notification_runs"][-1]["status"], "success")
+                self.assertTrue(diagnostic["notification_runs"][-1]["success"])
             finally:
                 reset_run_diagnostic_context(token)
                 DatabaseManager.reset_instance()

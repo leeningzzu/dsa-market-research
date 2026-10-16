@@ -388,7 +388,9 @@ class _SyntheticFetcherManager:
 
     def get_daily_data(self, code, *args, **kwargs):
         self.daily_calls.append({"code": code, "args": args, "kwargs": kwargs})
-        return self.frame.copy(), "SyntheticFixture"
+        # This is a generated fixture in an isolated temporary SQLite DB.
+        # Never relabel an observed BaoStock/provider frame as test data.
+        return self.frame.copy(), "test"
 
     def prefetch_stock_names(self, stock_codes, use_bulk=False):
         return len(stock_codes)
@@ -1367,11 +1369,34 @@ def test_native_zero_model_record_writes_only_the_admitted_temp_db_surfaces(
     isolated_db,
     tmp_path,
 ) -> None:
-    # 2026-09-25 is a non-trading holiday in the XSHG calendar; use the
-    # prior proven session so this native fixture exercises the positive
-    # postmarket V4 clock path rather than a holiday fail-closed branch.
-    target_date = date(2026, 9, 24)
+    """Native bounded run: proven deterministic research is not storage rights.
+
+    The current strict B1 contract does not license PredictionLedger/History
+    even in a disposable test DB. The independent *synthetic* day bars may be
+    written to isolated SQLite only; no provider call, model call, sending,
+    PIT data, or unauthorized durable strict research is permitted.
+    """
+    from src.services.prediction_ledger_service import PredictionLedgerService
+    from data_provider.daily_data_identity import (
+        attach_daily_data_identity, build_daily_data_identity,
+    )
+
+    target_date = date(2026, 9, 24)  # Independently completed XSHG session
     frame = _synthetic_daily_history(end_date=target_date)
+    typed = build_daily_data_identity(
+        frame, provider_identity="test",
+        provider_route="fixture:in_process_no_provider",
+        actual_response_branch="SYNTHETIC_TEST_ONLY",
+        requested_adjustment_basis="qfq",
+        observed_adjustment_basis="qfq",
+        basis_evidence="EXPLICIT_ISOLATED_SYNTHETIC_PRICE_SERIES",
+        requested_start=str(frame.iloc[0]["date"]),
+        requested_end=str(target_date),
+        currency="CNY", volume_unit="share", amount_unit="CNY",
+        identity_state="OBSERVED",
+        observed_at=datetime(2026, 9, 24, 10, 0, tzinfo=timezone.utc),
+    )
+    attach_daily_data_identity(frame, typed)
     fetcher = _SyntheticFetcherManager(frame)
     config = Config.get_instance()
     config.litellm_model = "openai/offline-zero-call"
@@ -1400,171 +1425,114 @@ def test_native_zero_model_record_writes_only_the_admitted_temp_db_surfaces(
     relative_strength.build_context.return_value = None
     before = _table_counts(isolated_db)
     repository_reports = Path(__file__).resolve().parents[1] / "reports"
-    repository_report_state_before = (
-        {
+
+    def report_manifest() -> dict:
+        return {
             str(path.relative_to(repository_reports)): (
-                path.stat().st_size,
-                path.stat().st_mtime_ns,
+                path.stat().st_size, path.stat().st_mtime_ns,
             )
-            for path in repository_reports.rglob("*")
-            if path.is_file()
-        }
-        if repository_reports.exists()
-        else {}
-    )
+            for path in repository_reports.rglob("*") if path.is_file()
+        } if repository_reports.exists() else {}
+
+    repository_report_state_before = report_manifest()
     notification_module_file = tmp_path / "src" / "notification.py"
+    observed_history_veto = []
+    original_save_history = DatabaseManager.save_analysis_history
+
+    def _observe_strict_history(self, **kwargs):
+        # Strict native synthetic-source MTF evidence is PROVEN, yet source
+        # lineage alone cannot authorize durable History or Ledger.
+        result = kwargs["result"]
+        factor = result.dashboard["factor_decision"]
+        assert factor["method_execution_receipt_policy"] == "REQUIRED"
+        assert factor["canonical_decision"]["evidence_state"] == "PROVEN"
+        assert factor["canonical_decision"]["action"] == "WAIT"
+        assert factor["composite_score"] is not None
+        assert factor["multi_timeframe_structure_context"]["price_identity_reasons"] == []
+        try:
+            return original_save_history(self, **kwargs)
+        except PermissionError as exc:
+            observed_history_veto.append(str(exc))
+            raise
 
     with patch("src.core.pipeline.DataFetcherManager", return_value=fetcher), \
          patch("src.core.pipeline.MarketStructureService", return_value=market_structure), \
          patch("src.core.pipeline.RelativeStrengthService", return_value=relative_strength), \
          patch("src.notification.__file__", str(notification_module_file)), \
          patch.object(
-             NotificationService,
-             "send_to_email",
+             NotificationService, "send_to_email",
              side_effect=AssertionError("email egress must stay disabled"),
          ) as send_email, \
          patch.object(
-             NotificationService,
-             "send",
+             NotificationService, "send",
              side_effect=AssertionError("notification egress must stay disabled"),
          ) as send_all, \
          patch.object(
-             NotificationService,
-             "send_with_results",
+             NotificationService, "send_with_results",
              side_effect=AssertionError("notification routing must stay disabled"),
          ) as send_with_results, \
-         patch.object(GeminiAnalyzer, "_get_skill_prompt_sections", return_value=("", "", True)), \
+         patch.object(
+             GeminiAnalyzer, "_get_skill_prompt_sections",
+             return_value=("", "", True),
+         ), \
+         patch.object(DatabaseManager, "save_analysis_history", _observe_strict_history), \
+         patch.object(
+             PredictionLedgerService, "persist",
+             side_effect=AssertionError("strict unlicensed Ledger write attempted"),
+         ) as ledger_persist, \
          patch("src.analyzer.get_api_keys_for_model") as get_keys, \
          patch("src.analyzer.litellm.completion") as completion:
-        receipt = record_canonical_run(
-            stock_codes=["600519"],
-            code_sha="8" * 40,
-            config=config,
-            current_time=datetime(2026, 9, 24, 10, 0, tzinfo=timezone.utc),
-            require_single_stock=True,
-            closed_world_database_receipt=True,
-            receipt_only=True,
-        )
+        with pytest.raises(
+            EvidenceFlywheelRuntimeError,
+            match="canonical result is missing a Prediction Ledger receipt",
+        ):
+            record_canonical_run(
+                stock_codes=["600519"],
+                code_sha="8" * 40,
+                config=config,
+                current_time=datetime(2026, 9, 24, 10, 0, tzinfo=timezone.utc),
+                require_single_stock=True,
+                closed_world_database_receipt=True,
+                receipt_only=True,
+            )
 
+    assert observed_history_veto == ["SOURCE_STORAGE_RIGHTS_NOT_ADMITTED"]
+    ledger_persist.assert_not_called()
     after = _table_counts(isolated_db)
     deltas = {
-        table_name: after[table_name] - before.get(table_name, 0)
-        for table_name in after
-        if after[table_name] - before.get(table_name, 0)
+        table: after[table] - before.get(table, 0)
+        for table in after if after[table] - before.get(table, 0)
     }
+    # The only durable price bytes in this run are explicitly synthetic
+    # fixture bars in disposable SQLite, not a licensed prediction/label.
     assert deltas == {
-        "analysis_history": 1,
-        "decision_signals": 1,
         "fundamental_snapshot": 1,
-        "learning_recording_journal": 1,
-        "prediction_ledger": 1,
         "stock_daily": len(frame),
     }
-    assert receipt["status"] == "RECORDED"
-    assert receipt["record_count"] == 1
-    assert receipt["model_request_budget"] == 0
-    assert receipt["model_request_count"] == 0
-    assert receipt["ledger_receipts"][0]["pit_eligible"] is False
-    assert receipt["ledger_receipts"][0]["schema_version"] == "prediction-ledger-v6"
-    assert len(receipt["ledger_receipts"][0]["recording_intent_hash"]) == 64
-    assert len(receipt["ledger_receipts"][0]["intended_cohort_id"]) == 64
-    assert receipt["ledger_receipts"][0]["strategy_eligibility_version"] == "strategy-eligibility-v2"
-    assert receipt["ledger_receipts"][0]["strategy_eligibility_state"] == "UNKNOWN"
-    assert "REQUIRED_EVIDENCE_INCOMPLETE" in receipt["ledger_receipts"][0][
-        "strategy_eligibility_reason_codes"
-    ]
-    assert "STRATEGY_ELIGIBILITY_NOT_BOUND" not in receipt["ledger_receipts"][0][
-        "strategy_eligibility_reason_codes"
-    ]
-    assert receipt["ledger_receipts"][0]["decision_time_utc"].endswith("Z")
-    assert receipt["ledger_receipts"][0]["decision_phase"] == "postmarket"
-    assert receipt["ledger_receipts"][0]["session_date"] == "2026-09-24"
-    assert receipt["ledger_receipts"][0]["effective_daily_bar_date"] == "2026-09-24"
-    assert receipt["ledger_receipts"][0]["outcome_label_anchor"] == "2026-09-24"
-    if receipt["ledger_receipts"][0]["available_at_max_utc"] is not None:
-        assert receipt["ledger_receipts"][0]["available_at_max_utc"].endswith("Z")
-    assert "ADJUSTMENT_BASIS_NOT_PERSISTED" in receipt["ledger_receipts"][0][
-        "pit_ineligibility_reasons"
-    ]
     with isolated_db.get_session() as session:
         cached_rows = session.execute(select(StockDaily)).scalars().all()
-    assert cached_rows
-    assert all(row.data_identity_json is None for row in cached_rows)
-    assert all(row.data_identity_hash is None for row in cached_rows)
+    assert len(cached_rows) == len(frame)
+    assert all(row.data_source == "test" for row in cached_rows)
+    assert all(row.data_identity_hash == typed["identity_hash"] for row in cached_rows)
+    assert all(row.data_identity_json for row in cached_rows)
+    assert all(json.loads(row.data_identity_json)["provider_identity"] == "test"
+               for row in cached_rows)
+    assert after["analysis_history"] == before["analysis_history"] == 0
+    assert after["decision_signals"] == before["decision_signals"] == 0
+    assert after["prediction_ledger"] == before["prediction_ledger"] == 0
+    assert after["prediction_outcomes"] == before["prediction_outcomes"] == 0
+    assert after["pit_dataset_manifests"] == before["pit_dataset_manifests"] == 0
+    assert after["llm_usage"] == before["llm_usage"] == 0
+    assert after["news_intel"] == before["news_intel"] == 0
+    assert after["alert_notifications"] == before["alert_notifications"] == 0
     completion.assert_not_called()
     get_keys.assert_not_called()
     send_email.assert_not_called()
     send_all.assert_not_called()
     send_with_results.assert_not_called()
-    report_files = sorted((tmp_path / "reports").glob("report_*.md"))
-    assert report_files == []
-    repository_report_state_after = (
-        {
-            str(path.relative_to(repository_reports)): (
-                path.stat().st_size,
-                path.stat().st_mtime_ns,
-            )
-            for path in repository_reports.rglob("*")
-            if path.is_file()
-        }
-        if repository_reports.exists()
-        else {}
-    )
-    assert repository_report_state_after == repository_report_state_before
+    assert sorted((tmp_path / "reports").glob("report_*.md")) == []
+    assert report_manifest() == repository_report_state_before
     assert len(fetcher.daily_calls) == 1
-    database_receipt = receipt["database_receipt"]
-    assert database_receipt["core_table_counts_after"] == {
-        "analysis_history": 1,
-        "decision_signals": 1,
-        "fundamental_snapshot": 1,
-        "learning_recording_journal": 1,
-        "prediction_ledger": 1,
-        "prediction_outcomes": 0,
-        "pit_dataset_manifests": 0,
-        "stock_daily": len(frame),
-        "llm_usage": 0,
-        "news_intel": 0,
-        "intelligence_items": 0,
-        "alert_notifications": 0,
-    }
-    assert database_receipt["unexpected_nonzero_table_deltas"] == {}
-    assert database_receipt["nonzero_table_count_deltas"] == deltas
-    ledger_identity = database_receipt["ledger_identities"][0]
-    assert ledger_identity["stock_code"] == "600519"
-    assert ledger_identity["code_sha"] == "8" * 40
-    assert ledger_identity["selection_source"] == "SPECIFIED_CODES"
-    assert ledger_identity["data_snapshot_identity"]
-    assert ledger_identity["strategy_id"]
-    assert ledger_identity["canonical_action"] in {"WAIT", "PASS"}
-    assert ledger_identity["schema_version"] == "prediction-ledger-v6"
-    assert len(ledger_identity["recording_intent_hash"]) == 64
-    assert len(ledger_identity["intended_cohort_id"]) == 64
-    assert ledger_identity["strategy_eligibility_version"] == "strategy-eligibility-v2"
-    assert ledger_identity["strategy_eligibility_state"] == "UNKNOWN"
-    assert len(ledger_identity["strategy_eligibility_hash"]) == 64
-    assert "REQUIRED_EVIDENCE_INCOMPLETE" in ledger_identity[
-        "strategy_eligibility_reason_codes"
-    ]
-    assert "STRATEGY_ELIGIBILITY_NOT_BOUND" not in ledger_identity[
-        "strategy_eligibility_reason_codes"
-    ]
-    assert ledger_identity["decision_time"].endswith("Z")
-    assert ledger_identity["decision_phase"] == "postmarket"
-    assert ledger_identity["session_date"] == "2026-09-24"
-    assert ledger_identity["effective_daily_bar_date"] == "2026-09-24"
-    assert ledger_identity["outcome_label_anchor"] == "2026-09-24"
-    if ledger_identity["available_at_max"] is not None:
-        assert ledger_identity["available_at_max"].endswith("Z")
-    assert receipt["artifact_policy"] == {
-        "receipt_only": True,
-        "report_files_created": False,
-        "database_uploaded": False,
-        "reports_uploaded": False,
-        "logs_uploaded": False,
-    }
-    assert receipt["route_boundaries"]["report_projection"] == "SUPPRESSED"
-    assert receipt["ledger_identities"][0]["code_sha"] == "8" * 40
-    assert receipt["ledger_identities"][0]["selection_source"] == "SPECIFIED_CODES"
 
 
 def test_closed_database_identity_and_receipt_file_are_deterministic(tmp_path) -> None:

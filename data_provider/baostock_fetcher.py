@@ -59,6 +59,93 @@ def _is_us_code(stock_code: str) -> bool:
     return bool(re.match(r'^[A-Z]{1,5}(\.[A-Z])?$', code))
 
 
+def verify_cn_index_completed_close_source_frame(
+    frame: pd.DataFrame, *,
+    trade_date: str,
+) -> dict:
+    """Read-only source receipt validation for existing DSA Market consumers.
+
+    A matching self-contained hash does not prove supplier authenticity,
+    legal rights, historical publication, or PIT. Valid source evidence is
+    PARTIAL only, and never an independently admitted numeric vote.
+    """
+    from src.core.trading_calendar import resolve_latest_completed_session_fail_closed
+
+    if not isinstance(frame, pd.DataFrame) or frame.empty:
+        raise ValueError("INDEX_SOURCE_IDENTITY_MISMATCH")
+    rec = frame.attrs.get("cn_index_completed_close_source")
+    if not isinstance(rec, dict):
+        raise ValueError("INDEX_SOURCE_IDENTITY_MISMATCH")
+    if str(rec.get("completed_through") or "") != str(trade_date):
+        raise ValueError("INDEX_SOURCE_TARGET_DATE_MISMATCH")
+    static_expected = {
+        "schema_version": "cn-index-completed-close-source-v1",
+        "dataset_id": "M_INDEX_CURRENT",
+        "instrument_kind": "INDEX",
+        "provider_identity": "BaostockFetcher",
+        "provider_route": "baostock.query_history_k_data_plus",
+        "timeframe": "1d",
+        "session_calendar": "XSHG",
+        "requested_adjustment_basis": "raw",
+        "observed_adjustment_basis": "UNKNOWN",
+        "basis_evidence": "REQUEST_ONLY_NO_RETURNED_ADJUSTMENT_FLAG",
+        "source_state": "PARTIAL",
+        "point_unit": "INDEX_POINTS",
+        "volume_unit": "UNKNOWN",
+        "amount_unit": "UNKNOWN",
+        "data_rights": "UNKNOWN",
+        "publication_at": "UNKNOWN",
+        "correction_vintage": "UNKNOWN",
+        "historical_pit_eligible": False,
+        "strategy_upgrade_authority": False,
+    }
+    fields = ("date", "code", "open", "high", "low", "close", "volume", "amount", "pctChg")
+    try:
+        row_count = int(rec.get("row_count"))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("INDEX_SOURCE_IDENTITY_MISMATCH") from exc
+    if (
+        any(rec.get(key) != value for key, value in static_expected.items())
+        or rec.get("source_code") not in {"sh.000001", "sh.000300"}
+        or list(frame.columns) != list(fields)
+        or row_count != len(frame)
+        or frame["code"].astype(str).ne(rec["source_code"]).any()
+        or frame["date"].astype(str).iloc[-1] != trade_date
+        or sha256_payload(frame.astype(str).to_dict("records")) != rec.get("content_sha256")
+        or sha256_payload({k: v for k, v in rec.items() if k != "identity_hash"}) != rec.get("identity_hash")
+    ):
+        raise ValueError("INDEX_SOURCE_IDENTITY_MISMATCH")
+    try:
+        observed_at = datetime.fromisoformat(str(rec.get("observed_at") or ""))
+        if observed_at.tzinfo is None or observed_at.utcoffset() is None:
+            raise ValueError
+        if rec.get("available_at_max") != rec.get("observed_at"):
+            raise ValueError
+    except (TypeError, ValueError) as exc:
+        raise ValueError("INDEX_SOURCE_IDENTITY_MISMATCH") from exc
+    last_completed = resolve_latest_completed_session_fail_closed(
+        "cn", current_time=observed_at,
+    )
+    if last_completed is None or last_completed.isoformat() < trade_date:
+        raise ValueError("INDEX_SOURCE_IDENTITY_MISMATCH")
+    return {
+        "dataset_id": "M_INDEX_CURRENT",
+        "source_code": rec["source_code"],
+        "source_state": "PARTIAL",
+        "provider_identity": rec["provider_identity"],
+        "completed_through": trade_date,
+        "observed_at": rec["observed_at"],
+        "content_sha256": rec["content_sha256"],
+        "identity_hash": rec["identity_hash"],
+        "source_data_rights": "UNKNOWN",
+        "volume_unit": "UNKNOWN",
+        "amount_unit": "UNKNOWN",
+        "historical_pit_eligible": False,
+        "independent_source_value_admitted": False,
+        "strategy_upgrade_authority": False,
+    }
+
+
 class BaostockFetcher(BaseFetcher):
     """
     Baostock 数据源实现
@@ -273,6 +360,132 @@ class BaostockFetcher(BaseFetcher):
                     raise
                 raise DataFetchError(f"Baostock 获取数据失败: {e}") from e
     
+    def get_cn_index_completed_close_source(
+        self,
+        index_code: str,
+        *,
+        start_date: str,
+        end_date: str,
+    ) -> pd.DataFrame:
+        """Bounded research source for *index* completed daily closes; no strategy admission.
+
+        Do not reuse the stock daily path: sh.000001 is an index but sz.000001
+        is a stock. The response must explicitly bind its own exchange-qualified
+        code. Observed source bytes do not prove vendor rights, publication
+        vintage, amount/volume units, or historical point-in-time entitlement.
+        """
+        from datetime import date
+        from math import isfinite
+        from src.core.trading_calendar import (
+            resolve_latest_completed_session_fail_closed,
+            resolve_required_daily_history_start_fail_closed,
+        )
+
+        if index_code not in {"sh.000001", "sh.000300"}:
+            raise DataFetchError("CN index source requires an explicit supported index code")
+        try:
+            start = date.fromisoformat(start_date)
+            target = date.fromisoformat(end_date)
+        except (TypeError, ValueError) as exc:
+            raise DataFetchError("CN index daily request date invalid") from exc
+        if start > target:
+            raise DataFetchError("CN index daily request date range reversed")
+        preflight = datetime.now(timezone.utc)
+        latest_complete = resolve_latest_completed_session_fail_closed(
+            "cn", current_time=preflight,
+        )
+        if (
+            latest_complete is None or target > latest_complete
+            or resolve_required_daily_history_start_fail_closed(
+                "cn", target, {"daily": 1},
+            ) is None
+        ):
+            raise DataFetchError("CN index daily session not completed")
+
+        fields = "date,code,open,high,low,close,volume,amount,pctChg"
+        with self._baostock_session() as bs:
+            result = bs.query_history_k_data_plus(
+                code=index_code,
+                fields=fields,
+                start_date=start_date,
+                end_date=end_date,
+                frequency="d",
+                adjustflag="3",
+            )
+            if result.error_code != "0":
+                raise DataFetchError("CN index daily provider query failed")
+            if list(result.fields) != fields.split(","):
+                raise DataFetchError("CN index daily field drift")
+            rows = []
+            while result.next():
+                rows.append(result.get_row_data())
+            if not rows:
+                raise DataFetchError("CN index daily source empty")
+            frame = pd.DataFrame(rows, columns=result.fields)
+            if (frame["code"].astype(str) != index_code).any():
+                raise DataFetchError("CN index response code mismatch")
+            try:
+                returned_dates = [date.fromisoformat(str(x)) for x in frame["date"]]
+            except (TypeError, ValueError) as exc:
+                raise DataFetchError("CN index daily response date invalid") from exc
+            if (
+                returned_dates != sorted(set(returned_dates))
+                or returned_dates[0] < start or returned_dates[-1] > target
+            ):
+                raise DataFetchError("CN index daily source date drift")
+            if returned_dates[-1] != target:
+                raise DataFetchError("CN index target close absent")
+            prices = {
+                name: pd.to_numeric(frame[name], errors="coerce")
+                for name in ("open", "high", "low", "close")
+            }
+            if any(
+                values.isna().any() or not all(isfinite(float(v)) and v > 0 for v in values)
+                for values in prices.values()
+            ) or (
+                (prices["low"] > prices["high"]).any()
+                or (prices["open"] < prices["low"]).any()
+                or (prices["open"] > prices["high"]).any()
+                or (prices["close"] < prices["low"]).any()
+                or (prices["close"] > prices["high"]).any()
+            ):
+                raise DataFetchError("CN index daily OHLC invalid")
+
+        # Take the true observation clock only after the provider session closes.
+        received = datetime.now(timezone.utc)
+        source = {
+            "schema_version": "cn-index-completed-close-source-v1",
+            "dataset_id": "M_INDEX_CURRENT",
+            "instrument_kind": "INDEX",
+            "source_code": index_code,
+            "provider_identity": self.name,
+            "provider_route": "baostock.query_history_k_data_plus",
+            "timeframe": "1d",
+            "requested_start": start.isoformat(),
+            "requested_end": target.isoformat(),
+            "completed_through": target.isoformat(),
+            "session_calendar": "XSHG",
+            "observed_at": received.astimezone(timezone.utc).isoformat(),
+            "available_at_max": received.astimezone(timezone.utc).isoformat(),
+            "requested_adjustment_basis": "raw",
+            "observed_adjustment_basis": "UNKNOWN",
+            "basis_evidence": "REQUEST_ONLY_NO_RETURNED_ADJUSTMENT_FLAG",
+            "point_unit": "INDEX_POINTS",
+            "volume_unit": "UNKNOWN",
+            "amount_unit": "UNKNOWN",
+            "publication_at": "UNKNOWN",
+            "correction_vintage": "UNKNOWN",
+            "data_rights": "UNKNOWN",
+            "historical_pit_eligible": False,
+            "source_state": "PARTIAL",
+            "strategy_upgrade_authority": False,
+            "row_count": len(frame),
+            "content_sha256": sha256_payload(frame.astype(str).to_dict("records")),
+        }
+        source["identity_hash"] = sha256_payload(source)
+        frame.attrs["cn_index_completed_close_source"] = source
+        return frame
+
     def get_intraday_data(
         self,
         stock_code: str,

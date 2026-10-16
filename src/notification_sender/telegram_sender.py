@@ -264,10 +264,9 @@ class TelegramSender:
         timeout_seconds: Optional[float] = None,
     ) -> bool:
         """按已转换的 Telegram Markdown payload 分段发送长消息。"""
-        # 按段落分割
-        sections = content.split("\n---\n")
+        # 保留分段标记：无论在同一条消息还是跨消息，拼接后必须恢复完整payload。
         delimiter = "\n---\n"
-        delimiter_length = len(delimiter)
+        sections = content.split(delimiter)
 
         current_chunk = []
         current_length = 0
@@ -279,7 +278,7 @@ class TelegramSender:
             if not current_chunk:
                 return all_success
 
-            chunk_content = "\n---\n".join(current_chunk)
+            chunk_content = "".join(current_chunk)
             logger.info(f"发送 Telegram 消息块 {chunk_index}...")
             chunk_index += 1
             current_chunk = []
@@ -303,7 +302,9 @@ class TelegramSender:
                 chunks.append(section[start:start + limit])
             return chunks
 
-        for section in sections:
+        for index, section in enumerate(sections):
+            if index:
+                section = delimiter + section
             if len(section) > max_length:
                 # 单段超限时强制切片，避免依赖“\\n---\\n”边界导致的整段超长发送
                 if not _flush_chunk():
@@ -323,8 +324,6 @@ class TelegramSender:
                 continue
 
             additional_length = len(section)
-            if current_chunk:
-                additional_length += delimiter_length
 
             if current_length + additional_length > max_length:
                 _flush_chunk()
