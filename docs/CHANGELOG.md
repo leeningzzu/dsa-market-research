@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [文档] 同步当前控制页到候选HEAD a66ec7df：记录首个MTF MACD/RSI方法窗口runtime trace、77项目标回归、四资产证明上限与下一source-capability切片；确认Project 01/05 v3.470已安装，避免其他模型重复执行已完成切片。功能分支仍无PR/Linux CI，不能冒充main。
 - [文档] 在既有stock-dsa-roadmap前置当前控制页、四资产七周期依赖投影、九条保留工作线、两条产品反馈链与工程旁路、阶段Owner/退出条件及唯一下一切片；明确6cd2b04d候选回执不等于四对象全READY/全仓CI/收益，修正旧PR30仍等待复验的过期“当前”叙述。保持原775边图、V2.5、分数、数据抓取和业务代码不变；配套01/05必要checkpoint恢复跨Chat连续性，而非增加新架构或复盘Agent。
 - [改进] 粗筛机器合同继续接入真实消费者：原screening.pipeline在八个实际seam记录run-local数量/耗时、未请求/未到达、日线预算未算与失败/过滤排除，并在最终截断前统计DSA完成/失败/跳过；ScreenResult及普通/AUTO服务响应携带同一execution_receipt，无新DB/原始行情、无评分变化或胜率主张。跨Chat路线复核澄清四资产七周期、方法特定窗口、行政相关组与统计增量、产品第二条Outcome/PIT反馈链和工程旁路的区别；真实HTTP计数/全Universe提速与漏选仍未证明，保持B1与同一canonical/V2.5边界。
 - [机器图/粗筛细选合同] 在不改149628字节/775边接受图的前提下，把现有DSA粗筛→细选→7TF→canonical派生为机器可读运行合同：L0来源、L1市场/行业许可、L2资产粗筛、L3股票/ETF细排、L4严格7TF深析、L5相关性去重/hard veto/完整Report。将原散落的MTF权重提为单一常量并由CI锁定，行为保持context +1.25/-2、daily +1.75/-2.5、60/30 +0.75/-1、15/5条件+0.25/-0.5、总[-6,+4]；hard veto无权重、MISSING/UNKNOWN零票但降低coverage、学习权重延后到合法PIT/OOT。Machine contract从43方法Profile动态编译15个correlation groups，明确MACD/RSI/ROC/背离、pivot/Chan/Wave、VCP/杯柄/双底、量价与成本代理不可重复计票；邮件八族保留，质量成长/估值/ETF专属/执行风险独立。新增CI反例先RED后GREEN，不建第二Shell/DB/报告/评分，不修改V2.5原件或自动交易。
