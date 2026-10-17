@@ -2,6 +2,151 @@
 
 > 本文是现有DSA机器图、执行合同和运行证据的维护者视图，不是新的Source、策略、数据库、调度器或报告权威。机器可读不变量见 `docs/stock-dsa-stage-baseline-v1.json`；真实状态仍由GitHub代码、CI、运行回执和合法数据证据决定。
 
+<!-- CURRENT_MASTER_CONTROL_START -->
+## 当前控制页：总目标、依赖图与退出条件（2026-10-17）
+
+CONTROL_ID = STOCK_DSA_MASTER_ROUTE_20261017_7TF_DUAL_FEEDBACK_CLOSURE
+BEHAVIOR_BASELINE = 6cd2b04d4d70095b6915296075392e94ff5db6e1
+MAIN_BASELINE = b32570b1562deaefa99f500a9c68eb7d1caf6f56
+AUTHORITY = exact Git/运行证据 > current 01 > 02/03 > 04/05 > Factor > 06 > 旧Chat
+
+**这是一份现有路线的维护者控制页，不是新架构、第二个Source、第二数据库或调度器。下文各dated checkpoint保留历史；本控制页纠正历史段落的“当前/下一步”陈述。原775边图和V2.5原件不变。**
+
+### 0.1 总目标与成功定义
+
+在DSA/daily_stock_analysis内，做出能够解释“为何入选、为何不选、何时成立、何时失效”的股票/ETF研究，并逐步积累合法、可复现的结果证据，检验净期望与校准质量。不是追求指标最多、测试最多、分数最高、胜率单项最大，也不承诺收益、不自动交易。
+
+产品完成至少有五个相互独立的证明：来源/时点/权利合法；方法数值与确认事件正确；候选与veto/唯一canonical一致；完整Report/Email实际消费且交付证据达到当前要求；学习结论来自合法机会分母及独立时间外验证。工程CI绿不能替代后四者，收到邮件也不能替代前面事实。
+
+五级对齐：Program研究可信与有可检验的净价值 → Product四类资产/八族/七周期/完整报告和结果反馈 → Lane B1/B5/M2/B6/B8/L1/M3 → Milestone一个可独立验收的纵向切片 → Atomic实际Owner、consumer、负例、合法nontrigger和回滚。横向始终有Data/Risk/Liquidity/Execution veto、许可/隐私、known-at、版本身份和Stop-Loss。
+
+### 0.2 当前事实与本次纠偏
+
+- 已核：远端main b32570b1是PR30绿色合并基线；候选分支feat/stock-dsa-m2-source-gates-v1的6cd2b04d已推送且本地clean。分支含50208fe0指数5m薄适配、9531baf1粗细筛合同、6cd2b04d实际筛选执行回执；本控制页是后续纯文档修订，不改变评分/抓取/写库/通知。
+- 已有：四个原生用例先RED，执行计数补齐后GREEN；后续新增总7个用例以及4个既有AUTO用例PASS；Builtin 31项和Stage Baseline 6项PASS。宽范围API/selection为114 PASS、5 FAIL（旧hotspot/AkShare与deadline/fallback环境相关，根因等价性未全部证明），不能说全仓CI或全部接口通过。
+- 未有：候选分支的新PR/Linux CI准入、四资产所有方法真实READY、行业指数完整价格链、合法PIT学习闭环、可量化提速/零漏选。编译器、13项指数合成接口测试、一次实源查询都不能补出这些证明。
+- Source连续性：物理01/05仍v3.468；v3.469曾生成但未安装。必须通过一次新的01/05成对checkpoint承接上述提交与未完成项，不再让旧WIP/旧PR状态成为下一Chat入口。
+
+### 0.3 详细依赖图：实线是数据/决策依赖，虚线是诊断或显式后继反馈
+
+下图为原接受图的可读依赖投影；节点出现不等于节点实际执行。状态和证据见0.4/0.5，运行层仍由原Registry/Factor/Diagnostics负责。
+
+```mermaid
+flowchart TD
+  ENTRY_AUTO["AUTO_SCREEN：股票/ETF独立候选池"] --> REF["证券身份/行业分类版本/历史成员/交易日历"]
+  ENTRY_CODES["SPECIFIED_CODES：绕过粗筛，不占AUTO配额"] --> SELECTED["有限深析对象与必要的市场/行业上下文"]
+  REF --> ADMISSION["逐数据对象：provider/known-at/单位/复权/权利/完成bar"]
+  ADMISSION --> SHARED["代表市场/行业上下文：共享一次，不逐股票重复抓取"]
+  ADMISSION --> COARSE["廉价日线/横截面粗筛：流动性/数据质量/资产适用性"]
+  GLOBAL["Global原生频率：只能确认/降级/失效/不足"] --> SHARED
+  SHARED --> FINE["Stock：行业/peer RS+质量估值；ETF：peer RS+交易与跟踪质量"]
+  COARSE --> FINE
+  FINE --> CAP["AUTO各类最多10、重点各3；允许0；预算跳过不等于否决"]
+  CAP --> SELECTED
+  SHARED --> SELECTED
+  SELECTED --> DEMAND["现有MethodWindowProfile：逐资产/周期/方法需求"]
+  DEMAND --> PLAN["共享请求规划：窗口、预算、源保留/分页能力"]
+  ADMISSION --> PLAN
+  PLAN --> BASE_D["实际完成1d：不把尚未收盘数据标完成"]
+  PLAN --> BASE_5["实际完成5m：合法连续会话/时段/数据缺口"]
+  BASE_D --> DWM["同一Owner：日/周/月；未完成周/月剔除"]
+  BASE_5 --> MINUTE["同一Owner：5/15/30/60m；上午下午分别聚合"]
+  DWM --> METHODS["每方法：公式/多起点稳定/结构确认/prefix/失效"]
+  MINUTE --> METHODS
+  METHODS --> MATRIX["asset×timeframe×method：READY/PARTIAL/MISSING/UNKNOWN/N-A"]
+  EXTRA["非K线原生证据：宽度、财报vintage、估值、NAV/IOPV、份额、点差/跟踪"] --> EIGHT["八证据族+独立非技术材料；同源同摆动去重"]
+  MATRIX --> EIGHT
+  EIGHT --> STRATEGY["白盒策略条件：现行stock/ETF路由；不把分数当概率"]
+  VETO["Data/Risk/Liquidity/Execution硬否决：不可平均抵消"] --> CANONICAL["唯一canonical：支持/反证/触发/失效/缺失/时间"]
+  STRATEGY --> CANONICAL
+  CANONICAL --> REPORT["同一完整Report/Email；LLM只解释；V2.5原件不改"]
+  REPORT --> DELIVERY["获准发送/实际收件：单独验收，不复活已关闭运输阶段"]
+  CANONICAL --> RECORD_GATE["独立存储许可与记录权限；未知即HOLD"]
+  RECORD_GATE --> LEDGER["合法不可变Journal/Ledger：TAKE/PASS/WAIT/否决/未触发/未成交"]
+  LEDGER --> OUTCOME["成熟Outcome+冻结label/成本/执行规则+PIT"]
+  OUTCOME --> OOT["白盒基线/时间外walk-forward/相关组消融/选择偏差审计"]
+  OOT --> LOGISTIC["Logistic；仅有增量才LightGBM"]
+  LOGISTIC --> CALIB["独立校准+冻结Shadow"]
+  CALIB --> PROMOTE["显式Promotion绑定代码/数据/特征/策略/模型/校准器"]
+  PROMOTE -. "只产生未来新版本，不改写历史" .-> STRATEGY
+  PLAN -. "requested vs returned" .-> OPS["工程旁路：阶段计数/耗时/失败/缺口/预算跳过"]
+  MATRIX -. "readiness与consumer缺口" .-> OPS
+  COARSE -. "排除理由与预算分开" .-> OPS
+  DELIVERY -. "交付证据" .-> OPS
+  OPS --> REVIEW["Role Review/同根复发/净负担：KEEP/简化/复用/延期"]
+  REVIEW -. "明确批准后改变下一版本" .-> DEMAND
+```
+
+**不是“大盘必须全好→行业必须全好→ETF必须全好→个股才能分析”的串行等待。** 市场/行业上下文是共享依赖；ETF和个股是兄弟输出路线，不是先选ETF才有资格分析个股。某个required veto缺失时相应策略不得行动，但其他合法证据和SPECIFIED_CODES研究仍可产出不足说明。
+
+### 0.4 九条保留工作线：每次Closure都核对，不以局部替代总体
+
+| 稳定工作线 | 范围与现状 | 必须保留的下一验收证据 |
+|---|---|---|
+| N1 日→周/月 | 个股/ETF样本与现有动态窗口已有；市场/行业逐对象未全验 | completed与边界、源口径、逐方法warm-up/recursive、真实数值进入同一consumer |
+| N2 5m→15/30/60m | 个股样本；ETF部分；指数一次实源32会话但适配后续断连；行业缺源 | requested/returned/required分开，按会话聚合、单位与复权核对、15/5确认仍OPEN |
+| N3 Global | 目标完整但各原生数据与known-at未全准入 | 科技/通胀/名实利率/美元人民币/商品/资金风险；不能由Global单独升级BUY |
+| N4 A股Market/Breadth及行业 | 指数当前来源与分钟来源级PARTIAL；分类查询不等于行业指数 | 历史Universe、宽度分母、行业价格/成员版本、RS与内部广度；不拿ETF静默当行业指数 |
+| N5 ETF-specific | E_PRICE_1D/E_PRICE_5M来源级进展；专属数据多数UNKNOWN | NAV与IOPV区分、价格同一时点/原始价格单位、份额/折溢价/点差/跟踪/篮子 |
+| N6 Stock hard gaps | 七周期主干已有；独立确认/估值/财报vintage/执行门禁未全好 | 质量成长/行业RS/适用估值、30m结构→15m确认→5m时点；原stock策略 |
+| N7 Extra classic | 43方法登记含延期；不是43方法已算/全部已准入 | 均线/量价/成本/结构优先；Chan窄语义与逐根replay；Wave/其他同类指标按触发延期 |
+| N8 B8A完整产品 | 同canonical完整Report/Email本地消费多项通过 | 独立支持/反证/估值/风险/触发/失效/时间原子守恒；实收证据另验，静态原件运输不重跑 |
+| N9 Learning/Model | 第二条链设计/代码部分存在；来源许可/PIT/OOT未准入 | 完整机会分母→合法Ledger→Outcome/PIT→白盒OOT→Logistic→条件LightGBM→校准/Shadow/Promotion |
+
+### 0.5 接下来阶段目标、依赖与关闭标准
+
+| 阶段 | 目标/现有Owner | 最小实施与退出证据 | 阻断范围 |
+|---|---|---|---|
+| G0工程接受 | 已推送候选进入其独立PR/CI，非复用PR30 | 当前分支exact HEAD、变更审查、自然Linux检查；旧5个hotspot失败必须定位，不重写golden | 阻断候选合并/Production主张；不阻断只读来源审计/计划维护 |
+| B1+B5四对象底座 | data_provider、daily/intraday identity、core pipeline/MTF | 代表市场指数、正式行业指数、ETF、个股分别冻结source-capability manifest；缺项明确；来源与请求身份留在原Owner | 某对象缺源不阻断兄弟对象，版权未知不落库积历史 |
+| B5窗口到方法 | 复用_current_daily_window_plan/_current_intraday_window_plan及Registry | 同一run_id能串起资产/方法requested/returned/required/stability/status；用600519已有纵向为对照，再接ETF/指数/行业；负例确认不因高周期不足删除低周期合法材料 | 阻断相应方法/策略，不一刀切全部周期 |
+| M2上下文到筛选 | MarketStructure/RS/Screening/Factor | 廉价合法指标缩Universe，有限候选完整7TF；共享指数/行业结果；候选跳过/否决/缺数理由分开 | 不能承诺与全市场深析零漏选；保留研究型审计样本 |
+| B6+B8策略与交付 | 原structure/pattern/Factor/Notification | confirmed_at/available_at/invalidation、执行veto、同canonical完整报告；未实现方法不以模板字样填充 | 不真实发信、交易或重训，除非另有明确授权 |
+| L1/M3第二链 | 原History/Journal/Ledger/Outcome与后续实验Owner | 合法写读/PIT/冻结label/成本/选择偏差审计；训练/验证/测试/校准分离，Promotion显式 | B1/HOLD时只做schema/合成测试/只读研究，不训练真实数据 |
+
+阶段是依赖关系，不是所有工作线强制串行。优先一个能够暴露共性缺口的真实纵向切片，保留另三类的显式OPEN；不复制四个分析引擎，也不长期停在一个测试模块。
+
+### 0.6 动态窗口与减负的准确位置
+
+窗口由(资产、价格对象、周期、方法、算法/config、as-of、source能力)决定。区分公式rolling窗、递归初始化/多起点比较窗、形态变长/anchor/确认窗、共享抓取跨度、label持有期、保留期、OOT切分。按相同源/口径/时点合并请求，按各自方法判断readiness；接口pagination上限、真实滚动保留底和单次缺包不可混淆。
+
+前序32完整会话示例：1536根5m可推512根15m、256根30m、128根60m。它既不自动满足某60m递归算法，也不意味着5m/15m的每个合法短窗方法都失败。67日是当时最大方法要求的共享请求目标，不是永恒统一最低长度；数值接近之外，还要验证threshold附近信号状态与确认事件不发生不合法回填。不能通过提高容差、拼不同adjustment/source或无限重试伪造稳定。
+
+减负顺序：市场/行业共享一次；只在完成bar或相关数据vintage/配置改变时重算；先粗筛后有限深析；同provider/资产/时点/复权的1d和5m基础帧复用；获独立存储许可前仅run-local重用，不加并行数据库。每次只保留一个新失败族的修复，纯提速不改排序；截断候选要评估漏选，不能声称数学等价。
+
+### 0.7 八族、权重与第二链的边界
+
+八族是解释/组织，不是八票。TREND_RS中的MA/RS、SUPPLY中的量价、COST代理、STRUCTURE中的pivot/Chan、MOMENTUM中的动量/波动、PATTERN事件、MTF职责分别保留。MACD背离/Chan背驰/衰竭若同源同摆动应去重；ATR风险尺度与ROC方向速度不能只因同组就删掉。15个行政相关组不是统计聚类证明。质量成长/估值/ETF专属保持横向原生频率，不能靠七周期K线生成它们。
+
+当前保留已有有界筛选偏好，不增加任意百分比，不把MISSING当利好，不用技术高分抵消veto。未来冗余/权重用合法PIT训练折内的成组消融、条件/分段比较和独立时间外结果决定；反馈处置限KEEP/CONFIRM、SIMPLIFY/MERGE/DROP_FROM_DECISION、CONDITION/SEGMENT。即便从决策中删除低增量指标，真实且要求披露的邮件材料不因此删减。效益指标同时看净期望/成本/回撤/周转/机会覆盖/校准，不以胜率单项决定。
+
+产品链A：source→deterministic evidence→策略/veto→canonical→完整报告。产品链B：同一canonical合法记录→真实Outcome/PIT→OOT→Logistic/条件LightGBM→独立校准→Shadow→显式晋升。工程旁路只有实际计数/耗时/异常→复盘→下一版本；它不能冒充链B、不能把市场结果倒灌为过去特征，也不能自动改参数/阈值。
+
+### 0.8 成熟项目决策与证据落点
+
+| donor/现有能力 | KEEP/ADAPT/DEFER | 落点与限制 |
+|---|---|---|
+| DSA/已接受AlphaSift派生 | KEEP：原粗细筛/服务/Diagnostics | 真实execution_receipt已接，不新增筛选Shell；本次不扩充复盘Agent |
+| LEAN官方market-hour consolidators | ADAPT模式：交易时段锚点、资源释放、公司行动边界 | 原XSHG bar service/period完成负例；不安装其broker/调度栈 |
+| Freqtrade recursive/lookahead | ADAPT测试：多长度末端比较＋prefix/信号反例 | 原方法测试；单币/单资产切片不适合直接验证横截面RS；未触发信号不能当无lookahead证明 |
+| CNEquity | ADAPT目录概念：history_mode/coverage/backfill vs snapshot-only | 下一四对象source-capability核验；官网开发树不等于本机已安装版本，注册数/文档范围不等于实得/版权 |
+| OpenBB标准化 | ADAPT query/data模型分离 | 原typed identities；统一字段不等于来源独立认证；不安装完整平台 |
+| CZSC | DEFER执行直到窄Chan适配trigger | FX/BI/ZS、confirmed事件；1.0 Rust和旧Python有接口差异，先pin/version/license/replay |
+| Qlib/scikit-learn | DEFER真实学习，ADAPT PIT/成组重要性方法 | PIT需公告日/期末/修订版；不以当前回补替代历史vintage，不新增数据库权威 |
+
+公开一次资料本轮已重新核验（2026-10-17）：LEAN https://www.quantconnect.com/docs/v2/writing-algorithms/consolidating-data/consolidator-types/market-hour-aware-consolidators ；Freqtrade https://www.freqtrade.io/en/stable/recursive-analysis/ 与 https://www.freqtrade.io/en/stable/lookahead-analysis/ ；CNEquity https://rootsunc.github.io/CNEquity/datasets/catalog/ ；OpenBB https://docs.openbb.co/odp/python/developer/standardization ；CZSC https://github.com/waditu/czsc ；Qlib https://qlib.readthedocs.io/en/latest/advanced/PIT.html ；相关特征 https://scikit-learn.org/stable/auto_examples/inspection/plot_permutation_importance_multicollinear.html 。这是模式/文档核验，不是安装、数据许可、接口全审计或收益证明。
+
+### 0.9 Role Review、反例与唯一下一步
+
+用户再次提醒总路线/机器图未交付：TRUE_POSITIVE，PROCESS_CONSUMER/LANE_RECURRENT；最早应在6cd2b04d material closure时给完整结果并做01/05 checkpoint。AUTO_RETROSPECTIVE_BEFORE_USER_REMINDER=NO，不能仅凭新增说明声称长期自动复盘已稳定。跨Chat恢复以现有Source/工具证据为本；R019原包未恢复，保留gap，只消费已接受的父目标/consumer、复用/反例、回归/净负担三个模式。
+
+Product视角：四资产七周期+非K线证据+第二链全部保留；Data视角：source与rights/clock分门；Algorithm视角：不重复指标引擎；Operations视角：8个实测seam不等于所有节点；Review视角：planned/executed/admitted分离；User视角：只补01/05不重传八份，不再要求用户诊断日志或手动推送。
+
+UNIQUE_NEXT_STEP = 在现有MTF/Registry内完成“逐资产×周期×方法的窗口与readiness贯通清单”的一个真实只读纵向切片：以已有合法600519源路径为对照，同时列市场/行业/ETF的来源能力缺口；每项绑定required/requested/returned/stability/确认时间/consumer，分别给READY/PARTIAL/MISSING/UNKNOWN，不新建规划器、不继续堆工程计数。候选GitHub PR/CI为该切片生产晋升门禁，不以旧PR30绿灯代替。
+
+PASS = 原方法/窗口/消费者同一身份可追，正例与短历史/错单位/错时点/未来确认/未请求反例均守边界，报告保留独立材料；STOP = 四类资产一条替全部、合成冒实源、UNKNOWN伪造、无授权写库/发送/模型/Git主分支迁移、统计去重删掉规定披露或反复失败仍硬扩窗。CURRENT_ROUTE_STILL_WORTH_CONTINUING=YES；本次不改Instructions，必须完成一次01/05 paired checkpoint，其他六份KEEP。
+<!-- CURRENT_MASTER_CONTROL_END -->
+
 ## 1. GitHub是后续工程基线
 
 所有可继续开发的能力必须进入当前公共仓库的功能分支，经Pull Request和阻断CI后才可成为新基线。禁止把长期能力只留在本地WIP、聊天摘要或Project Source中；也禁止直接把未经CI验证的WIP推到 `main`。
@@ -30,7 +175,7 @@
 | Program | 合法known-at数据→白盒证据→唯一canonical→完整交付→合法Outcome/PIT→独立校准→Shadow→Promotion | 不自动交易，不保证收益 |
 | Product | Global→A股市场/行业→ETF/股票→七周期/基本面/估值/风险→FULL Report/Email | 单股票技术证据不能替代市场、ETF和基本面 |
 | Lane | B1权利、B5来源/方法、B8完整报告、History/PIT、模型与Promotion | 各Lane独立门禁，不平均抵消 |
-| Milestone | 本轮为真实七周期原生方法逐项进入同一报告消费者 | 不等于43方法全部READY |
+| Milestone | 当前控制页0.9指定一个有界纵向切片；下文dated milestone为历史证据 | 不等于43方法全部READY |
 | Atomic | 复用既有Owner、消费者、测试和负例的最小改动 | 不建第二套Shell/DB/Registry/Report |
 
 ## 4. 阶段基线
@@ -39,7 +184,9 @@
 
 功能分支、PR、required CI和可回滚提交身份。只有PR阻断检查通过并显式合并，才形成后续开发基线。
 
-### G0 PR #30 Linux CI六项失效的当前合同闭环（2026-10-16）
+### HISTORICAL — G0 PR #30 Linux CI六项失效修复时检查点（2026-10-16）
+
+> 后继证据：PR30随后已在CI 38890306259通过并合并为main b32570b1；以下“尚未证明/等待”描述仅属于当时修复候选，不是当前PR状态。新的M2候选分支必须另验PR/CI。
 
 实际GitHub CI日志为6348 passed / 6 failed / 30 deselected，四组为Backtest真实回测重取、轻量股票名的扩展日线窗口、原生零外部模型P0、市场复盘History/通知诊断三项。它们全部在本地原入口复现RED；根因分类为五处B1未证明存储许可的历史正向预期与一处旧2023-06-01的硬编码起点。不能把新B1存储VETO降级以制造History/Ledger、也不能让旧起点缩短七周期MACD/RSI窗口。
 
@@ -320,6 +467,6 @@ CI必须同时保护：
 7. 记录CI结果、未证明项和Role Review；
 8. 显式merge后，该commit才成为新的Production GitHub基线。
 
-当前公开GitHub门禁对象为PR #30。功能分支push本身不会触发本仓CI，因为`ci.yml`只对`main` push或面向`main`的Pull Request运行；因此Actions首页最初只显示main定时任务不代表分支未推送。PR首次运行中ai-governance、docker-build和桌面打包通过，backend-gate在Offline suite发现17条历史Pipeline通知测试仍期待微信/飞书/NTFY/Gotify/上下文替代正式Email。生产合同没有放宽；旧测试被改为Email REQUIRED、Telegram OPTIONAL及其他渠道不替代Report的准确正负例，本地相关模块42/42与Notification/Schedule 203/203通过，等待新分支提交触发远端复验。
+历史PR #30已绿色合并为main b32570b1。当前feat/stock-dsa-m2-source-gates-v1中的指数源、筛选合同和运行回执属于后继候选；截至本控制页核验，不能引用旧PR30的绿灯替代新分支PR/Linux CI。功能分支push不等于CI执行，更不等于main已包含该能力。PR30曾经历通知/历史测试修复，其失败与修复记录保留于dated章节，不再充当当前待办。
 
 M2候选实现可以在同一已推送功能分支继续，并持续以小提交同步GitHub；但未merge的分支能力只能称候选基线，不能冒充main/Production。任何本地WIP、ZIP、Project Source或聊天结论都不能替代GitHub分支、CI与最终merge形成的工程基线。
