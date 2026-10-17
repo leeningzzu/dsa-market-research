@@ -8,6 +8,7 @@ import logging
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from time import perf_counter
 from typing import Callable
 
 import pandas as pd
@@ -121,6 +122,40 @@ def screen(
 
     run_id = uuid.uuid4().hex[:12]
     degradation: list[str] = []
+    execution_started = perf_counter()
+    stage_rows = {
+        name: {"stage": name, "status": "NOT_REACHED", "input_count": None,
+               "output_count": None, "excluded_count": 0, "elapsed_ms": None}
+        for name in (
+            "snapshot", "host_prefilter", "snapshot_filter", "daily_enrichment",
+            "daily_filter", "shortlist", "post_analysis", "selection",
+        )
+    }
+    dsa_status_counts = dict(completed=0, failed=0, skipped=0, not_requested=0, unknown=0)
+    risk_excluded_count = 0
+
+    def record_stage(name, *, status="COMPLETED", started=None, **counts):
+        stage_rows[name].update(status=status, **counts)
+        if started is not None:
+            stage_rows[name]["elapsed_ms"] = round(max(0.0, perf_counter() - started) * 1000, 3)
+
+    def finish(result, reason):
+        result.execution_receipt = {
+            "schema_version": "screening-execution-receipt-v1",
+            "scope": "RUN_LOCAL_EXECUTION_METADATA_NOT_DATA_OR_STRATEGY_PROOF",
+            "run_id": run_id, "asset_type": asset_type,
+            "terminal_reason": reason,
+            "elapsed_ms": round(max(0.0, perf_counter() - execution_started) * 1000, 3),
+            "stages": list(stage_rows.values()),
+            "dsa_status_counts": dict(dsa_status_counts),
+            "risk_excluded_count": risk_excluded_count,
+            "provider_http_request_count": None,
+            "source_or_method_readiness_proven": False,
+            "full_universe_equivalence_proven": False,
+            "market_outcome_learning_admitted": False,
+        }
+        return result
+
 
     # 1. Load strategy
     strategies = load_all_strategies(config.strategies_dir)
@@ -152,6 +187,7 @@ def screen(
 
     # 2. Fetch snapshot
     _emit_progress(progress_callback, 25, "正在读取全市场快照")
+    snapshot_started = perf_counter()
     snapshot_df = fetch_snapshot_with_fallback(
         config.snapshot_source_priority,
         required_columns=_required_snapshot_columns(snapshot_filters),
@@ -187,6 +223,8 @@ def screen(
     source_errors = [str(item) for item in snapshot_df.attrs.get("source_errors", [])]
     degradation.extend(f"Snapshot source fallback: {item}" for item in source_errors)
 
+    record_stage("snapshot", started=snapshot_started, output_count=snapshot_count)
+    prefilter_started = perf_counter()
     candidate_prefilter_diagnostics: dict[str, object] = {}
     if candidate_prefilter is not None:
         filtered_snapshot, raw_diagnostics = candidate_prefilter(snapshot_df.copy())
@@ -202,6 +240,12 @@ def screen(
             "Candidate prefilter retained "
             f"{len(snapshot_df)}/{snapshot_count} snapshot candidates"
         )
+    record_stage(
+        "host_prefilter", started=prefilter_started,
+        status="COMPLETED" if candidate_prefilter is not None else "NOT_REQUESTED",
+        input_count=snapshot_count, output_count=len(snapshot_df),
+        excluded_count=max(0, snapshot_count - len(snapshot_df)),
+    )
     if bool(snapshot_df.attrs.get("fallback_used")):
         stale_age = snapshot_df.attrs.get("stale_age_hours")
         if stale_age is None:
@@ -220,8 +264,12 @@ def screen(
                 "Snapshot hard-filter waterfall: "
                 + _format_filter_waterfall(snapshot_waterfall)
             )
+    filter_started = perf_counter()
     df = apply_hard_filters(snapshot_df, snapshot_filters)
     after_filter_count = len(df)
+    record_stage("snapshot_filter", started=filter_started,
+                 input_count=len(snapshot_df), output_count=after_filter_count,
+                 excluded_count=len(snapshot_df) - after_filter_count)
     _emit_progress(
         progress_callback,
         42,
@@ -229,7 +277,7 @@ def screen(
     )
 
     if df.empty:
-        return ScreenResult(
+        return finish(ScreenResult(
             strategy=strategy,
             market=market,
             snapshot_count=snapshot_count,
@@ -245,10 +293,16 @@ def screen(
             daily_enriched=False,
             risk_enabled=config.risk_enabled,
             portfolio_diversity_enabled=config.portfolio_diversity_enabled,
-        )
+        ), "EMPTY_AFTER_SNAPSHOT_FILTER")
 
     daily_enriched = False
     daily_enrich_count = 0
+    daily_started = perf_counter()
+    daily_input_count = len(df)
+    record_stage("daily_enrichment", status="NOT_REQUESTED",
+                 input_count=daily_input_count, output_count=daily_input_count)
+    record_stage("daily_filter", status="NOT_REQUESTED",
+                 input_count=daily_input_count, output_count=daily_input_count)
     if daily_needed or daily_requested:
         provisional = _sort_screened_candidates(compute_screen_scores(df, screening), screening)
         enrich_count = min(daily_limit, len(provisional))
@@ -296,6 +350,14 @@ def screen(
                 sample = " | ".join(daily_errors[:5])
                 suffix = f" | +{len(daily_errors) - 5} more" if len(daily_errors) > 5 else ""
                 degradation.append(f"Daily K-line enrichment row errors: {sample}{suffix}")
+            record_stage(
+                "daily_enrichment", started=daily_started,
+                input_count=daily_input_count, output_count=len(enriched),
+                attempted_count=enrich_count, success_count=daily_enrich_count,
+                failure_count=max(0, enrich_count - daily_enrich_count),
+                budget_deferred_count=max(0, daily_input_count - enrich_count),
+            )
+            daily_filter_started = perf_counter()
             if daily_needed:
                 if explain_filters:
                     daily_waterfall = hard_filter_waterfall(enriched, screening.hard_filters)
@@ -318,16 +380,28 @@ def screen(
                     )
             else:
                 df = enriched
+            record_stage(
+                "daily_filter", started=daily_filter_started,
+                status="COMPLETED" if daily_needed else "NOT_REQUESTED",
+                input_count=len(enriched), output_count=len(df),
+                excluded_count=len(enriched) - len(df),
+            )
         except Exception as exc:
             if daily_needed:
                 raise RuntimeError(
                     "Daily K-line enrichment is required by this strategy but failed: "
                     f"{exc}"
                 ) from exc
+            record_stage("daily_enrichment", status="FAILED", started=daily_started,
+                         input_count=daily_input_count, output_count=None,
+                         attempted_count=enrich_count, success_count=0,
+                         failure_count=enrich_count,
+                         budget_deferred_count=max(0, daily_input_count - enrich_count),
+                         error_kind=type(exc).__name__)
             degradation.append(f"Daily K-line enrichment skipped: {exc}")
 
     if df.empty:
-        return ScreenResult(
+        return finish(ScreenResult(
             strategy=strategy,
             market=market,
             strategy_version=strat.version,
@@ -344,9 +418,10 @@ def screen(
             daily_enrich_count=daily_enrich_count,
             risk_enabled=config.risk_enabled,
             portfolio_diversity_enabled=config.portfolio_diversity_enabled,
-        )
+        ), "EMPTY_AFTER_DAILY_FILTER")
 
     # 4. Compute screen_score
+    shortlist_started = perf_counter()
     df = _sort_screened_candidates(compute_screen_scores(df, screening), screening)
 
     # 5. Take Top K for LLM ranking
@@ -476,6 +551,10 @@ def screen(
             p.rank = i + 1
             p.final_score = p.screen_score
 
+    record_stage("shortlist", started=shortlist_started,
+                 input_count=len(df), output_count=len(picks),
+                 budget_deferred_count=max(0, len(df) - top_k),
+                 llm_ranked=llm_ranked)
     # 8. Independent risk overlay
     if config.risk_enabled:
         picks, risk_degradation = apply_risk_overlay(
@@ -500,6 +579,8 @@ def screen(
     # 10. Selection variant application moved below so rotation occurs after
     # final post-analysis scoring. See PR feedback: preserve final-ranking invariants.
 
+    post_started = perf_counter()
+    post_input_count = len(picks)
     # 11. Optional L3 post-analysis, DSA is only one possible analyzer.
     if analyzer_names:
         _emit_progress(progress_callback, 82, "正在执行最终评分与风险校验")
@@ -535,6 +616,19 @@ def screen(
         )
         degradation.extend(post_degradation)
 
+    for pick in picks:
+        if "dsa" not in analyzer_names:
+            dsa_status_counts["not_requested"] += 1
+        else:
+            state = pick.post_analysis_status.get("dsa", "unknown")
+            dsa_status_counts[state if state in {"completed", "failed", "skipped"} else "unknown"] += 1
+    risk_excluded_count = sum(bool(pick.excluded_by_risk) for pick in picks)
+    record_stage("post_analysis", started=post_started,
+                 status="COMPLETED" if analyzer_names else "NOT_REQUESTED",
+                 input_count=post_input_count, output_count=len(picks))
+    selection_started = perf_counter()
+    selection_input_count = len(picks)
+
     # Apply selection variant after post-analyzers to ensure rotation respects
     # final_score adjustments made by L3 analyzers (e.g. scorecard/dsa).
     selection_variant = apply_seeded_selection_variant(
@@ -548,9 +642,11 @@ def screen(
         analyzer_names=analyzer_names,
     )
     picks = selection_variant.picks
+    record_stage("selection", started=selection_started,
+                 input_count=selection_input_count, output_count=len(picks))
     _emit_progress(progress_callback, 88, "选股核心流程完成")
 
-    return ScreenResult(
+    return finish(ScreenResult(
         strategy=strategy,
         market=market,
         strategy_version=strat.version,
@@ -583,7 +679,7 @@ def screen(
         result_variant_applied=selection_variant.applied,
         result_variant_pool_size=selection_variant.pool_size,
         result_variant_rotated_slots=selection_variant.rotated_slots,
-    )
+    ), "SELECTION_COMPLETED")
 
 
 def _emit_progress(

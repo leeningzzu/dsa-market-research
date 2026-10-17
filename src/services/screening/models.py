@@ -244,6 +244,8 @@ class ScreenResult:
     result_variant_rotated_slots: int = 0
     saved_path: str = ""
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    # Run-local execution metadata only; not source licensing or market labels.
+    execution_receipt: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

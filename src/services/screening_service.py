@@ -1273,6 +1273,7 @@ class ScreeningService:
             "snapshot_count": raw_data.get("snapshot_count"),
             "snapshot_source": raw_data.get("snapshot_source") or "",
             "after_filter_count": raw_data.get("after_filter_count"),
+            "execution_receipt": raw_data.get("execution_receipt") or {},
             "llm_ranked": raw_data.get("llm_ranked"),
             "llm_market_view": raw_data.get("llm_market_view") or "",
             "llm_selection_logic": raw_data.get("llm_selection_logic") or "",
@@ -2082,6 +2083,7 @@ def _resolve_auto_screen_bucket(
         "snapshot_count": raw_data.get("snapshot_count"),
         "snapshot_source": raw_data.get("snapshot_source") or "",
         "after_filter_count": raw_data.get("after_filter_count"),
+        "execution_receipt": raw_data.get("execution_receipt") or {},
         "ranking_mode": ranking_mode,
         "llm_ranked": False,
         "post_analyzers": post_analyzer_names,
@@ -2198,6 +2200,10 @@ def resolve_auto_screen_analysis_targets(
         "degradation": list(stock_bucket.get("degradation") or []),
         "etf_degradation": list(etf_bucket.get("degradation") or []),
         "stock_preferences": dict(stock_bucket.get("preference_diagnostics") or {}),
+        "execution_receipts": {
+            "stock": stock_bucket.get("execution_receipt") or {},
+            "etf": etf_bucket.get("execution_receipt") or {},
+        },
         "selected_candidates": selected,
         "production_boundary": {
             "llm_ranking": False,
