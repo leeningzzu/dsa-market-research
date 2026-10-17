@@ -3,6 +3,23 @@
   "baseline_id": "STOCK_DSA_GITHUB_7TF_FULL_PRODUCT_BASELINE_V1",
   "authority": "CI_DERIVED_GUARDRAIL_ONLY_NOT_RUNTIME_PROOF",
   "production_shell": "DSA/daily_stock_analysis",
+  "continuity_entrypoints": {
+    "agent_rules": "AGENTS.md#0-stock_dsa-连续实施入口",
+    "current_master_route": "docs/stock-dsa-roadmap.md#当前控制页总目标依赖图与退出条件2026-10-17",
+    "machine_guardrail": "docs/stock-dsa-stage-baseline-v1.json",
+    "exact_git_and_ci_recheck_required": true,
+    "feature_branch_plan_is_not_main_production": true
+  },
+  "runtime_method_window_readiness": {
+    "schema_version": "asset-timeframe-method-window-readiness-v1",
+    "first_vertical_slice": "MTF_MOMENTUM_CONTEXT_MACD_RSI",
+    "asset_routes": ["MARKET", "SECTOR", "ETF", "STOCK"],
+    "timeframes": ["monthly", "weekly", "daily", "60m", "30m", "15m", "5m"],
+    "fields": ["required_bars", "requested_bars", "returned_bars", "status", "reason", "consumer_path"],
+    "strategy_admitted": false,
+    "learning_admitted": false,
+    "storage_admitted": false
+  },
   "acceptance": {
     "state": "CANDIDATE_UNTIL_GITHUB_PR_CI_AND_EXPLICIT_MERGE",
     "remote_branch": "main",

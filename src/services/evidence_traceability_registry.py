@@ -209,6 +209,211 @@ def json_wire_equal(left: Any, right: Any) -> bool:
 def digest(value: Any) -> str:
     return sha256(canonical_json(value).encode("utf-8")).hexdigest()
 
+METHOD_WINDOW_READINESS_TRACE_VERSION = "asset-timeframe-method-window-readiness-v1"
+
+
+def compile_mtf_method_window_readiness_trace(
+    *,
+    asset_route: str,
+    instrument: str,
+    target_date: Any,
+    daily_window_plan: Any,
+    intraday_window_plan: Any,
+    multi_timeframe_structure_context: Any,
+) -> dict:
+    """Join existing acquisition plans with actual native MACD/RSI readiness.
+
+    This is a run-local trace projection, not a second planner, formula owner,
+    strategy score, data-rights grant, persistence permit, or learning label.
+    """
+
+    route = str(asset_route or "").strip().upper()
+    code = str(instrument or "").strip()
+    target = (
+        target_date.isoformat()
+        if hasattr(target_date, "isoformat")
+        else str(target_date or "").strip()
+    )
+    base = {
+        "schema_version": METHOD_WINDOW_READINESS_TRACE_VERSION,
+        "asset_route": route,
+        "instrument": code,
+        "target_date": target,
+        "status": "UNKNOWN",
+        "reason": "TRACE_INPUT_NOT_ADMITTED",
+        "rows": [],
+        "strategy_admitted": False,
+        "learning_admitted": False,
+        "storage_admitted": False,
+        "consumer_scope": (
+            "Factor.MTF",
+            "Registry.timeframe_family_matrix.MOMENTUM",
+            "Notification.seven_timeframe",
+        ),
+    }
+
+    def finish(document: dict) -> dict:
+        document = dict(document)
+        document["trace_hash"] = digest(document)
+        return document
+
+    if route not in {"MARKET", "SECTOR", "ETF", "STOCK"} or not code or not target:
+        return finish(base)
+    if not all(isinstance(value, Mapping) for value in (
+        daily_window_plan, intraday_window_plan, multi_timeframe_structure_context,
+    )):
+        return finish(base)
+    if str(multi_timeframe_structure_context.get("target_date") or "") != target:
+        return finish({**base, "reason": "TARGET_DATE_MISMATCH"})
+    if str(daily_window_plan.get("target_date") or "") != target:
+        return finish({**base, "reason": "DAILY_PLAN_TARGET_DATE_MISMATCH"})
+    plan_hash = str(daily_window_plan.get("plan_hash") or "")
+    if len(plan_hash) != 64:
+        return finish({**base, "reason": "DAILY_PLAN_IDENTITY_MISSING"})
+    plan_identity_keys = (
+        "version", "market", "target_date", "timeframe_required_bars",
+        "source_only_timeframe_required_bars", "method_required_bars",
+        "method_window_classes", "mtf_recursive_comparison_required_bars",
+        "mtf_recursive_calendar_status",
+    )
+    if digest({key: daily_window_plan.get(key) for key in plan_identity_keys}) != plan_hash:
+        return finish({**base, "reason": "DAILY_PLAN_HASH_MISMATCH"})
+
+    frames = multi_timeframe_structure_context.get("timeframes")
+    daily_frame_requirements = daily_window_plan.get("method_required_bars")
+    daily_requested = daily_window_plan.get("timeframe_required_bars")
+    recursive_requirements = daily_window_plan.get(
+        "mtf_recursive_comparison_required_bars"
+    )
+    recursive_plan_states = daily_window_plan.get("mtf_recursive_calendar_status")
+    minute_requirements = intraday_window_plan.get(
+        "method_required_bars_by_timeframe"
+    )
+    minute_sessions = intraday_window_plan.get("admission_sessions_by_timeframe")
+    bars_per_session = intraday_window_plan.get("bars_per_session")
+    if not all(isinstance(value, Mapping) for value in (
+        frames, daily_frame_requirements, daily_requested,
+        recursive_requirements, recursive_plan_states,
+        minute_requirements, minute_sessions, bars_per_session,
+    )):
+        return finish({**base, "reason": "PLAN_OR_RUNTIME_SHAPE_INVALID"})
+
+    component_fields = (
+        ("MACD_STARTUP_COMPARISON", "macd_startup_stability", "MACD"),
+        ("RSI_STARTUP_COMPARISON", "rsi_startup_stability", "RSI"),
+    )
+    rows = []
+    for timeframe in TIMEFRAMES:
+        frame = frames.get(timeframe)
+        if not isinstance(frame, Mapping):
+            frame = {}
+        returned = frame.get("observations")
+        returned_bars = (
+            returned if type(returned) is int and returned >= 0 else None
+        )
+        for component, field, daily_method in component_fields:
+            if timeframe in {"monthly", "weekly", "daily"}:
+                if timeframe == "daily":
+                    requirements = daily_frame_requirements.get("daily")
+                    required = (
+                        requirements.get(daily_method)
+                        if isinstance(requirements, Mapping)
+                        else None
+                    )
+                else:
+                    required = recursive_requirements.get(component)
+                requested = daily_requested.get(timeframe)
+                plan_states = recursive_plan_states.get(timeframe)
+                plan_state = (
+                    plan_states.get(component)
+                    if isinstance(plan_states, Mapping)
+                    else "ACQUISITION_PLANNED"
+                )
+            else:
+                requirements = minute_requirements.get(timeframe)
+                required = (
+                    requirements.get(component)
+                    if isinstance(requirements, Mapping)
+                    else None
+                )
+                sessions = minute_sessions.get(timeframe)
+                per_session = bars_per_session.get(timeframe)
+                requested = (
+                    sessions * per_session
+                    if type(sessions) is int and type(per_session) is int
+                    else None
+                )
+                plan_state = "ACQUISITION_PLANNED"
+
+            receipt = frame.get(field)
+            state = str((receipt or {}).get("status") or "MISSING")
+            if state not in {"READY", "PARTIAL", "MISSING", "UNKNOWN"}:
+                state = "UNKNOWN"
+            reason = str(
+                (receipt or {}).get("reason") or "METHOD_EXECUTION_RECEIPT_MISSING"
+            )
+            if not isinstance(receipt, Mapping):
+                state, reason = "MISSING", "METHOD_EXECUTION_RECEIPT_MISSING"
+            elif receipt.get("strategy_admitted") is not False or receipt.get(
+                "learning_admitted"
+            ) is not False:
+                state, reason = "UNKNOWN", "METHOD_RECEIPT_AUTHORITY_ESCALATION"
+            elif type(required) is int and receipt.get("required_observations") != required:
+                state, reason = "UNKNOWN", "METHOD_REQUIRED_BARS_MISMATCH"
+            elif type(returned_bars) is int and receipt.get("observations") != returned_bars:
+                state, reason = "UNKNOWN", "METHOD_OBSERVATION_COUNT_MISMATCH"
+            elif (
+                state == "READY"
+                and type(required) is int
+                and type(returned_bars) is int
+                and returned_bars < required
+            ):
+                state, reason = "UNKNOWN", "OBSERVATIONS_BELOW_REQUIRED_BARS"
+            rows.append({
+                "timeframe": timeframe,
+                "method_id": "MTF_MOMENTUM_CONTEXT",
+                "component": component,
+                "window_class": "RECURSIVE_WARMUP",
+                "required_bars": required,
+                "requested_bars": requested,
+                "returned_bars": returned_bars,
+                "acquisition_plan_status": plan_state,
+                "status": state,
+                "reason": reason,
+                "source_window_sufficient": bool(
+                    type(required) is int
+                    and type(returned_bars) is int
+                    and returned_bars >= required
+                ),
+                "consumer_path": (
+                    "multi_timeframe_structure_context.timeframes."
+                    f"{timeframe}.{field}"
+                ),
+                "confirmed_at": None,
+                "invalidation": None,
+                "independent_action_authority": False,
+                "strategy_admitted": False,
+                "learning_admitted": False,
+            })
+
+    states = [row["status"] for row in rows]
+    if rows and all(state == "READY" for state in states):
+        status, reason = "READY", "ALL_TRACED_COMPONENTS_READY"
+    elif any(state in {"READY", "PARTIAL"} for state in states):
+        status, reason = "PARTIAL", "MIXED_METHOD_WINDOW_READINESS"
+    elif any(state == "UNKNOWN" for state in states):
+        status, reason = "UNKNOWN", "METHOD_WINDOW_READINESS_UNKNOWN"
+    else:
+        status, reason = "MISSING", "METHOD_WINDOW_READINESS_MISSING"
+    return finish({
+        **base,
+        "status": status,
+        "reason": reason,
+        "daily_plan_hash": daily_window_plan["plan_hash"],
+        "intraday_plan_hash": digest(intraday_window_plan),
+        "rows": rows,
+    })
+
 
 def at(value: Any, path: str) -> Any:
     for key in path.split("."):

@@ -43,6 +43,19 @@ def test_stage_baseline_is_derived_from_the_existing_machine_graph() -> None:
 
     assert baseline["authority"] == "CI_DERIVED_GUARDRAIL_ONLY_NOT_RUNTIME_PROOF"
     assert baseline["production_shell"] == "DSA/daily_stock_analysis"
+    continuity = baseline["continuity_entrypoints"]
+    assert continuity["agent_rules"].startswith("AGENTS.md#0-")
+    assert continuity["current_master_route"].startswith("docs/stock-dsa-roadmap.md#")
+    assert continuity["exact_git_and_ci_recheck_required"] is True
+    assert continuity["feature_branch_plan_is_not_main_production"] is True
+    readiness = baseline["runtime_method_window_readiness"]
+    assert readiness["schema_version"] == "asset-timeframe-method-window-readiness-v1"
+    assert readiness["first_vertical_slice"] == "MTF_MOMENTUM_CONTEXT_MACD_RSI"
+    assert readiness["asset_routes"] == ["MARKET", "SECTOR", "ETF", "STOCK"]
+    assert readiness["timeframes"] == list(TIMEFRAMES)
+    assert readiness["strategy_admitted"] is False
+    assert readiness["learning_admitted"] is False
+    assert readiness["storage_admitted"] is False
     assert locked["accepted_machine_graph_sha256"] == ACCEPTED_DATA_OBJECT_GRAPH_SHA256
     assert locked["requirements"] == len(ACCEPTED_REQUIREMENT_ROLES) == 26
     assert locked["method_profiles"] == len(policy["methods"]) == 43

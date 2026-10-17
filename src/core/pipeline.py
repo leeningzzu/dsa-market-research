@@ -130,6 +130,7 @@ from src.services.intraday_bar_service import (
 from src.services.evidence_traceability_registry import (
     build_method_execution_receipt,
     compile_method_window_policy_view,
+    compile_mtf_method_window_readiness_trace,
 )
 from src.services.pit_identity import (
     build_completed_history_identity,
@@ -1293,6 +1294,7 @@ class StockAnalysisPipeline:
             trend_result: Optional[TrendAnalysisResult] = None
             canonical_trend_result: Optional[TrendAnalysisResult] = None
             completed_daily_history: Optional[pd.DataFrame] = None
+            daily_window_plan: Optional[Dict[str, Any]] = None
             try:
                 from src.services.history_loader import get_frozen_target_date
                 _mkt = get_market_for_stock(normalize_stock_code(code))
@@ -1409,6 +1411,16 @@ class StockAnalysisPipeline:
                 daily_price_structure_context=price_structure_context,
                 snapshot_observed_at=market_data_snapshot_observed_at,
                 intraday_timeframes=intraday_timeframes,
+            )
+            multi_timeframe_structure_context["method_window_readiness_trace"] = (
+                compile_mtf_method_window_readiness_trace(
+                    asset_route=receipt_asset_route,
+                    instrument=code,
+                    target_date=daily_market_target_date,
+                    daily_window_plan=daily_window_plan,
+                    intraday_window_plan=_current_intraday_window_plan(),
+                    multi_timeframe_structure_context=multi_timeframe_structure_context,
+                )
             )
             method_execution_receipts = self._build_direct_method_execution_receipts(
                 code=code,
