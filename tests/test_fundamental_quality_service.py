@@ -181,4 +181,3 @@ def test_later_observed_quality_admission_cannot_be_reused_for_earlier_research(
     assert result["status"] == "NOT_ADMITTED"
     assert "QUALITY_DATA_NOT_KNOWN_AT_ASOF" in result["reason_codes"]
     assert result["learning_admitted"] is False
-

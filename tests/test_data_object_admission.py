@@ -253,7 +253,3 @@ def test_same_day_completed_period_remains_valid_nontrigger():
     )
     assert result["product_admitted"] is True
     assert result["learning_admitted"] is False
-
-
-
-
