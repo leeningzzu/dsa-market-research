@@ -4,8 +4,8 @@
 The service reuses the existing daily history owner, StockTrendAnalyzer and
 confirmed daily Pivot/Swing owner. Weekly/monthly bars are deterministic OHLCV
 aggregates of completed daily bars. Optional canonical 5m/15m/30m/60m inputs
-may contribute descriptive Trend/MA/Volume/MACD/RSI context only; timestamp-aware
-intraday Price Structure/Pattern and independent action authority remain blocked.
+may contribute descriptive Trend/MA/Volume/MACD/RSI and confirmed-pivot context;
+intraday Pattern/Trigger and independent action authority remain blocked.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from datetime import date, datetime
 from hashlib import sha256
 import json
 import math
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Mapping, Optional
 
 import pandas as pd
 
@@ -31,7 +31,11 @@ from data_provider.intraday_data_identity import (
 )
 
 from src.core.trading_calendar import resolve_completed_timeframe_bar_date
-from src.services.intraday_bar_service import IntradayBarError, validate_complete_cn_5m_sessions
+from src.services.intraday_bar_service import (
+    IntradayBarError,
+    aggregate_completed_intraday_bars,
+    validate_complete_cn_5m_sessions,
+)
 
 from src.services.price_structure_service import (
     build_confirmed_intraday_structure_context,
@@ -108,12 +112,12 @@ _ROLE = {
 }
 
 INTRADAY_EVIDENCE_SCHEMA_VERSION = "intraday-timeframe-evidence-v1"
-INTRADAY_EVIDENCE_ALGORITHM_VERSION = "canonical-intraday-trend-ma-confirmed-60m-30m-structure-v3"
+INTRADAY_EVIDENCE_ALGORITHM_VERSION = "canonical-intraday-trend-ma-confirmed-7tf-structure-v4"
 _INTRADAY_EVIDENCE_CONFIG = {
     "schema_version": INTRADAY_EVIDENCE_SCHEMA_VERSION,
     "algorithm_version": INTRADAY_EVIDENCE_ALGORITHM_VERSION,
-    "admitted_methods": ["TREND", "MA", "VOLUME", "MACD", "RSI"],
-    "price_structure": "CONFIRMED_60M_BRIDGE_AND_30M_CONTEXT_ONLY",
+    "admitted_methods": ["TREND", "MA", "VOLUME", "MACD", "RSI", "PRICE_STRUCTURE"],
+    "price_structure": "CONFIRMED_60M_30M_15M_5M_CONTEXT_ONLY",
     "pattern_trigger": "NOT_ADMITTED",
     "independent_action_authority": False,
 }
@@ -410,21 +414,11 @@ def _build_intraday_timeframe(
     trend = _admitted_recursive_trend_projection(
         trend, macd_startup=macd_startup, rsi_startup=rsi_startup,
     )
-    price_structure = (
-        build_confirmed_intraday_structure_context(
-            analyzer_frame.assign(available_at=frame["available_at"]),
-            timeframe=key,
-        )
-        if key in {"60m", "30m"}
-        else {
-            "status": "MISSING",
-            "reason": "INTRADAY_PRICE_STRUCTURE_NOT_ADMITTED",
-            "summary": None,
-            "independent_action_authority": False,
-        }
+    price_structure = build_confirmed_intraday_structure_context(
+        analyzer_frame.assign(available_at=frame["available_at"]),
+        timeframe=key,
     )
-    if key in {"60m", "30m"}:
-        price_structure["intraday_identity_hash"] = identity["identity_hash"]
+    price_structure["intraday_identity_hash"] = identity["identity_hash"]
     ma_structure = build_ma_structure_evidence(
         analyzer_frame,
         timeframe=key,
@@ -450,14 +444,13 @@ def _build_intraday_timeframe(
             rsi_signal = str(trend.get("rsi_signal") or "").strip()
             if rsi_signal and rsi_signal != "数据不足":
                 summary = "；".join(item for item in (summary, rsi_signal) if item)
-    if key in {"60m", "30m"} and price_structure.get("status") == "READY":
+    if price_structure.get("status") == "READY":
         summary = "；".join(filter(None, (
-            summary, price_structure.get("summary"), f"{key}形态和独立交易触发尚未准入",
+            summary, price_structure.get("summary"),
+            f"{key}仅有确认结构上下文；形态和独立交易触发仍缺少可核依据",
         )))
-    elif summary and key in {"60m", "30m"}:
-        summary += f"；{key}尚无已确认枢轴，形态和交易触发仍未准入"
     elif summary:
-        summary += "；分钟价格结构/形态尚未准入"
+        summary += f"；{key}尚无已确认枢轴，形态和独立交易触发仍缺少可核依据"
 
     return {
         "schema_version": INTRADAY_EVIDENCE_SCHEMA_VERSION,
@@ -465,9 +458,8 @@ def _build_intraday_timeframe(
         "config_hash": INTRADAY_EVIDENCE_CONFIG_HASH,
         "status": "PARTIAL" if has_partial else "MISSING",
         "reason": (
-            ("INTRADAY_CONFIRMED_30M_STRUCTURE_CONTEXT_ONLY"
-             if key == "30m" else "INTRADAY_CONFIRMED_60M_BRIDGE_CONTEXT_ONLY")
-            if key in {"60m", "30m"} and price_structure.get("status") == "READY"
+            f"INTRADAY_CONFIRMED_{key.upper()}_STRUCTURE_CONTEXT_ONLY"
+            if price_structure.get("status") == "READY"
             else "INTRADAY_TREND_MA_PARTIAL_CURRENT"
             if has_partial
             else "INTRADAY_WARMUP_INSUFFICIENT"
@@ -686,6 +678,24 @@ def _ma_release_confirmation(
     return confirmed, structure_state or None, volume_status or None
 
 
+def _ma_cross_event_reader_label(value: Any) -> str:
+    """Translate one deterministic MA event code without changing its audit identity."""
+    event = str(value or "").strip()
+    parts = event.split("_")
+    if (
+        len(parts) == 4
+        and parts[0].startswith("MA")
+        and parts[1] == "CROSS"
+        and parts[2] in {"ABOVE", "BELOW"}
+        and parts[3].startswith("MA")
+        and parts[0][2:].isdigit()
+        and parts[3][2:].isdigit()
+    ):
+        direction = "上穿" if parts[2] == "ABOVE" else "下穿"
+        return f"{parts[0][2:]}期均线{direction}{parts[3][2:]}期均线"
+    return event
+
+
 def _ma_state_summary(evidence: Dict[str, Any]) -> Optional[str]:
     state = str(evidence.get("state") or "")
     ordering = str(evidence.get("ordering") or "MIXED")
@@ -707,7 +717,12 @@ def _ma_state_summary(evidence: Dict[str, Any]) -> Optional[str]:
     if state == "FAILED_RELEASE":
         return "此前均线释放未能延续，需等待新的结构确认"
     if evidence.get("cross_events"):
-        return f"均线发生{'/'.join(evidence['cross_events'])}，仅作趋势上下文，不单独构成方向确认"
+        reader_events = [
+            _ma_cross_event_reader_label(item)
+            for item in evidence["cross_events"]
+            if str(item or "").strip()
+        ]
+        return f"均线发生{'、'.join(reader_events)}，仅作趋势上下文，不单独构成方向确认"
     return None
 
 
@@ -1624,3 +1639,226 @@ def build_multi_timeframe_structure_context(
         if ready_high
         else False,
     }
+
+
+FORMAL_CN_MARKET_INDEX_7TF_SCHEMA_VERSION = "formal-cn-market-index-7tf-v1"
+
+
+def build_formal_cn_market_index_7tf_context(
+    *,
+    index_code: str,
+    daily_source_frame: Any,
+    five_minute_source_frame: Any,
+    target_date: date,
+    snapshot_observed_at: datetime,
+    trend_analyzer: Any,
+    daily_window_plan: Mapping[str, Any],
+    intraday_window_plan: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Bind one formal CN index to the existing 7TF method consumers.
+
+    The function is a thin run-local adapter over existing source validators,
+    aggregators, MTF and Registry owners. It does not create a proxy, storage
+    permission, strategy vote, PIT history or a second market-analysis shell.
+    """
+    from data_provider.baostock_fetcher import (
+        verify_cn_index_completed_close_source_frame,
+    )
+    from data_provider.cn_index_minute_source import (
+        verify_cn_index_completed_5m_source_frame,
+    )
+    from src.services.evidence_traceability_registry import (
+        compile_mtf_method_window_readiness_trace,
+        digest,
+    )
+
+    code = str(index_code or "").strip()
+    target = target_date.isoformat() if isinstance(target_date, date) else ""
+    base = {
+        "schema_version": FORMAL_CN_MARKET_INDEX_7TF_SCHEMA_VERSION,
+        "source_code": code,
+        "target_date": target,
+        "status": "UNKNOWN",
+        "reason": "FORMAL_MARKET_7TF_INPUT_NOT_ADMITTED",
+        "timeframes": {},
+        "method_window_readiness_trace": None,
+        "daily_source_observation": None,
+        "minute_source_observation": None,
+        "source_data_rights": "UNKNOWN",
+        "volume_unit": "UNKNOWN",
+        "amount_unit": "UNKNOWN",
+        "historical_pit_eligible": False,
+        "independent_source_value_admitted": False,
+        "strategy_upgrade_authority": False,
+        "storage_admitted": False,
+        "learning_admitted": False,
+    }
+
+    def finish(value: Dict[str, Any]) -> Dict[str, Any]:
+        result = dict(value)
+        result["context_hash"] = digest(result)
+        return result
+
+    if (
+        code not in {"sh.000001", "sh.000300"}
+        or not isinstance(target_date, date)
+        or not isinstance(snapshot_observed_at, datetime)
+        or snapshot_observed_at.tzinfo is None
+        or snapshot_observed_at.utcoffset() is None
+        or not isinstance(daily_window_plan, Mapping)
+        or not isinstance(intraday_window_plan, Mapping)
+    ):
+        return finish(base)
+
+    try:
+        daily_observation = verify_cn_index_completed_close_source_frame(
+            daily_source_frame, trade_date=target,
+        )
+        minute_observation = verify_cn_index_completed_5m_source_frame(
+            five_minute_source_frame, trade_date=target,
+        )
+        if (
+            daily_observation.get("source_code") != code
+            or minute_observation.get("source_code") != code
+        ):
+            raise ValueError("FORMAL_MARKET_INDEX_INSTRUMENT_MISMATCH")
+        for observation in (daily_observation, minute_observation):
+            observed = datetime.fromisoformat(str(observation.get("observed_at") or ""))
+            if (
+                observed.tzinfo is None
+                or observed.utcoffset() is None
+                or observed > snapshot_observed_at
+            ):
+                raise ValueError("FORMAL_MARKET_INDEX_OBSERVED_AFTER_SNAPSHOT")
+
+        history = daily_source_frame.copy()
+        history["date"] = pd.to_datetime(history["date"], errors="raise").dt.date
+        history["data_source"] = daily_observation["provider_identity"]
+        history = history.sort_values("date", kind="stable").reset_index(drop=True)
+        daily_trend_result = (
+            trend_analyzer.analyze(history.copy(), code)
+            if len(history) >= TREND_MIN_BARS
+            else None
+        )
+        daily_structure = build_price_structure_context(
+            stock_code=code,
+            history=history,
+            target_date=target_date,
+            market="cn",
+        )
+        intraday_timeframes: Dict[str, Any] = {
+            "5m": five_minute_source_frame,
+        }
+        for timeframe in ("15m", "30m", "60m"):
+            intraday_timeframes[timeframe] = aggregate_completed_intraday_bars(
+                five_minute_source_frame,
+                target_timeframe=timeframe,
+            )
+
+        mtf = build_multi_timeframe_structure_context(
+            stock_code=code,
+            history=history,
+            target_date=target_date,
+            market="cn",
+            trend_analyzer=trend_analyzer,
+            daily_trend_result=daily_trend_result,
+            daily_price_structure_context=daily_structure,
+            snapshot_observed_at=snapshot_observed_at,
+            intraday_timeframes=intraday_timeframes,
+        )
+        trace = compile_mtf_method_window_readiness_trace(
+            asset_route="MARKET",
+            instrument=code,
+            target_date=target_date,
+            daily_window_plan=daily_window_plan,
+            intraday_window_plan=intraday_window_plan,
+            multi_timeframe_structure_context=mtf,
+            formal_market_source_frames={
+                "daily": daily_source_frame,
+                **intraday_timeframes,
+            },
+        )
+        if trace.get("reason") == "FORMAL_MARKET_SOURCE_BINDING_INVALID":
+            raise ValueError("FORMAL_MARKET_SOURCE_BINDING_INVALID")
+
+        timeframe_projection = {}
+        for timeframe in ("monthly", "weekly", "daily", "60m", "30m", "15m", "5m"):
+            item = mtf.get("timeframes", {}).get(timeframe, {})
+            timeframe_projection[timeframe] = {
+                "status": item.get("status"),
+                "reason": item.get("reason"),
+                "observations": item.get("observations"),
+                "summary": item.get("summary"),
+                "completed_through": item.get("completed_through"),
+                "latest_bar_date": item.get("latest_bar_date"),
+                "latest_bar_end": item.get("latest_bar_end"),
+            }
+        return finish({
+            **base,
+            "status": trace.get("status") or "UNKNOWN",
+            "reason": trace.get("reason") or "METHOD_WINDOW_READINESS_UNKNOWN",
+            "timeframes": timeframe_projection,
+            "multi_timeframe_structure_context": mtf,
+            "method_window_readiness_trace": trace,
+            "daily_source_observation": daily_observation,
+            "minute_source_observation": minute_observation,
+        })
+    except (
+        ValueError, TypeError, KeyError, AttributeError, IndexError,
+        IntradayBarError,
+    ):
+        return finish({**base, "reason": "FORMAL_MARKET_SOURCE_BINDING_INVALID"})
+
+
+def verify_formal_cn_market_index_7tf_context(value: Any) -> Dict[str, Any]:
+    """Verify the same-run formal-index projection without upgrading its authority."""
+    from src.services.evidence_traceability_registry import digest
+
+    if not isinstance(value, Mapping):
+        raise ValueError("FORMAL_MARKET_7TF_CONTEXT_INVALID")
+    required = {
+        "schema_version", "source_code", "target_date", "status", "reason",
+        "timeframes", "multi_timeframe_structure_context",
+        "method_window_readiness_trace", "daily_source_observation",
+        "minute_source_observation", "source_data_rights", "volume_unit",
+        "amount_unit", "historical_pit_eligible",
+        "independent_source_value_admitted", "strategy_upgrade_authority",
+        "storage_admitted", "learning_admitted", "context_hash",
+    }
+    if set(value) != required:
+        raise ValueError("FORMAL_MARKET_7TF_CONTEXT_INVALID")
+    payload = {key: item for key, item in value.items() if key != "context_hash"}
+    if value.get("context_hash") != digest(payload):
+        raise ValueError("FORMAL_MARKET_7TF_CONTEXT_HASH_MISMATCH")
+    if (
+        value.get("schema_version") != FORMAL_CN_MARKET_INDEX_7TF_SCHEMA_VERSION
+        or value.get("source_code") not in {"sh.000001", "sh.000300"}
+        or value.get("source_data_rights") != "UNKNOWN"
+        or value.get("volume_unit") != "UNKNOWN"
+        or value.get("amount_unit") != "UNKNOWN"
+        or value.get("historical_pit_eligible") is not False
+        or value.get("independent_source_value_admitted") is not False
+        or value.get("strategy_upgrade_authority") is not False
+        or value.get("storage_admitted") is not False
+        or value.get("learning_admitted") is not False
+    ):
+        raise ValueError("FORMAL_MARKET_7TF_CONTEXT_AUTHORITY_INVALID")
+    mtf = value.get("multi_timeframe_structure_context")
+    trace = value.get("method_window_readiness_trace")
+    if (
+        not isinstance(mtf, Mapping)
+        or not isinstance(trace, Mapping)
+        or mtf.get("stock_code") != value.get("source_code")
+        or mtf.get("target_date") != value.get("target_date")
+        or trace.get("asset_route") != "MARKET"
+        or trace.get("instrument") != value.get("source_code")
+        or trace.get("target_date") != value.get("target_date")
+        or trace.get("strategy_admitted") is not False
+        or trace.get("learning_admitted") is not False
+        or trace.get("storage_admitted") is not False
+    ):
+        raise ValueError("FORMAL_MARKET_7TF_CONTEXT_BINDING_INVALID")
+    trace_payload = {key: item for key, item in trace.items() if key != "trace_hash"}
+    if trace.get("trace_hash") != digest(trace_payload):
+        raise ValueError("FORMAL_MARKET_7TF_TRACE_HASH_MISMATCH")
+    return dict(value)

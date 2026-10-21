@@ -11,6 +11,8 @@ Neither block represents actual holder acquisition records or institutional inte
 from __future__ import annotations
 
 from datetime import date
+from hashlib import sha256
+import json
 from typing import Any, Dict, Optional
 
 import pandas as pd
@@ -18,6 +20,18 @@ import pandas as pd
 
 COST_STRUCTURE_SCHEMA_VERSION = "cost-structure-v1"
 REFERENCE_WINDOWS = (20, 60)
+ALGORITHM_VERSION = "cost-structure-bar-reference-v1"
+_CONFIG = {
+    "algorithm_version": ALGORITHM_VERSION,
+    "reference_windows": REFERENCE_WINDOWS,
+    "bar_reference_method": "HLC3_VOLUME_WEIGHTED_COMPLETED_DAILY_BARS",
+    "provider_snapshot_authority": "CURRENT_ONLY",
+    "completed_bar_only": True,
+    "institutional_intent_inferred": False,
+}
+CONFIG_HASH = sha256(
+    json.dumps(_CONFIG, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+).hexdigest()
 
 
 def _safe_float(value: Any) -> Optional[float]:
@@ -252,6 +266,10 @@ def build_cost_structure_context(
             "schema_version": COST_STRUCTURE_SCHEMA_VERSION,
             "family": "cost_structure",
             "status": "UNKNOWN",
+            "completed_bar_only": True,
+            "algorithm_version": ALGORITHM_VERSION,
+            "config_hash": CONFIG_HASH,
+            "effective_parameters": dict(_CONFIG),
             "reason": "TARGET_DATE_UNKNOWN",
             "stock_code": stock_code,
             "market": str(market or "").lower() or None,
@@ -317,6 +335,9 @@ def build_cost_structure_context(
         "schema_version": COST_STRUCTURE_SCHEMA_VERSION,
         "family": "cost_structure",
         "status": status,
+        "algorithm_version": ALGORITHM_VERSION,
+        "config_hash": CONFIG_HASH,
+        "effective_parameters": dict(_CONFIG),
         "reason": reason,
         "stock_code": stock_code,
         "market": str(market or "").lower() or None,
