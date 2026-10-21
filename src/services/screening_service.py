@@ -3751,7 +3751,9 @@ def get_dsa_daily_history(stock_code: str, *, lookback_days: int = 120) -> Tuple
 
     normalized_code = _env_text(stock_code).zfill(6)
     days = max(int(lookback_days or 0), 30)
-    return load_history_df(normalized_code, days=days)
+    return load_history_df(
+        normalized_code, days=days, require_verified_identity=True,
+    )
 
 
 def _normalize_dsa_daily_history(raw_df: Any) -> Any:
