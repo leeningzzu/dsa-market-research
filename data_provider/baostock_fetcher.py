@@ -350,6 +350,7 @@ class BaostockFetcher(BaseFetcher):
                     volume_unit="share",
                     amount_unit="CNY",
                     identity_state="OBSERVED",
+                    instrument=stock_code,
                 )
                 attach_daily_data_identity(df, identity)
                 

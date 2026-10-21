@@ -20,7 +20,9 @@ from data_provider.daily_data_identity import (
     DailyDataIdentityError,
     attach_daily_data_identity,
     extract_daily_data_identity,
+    extract_daily_data_identity_from_records,
     rebind_daily_data_identity,
+    verify_observed_daily_frame_request,
 )
 
 logger = logging.getLogger(__name__)
@@ -130,16 +132,128 @@ def _select_best_bars(db, stock_code: str, start: date, end: date) -> Tuple[Opti
     return best_code, best_bars
 
 
+def _row_record(row: Any) -> dict:
+    if hasattr(row, "to_dict"):
+        value = row.to_dict()
+        return dict(value) if isinstance(value, dict) else {}
+    return {
+        key: getattr(row, key, None)
+        for key in (
+            "code", "date", "open", "high", "low", "close", "volume",
+            "amount", "pct_chg", "ma5", "ma10", "ma20", "volume_ratio",
+            "data_source", "data_identity_json", "data_identity_hash",
+        )
+    }
+
+
+def _load_verified_cache_for_calculation(
+    db: Any,
+    stock_code: str,
+    start: date,
+    end: date,
+    required_records: int,
+) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
+    """Admit only content-bound typed DB history for calculations/ranking."""
+    from data_provider.base import normalize_stock_code
+
+    candidates, normalized_code = _history_code_candidates(stock_code)
+    requested_key = normalize_stock_code(stock_code)
+    best = None
+    best_key = None
+    for candidate in candidates:
+        try:
+            rows = list(db.get_data_range(candidate, start, end) or [])
+            if not rows:
+                continue
+            records = [_row_record(row) for row in rows]
+            identity = extract_daily_data_identity_from_records(records, strict=True)
+            if (
+                identity is None
+                or identity.get("identity_state") != "OBSERVED"
+                or normalize_stock_code(str(identity.get("instrument") or ""))
+                != requested_key
+                or identity.get("returned_end") != end.isoformat()
+            ):
+                continue
+            origin_start = date.fromisoformat(str(identity.get("returned_start") or ""))
+            origin_end = date.fromisoformat(str(identity.get("returned_end") or ""))
+            if origin_end != end:
+                continue
+            full_rows = (
+                rows
+                if origin_start >= start
+                else list(db.get_data_range(candidate, origin_start, origin_end) or [])
+            )
+            if not full_rows:
+                continue
+            full_records = [_row_record(row) for row in full_rows]
+            if any(
+                normalize_stock_code(str(record.get("code") or candidate))
+                != requested_key
+                for record in full_records
+            ):
+                continue
+            full_frame = pd.DataFrame(full_records)
+            verify_observed_daily_frame_request(
+                full_frame,
+                instrument=stock_code,
+                provider_identity=identity.get("provider_identity"),
+                requested_start=identity.get("requested_start"),
+                requested_end=identity.get("requested_end"),
+                target_date=origin_end,
+            )
+            dates = pd.to_datetime(full_frame["date"], errors="coerce")
+            if dates.isna().any():
+                continue
+            selected = full_frame.loc[
+                dates.dt.date.between(start, end)
+            ].copy()
+            selected_dates = pd.to_datetime(
+                selected["date"], errors="coerce",
+            ).dt.date
+            if (
+                selected.empty
+                or selected_dates.isna().any()
+                or max(selected_dates) != end
+                or len(selected) < required_records
+            ):
+                continue
+            selected.drop(
+                columns=["data_identity_json", "data_identity_hash"],
+                errors="ignore",
+                inplace=True,
+            )
+            view_identity = rebind_daily_data_identity(identity, selected)
+            attach_daily_data_identity(selected, view_identity)
+            key = (len(selected), candidate == normalized_code)
+            if best_key is None or key > best_key:
+                best_key = key
+                best = (selected, candidate)
+        except (
+            DailyDataIdentityError, ValueError, TypeError, KeyError,
+            AttributeError, IndexError,
+        ):
+            continue
+    return best if best is not None else (None, None)
+
+
 def load_history_df(
     stock_code: str,
     days: int = 60,
     target_date: Optional[date] = None,
+    *,
+    require_verified_identity: bool = False,
 ) -> Tuple[Optional[pd.DataFrame], str]:
     """Load K-line history, DB first with DataFetcherManager fallback.
 
     Returns ``(df, source)`` where *source* is ``"db_cache"`` on DB hit or the
     actual provider name on network fallback.  Returns ``(None, "none")`` when
     both paths fail.
+
+    ``require_verified_identity=True`` is mandatory for any consumer that can
+    rank, calculate indicators, or affect the canonical. It rejects legacy
+    date-only caches and unbound provider frames while preserving the default
+    compatibility path for raw data viewing only.
     """
     from src.storage import get_db
 
@@ -156,19 +270,30 @@ def load_history_df(
     # --- 1. DB lookup (canonical code, then prefix-stripped fallback) ------
     try:
         db = get_db()
-        _code, bars = _select_best_bars(db, stock_code, start, end)
         required_records = max(min(days, _CACHE_MIN_RECORDS), 1)
-        latest_date = max((_bar_date(bar) for bar in bars), default=date.min)
-        if bars and latest_date >= end and len(bars) >= required_records:
-            df = pd.DataFrame([b.to_dict() for b in bars])
-            identity = extract_daily_data_identity(df, strict=False)
-            if identity is not None:
-                attach_daily_data_identity(df, rebind_daily_data_identity(identity, df))
-            logger.debug(
-                "load_history_df(%s): %d bars from DB (requested %d)",
-                stock_code, len(df), days,
+        if require_verified_identity:
+            df, _code = _load_verified_cache_for_calculation(
+                db, stock_code, start, end, required_records,
             )
-            return df, "db_cache"
+            if df is not None:
+                logger.debug(
+                    "load_history_df(%s): %d verified bars from DB (requested %d)",
+                    stock_code, len(df), days,
+                )
+                return df, "db_cache"
+        else:
+            _code, bars = _select_best_bars(db, stock_code, start, end)
+            latest_date = max((_bar_date(bar) for bar in bars), default=date.min)
+            if bars and latest_date >= end and len(bars) >= required_records:
+                df = pd.DataFrame([b.to_dict() for b in bars])
+                identity = extract_daily_data_identity(df, strict=False)
+                if identity is not None:
+                    attach_daily_data_identity(df, rebind_daily_data_identity(identity, df))
+                logger.debug(
+                    "load_history_df(%s): %d bars from DB (requested %d)",
+                    stock_code, len(df), days,
+                )
+                return df, "db_cache"
     except Exception as e:
         logger.debug("load_history_df(%s): DB read failed: %s", stock_code, e)
 
@@ -196,6 +321,15 @@ def load_history_df(
 
             try:
                 identity = extract_daily_data_identity(df, strict=True)
+                if require_verified_identity:
+                    verify_observed_daily_frame_request(
+                        df,
+                        instrument=stock_code,
+                        provider_identity=source,
+                        requested_start=start,
+                        requested_end=end,
+                        target_date=end,
+                    )
             except DailyDataIdentityError as exc:
                 logger.warning(
                     "load_history_df(%s): provider %s returned malformed daily identity: %s",

@@ -8,7 +8,7 @@ only observed response/query evidence may prove an adjustment basis.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import hashlib
 import json
 import math
@@ -19,6 +19,8 @@ import pandas as pd
 
 DAILY_DATA_IDENTITY_SCHEMA_VERSION = "daily-data-identity-v1"
 DAILY_DATA_IDENTITY_FRAME_ATTR = "daily_data_identity"
+DAILY_ACQUISITION_RECEIPT_SCHEMA_VERSION = "dsa-daily-acquisition-v1"
+DAILY_ACQUISITION_RECEIPT_FRAME_ATTR = "dsa_daily_acquisition_receipt"
 
 _IDENTITY_STATES = frozenset({"OBSERVED", "UNCLASSIFIED"})
 _ADJUSTMENT_BASES = frozenset({"raw", "qfq", "hfq", "total_return"})
@@ -61,6 +63,7 @@ def build_daily_data_identity(
     identity_state: str,
     observed_at: Optional[datetime] = None,
     raw_response_sha256: Optional[str] = None,
+    instrument: Optional[str] = None,
 ) -> dict[str, Any]:
     returned_start, returned_end = _returned_range(frame)
     content_payload = _frame_content_payload(frame)
@@ -69,6 +72,7 @@ def build_daily_data_identity(
         "identity_state": str(identity_state or "").strip().upper(),
         "provider_identity": str(provider_identity or "").strip(),
         "provider_route": str(provider_route or "").strip(),
+        "instrument": _instrument_text(instrument),
         "actual_response_branch": str(actual_response_branch or "").strip(),
         "requested_adjustment_basis": _basis(requested_adjustment_basis),
         "observed_adjustment_basis": _basis(observed_adjustment_basis),
@@ -98,6 +102,7 @@ def build_unclassified_daily_data_identity(
     requested_start: Optional[str],
     requested_end: Optional[str],
     actual_response_branch: str = "UNOBSERVED",
+    instrument: Optional[str] = None,
 ) -> dict[str, Any]:
     return build_daily_data_identity(
         frame,
@@ -113,6 +118,7 @@ def build_unclassified_daily_data_identity(
         volume_unit="UNKNOWN",
         amount_unit="UNKNOWN",
         identity_state="UNCLASSIFIED",
+        instrument=instrument,
     )
 
 
@@ -172,6 +178,8 @@ def validate_daily_data_identity(value: Any) -> dict[str, Any]:
     payload["returned_end"] = end
     payload["requested_start"] = _date_text(payload.get("requested_start"))
     payload["requested_end"] = _date_text(payload.get("requested_end"))
+    if "instrument" in payload:
+        payload["instrument"] = _instrument_text(payload.get("instrument"))
     if payload["requested_start"] and payload["requested_end"] and payload["requested_start"] > payload["requested_end"]:
         raise DailyDataIdentityError("requested date range is reversed")
     if _identity_hash(payload) != payload.get("identity_hash"):
@@ -280,6 +288,160 @@ def verified_observed_daily_frame_provider(frame: Any) -> Optional[str]:
     return provider
 
 
+def verify_observed_daily_frame_request(
+    frame: Any,
+    *,
+    instrument: str,
+    provider_identity: Optional[str],
+    requested_start: Optional[Any],
+    requested_end: Optional[Any],
+    target_date: Any,
+    observed_at_ceiling: Optional[datetime] = None,
+) -> dict[str, Any]:
+    """Bind one OBSERVED daily response to the exact request and content bytes.
+
+    This is an admission check for run-local research only. It does not grant
+    storage, redistribution, historical-PIT or training rights.
+    """
+    if not isinstance(frame, pd.DataFrame) or frame.empty or "date" not in frame.columns:
+        raise DailyDataIdentityError("daily response frame is empty or undated")
+    identity = extract_daily_data_identity(frame, strict=True)
+    if identity is None or identity.get("identity_state") != "OBSERVED":
+        raise DailyDataIdentityError("daily response requires an OBSERVED identity")
+    verified_provider = verified_observed_daily_frame_provider(frame)
+    if verified_provider is None:
+        raise DailyDataIdentityError("daily response content identity is invalid")
+    if provider_identity and _provider_key(verified_provider) != _provider_key(provider_identity):
+        raise DailyDataIdentityError("daily response provider does not match selected fetcher")
+    requested_instrument = _instrument_text(instrument)
+    if not requested_instrument or _instrument_text(identity.get("instrument")) != requested_instrument:
+        raise DailyDataIdentityError("daily response instrument does not match request")
+    expected_start = _date_text(requested_start)
+    expected_end = _date_text(requested_end)
+    if identity.get("requested_start") != expected_start or identity.get("requested_end") != expected_end:
+        raise DailyDataIdentityError("daily response request range does not match dispatch")
+    if (
+        identity.get("requested_adjustment_basis")
+        and identity.get("requested_adjustment_basis") != identity.get("observed_adjustment_basis")
+    ):
+        raise DailyDataIdentityError("daily response adjustment basis does not match request")
+    target = _date_text(target_date)
+    if not target:
+        raise DailyDataIdentityError("daily response target date is invalid")
+    dates = pd.to_datetime(frame["date"], errors="coerce")
+    if dates.isna().any():
+        raise DailyDataIdentityError("daily response contains an invalid date")
+    normalized_dates = [value.date() for value in dates]
+    if len(set(normalized_dates)) != len(normalized_dates):
+        raise DailyDataIdentityError("daily response contains duplicate dates")
+    if max(normalized_dates).isoformat() != target:
+        raise DailyDataIdentityError("daily response does not end at the requested target")
+    if any(value.isoformat() > target for value in normalized_dates):
+        raise DailyDataIdentityError("daily response contains a future bar")
+    if (
+        identity.get("returned_start") != min(normalized_dates).isoformat()
+        or identity.get("returned_end") != max(normalized_dates).isoformat()
+        or identity.get("row_count") != len(frame)
+    ):
+        raise DailyDataIdentityError("daily response returned range/count is inconsistent")
+    observed_at = _utc_datetime(identity.get("observed_at"))
+    ceiling = observed_at_ceiling or datetime.now(timezone.utc)
+    if ceiling.tzinfo is None or ceiling.utcoffset() is None:
+        ceiling = ceiling.replace(tzinfo=timezone.utc)
+    else:
+        ceiling = ceiling.astimezone(timezone.utc)
+    if observed_at is None or observed_at > ceiling + timedelta(minutes=1):
+        raise DailyDataIdentityError("daily response observation time is in the future")
+    return identity
+
+
+def seal_daily_acquisition_receipt(value: Mapping[str, Any]) -> dict[str, Any]:
+    payload = dict(value)
+    payload.pop("receipt_hash", None)
+    payload["receipt_hash"] = sha256_payload(payload)
+    return validate_daily_acquisition_receipt(payload)
+
+
+def validate_daily_acquisition_receipt(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise DailyDataIdentityError("daily acquisition receipt must be an object")
+    payload = json.loads(canonical_json(dict(value)))
+    if payload.get("schema_version") != DAILY_ACQUISITION_RECEIPT_SCHEMA_VERSION:
+        raise DailyDataIdentityError("daily acquisition receipt schema_version mismatch")
+    mode = str(payload.get("acquisition_mode") or "").strip().upper()
+    if mode not in {"VERIFIED_PROVIDER_CALL", "VERIFIED_CACHE_HIT"}:
+        raise DailyDataIdentityError("daily acquisition mode is invalid")
+    payload["acquisition_mode"] = mode
+    instrument = _instrument_text(payload.get("instrument"))
+    if not instrument:
+        raise DailyDataIdentityError("daily acquisition instrument is missing")
+    payload["instrument"] = instrument
+    for key in (
+        "caller", "asset_route", "market", "target_date", "provider_identity",
+        "provider_route", "source_identity_hash", "request_evidence_status",
+        "returned_start", "returned_end", "persistence_status", "actual_consumer",
+        "receipt_hash",
+    ):
+        if not str(payload.get(key) or "").strip():
+            raise DailyDataIdentityError(f"daily acquisition receipt missing {key}")
+    if not _is_sha256(payload.get("source_identity_hash")) or not _is_sha256(payload.get("receipt_hash")):
+        raise DailyDataIdentityError("daily acquisition hashes must be exact 64-hex")
+    for key in ("returned_base_bars", "admitted_base_bars", "provider_method_call_count"):
+        item = payload.get(key)
+        if isinstance(item, bool) or not isinstance(item, int) or item < 0:
+            raise DailyDataIdentityError(f"daily acquisition {key} must be a non-negative integer")
+    if payload["admitted_base_bars"] > payload["returned_base_bars"]:
+        raise DailyDataIdentityError("daily acquisition admitted bars exceed returned bars")
+    if payload.get("provider_http_request_count") is not None:
+        raise DailyDataIdentityError("daily acquisition cannot infer provider HTTP request count")
+    requested_count = payload.get("requested_session_count")
+    if mode == "VERIFIED_PROVIDER_CALL":
+        if (
+            payload.get("request_evidence_status") != "VERIFIED_PROVIDER_CALL"
+            or payload.get("provider_method_call_count") != 1
+            or isinstance(requested_count, bool)
+            or not isinstance(requested_count, int)
+            or requested_count <= 0
+            or not payload.get("actual_request_start")
+            or not payload.get("actual_request_end")
+            or payload.get("cache_lookup_start") is not None
+            or payload.get("cache_lookup_end") is not None
+        ):
+            raise DailyDataIdentityError("daily provider-call receipt is inconsistent")
+    else:
+        if (
+            payload.get("request_evidence_status") != "VERIFIED_LAWFUL_CACHE_HIT"
+            or payload.get("provider_method_call_count") != 0
+            or requested_count is not None
+            or payload.get("actual_request_start") is not None
+            or payload.get("actual_request_end") is not None
+            or not payload.get("cache_lookup_start")
+            or not payload.get("cache_lookup_end")
+        ):
+            raise DailyDataIdentityError("daily cache-hit receipt is inconsistent")
+    expected_hash = sha256_payload({key: item for key, item in payload.items() if key != "receipt_hash"})
+    if payload.get("receipt_hash") != expected_hash:
+        raise DailyDataIdentityError("daily acquisition receipt hash mismatch")
+    return payload
+
+
+def attach_daily_acquisition_receipt(frame: pd.DataFrame, receipt: Any) -> pd.DataFrame:
+    frame.attrs[DAILY_ACQUISITION_RECEIPT_FRAME_ATTR] = validate_daily_acquisition_receipt(receipt)
+    return frame
+
+
+def extract_daily_acquisition_receipt(frame: Any, *, strict: bool = False) -> Optional[dict[str, Any]]:
+    try:
+        if not isinstance(frame, pd.DataFrame):
+            return None
+        value = frame.attrs.get(DAILY_ACQUISITION_RECEIPT_FRAME_ATTR)
+        return None if value is None else validate_daily_acquisition_receipt(value)
+    except (DailyDataIdentityError, TypeError, ValueError, json.JSONDecodeError):
+        if strict:
+            raise
+        return None
+
+
 def extract_daily_data_identity_from_records(
     records: Sequence[Any],
     *,
@@ -336,6 +498,7 @@ def ensure_daily_data_identity(
     provider_route: str,
     requested_start: Optional[str],
     requested_end: Optional[str],
+    instrument: Optional[str] = None,
 ) -> dict[str, Any]:
     identity = extract_daily_data_identity(frame, strict=True)
     if identity is None:
@@ -345,9 +508,19 @@ def ensure_daily_data_identity(
             provider_route=provider_route,
             requested_start=requested_start,
             requested_end=requested_end,
+            instrument=instrument,
         )
     if _provider_key(identity.get("provider_identity")) != _provider_key(provider_identity):
         raise DailyDataIdentityError("daily data identity provider does not match selected fetcher")
+    requested_instrument = _instrument_text(instrument)
+    if requested_instrument:
+        claimed_instrument = _instrument_text(identity.get("instrument"))
+        if not claimed_instrument or claimed_instrument != requested_instrument:
+            raise DailyDataIdentityError("daily data identity instrument does not match request")
+    if identity.get("requested_start") != _date_text(requested_start):
+        raise DailyDataIdentityError("daily data identity requested_start does not match request")
+    if identity.get("requested_end") != _date_text(requested_end):
+        raise DailyDataIdentityError("daily data identity requested_end does not match request")
     identity = rebind_daily_data_identity(identity, frame)
     attach_daily_data_identity(frame, identity)
     return identity
@@ -407,6 +580,30 @@ def _basis(value: Any) -> Optional[str]:
 
 def _provider_key(value: Any) -> str:
     return str(value or "").strip().lower()
+
+
+def _instrument_text(value: Any) -> Optional[str]:
+    text = str(value or "").strip().upper()
+    if not text:
+        return None
+    if len(text) == 8 and text[:2] in {"SH", "SZ", "BJ"} and text[2:].isdigit():
+        return text[2:]
+    if len(text) == 9 and text[6:] in {".SH", ".SZ", ".BJ"} and text[:6].isdigit():
+        return text[:6]
+    return text
+
+
+def _utc_datetime(value: Any) -> Optional[datetime]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _date_text(value: Any) -> Optional[str]:

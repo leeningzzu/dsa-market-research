@@ -175,8 +175,11 @@ def build_completed_history_identity(
         "price_identity_reasons": reasons,
     }
     if observed_utc is not None:
-        result["snapshot_observed_at"] = observed_utc.isoformat()
-        result["available_at_max"] = observed_utc.isoformat()
+        # Internal comparison uses naive UTC; the public carrier must retain
+        # its explicit UTC offset so the actual send guard never guesses a zone.
+        observed_wire = observed_utc.replace(tzinfo=timezone.utc).isoformat()
+        result["snapshot_observed_at"] = observed_wire
+        result["available_at_max"] = observed_wire
     return result
 
 
@@ -351,9 +354,12 @@ def build_auto_screen_selection_context(provenance: Any) -> Dict[str, Any]:
                     "product_group",
                     "asset_type",
                     "code",
+                    "name",
                     "score",
                     "screen_score",
+                    "reason",
                     "risk_level",
+                    "risk_flags",
                     "industry",
                     "listing_market",
                     "listing_board",
