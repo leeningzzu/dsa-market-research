@@ -12,6 +12,81 @@ from __future__ import annotations
 import re
 from typing import Dict, Tuple
 
+# Reviewed product identities, not a market-data/rights registry. Only these
+# qualified plain CN equity-index ETFs enter the CURRENT own-price route.
+# Other funds remain unqualified; a prefix/name is never positive admission.
+CN_ETF_PRICE_PROFILES = {
+    "510300": {
+        "listing_exchange": "SH", "benchmark": "CSI300",
+        "fund_name": "华泰柏瑞沪深300交易型开放式指数证券投资基金",
+        "evidence": "https://etf.sse.com.cn/disclosure/ssenotice/c/c_20250731_10787133.shtml",
+    },
+    "159919": {
+        "listing_exchange": "SZ", "benchmark": "CSI300",
+        "fund_name": "嘉实沪深300交易型开放式指数证券投资基金",
+        "evidence": "https://www.szse.cn/disclosure/notice/fund/t20120327_516273.html",
+        "exposure_evidence": "https://www.jsfund.cn/main/fund/159919/fundNav.shtml",
+    },
+}
+CN_PRICE_ASSET_ADMISSION_VERSION = "cn-own-price-asset-admission-v1"
+
+
+def resolve_cn_price_asset(stock_code: str) -> dict:
+    """Resolve venue BEFORE stripping a symbol; never rename an index as ETF.
+
+    This code-owned qualification covers own traded prices only. It does not
+    qualify a market/sector proxy, NAV, units, liquidity, rights, PIT or a BUY.
+    Adding a fund requires reviewed product facts in this existing mapping.
+    Foreign symbols keep their existing separate owner/route.
+    """
+    import hashlib
+    import json
+
+    raw = str(stock_code or "").strip().upper()
+    match = re.fullmatch(r"(?:(SH|SS|SZ|BJ)\.?)?(\d{6})(?:\.(SH|SS|SZ|BJ))?", raw)
+    result = {
+        "schema_version": CN_PRICE_ASSET_ADMISSION_VERSION,
+        "instrument": raw, "market": None, "asset_route": "UNKNOWN",
+        "status": "NOT_ADMITTED", "reason": "NOT_CN_SYMBOL",
+        "scope": "CURRENT_OWN_TRADED_PRICE_RESEARCH_ONLY",
+        "proxy_admitted": False, "strategy_admitted": False,
+        "storage_admitted": False, "historical_pit_admitted": False,
+        "learning_admitted": False,
+    }
+    if match:
+        prefix, code, suffix = match.groups()
+        prefix = "SH" if prefix == "SS" else prefix
+        suffix = "SH" if suffix == "SS" else suffix
+        venue = prefix or suffix
+        result.update(instrument=code, market="cn")
+        if prefix and suffix and prefix != suffix:
+            result["reason"] = "CONFLICTING_EXCHANGE_QUALIFIERS"
+        elif (venue == "SH" and code.startswith("000")) or code.startswith("399"):
+            result.update(asset_route="MARKET", reason="FORMAL_INDEX_REQUIRES_MARKET_OWNER")
+        elif code.startswith(("51", "52", "56", "58", "15", "16", "18")):
+            result.update(asset_route="ETF", reason="ETF_PRODUCT_PROFILE_NOT_QUALIFIED")
+            profile = CN_ETF_PRICE_PROFILES.get(code)
+            if profile:
+                if venue and venue != profile["listing_exchange"]:
+                    result["reason"] = "ETF_LISTING_EXCHANGE_MISMATCH"
+                else:
+                    result.update(
+                        status="ADMITTED", reason="REVIEWED_CN_EQUITY_INDEX_ETF_OWN_PRICE",
+                        product_profile={**profile, "underlying_market": "CN_A_SHARES",
+                                         "product_kind": "PLAIN_EQUITY_INDEX_ETF",
+                                         "currency": "CNY",
+                                         "reviewed_on": "2026-10-17"},
+                    )
+        else:
+            # Preserve the existing stock route; this is not a new listing or
+            # trade-eligibility check for ordinary stock symbols.
+            result.update(asset_route="STOCK", status="ADMITTED", reason="EXISTING_CN_STOCK_ROUTE")
+    result["admission_hash"] = hashlib.sha256(
+        json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return result
+
+
 # Stock code -> name mapping (common stocks)
 STOCK_NAME_MAP = {
     # === A-shares ===
