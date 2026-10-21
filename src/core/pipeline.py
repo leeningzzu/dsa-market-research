@@ -18,6 +18,7 @@ import inspect
 import threading
 import time
 import uuid
+from copy import deepcopy
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta, timezone
@@ -30,6 +31,18 @@ from src.config import FUNDAMENTAL_STAGE_TIMEOUT_SECONDS_DEFAULT, get_config, Co
 from src.storage import get_db
 from data_provider import DataFetcherManager
 from data_provider.base import is_bse_code, normalize_stock_code
+from src.data.stock_mapping import resolve_cn_price_asset
+
+from data_provider.daily_data_identity import (
+    DAILY_ACQUISITION_RECEIPT_SCHEMA_VERSION,
+    DailyDataIdentityError,
+    attach_daily_acquisition_receipt,
+    attach_daily_data_identity,
+    extract_daily_data_identity_from_records,
+    rebind_daily_data_identity,
+    seal_daily_acquisition_receipt,
+    verify_observed_daily_frame_request,
+)
 from data_provider.us_index_mapping import is_us_index_code
 from data_provider.realtime_types import ChipDistribution
 from src.analyzer import (
@@ -103,6 +116,8 @@ from src.services.volatility_momentum_service import (
     atr_startup_comparison_required_bars,
 )
 from src.services.pattern_trigger_service import build_pattern_trigger_context
+from src.services.business_valuation_service import compile_business_valuation
+from src.services.fundamental_quality_service import compile_fundamental_quality
 from src.services.pattern_trigger_service import (
     CUP_MAX_DURATION_SESSIONS,
     DOUBLE_BOTTOM_MAX_SEPARATION_SESSIONS,
@@ -171,6 +186,7 @@ from src.core.trading_calendar import (
     resolve_forward_sessions_fail_closed,
     resolve_latest_completed_session_fail_closed,
     resolve_required_daily_history_start_fail_closed,
+    resolve_session_range_fail_closed,
     is_market_open,
 )
 from data_provider.us_index_mapping import is_us_stock_code
@@ -462,6 +478,173 @@ def _next_bounded_monthly_macd_window(
     }
 
 
+def _daily_row_record(row: Any) -> Dict[str, Any]:
+    to_dict = getattr(row, "to_dict", None)
+    if callable(to_dict):
+        value = to_dict()
+        return dict(value) if isinstance(value, Mapping) else {}
+    return {
+        key: getattr(row, key, None)
+        for key in (
+            "code", "date", "open", "high", "low", "close", "volume",
+            "amount", "pct_chg", "ma5", "ma10", "ma20", "volume_ratio",
+            "data_source", "data_identity_json", "data_identity_hash",
+        )
+    }
+
+
+def _daily_observation_ceiling(current_time: Optional[datetime]) -> datetime:
+    value = current_time or datetime.now(timezone.utc)
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _load_verified_cached_daily_history(
+    *,
+    db: Any,
+    code: str,
+    market: Optional[str],
+    target_date: date,
+    window_plan: Mapping[str, Any],
+    current_time: Optional[datetime] = None,
+) -> Optional[pd.DataFrame]:
+    """Return a content-bound current daily cache view or fail closed.
+
+    Date coverage alone is never sufficient. The original persisted response is
+    reconstructed and verified before a bounded run-local view is admitted.
+    This read proves neither vendor storage rights nor historical PIT.
+    """
+    start = window_plan.get("start_date")
+    asset_admission = resolve_cn_price_asset(code)
+    if str(market or "").lower() == "cn" and asset_admission["status"] != "ADMITTED":
+        return None
+    normalized_code = normalize_stock_code(str(code or ""))
+    if (
+        not normalized_code
+        or not isinstance(start, date)
+        or isinstance(start, datetime)
+        or start > target_date
+    ):
+        return None
+    try:
+        expected = resolve_session_range_fail_closed(market, start, target_date)
+        if not expected:
+            return None
+        candidate_rows = db.get_data_range(code, start, target_date)
+        if not isinstance(candidate_rows, (list, tuple)) or not candidate_rows:
+            return None
+        candidate_records = [_daily_row_record(row) for row in candidate_rows]
+        if any(
+            normalize_stock_code(str(record.get("code") or "")) != normalized_code
+            for record in candidate_records
+        ):
+            return None
+        origin_identity = extract_daily_data_identity_from_records(
+            candidate_records, strict=True,
+        )
+        if (
+            origin_identity is None
+            or origin_identity.get("identity_state") != "OBSERVED"
+            or normalize_stock_code(str(origin_identity.get("instrument") or ""))
+            != normalized_code
+            or origin_identity.get("returned_end") != target_date.isoformat()
+            or (
+                asset_admission["asset_route"] == "ETF"
+                and origin_identity.get("currency")
+                != asset_admission["product_profile"]["currency"]
+            )
+        ):
+            return None
+        origin_start = date.fromisoformat(str(origin_identity.get("returned_start") or ""))
+        origin_end = date.fromisoformat(str(origin_identity.get("returned_end") or ""))
+        if origin_start > start or origin_end != target_date:
+            return None
+        full_rows = (
+            candidate_rows
+            if origin_start == start and origin_end == target_date
+            else db.get_data_range(code, origin_start, origin_end)
+        )
+        if not isinstance(full_rows, (list, tuple)) or not full_rows:
+            return None
+        full_records = [_daily_row_record(row) for row in full_rows]
+        if any(
+            normalize_stock_code(str(record.get("code") or "")) != normalized_code
+            for record in full_records
+        ):
+            return None
+        full_frame = pd.DataFrame(full_records)
+        verify_observed_daily_frame_request(
+            full_frame,
+            instrument=normalized_code,
+            provider_identity=origin_identity.get("provider_identity"),
+            requested_start=origin_identity.get("requested_start"),
+            requested_end=origin_identity.get("requested_end"),
+            target_date=origin_end,
+            observed_at_ceiling=_daily_observation_ceiling(current_time),
+        )
+        dates = pd.to_datetime(full_frame["date"], errors="coerce")
+        if dates.isna().any():
+            return None
+        mask = dates.dt.date.between(start, target_date)
+        selected = full_frame.loc[mask].copy()
+        selected_dates = [value.date() for value in pd.to_datetime(selected["date"])]
+        if selected_dates != expected:
+            return None
+        selected.drop(
+            columns=["data_identity_json", "data_identity_hash"],
+            errors="ignore",
+            inplace=True,
+        )
+        view_identity = rebind_daily_data_identity(origin_identity, selected)
+        attach_daily_data_identity(selected, view_identity)
+        receipt = seal_daily_acquisition_receipt({
+            "schema_version": DAILY_ACQUISITION_RECEIPT_SCHEMA_VERSION,
+            "caller": "StockAnalysisPipeline.fetch_and_save_stock_data",
+            "asset_route": asset_admission["asset_route"] if market == "cn" else "STOCK",
+            "asset_admission": asset_admission,
+            "market": str(market or "").strip().lower(),
+            "instrument": normalized_code,
+            "target_date": target_date.isoformat(),
+            "acquisition_mode": "VERIFIED_CACHE_HIT",
+            "request_evidence_status": "VERIFIED_LAWFUL_CACHE_HIT",
+            "plan_hash": str(window_plan.get("plan_hash") or ""),
+            "planned_start": start.isoformat(),
+            "planned_end": target_date.isoformat(),
+            "planned_session_count": len(expected),
+            "actual_request_start": None,
+            "actual_request_end": None,
+            "requested_session_count": None,
+            "cache_lookup_start": start.isoformat(),
+            "cache_lookup_end": target_date.isoformat(),
+            "returned_start": selected_dates[0].isoformat(),
+            "returned_end": selected_dates[-1].isoformat(),
+            "returned_base_bars": len(selected),
+            "admitted_base_bars": len(selected),
+            "origin_returned_base_bars": len(full_frame),
+            "source_identity_hash": view_identity["identity_hash"],
+            "source_origin_identity_hash": origin_identity["identity_hash"],
+            "source_observed_at": origin_identity.get("observed_at"),
+            "source_adjustment_basis": origin_identity.get("observed_adjustment_basis"),
+            "provider_identity": origin_identity["provider_identity"],
+            "provider_route": origin_identity["provider_route"],
+            "provider_method_call_count": 0,
+            "provider_http_request_count": None,
+            "persistence_status": "VERIFIED_EXISTING_CACHE_NO_WRITE",
+            "actual_consumer": "StockAnalysisPipeline.analyze_stock",
+        })
+        attach_daily_acquisition_receipt(selected, receipt)
+        return selected
+    except (
+        DailyDataIdentityError, ValueError, TypeError, KeyError, AttributeError,
+    ):
+        logger.warning("Cannot admit typed daily cache for %s", code)
+        return None
+    except Exception:
+        logger.warning("Cannot verify source-window cache coverage for %s", code)
+        return None
+
+
 def _cached_daily_history_covers_current_window(
     *,
     db: Any,
@@ -470,38 +653,14 @@ def _cached_daily_history_covers_current_window(
     target_date: date,
     window_plan: Mapping[str, Any],
 ) -> bool:
-    """Permit a cache SKIP only for every completed exchange session in scope.
-
-    This is a date-coverage test, never an attestation of source license,
-    adjustment revision, historical PIT, recursive convergence or action.
-    Missing sessions (including unverified suspensions) cause a fetch attempt
-    rather than a false claim of a fully covered window.
-    """
-    start = window_plan.get("start_date")
-    if not isinstance(start, date) or isinstance(start, datetime) or start > target_date:
-        return False
-    try:
-        rows = db.get_data_range(code, start, target_date)
-        if not isinstance(rows, (list, tuple)) or not rows:
-            return False
-        observed = [getattr(row, "date", None) for row in rows]
-        if any(
-            not isinstance(value, date) or isinstance(value, datetime)
-            for value in observed
-        ):
-            return False
-        if len(set(observed)) != len(observed):
-            return False
-        actual = sorted(observed)
-        if actual[0] != start or actual[-1] != target_date:
-            return False
-        expected = resolve_forward_sessions_fail_closed(
-            market, start - timedelta(days=1), len(actual),
-        )
-        return expected == actual
-    except Exception:
-        logger.warning("Cannot verify source-window cache coverage for %s", code)
-        return False
+    """Compatibility bool over the strict content-bound cache loader."""
+    return _load_verified_cached_daily_history(
+        db=db,
+        code=code,
+        market=market,
+        target_date=target_date,
+        window_plan=window_plan,
+    ) is not None
 
 
 # Canonical 5m remains the single intraday source.  The fetch horizon is
@@ -613,6 +772,7 @@ def _supports_explicit_keyword(callable_obj: Any, keyword: str) -> bool:
 # double-check 初始化 _single_stock_notify_lock 仍然线程安全。
 _SINGLE_STOCK_NOTIFY_LOCK_INIT_GUARD = threading.Lock()
 _DAILY_MARKET_CONTEXT_SERVICE_LOCK_INIT_GUARD = threading.Lock()
+_RUN_LOCAL_DAILY_HISTORY_LOCK_INIT_GUARD = threading.Lock()
 
 
 def _symbol_scope_lookup_values(code: str, market: str) -> List[str]:
@@ -801,6 +961,8 @@ class StockAnalysisPipeline:
                 logger.debug("market hotspot service init failed (fail-open): %s", exc)
         self._single_stock_notify_lock = threading.Lock()
         self._daily_market_context_service_lock = threading.Lock()
+        self._run_local_daily_history_lock = threading.Lock()
+        self._run_local_daily_history: Dict[Tuple[str, str], pd.DataFrame] = {}
         self._concept_rankings_cache_lock = threading.Lock()
         self._concept_rankings_cache: Dict[str, Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]] = {}
         
@@ -880,64 +1042,116 @@ class StockAnalysisPipeline:
                 },
             )
 
+    def _ensure_run_local_daily_history_state(self) -> None:
+        if hasattr(self, "_run_local_daily_history_lock") and hasattr(
+            self, "_run_local_daily_history"
+        ):
+            return
+        with _RUN_LOCAL_DAILY_HISTORY_LOCK_INIT_GUARD:
+            if not hasattr(self, "_run_local_daily_history_lock"):
+                self._run_local_daily_history_lock = threading.Lock()
+            if not hasattr(self, "_run_local_daily_history"):
+                self._run_local_daily_history = {}
+
+    @staticmethod
+    def _run_local_daily_history_key(code: str, target_date: date) -> Tuple[str, str]:
+        return normalize_stock_code(str(code or "")), target_date.isoformat()
+
+    def _remember_run_local_daily_history(
+        self, *, code: str, target_date: date, frame: pd.DataFrame,
+    ) -> None:
+        self._ensure_run_local_daily_history_state()
+        copied = frame.copy(deep=True)
+        copied.attrs = deepcopy(frame.attrs)
+        key = self._run_local_daily_history_key(code, target_date)
+        with self._run_local_daily_history_lock:
+            self._run_local_daily_history[key] = copied
+
+    def _get_run_local_daily_history(
+        self, *, code: str, target_date: date,
+    ) -> Optional[pd.DataFrame]:
+        self._ensure_run_local_daily_history_state()
+        key = self._run_local_daily_history_key(code, target_date)
+        with self._run_local_daily_history_lock:
+            frame = self._run_local_daily_history.get(key)
+            if frame is None:
+                return None
+            copied = frame.copy(deep=True)
+            copied.attrs = deepcopy(frame.attrs)
+            return copied
+
+    def _clear_run_local_daily_history(self, *, code: str, target_date: date) -> None:
+        self._ensure_run_local_daily_history_state()
+        key = self._run_local_daily_history_key(code, target_date)
+        with self._run_local_daily_history_lock:
+            self._run_local_daily_history.pop(key, None)
+
     def fetch_and_save_stock_data(
-        self, 
+        self,
         code: str,
         force_refresh: bool = False,
         current_time: Optional[datetime] = None,
     ) -> Tuple[bool, Optional[str]]:
-        """
-        获取并保存单只股票数据
-        
-        断点续传逻辑：
-        1. 检查数据库是否已有最新可复用交易日数据
-        2. 如果有且不强制刷新，则跳过网络请求
-        3. 否则从数据源获取并保存
-        
-        Args:
-            code: 股票代码
-            force_refresh: 是否强制刷新（忽略本地缓存）
-            current_time: 本轮运行冻结的参考时间，用于统一断点续传目标交易日判断
-            
-        Returns:
-            Tuple[是否成功, 错误信息]
+        """Acquire one daily window with request/cache/source identity separated.
+
+        A verified read-only provider response remains available to this run when
+        the independent B1 storage gate rejects persistence. Invalid or untyped
+        caches may never suppress a provider call or feed strict current evidence.
         """
         stock_name = code
+        target_date: Optional[date] = None
         try:
-            # 首先获取股票名称
-            stock_name = self.fetcher_manager.get_stock_name(code, allow_realtime=False)
-
-            target_date = self._resolve_resume_target_date(
-                code, current_time=current_time
+            asset_admission = resolve_cn_price_asset(code)
+            if asset_admission["market"] == "cn":
+                if asset_admission["status"] != "ADMITTED":
+                    return False, "PRICE_ASSET_NOT_ADMITTED: " + asset_admission["reason"]
+                code = asset_admission["instrument"]
+            stock_name = self.fetcher_manager.get_stock_name(
+                code, allow_realtime=False,
             )
-
-            # Latest-day presence alone cannot certify the extended method
-            # windows (e.g. 140 monthly/268 weekly bars). Preserve old P0
-            # and non-CN resume semantics until those owners have dedicated
-            # admission contracts; current CN research needs real coverage.
+            target_date = self._resolve_resume_target_date(
+                code, current_time=current_time,
+            )
+            self._clear_run_local_daily_history(
+                code=code, target_date=target_date,
+            )
             market = get_market_for_stock(normalize_stock_code(code))
-            daily_window_plan = None
+            strict_current = (
+                str(market or "").lower() == "cn"
+                and not bool(getattr(self, "p0_bounded_trial", False))
+                and not bool(getattr(self, "p0_receipt_only", False))
+            )
+            daily_window_plan: Optional[Dict[str, Any]] = None
+
             if not force_refresh and self.db.has_today_data(code, target_date):
-                legacy_resume = (
-                    str(market or "").lower() != "cn"
-                    or bool(getattr(self, "p0_bounded_trial", False))
-                    or bool(getattr(self, "p0_receipt_only", False))
-                )
-                if not legacy_resume:
-                    daily_window_plan = _current_daily_window_plan(
-                        market=market, target_date=target_date,
-                    )
-                if legacy_resume or _cached_daily_history_covers_current_window(
-                    db=self.db, code=code, market=market,
-                    target_date=target_date, window_plan=daily_window_plan,
-                ):
+                if not strict_current:
                     logger.info(
-                        f"{stock_name}({code}) {target_date} 当前方法窗口已有完整缓存，跳过获取"
+                        "%s(%s) %s legacy resume cache present; skip fetch",
+                        stock_name, code, target_date,
+                    )
+                    return True, None
+                daily_window_plan = _current_daily_window_plan(
+                    market=market, target_date=target_date,
+                )
+                cached = _load_verified_cached_daily_history(
+                    db=self.db,
+                    code=code,
+                    market=market,
+                    target_date=target_date,
+                    window_plan=daily_window_plan,
+                    current_time=current_time,
+                )
+                if cached is not None:
+                    self._remember_run_local_daily_history(
+                        code=code, target_date=target_date, frame=cached,
+                    )
+                    logger.info(
+                        "%s(%s) %s typed current method window cache verified; skip provider",
+                        stock_name, code, target_date,
                     )
                     return True, None
 
-            # 从数据源获取数据
-            logger.info(f"{stock_name}({code}) 开始从数据源获取数据...")
+            logger.info("%s(%s) 开始从数据源获取数据...", stock_name, code)
             if daily_window_plan is None:
                 daily_window_plan = _current_daily_window_plan(
                     market=market, target_date=target_date,
@@ -948,7 +1162,6 @@ class StockAnalysisPipeline:
                 start_date=history_start.isoformat(),
                 end_date=target_date.isoformat(),
             )
-
             if df is None or df.empty:
                 return False, "获取数据为空"
 
@@ -956,7 +1169,9 @@ class StockAnalysisPipeline:
                 if "date" not in df.columns:
                     return False, "receipt-only historical replay requires dated bars"
                 bounded = df.copy()
-                bounded_dates = pd.to_datetime(bounded["date"], errors="coerce").dt.date
+                bounded_dates = pd.to_datetime(
+                    bounded["date"], errors="coerce",
+                ).dt.date
                 mask = (
                     bounded_dates.notna()
                     & (bounded_dates >= history_start)
@@ -967,15 +1182,142 @@ class StockAnalysisPipeline:
                     return False, "receipt-only historical replay returned no in-window bars"
                 df = bounded
 
-            # 保存到数据库
-            saved_count = self.db.save_daily_data(df, code, source_name)
-            logger.info(f"{stock_name}({code}) 数据保存成功（来源: {source_name}，新增 {saved_count} 条）")
+            if not strict_current:
+                saved_count = self.db.save_daily_data(df, code, source_name)
+                logger.info(
+                    "%s(%s) 数据保存成功（来源: %s，新增 %s 条）",
+                    stock_name, code, source_name, saved_count,
+                )
+                return True, None
 
+            identity = verify_observed_daily_frame_request(
+                df,
+                instrument=code,
+                provider_identity=source_name,
+                requested_start=history_start,
+                requested_end=target_date,
+                target_date=target_date,
+                observed_at_ceiling=_daily_observation_ceiling(current_time),
+            )
+            if (
+                asset_admission["asset_route"] == "ETF"
+                and identity.get("currency") != asset_admission["product_profile"]["currency"]
+            ):
+                raise DailyDataIdentityError("ETF_DAILY_LISTING_CURRENCY_MISMATCH")
+            requested_sessions = resolve_session_range_fail_closed(
+                market, history_start, target_date,
+            )
+            if not requested_sessions:
+                raise DailyDataIdentityError(
+                    "daily request exchange-session range is unavailable"
+                )
+            returned_dates = [
+                value.date()
+                for value in pd.to_datetime(df["date"], errors="raise")
+            ]
+            if (
+                len(returned_dates) > len(requested_sessions)
+                or returned_dates != requested_sessions[-len(returned_dates):]
+            ):
+                raise DailyDataIdentityError(
+                    "daily response is not an exact completed-session suffix"
+                )
+            receipt = seal_daily_acquisition_receipt({
+                "schema_version": DAILY_ACQUISITION_RECEIPT_SCHEMA_VERSION,
+                "caller": "StockAnalysisPipeline.fetch_and_save_stock_data",
+                "asset_route": asset_admission["asset_route"],
+                "asset_admission": asset_admission,
+                "market": str(market or "").strip().lower(),
+                "instrument": normalize_stock_code(code),
+                "target_date": target_date.isoformat(),
+                "acquisition_mode": "VERIFIED_PROVIDER_CALL",
+                "request_evidence_status": "VERIFIED_PROVIDER_CALL",
+                "plan_hash": str(daily_window_plan.get("plan_hash") or ""),
+                "planned_start": history_start.isoformat(),
+                "planned_end": target_date.isoformat(),
+                "planned_session_count": len(requested_sessions),
+                "actual_request_start": history_start.isoformat(),
+                "actual_request_end": target_date.isoformat(),
+                "requested_session_count": len(requested_sessions),
+                "cache_lookup_start": None,
+                "cache_lookup_end": None,
+                "returned_start": returned_dates[0].isoformat(),
+                "returned_end": returned_dates[-1].isoformat(),
+                "returned_base_bars": len(df),
+                "admitted_base_bars": len(df),
+                "source_identity_hash": identity["identity_hash"],
+                "source_observed_at": identity.get("observed_at"),
+                "source_adjustment_basis": identity.get(
+                    "observed_adjustment_basis"
+                ),
+                "provider_identity": identity["provider_identity"],
+                "provider_route": identity["provider_route"],
+                "provider_method_call_count": 1,
+                "provider_http_request_count": None,
+                "persistence_status": "NOT_ATTEMPTED",
+                "actual_consumer": "StockAnalysisPipeline.analyze_stock",
+            })
+            attach_daily_acquisition_receipt(df, receipt)
+            self._remember_run_local_daily_history(
+                code=code, target_date=target_date, frame=df,
+            )
+            try:
+                saved_count = self.db.save_daily_data(df, code, source_name)
+            except PermissionError as exc:
+                if "SOURCE_STORAGE_RIGHTS_NOT_ADMITTED" not in str(exc):
+                    self._clear_run_local_daily_history(
+                        code=code, target_date=target_date,
+                    )
+                    raise
+                receipt = seal_daily_acquisition_receipt({
+                    **receipt,
+                    "persistence_status": "RIGHTS_NOT_ADMITTED_RUN_LOCAL_ONLY",
+                })
+                attach_daily_acquisition_receipt(df, receipt)
+                self._remember_run_local_daily_history(
+                    code=code, target_date=target_date, frame=df,
+                )
+                logger.info(
+                    "%s(%s) typed daily data admitted run-local; vendor storage rights remain HOLD",
+                    stock_name, code,
+                )
+                return True, None
+            except Exception:
+                self._clear_run_local_daily_history(
+                    code=code, target_date=target_date,
+                )
+                raise
+
+            receipt = seal_daily_acquisition_receipt({
+                **receipt,
+                "persistence_status": "PERSISTED_BY_EXISTING_STORAGE_GATE",
+                "persisted_rows": int(saved_count),
+            })
+            attach_daily_acquisition_receipt(df, receipt)
+            self._remember_run_local_daily_history(
+                code=code, target_date=target_date, frame=df,
+            )
+            logger.info(
+                "%s(%s) typed daily data saved（来源: %s，新增 %s 条）",
+                stock_name, code, source_name, saved_count,
+            )
             return True, None
 
-        except Exception as e:
-            error_msg = f"获取/保存数据失败: {str(e)}"
-            logger.error(f"{stock_name}({code}) {error_msg}")
+        except DailyDataIdentityError as exc:
+            if target_date is not None:
+                self._clear_run_local_daily_history(
+                    code=code, target_date=target_date,
+                )
+            error_msg = f"DAILY_ACQUISITION_BINDING_INVALID: {exc}"
+            logger.error("%s(%s) %s", stock_name, code, error_msg)
+            return False, error_msg
+        except Exception as exc:
+            if target_date is not None:
+                self._clear_run_local_daily_history(
+                    code=code, target_date=target_date,
+                )
+            error_msg = f"获取/保存数据失败: {exc}"
+            logger.error("%s(%s) %s", stock_name, code, error_msg)
             return False, error_msg
     
     def _load_current_stock_intraday_timeframes(
@@ -986,16 +1328,36 @@ class StockAnalysisPipeline:
         market: Optional[str],
         target_date: date,
         completed_daily_history: Optional[pd.DataFrame],
+        current_time: Optional[datetime] = None,
     ) -> Dict[str, pd.DataFrame]:
-        """Load current-only canonical CN stock intraday context, fail-open to missing."""
+        """Reuse one current CN stock/qualified-ETF price path; missing stays missing."""
         if bool(getattr(self, "p0_bounded_trial", False)) or bool(
             getattr(self, "p0_receipt_only", False)
         ):
             return {}
         if str(market or "").strip().lower() != "cn":
             return {}
-        if SearchService.is_index_or_etf(code, stock_name):
+        asset_admission = resolve_cn_price_asset(code)
+        if asset_admission["status"] != "ADMITTED":
+            logger.info("%s price admission: %s", code, asset_admission["reason"])
             return {}
+        code = asset_admission["instrument"]
+        daily_identity = None
+        if asset_admission["asset_route"] == "ETF":
+            try:
+                from data_provider.daily_data_identity import extract_daily_data_identity
+                daily_identity = extract_daily_data_identity(completed_daily_history, strict=True)
+                verify_observed_daily_frame_request(
+                    completed_daily_history, instrument=code,
+                    provider_identity=daily_identity["provider_identity"],
+                    requested_start=daily_identity["requested_start"],
+                    requested_end=daily_identity["requested_end"], target_date=target_date,
+                    observed_at_ceiling=_daily_observation_ceiling(current_time),
+                )
+                if daily_identity.get("currency") != asset_admission["product_profile"]["currency"]:
+                    raise DailyDataIdentityError("ETF_DAILY_LISTING_CURRENCY_MISMATCH")
+            except (DailyDataIdentityError, KeyError, TypeError, ValueError):
+                return {}
 
         latest_completed = resolve_latest_completed_session_fail_closed("cn")
         if latest_completed is None or target_date != latest_completed:
@@ -1058,6 +1420,9 @@ class StockAnalysisPipeline:
             )
             if fetcher is None:
                 return {}
+            # Capture the actual call range before a valid shorter response may
+            # narrow expected_sessions. A method's desired window is not this call.
+            requested_sessions = tuple(expected_sessions)
             five_minute = self.fetcher_manager._call_fetcher_method(
                 fetcher,
                 "get_intraday_data",
@@ -1066,6 +1431,45 @@ class StockAnalysisPipeline:
                 end_date=expected_sessions[-1].isoformat(),
                 frequency="5",
             )
+            from data_provider.intraday_data_identity import extract_intraday_data_identity
+
+            source_identity = extract_intraday_data_identity(five_minute, strict=True)
+            if (
+                source_identity is None
+                or source_identity.get("timeframe") != "5m"
+                or source_identity.get("provider_identity") != "BaostockFetcher"
+                or source_identity.get("requested_start") != requested_sessions[0].isoformat()
+                or source_identity.get("requested_end") != requested_sessions[-1].isoformat()
+                or set(five_minute["code"].astype(str)) != {str(code).strip()}
+            ):
+                raise ValueError("INTRADAY_RESPONSE_REQUEST_IDENTITY_MISMATCH")
+            if daily_identity is not None:
+                query = source_identity.get("query_identity") or {}
+                exchange = asset_admission["product_profile"]["listing_exchange"].lower()
+                if (
+                    str(query.get("code") or "").lower() != f"{exchange}.{code}"
+                    or str(query.get("frequency") or "") != "5"
+                    or str(query.get("adjustflag") or "") != {
+                        "qfq": "2", "hfq": "1", "raw": "3",
+                    }.get(source_identity.get("observed_adjustment_basis"))
+                    or source_identity.get("requested_adjustment_basis")
+                    != source_identity.get("observed_adjustment_basis")
+                ):
+                    raise ValueError("ETF_MINUTE_QUERY_ASSET_OR_BASIS_MISMATCH")
+                ceiling = pd.Timestamp(_daily_observation_ceiling(current_time))
+                for clock_key in ("observed_at", "available_at_max"):
+                    observed = pd.to_datetime(source_identity.get(clock_key), utc=True, errors="coerce")
+                    if pd.isna(observed) or observed > ceiling:
+                        raise ValueError("ETF_MINUTE_OBSERVATION_NOT_KNOWN_AT_EXECUTION")
+            if daily_identity is not None and any(
+                source_identity.get(minute_key) != daily_identity.get(daily_key)
+                for minute_key, daily_key in (
+                    ("provider_identity", "provider_identity"),
+                    ("observed_adjustment_basis", "observed_adjustment_basis"),
+                    ("currency", "currency"),
+                )
+            ):
+                raise ValueError("ETF_DAILY_MINUTE_SOURCE_BASIS_MISMATCH")
             try:
                 validate_complete_cn_5m_sessions(
                     five_minute,
@@ -1121,6 +1525,28 @@ class StockAnalysisPipeline:
                     f"intraday aggregation cardinality mismatch: "
                     f"{ {key: len(value) for key, value in derived.items()} }"
                 )
+            acquisition = {
+                "schema_version": "dsa-intraday-acquisition-v1",
+                "caller": "StockAnalysisPipeline._load_current_stock_intraday_timeframes",
+                "asset_route": asset_admission["asset_route"],
+                "asset_admission": asset_admission,
+                "instrument": str(code).strip(),
+                "target_date": target_date.isoformat(),
+                "requested_start": requested_sessions[0].isoformat(),
+                "requested_end": requested_sessions[-1].isoformat(),
+                "requested_session_dates": [day.isoformat() for day in requested_sessions],
+                "requested_session_count": len(requested_sessions),
+                "returned_base_bars": len(five_minute),
+                "admitted_session_count": len(expected_sessions),
+                "source_identity_hash": source_identity["identity_hash"],
+                "provider_identity": source_identity["provider_identity"],
+                "provider_route": source_identity["provider_route"],
+                "provider_method_call_count": 1,
+                # A provider-method call is not a count of HTTP requests/retries.
+                "provider_http_request_count": None,
+            }
+            acquisition["receipt_hash"] = sha256_payload(acquisition)
+            five_minute.attrs["dsa_intraday_acquisition_receipt"] = acquisition
             return derived
         except Exception as exc:
             logger.warning(
@@ -1160,6 +1586,12 @@ class StockAnalysisPipeline:
         """
         stock_name = code
         try:
+            asset_admission = resolve_cn_price_asset(code)
+            if asset_admission["market"] == "cn":
+                if asset_admission["status"] != "ADMITTED":
+                    logger.warning("%s price admission: %s", code, asset_admission["reason"])
+                    return None
+                code = asset_admission["instrument"]
             portfolio_context = getattr(self, "portfolio_context", None)
             if not isinstance(portfolio_context, dict):
                 portfolio_context = None
@@ -1290,10 +1722,13 @@ class StockAnalysisPipeline:
             except Exception as e:
                 logger.debug(f"{stock_name}({code}) 基本面快照写入失败: {e}")
 
-            # Step 3: 趋势分析（基于交易理念）— completed daily evidence and legacy intraday view are separated.
+            # Step 3: canonical daily evidence consumes only a verified provider
+            # call or a content-bound typed cache. Legacy rows may still support
+            # display compatibility, but cannot enter strict methods/canonical.
             trend_result: Optional[TrendAnalysisResult] = None
             canonical_trend_result: Optional[TrendAnalysisResult] = None
             completed_daily_history: Optional[pd.DataFrame] = None
+            legacy_trend_history: Optional[pd.DataFrame] = None
             daily_window_plan: Optional[Dict[str, Any]] = None
             try:
                 from src.services.history_loader import get_frozen_target_date
@@ -1304,26 +1739,60 @@ class StockAnalysisPipeline:
                     market=_mkt,
                     target_date=end_date,
                 )
+                completed_daily_history = self._get_run_local_daily_history(
+                    code=code, target_date=end_date,
+                )
+                if completed_daily_history is None:
+                    completed_daily_history = _load_verified_cached_daily_history(
+                        db=self.db,
+                        code=code,
+                        market=_mkt,
+                        target_date=end_date,
+                        window_plan=daily_window_plan,
+                        current_time=current_time,
+                    )
+                    if completed_daily_history is not None:
+                        self._remember_run_local_daily_history(
+                            code=code,
+                            target_date=end_date,
+                            frame=completed_daily_history,
+                        )
                 start_date = daily_window_plan["start_date"]
-                historical_bars = self.db.get_data_range(code, start_date, end_date)
-                if historical_bars:
-                    completed_daily_history = pd.DataFrame([bar.to_dict() for bar in historical_bars])
+                if completed_daily_history is None:
+                    historical_bars = self.db.get_data_range(
+                        code, start_date, end_date,
+                    )
+                    if historical_bars:
+                        legacy_trend_history = pd.DataFrame(
+                            [bar.to_dict() for bar in historical_bars]
+                        )
+                else:
+                    legacy_trend_history = completed_daily_history.copy()
                     if len(completed_daily_history) >= 60:
                         canonical_trend_result = self.trend_analyzer.analyze(
                             completed_daily_history.copy(), code
                         )
-                    trend_df = completed_daily_history.copy()
-                    # Legacy prompt/display compatibility may still use realtime augmentation
-                    # or short-history MA fallbacks. Canonical factor evidence above uses neither.
+                if isinstance(legacy_trend_history, pd.DataFrame) and not legacy_trend_history.empty:
+                    trend_df = legacy_trend_history.copy()
                     if self.config.enable_realtime_quote and realtime_quote:
-                        trend_df = self._augment_historical_with_realtime(trend_df, realtime_quote, code)
+                        trend_df = self._augment_historical_with_realtime(
+                            trend_df, realtime_quote, code,
+                        )
                         trend_result = self.trend_analyzer.analyze(trend_df, code)
                     else:
-                        trend_result = canonical_trend_result or self.trend_analyzer.analyze(trend_df, code)
-                    logger.info(f"{stock_name}({code}) 趋势分析: {trend_result.trend_status.value}, "
-                              f"买入信号={trend_result.buy_signal.value}, 评分={trend_result.signal_score}")
-            except Exception as e:
-                logger.warning(f"{stock_name}({code}) 趋势分析失败: {e}", exc_info=True)
+                        trend_result = canonical_trend_result or self.trend_analyzer.analyze(
+                            trend_df, code,
+                        )
+                    logger.info(
+                        "%s(%s) 趋势分析: %s, 买入信号=%s, 评分=%s",
+                        stock_name, code, trend_result.trend_status.value,
+                        trend_result.buy_signal.value, trend_result.signal_score,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "%s(%s) 趋势分析失败: %s",
+                    stock_name, code, exc, exc_info=True,
+                )
 
             relative_strength_context = None
             if canonical_trend_result is not None and not SearchService.is_index_or_etf(code, stock_name):
@@ -1343,8 +1812,13 @@ class StockAnalysisPipeline:
                 market=market,
                 target_date=daily_market_target_date,
                 completed_daily_history=completed_daily_history,
+                current_time=current_time,
             )
-            market_data_snapshot_observed_at = datetime.now(timezone.utc)
+            # Replay/current-time callers own the known-at cutoff. Using the
+            # wall clock here would make an otherwise frozen source snapshot
+            # appear after its decision/send time and can also cross a later
+            # exchange session while the target bars remain unchanged.
+            market_data_snapshot_observed_at = _daily_observation_ceiling(current_time)
             completed_history_identity = (
                 build_completed_history_identity(
                     completed_daily_history,
@@ -1365,7 +1839,8 @@ class StockAnalysisPipeline:
                     "target_date": daily_market_target_date.isoformat(),
                 }
             receipt_asset_route = (
-                "ETF" if SearchService.is_index_or_etf(code, stock_name) else "STOCK"
+                asset_admission["asset_route"] if market == "cn"
+                else ("ETF" if SearchService.is_index_or_etf(code, stock_name) else "STOCK")
             )
             supply_demand_context = build_supply_demand_context(
                 stock_code=code,
@@ -1412,6 +1887,8 @@ class StockAnalysisPipeline:
                 snapshot_observed_at=market_data_snapshot_observed_at,
                 intraday_timeframes=intraday_timeframes,
             )
+            if market == "cn":
+                multi_timeframe_structure_context["asset_admission"] = asset_admission
             multi_timeframe_structure_context["method_window_readiness_trace"] = (
                 compile_mtf_method_window_readiness_trace(
                     asset_route=receipt_asset_route,
@@ -1420,8 +1897,15 @@ class StockAnalysisPipeline:
                     daily_window_plan=daily_window_plan,
                     intraday_window_plan=_current_intraday_window_plan(),
                     multi_timeframe_structure_context=multi_timeframe_structure_context,
+                    intraday_source_frames=intraday_timeframes,
+                    daily_source_frame=completed_daily_history,
                 )
             )
+            fundamental_context = self._compile_business_valuation_context(
+                fundamental_context,
+                target_date=daily_market_target_date,
+            )
+
             method_execution_receipts = self._build_direct_method_execution_receipts(
                 code=code,
                 market=market,
@@ -1436,6 +1920,7 @@ class StockAnalysisPipeline:
                 volatility_momentum_context=volatility_momentum_context,
                 pattern_trigger_context=pattern_trigger_context,
                 multi_timeframe_structure_context=multi_timeframe_structure_context,
+                fundamental_context=fundamental_context,
             )
 
             if use_agent:
@@ -3054,6 +3539,40 @@ class StockAnalysisPipeline:
         return populate_decision_action_fields(result, explicit_action=explicit_action)
 
     @staticmethod
+    def _compile_business_valuation_context(
+        fundamental_context: Optional[Dict[str, Any]],
+        *,
+        target_date: date,
+    ) -> Optional[Dict[str, Any]]:
+        """Invoke dated quality and business-valuation owners before receipts."""
+        if not isinstance(fundamental_context, dict):
+            return fundamental_context
+        result = dict(fundamental_context)
+        quality_request = result.get("quality_growth_input")
+        if (
+            isinstance(quality_request, dict)
+            and not isinstance(result.get("fundamental_quality"), dict)
+        ):
+            result["fundamental_quality"] = compile_fundamental_quality(
+                quality_request,
+                as_of=target_date,
+            )
+        request = result.get("business_valuation_input")
+        if (
+            isinstance(request, dict)
+            and not isinstance(result.get("business_valuation"), dict)
+        ):
+            # The Pipeline's frozen research date is the authoritative known-at
+            # ceiling.  A provider/request payload may carry a later wall-clock
+            # as_of for provenance, but it must never move valuation beyond the
+            # completed research snapshot and silently admit future disclosures.
+            result["business_valuation"] = compile_business_valuation(
+                request,
+                as_of=target_date,
+            )
+        return result
+
+    @staticmethod
     def _build_direct_method_execution_receipts(
         *,
         code: str,
@@ -3069,6 +3588,7 @@ class StockAnalysisPipeline:
         volatility_momentum_context: Optional[Dict[str, Any]],
         pattern_trigger_context: Optional[Dict[str, Any]],
         multi_timeframe_structure_context: Optional[Dict[str, Any]],
+        fundamental_context: Optional[Dict[str, Any]],
     ) -> Dict[str, Dict[str, Any]]:
         """Bind only producer outputs that actually returned from Pipeline calls."""
 
@@ -3177,6 +3697,59 @@ class StockAnalysisPipeline:
                     },
                     **common,
                 )
+        quality = (
+            fundamental_context.get("fundamental_quality")
+            if isinstance(fundamental_context, dict) else None
+        )
+        if isinstance(quality, dict) and quality.get("status") == "READY":
+            quality_admission_hashes = tuple(
+                str(value) for value in quality.get("data_admission_hashes") or ()
+            )
+            receipts["QUALITY"] = build_method_execution_receipt(
+                "QUALITY",
+                output=quality,
+                timeframe="asset",
+                input_identity={
+                    "quality_receipt_hash": quality.get("receipt_hash"),
+                    "data_admission_hashes": quality_admission_hashes,
+                    "asset_id": quality.get("asset_id"),
+                    "as_of": quality.get("as_of"),
+                },
+                upstream_hashes={
+                    "data_admission_hashes": quality_admission_hashes,
+                },
+                asset_route=asset_route,
+                stock_code=code,
+                market=market,
+                target_date=target_date,
+            )
+
+        valuation = (
+            fundamental_context.get("business_valuation")
+            if isinstance(fundamental_context, dict) else None
+        )
+        if isinstance(valuation, dict) and valuation.get("status") == "READY":
+            admission_hashes = tuple(
+                str(value) for value in valuation.get("data_admission_hashes") or ()
+            )
+            receipts["VALUATION"] = build_method_execution_receipt(
+                "VALUATION",
+                output=valuation,
+                timeframe="asset",
+                input_identity={
+                    "valuation_receipt_hash": valuation.get("receipt_hash"),
+                    "data_admission_hashes": admission_hashes,
+                    "route_id": valuation.get("route_id"),
+                    "asset_id": valuation.get("asset_id"),
+                    "as_of": valuation.get("as_of"),
+                },
+                upstream_hashes={"data_admission_hashes": admission_hashes},
+                asset_route=asset_route,
+                stock_code=code,
+                market=market,
+                target_date=target_date,
+            )
+
         if isinstance(multi_timeframe_structure_context, dict):
             receipts["MTF"] = build_method_execution_receipt(
                 "MTF",
@@ -3218,14 +3791,23 @@ class StockAnalysisPipeline:
             code, getattr(result, "name", "")
         )
         normalized_code = str(code or "").strip().split(".")[0]
-        is_market_index = is_us_index_code(normalized_code)
+        asset_admission = resolve_cn_price_asset(code)
+        is_market_index = (
+            is_us_index_code(normalized_code)
+            or asset_admission["asset_route"] == "MARKET"
+        )
         if is_market_index:
             if self.p0_bounded_trial:
                 raise P0BoundedTrialError(f"P0 rejects ETF or index result: {code}")
             return
         if is_index_or_etf and self.p0_bounded_trial:
             raise P0BoundedTrialError(f"P0 rejects ETF or index result: {code}")
-        asset_type = "etf" if is_index_or_etf else "stock"
+        asset_type = (
+            asset_admission["asset_route"].lower() if asset_admission["market"] == "cn"
+            else ("etf" if is_index_or_etf else "stock")
+        )
+        if asset_type not in {"stock", "etf"}:
+            return
         # Missing deterministic trend evidence must still finalize an explicit
         # UNKNOWN/watch canonical state; never preserve a stale legacy BUY/SELL.
         report_language = normalize_report_language(
@@ -3542,6 +4124,18 @@ class StockAnalysisPipeline:
                     continue
                 delivery["product_group"] = candidate.get("product_group")
                 delivery["group_rank"] = candidate.get("group_rank")
+                delivery.update({
+                    "candidate_name": candidate.get("name"),
+                    "candidate_score": candidate.get("score"),
+                    "screen_score": candidate.get("screen_score"),
+                    "candidate_reason": candidate.get("reason"),
+                    "candidate_risk_level": candidate.get("risk_level"),
+                    "candidate_risk_flags": list(candidate.get("risk_flags") or ()),
+                    "candidate_industry": candidate.get("industry"),
+                    "preference_status": candidate.get("preference_status"),
+                    "classification_status": candidate.get("classification_status"),
+                    "focus_eligible": candidate.get("focus_eligible"),
+                })
                 candidate_identity = {
                     "listing_market": candidate.get("listing_market"),
                     "listing_board": candidate.get("listing_board"),
@@ -4884,24 +5478,31 @@ class StockAnalysisPipeline:
         
         # === 批量预取实时行情（优化：避免每只股票都触发全量拉取）===
         # 只有股票数量 >= 5 时才进行预取，少量股票直接逐个查询更高效
-        if len(stock_codes) >= 5:
-            daily_prefetch_count = self.fetcher_manager.prefetch_daily_klines(stock_codes, days=30)
+        prefetch_codes = []
+        for candidate in stock_codes:
+            admission = resolve_cn_price_asset(candidate)
+            if admission["market"] != "cn" or admission["status"] == "ADMITTED":
+                prefetch_codes.append(candidate)
+        # Keep ALL requests for worker failure reporting and the denominator;
+        # only the eager acquisition optimization is filtered here.
+        if len(prefetch_codes) >= 5:
+            daily_prefetch_count = self.fetcher_manager.prefetch_daily_klines(prefetch_codes, days=30)
             if daily_prefetch_count > 0:
                 logger.info(
                     "[prefetch] component=daily_kline_prefetch action=complete "
                     "provider=TickFlowFetcher cached=%d stock_count=%d",
                     daily_prefetch_count,
-                    len(stock_codes),
+                    len(prefetch_codes),
                 )
 
-            prefetch_count = self.fetcher_manager.prefetch_realtime_quotes(stock_codes)
+            prefetch_count = self.fetcher_manager.prefetch_realtime_quotes(prefetch_codes)
             if prefetch_count > 0:
                 logger.info(f"已启用批量预取架构：一次拉取全市场数据，{len(stock_codes)} 只股票共享缓存")
 
         # Issue #455: 预取股票名称，避免并发分析时显示「股票xxxxx」
         # dry_run 仅做数据拉取，不需要名称预取，避免额外网络开销
-        if not dry_run:
-            self.fetcher_manager.prefetch_stock_names(stock_codes, use_bulk=False)
+        if not dry_run and prefetch_codes:
+            self.fetcher_manager.prefetch_stock_names(prefetch_codes, use_bulk=False)
 
         # 单股推送模式（#55）：从配置读取
         single_stock_notify = getattr(self.config, 'single_stock_notify', False)
@@ -4989,7 +5590,7 @@ class StockAnalysisPipeline:
             success_count = sum(
                 1
                 for code in stock_codes
-                if self.db.has_today_data(
+                if code in prefetch_codes and self.db.has_today_data(
                     code,
                     self._resolve_resume_target_date(
                         code, current_time=resume_reference_time
@@ -6029,7 +6630,62 @@ class StockAnalysisPipeline:
                 report_type = ReportType.FULL
         generator = getattr(self.notifier, "generate_aggregate_report", None)
         if callable(generator):
-            return generator(results, report_type)
+            kwargs: Dict[str, Any] = {}
+            bound_context = getattr(
+                self, "_current_query_market_report_context", None,
+            )
+            if bound_context is not None:
+                context_query_id = str(
+                    getattr(bound_context, "query_id", "") or ""
+                )
+                pipeline_query_id = str(getattr(self, "query_id", "") or "")
+                if (
+                    pipeline_query_id and context_query_id
+                    and pipeline_query_id != context_query_id
+                ):
+                    raise ValueError(
+                        "pipeline current Market context query identity mismatch"
+                    )
+                trade_date = getattr(bound_context, "trade_date", None)
+                if trade_date is None:
+                    raise ValueError(
+                        "pipeline current Market context trade date missing"
+                    )
+                kwargs.update({
+                    "report_date": str(trade_date),
+                    "market_context": bound_context,
+                    "expected_query_id": pipeline_query_id or context_query_id,
+                })
+            elif results:
+                # Direct save/send consumers may run after the local query context
+                # object leaves scope. Reuse only the exact dates already sealed
+                # into Factor; never default current Product research to today.
+                target_dates = set()
+                for result in results:
+                    dashboard = getattr(result, "dashboard", None)
+                    factor = (
+                        dashboard.get("factor_decision")
+                        if isinstance(dashboard, dict) else None
+                    )
+                    if not isinstance(factor, dict):
+                        continue
+                    shared = factor.get("shared_report_context")
+                    mtf = factor.get("multi_timeframe_structure_context")
+                    for value in (
+                        shared.get("trade_date")
+                        if isinstance(shared, dict) else None,
+                        mtf.get("target_date")
+                        if isinstance(mtf, dict) else None,
+                    ):
+                        if str(value or "").strip():
+                            target_dates.add(str(value))
+                if len(target_dates) > 1:
+                    raise ValueError(
+                        "pipeline current report target dates are inconsistent"
+                    )
+                if target_dates:
+                    kwargs["report_date"] = next(iter(target_dates))
+            return generator(results, report_type, **kwargs)
         if report_type == ReportType.BRIEF and hasattr(self.notifier, "generate_brief_report"):
             return self.notifier.generate_brief_report(results)
         return self.notifier.generate_dashboard_report(results)
