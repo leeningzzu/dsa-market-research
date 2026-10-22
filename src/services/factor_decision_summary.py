@@ -27,6 +27,8 @@ from src.services.research_state_projection import (
     validate_canonical_decision_semantics,
 )
 from src.services.v2_5_evidence_coverage import compile_product_coverage
+from src.services.business_valuation_service import validate_business_valuation
+from src.services.fundamental_quality_service import validate_fundamental_quality
 
 
 _STRONG_TRENDS = {"强势多头", "多头排列"}
@@ -90,7 +92,82 @@ def _format_price(value: Optional[float]) -> str:
     return f"{value:.2f}" if value is not None and value > 0 else ""
 
 
-def _valuation_summary(fundamental_context: Any) -> str:
+def _validated_asset_material(
+    fundamental_context: Any,
+    *,
+    asset_type: str,
+    expected_asset_id: Optional[str] = None,
+) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    """Validate existing Quality/Valuation receipts before Product projection.
+
+    Pipeline owns both deterministic compilers.  This consumer only rejects
+    stale or forged READY material and carries the bounded Product facts into
+    the existing Factor/Brief/Email chain; it creates no score or action vote.
+    """
+    context = _mapping(fundamental_context)
+    quality: Optional[Dict[str, Any]] = None
+    valuation: Optional[Dict[str, Any]] = None
+
+    raw_quality = context.get("fundamental_quality")
+    if raw_quality is not None:
+        if not isinstance(raw_quality, dict):
+            raise ValueError("fundamental quality material has invalid type")
+        quality = validate_fundamental_quality(raw_quality)
+        if quality.get("status") == "READY" and quality.get("asset_type") != "stock":
+            raise ValueError("fundamental quality material has invalid asset type")
+        if quality.get("status") == "READY" and asset_type != "stock":
+            raise ValueError("fundamental quality material is not applicable to ETF")
+        if (
+            quality.get("status") == "READY"
+            and expected_asset_id
+            and str(quality.get("asset_id") or "").split(".")[-1]
+            != str(expected_asset_id).split(".")[-1]
+        ):
+            raise ValueError("fundamental quality material has invalid asset identity")
+
+    raw_valuation = context.get("business_valuation")
+    if raw_valuation is not None:
+        if not isinstance(raw_valuation, dict):
+            raise ValueError("business valuation material has invalid type")
+        valuation = validate_business_valuation(raw_valuation)
+        if valuation.get("status") == "READY" and valuation.get("asset_type") != asset_type:
+            raise ValueError("business valuation material has invalid asset type")
+        if (
+            valuation.get("status") == "READY"
+            and expected_asset_id
+            and str(valuation.get("asset_id") or "").split(".")[-1]
+            != str(expected_asset_id).split(".")[-1]
+        ):
+            raise ValueError("business valuation material has invalid asset identity")
+    return quality, valuation
+
+
+def _quality_summary(
+    quality: Optional[Dict[str, Any]],
+    *,
+    asset_type: str,
+) -> str:
+    if asset_type == "etf":
+        return "质量成长：ETF不适用单公司财务质量口径。"
+    if isinstance(quality, dict):
+        text = str(quality.get("summary_zh") or "").strip()
+        if text:
+            return text
+    return "质量成长：数据不足，暂不判断。"
+
+
+def _valuation_summary(
+    fundamental_context: Any,
+    *,
+    asset_type: str = "stock",
+    business_valuation: Optional[Dict[str, Any]] = None,
+) -> str:
+    if isinstance(business_valuation, dict):
+        text = str(business_valuation.get("summary_zh") or "").strip()
+        if text:
+            return text
+    if asset_type == "etf":
+        return "底层估值：数据不足，暂不判断高低。"
     if not isinstance(fundamental_context, dict):
         return "估值：数据不足，暂不判断高低。"
 
@@ -124,7 +201,6 @@ def _valuation_summary(fundamental_context: Any) -> str:
         f"估值：已取得基础估值数据{suffix}；"
         "缺少可靠历史分位和同行比较，暂不判断偏低、合理或偏高。"
     )
-
 
 def _cost_structure_summary(chip_data: Any) -> str:
     if chip_data is None:
@@ -956,6 +1032,39 @@ def _bound_risk_material(summary: Dict[str, Any], brief: Any = None) -> Dict[str
     }
 
 
+def _bound_asset_material(summary: Dict[str, Any], brief: Any = None) -> Dict[str, Any]:
+    """Bind visible Quality/Valuation atoms without creating action authority."""
+    candidate = summary.get("investor_brief") if brief is None else brief
+    if candidate is not None and not isinstance(candidate, dict):
+        raise ValueError("investor brief asset material has invalid type")
+
+    def mapping_or_none(value: Any, label: str) -> Any:
+        if value is None:
+            return None
+        if not isinstance(value, dict):
+            raise ValueError(f"{label} has invalid type")
+        return value
+
+    return {
+        "factor_quality_growth": summary.get("quality_growth"),
+        "factor_valuation_text": summary.get("valuation"),
+        "factor_quality_receipt": mapping_or_none(
+            summary.get("fundamental_quality"), "fundamental quality material",
+        ),
+        "factor_business_valuation_receipt": mapping_or_none(
+            summary.get("business_valuation"), "business valuation material",
+        ),
+        "brief_quality": mapping_or_none(
+            candidate.get("quality") if isinstance(candidate, dict) else None,
+            "investor brief quality material",
+        ),
+        "brief_valuation": mapping_or_none(
+            candidate.get("valuation") if isinstance(candidate, dict) else None,
+            "investor brief valuation material",
+        ),
+    }
+
+
 def canonical_factor_binding(summary: Any) -> Dict[str, Any]:
     """Bind one legal canonical decision to the current deterministic trace."""
 
@@ -988,6 +1097,8 @@ def canonical_factor_binding(summary: Any) -> Dict[str, Any]:
         # snapshots without this digest cannot pass a *current* Product gate.
         "risk_material_binding_version": "factor-brief-risk-atoms-v1",
         "risk_material_sha256": digest(_bound_risk_material(summary)),
+        "asset_material_binding_version": "factor-brief-quality-valuation-v1",
+        "asset_material_sha256": digest(_bound_asset_material(summary)),
     }
 
 
@@ -1017,6 +1128,8 @@ def validate_investor_brief_binding(
         raise ValueError("investor brief canonical binding is missing or stale")
     if digest(_bound_risk_material(summary, candidate)) != expected["risk_material_sha256"]:
         raise ValueError("investor brief risk material identity is stale")
+    if digest(_bound_asset_material(summary, candidate)) != expected["asset_material_sha256"]:
+        raise ValueError("investor brief quality/valuation material identity is stale")
     return candidate
 
 
@@ -1521,6 +1634,12 @@ def _build_asset_research_brief_v1(trend_result, summary, *, asset_type: str = "
         sections.get("valuation"),
         ("\u4f30\u503c\uff1a", "\u4f30\u503c:", "底层估值：", "底层估值:"),
     )
+    quality_growth = _asset_brief_v1_text(
+        sections.get("quality_growth"),
+        ("质量成长：", "质量成长:"),
+    )
+    quality_document = _mapping(summary.get("fundamental_quality"))
+    valuation_document = _mapping(summary.get("business_valuation"))
     cost = _asset_brief_v1_text(
         sections.get("cost_structure"),
         ("\u6210\u672c/\u7b79\u7801\uff1a", "\u6210\u672c/\u7b79\u7801:"),
@@ -1534,6 +1653,15 @@ def _build_asset_research_brief_v1(trend_result, summary, *, asset_type: str = "
     valuation_displayable = (
         _asset_brief_v1_usable(valuation)
         or "已取得基础估值数据" in str(valuation or "")
+    )
+    quality_displayable = (
+        asset_type == "stock"
+        and str(quality_document.get("status") or "").upper() == "READY"
+        and _asset_brief_v1_usable(quality_growth)
+    )
+    structured_valuation_ready = (
+        str(valuation_document.get("status") or "").upper() == "READY"
+        and valuation_document.get("product_admitted") is True
     )
 
     material_events = _material_event_sentences(summary)
@@ -1737,11 +1865,37 @@ def _build_asset_research_brief_v1(trend_result, summary, *, asset_type: str = "
         "trigger": trigger,
         "invalidation": invalidation,
         "risk_notes": risks,
+        "quality": (
+            {
+                "status": "READY" if quality_displayable else str(
+                    quality_document.get("status") or "MISSING"
+                ).upper(),
+                "label": "质量成长",
+                "summary": quality_growth if quality_displayable else "",
+                "uncertainty": str(quality_document.get("uncertainty_zh") or "").strip(),
+                "receipt_hash": quality_document.get("receipt_hash"),
+            }
+            if asset_type == "stock"
+            else {
+                "status": "NOT_APPLICABLE",
+                "label": "质量成长",
+                "summary": "",
+                "uncertainty": "ETF不适用单公司财务质量口径。",
+                "receipt_hash": None,
+            }
+        ),
         "valuation": {
-            "status": "PARTIAL_CURRENT" if valuation_displayable else "MISSING",
+            "status": (
+                "READY"
+                if structured_valuation_ready
+                else str(valuation_document.get("status") or "").upper()
+                if valuation_document
+                else "PARTIAL_CURRENT" if valuation_displayable else "MISSING"
+            ),
             "label": "底层估值" if asset_type == "etf" else "估值",
-            "summary": valuation if valuation_displayable else "",
-            "uncertainty": (
+            "summary": valuation if (valuation_displayable or valuation_document) else "",
+            "uncertainty": str(valuation_document.get("uncertainty_zh") or "").strip()
+            or (
                 ""
                 if valuation_displayable
                 else (
@@ -1750,6 +1904,11 @@ def _build_asset_research_brief_v1(trend_result, summary, *, asset_type: str = "
                     else "尚未绑定可靠合理价格区间、历史分位与同行比较。"
                 )
             ),
+            "route_id": valuation_document.get("route_id"),
+            "methods": valuation_document.get("methods") or (),
+            "fair_value": valuation_document.get("fair_value"),
+            "price_position": valuation_document.get("price_position"),
+            "receipt_hash": valuation_document.get("receipt_hash"),
         },
         "asset_specific": (
             {
@@ -1772,7 +1931,12 @@ def _build_asset_research_brief_v1(trend_result, summary, *, asset_type: str = "
             "available": False,
             "reason": "\u5c1a\u672a\u5b8c\u6210\u72ec\u7acb\u6821\u51c6\u3002",
         },
-        "detail_refs": ["factor_decision.sections", "trend_result"],
+        "detail_refs": [
+            "factor_decision.sections",
+            "factor_decision.fundamental_quality",
+            "factor_decision.business_valuation",
+            "trend_result",
+        ],
     }
 
 
@@ -1803,6 +1967,16 @@ def build_stock_factor_decision_summary(
     """
 
     asset_type = "etf" if str(asset_type or "").lower() == "etf" else "stock"
+    expected_asset_id = str(getattr(trend_result, "code", "") or "").strip()
+    fundamental_quality, business_valuation = _validated_asset_material(
+        fundamental_context,
+        asset_type=asset_type,
+        expected_asset_id=expected_asset_id or None,
+    )
+    quality_growth = _quality_summary(
+        fundamental_quality,
+        asset_type=asset_type,
+    )
     if trend_result is None and not include_canonical:
         raise ValueError("trend_result is required")
 
@@ -2043,10 +2217,10 @@ def build_stock_factor_decision_summary(
     if "nearest_support" in structured_context:
         support = _price_structure_level(price_structure_evidence, "nearest_support")
 
-    valuation = (
-        "底层估值：数据不足，暂不判断高低。"
-        if asset_type == "etf"
-        else _valuation_summary(fundamental_context)
+    valuation = _valuation_summary(
+        fundamental_context,
+        asset_type=asset_type,
+        business_valuation=business_valuation,
     )
     cost_structure = (
         "成本/筹码：ETF不适用个股筹码口径。"
@@ -2060,6 +2234,7 @@ def build_stock_factor_decision_summary(
         "momentum": _volatility_momentum_summary(volatility_momentum_evidence, trend_result),
         "pattern_trigger": _pattern_trigger_summary(pattern_trigger_evidence),
         "cost_structure": cost_structure,
+        "quality_growth": quality_growth,
         "valuation": valuation,
         "market_sector_regime": (
             "市场/板块：原始风险提示未通过本次方法执行身份准入，不据此作最终否决。"
@@ -2076,6 +2251,7 @@ def build_stock_factor_decision_summary(
         "trend_relative_strength",
         "supply_demand_volume_price",
         "price_structure",
+        "quality_growth",
         "valuation",
     ):
         text = sections[key]
@@ -2160,6 +2336,9 @@ def build_stock_factor_decision_summary(
         "action_condition": action_condition,
         "invalidation_condition": invalidation_condition,
         "valuation": valuation,
+        "quality_growth": quality_growth,
+        "fundamental_quality": fundamental_quality,
+        "business_valuation": business_valuation,
         "cost_structure": cost_structure,
         "risk_notes": _risk_notes(trend_result),
         "sections": sections,

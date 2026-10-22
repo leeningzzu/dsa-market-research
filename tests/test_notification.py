@@ -2406,7 +2406,8 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         self, mock_get_config: mock.MagicMock
     ):
         result = _make_investor_brief_result()
-        brief = result.dashboard["factor_decision"]["investor_brief"]
+        factor = result.dashboard["factor_decision"]
+        brief = factor["investor_brief"]
         brief["asset_type"] = "etf"
         brief["valuation"] = {
             "status": "PARTIAL_CURRENT",
@@ -2445,6 +2446,12 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
             },
             "summary": None,
         }
+        # This test intentionally changes otherwise legal Product atoms. Seal
+        # them before the actual renderer; post-seal edits must remain invalid.
+        factor["canonical_decision_identity"] = canonical_factor_binding(factor)
+        brief["canonical_binding"] = deepcopy(
+            factor["canonical_decision_identity"]
+        )
 
         for renderer_enabled in (False, True):
             mock_get_config.return_value = _make_config(

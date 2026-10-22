@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [修复] 将既有 fundamental_quality 与九类 business_valuation 回执实际绑定到 Factor、投资者简报和原邮件消费者：股票展示可核质量事实与业务适用估值方法/区间/不确定性，ETF展示NAV估值路线且质量标记不适用；材料纳入 canonical/brief 身份并拒绝跨资产或封存后篡改。该消费修复不改变评分、策略、veto、候选配额、V2.5固定框架或发送行为。
 - [修复] AUTO_SCREEN 的股票/ETF重点分组不再把默认插补分、缺失或过期快照来源、以及绕过原筛选执行链的旧候选当作FOCUS；候选仍保留在可审计的REMAINING池，只有评分输入完整、快照来源可核且原screening execution receipt完成三项均显式成立时才可进入重点Top3。该门禁不改变粗筛分数、候选配额、canonical/veto、V2.5结构或概率语义。
 - [文档] 同步当前控制页到候选HEAD a66ec7df：记录首个MTF MACD/RSI方法窗口runtime trace、77项目标回归、四资产证明上限与下一source-capability切片；确认Project 01/05 v3.470已安装，避免其他模型重复执行已完成切片。功能分支仍无PR/Linux CI，不能冒充main。
 - [文档] 在既有stock-dsa-roadmap前置当前控制页、四资产七周期依赖投影、九条保留工作线、两条产品反馈链与工程旁路、阶段Owner/退出条件及唯一下一切片；明确6cd2b04d候选回执不等于四对象全READY/全仓CI/收益，修正旧PR30仍等待复验的过期“当前”叙述。保持原775边图、V2.5、分数、数据抓取和业务代码不变；配套01/05必要checkpoint恢复跨Chat连续性，而非增加新架构或复盘Agent。
