@@ -14,6 +14,10 @@ import math
 from typing import Any
 
 from src.services.pit_identity import sha256_payload
+from src.services.provider_operation_rights import (
+    ProviderOperationRightsError,
+    validate_provider_operation_rights_evidence,
+)
 
 
 SCHEMA_VERSION = "data-object-admission-receipt-v1"
@@ -52,6 +56,7 @@ _REQUIRED_RIGHTS_FIELDS = frozenset({
     "training",
     "redistribution",
 })
+_OPTIONAL_RECEIPT_FIELDS = frozenset({"rights_evidence"})
 
 
 class DataObjectAdmissionError(ValueError):
@@ -136,6 +141,74 @@ def seal_data_object_admission_receipt(payload: Mapping[str, Any]) -> dict[str, 
     return body
 
 
+def build_operation_specific_data_admission_receipt(
+    obligation: Mapping[str, Any],
+    source_identity: Mapping[str, Any],
+    rights_evidence: Mapping[str, Any],
+    *,
+    units: Mapping[str, str],
+    available_at: str | datetime,
+    revision: str,
+    vintage: str | datetime,
+) -> dict[str, Any]:
+    """Bind one observed source identity to one externally evidenced operation.
+
+    The caller cannot supply a free-form rights map.  Product/storage/training/
+    redistribution decisions come only from the validated rights-evidence
+    owner and are sealed into the existing admission receipt.
+    """
+    if not isinstance(obligation, Mapping) or not isinstance(source_identity, Mapping):
+        raise DataObjectAdmissionError("DATA_OBJECT_ADMISSION_BUILD_INPUT_INVALID")
+    try:
+        evidence = validate_provider_operation_rights_evidence(rights_evidence)
+    except ProviderOperationRightsError as exc:
+        raise DataObjectAdmissionError("DATA_OBJECT_ADMISSION_RIGHTS_EVIDENCE_INVALID") from exc
+    provider = _text(source_identity.get("provider_identity"))
+    route = _text(source_identity.get("provider_route"))
+    if provider != evidence.get("provider_identity"):
+        raise DataObjectAdmissionError("DATA_OBJECT_ADMISSION_RIGHTS_PROVIDER_MISMATCH")
+    if route != evidence.get("provider_route"):
+        raise DataObjectAdmissionError("DATA_OBJECT_ADMISSION_RIGHTS_ROUTE_MISMATCH")
+    source_hash = _text(source_identity.get("identity_hash")).lower()
+    content_hash = _text(source_identity.get("content_sha256")).lower()
+    if not _is_sha256(source_hash) or not _is_sha256(content_hash):
+        raise DataObjectAdmissionError("DATA_OBJECT_ADMISSION_SOURCE_IDENTITY_INVALID")
+    observed_at = _text(source_identity.get("observed_at"))
+    _parse_aware_datetime(observed_at)
+    completed_through = _text(
+        source_identity.get("returned_end")
+        or source_identity.get("available_at_max")
+    )
+    if not completed_through:
+        raise DataObjectAdmissionError("DATA_OBJECT_ADMISSION_COMPLETED_THROUGH_MISSING")
+    adjustment_basis = _text(source_identity.get("observed_adjustment_basis")).upper()
+    currency = _text(source_identity.get("currency")).upper()
+    if not adjustment_basis or not currency:
+        raise DataObjectAdmissionError("DATA_OBJECT_ADMISSION_SOURCE_SEMANTICS_MISSING")
+    payload = {
+        "schema_version": SCHEMA_VERSION,
+        "dataset_id": _text(obligation.get("dataset_id")),
+        "provider_identity": provider,
+        "provider_route": route,
+        "native_frequency": _text(obligation.get("native_frequency")),
+        "source_identity_hash": source_hash,
+        "content_sha256": content_hash,
+        "observed_at": observed_at,
+        "available_at": _aware_text(available_at),
+        "completed_through": completed_through,
+        "units": dict(units),
+        "currency": currency,
+        "adjustment_basis": adjustment_basis,
+        "revision": _text(revision),
+        "vintage": _aware_text(vintage),
+        "rights": dict(evidence["rights"]),
+        "rights_evidence": evidence,
+        "historical_pit_eligible": False,
+        "consumer_scope": _text(obligation.get("product_consumer")),
+    }
+    return seal_data_object_admission_receipt(payload)
+
+
 def compile_data_object_admission(
     obligation: Mapping[str, Any],
     receipt: Mapping[str, Any] | None,
@@ -163,6 +236,9 @@ def compile_data_object_admission(
         "strategy_upgrade_authority": False,
         "independent_action_authority": False,
         "receipt_hash": None,
+        "rights_evidence_hash": None,
+        "operation_purpose": None,
+        "delivery_scope": None,
     }
     if not applicable:
         base["reasons"] = ["DATA_OBJECT_NOT_APPLICABLE_TO_ASSET_ROUTE"]
@@ -209,6 +285,7 @@ def compile_data_object_admission(
     if not semantic_complete:
         reasons.append("UNITS_BASIS_REVISION_OR_VINTAGE_UNKNOWN")
     rights = normalized["rights"]
+    rights_evidence = normalized.get("rights_evidence")
     product_allowed = rights["product_use"] == "ALLOWED"
     if not product_allowed:
         reasons.append("PRODUCT_USE_RIGHT_NOT_ALLOWED")
@@ -267,12 +344,32 @@ def compile_data_object_admission(
         "revision": normalized["revision"],
         "vintage": normalized["vintage"],
         "rights": dict(rights),
+        "rights_evidence_hash": (
+            rights_evidence.get("evidence_hash")
+            if isinstance(rights_evidence, Mapping)
+            else None
+        ),
+        "operation_purpose": (
+            rights_evidence.get("operation_purpose")
+            if isinstance(rights_evidence, Mapping)
+            else None
+        ),
+        "delivery_scope": (
+            rights_evidence.get("delivery_scope")
+            if isinstance(rights_evidence, Mapping)
+            else None
+        ),
         "receipt_hash": normalized["receipt_hash"],
     })
 
 
 def validate_data_object_admission_receipt(value: Mapping[str, Any]) -> dict[str, Any]:
-    if not isinstance(value, Mapping) or set(value) != _REQUIRED_RECEIPT_FIELDS:
+    keys = set(value) if isinstance(value, Mapping) else set()
+    if (
+        not isinstance(value, Mapping)
+        or not _REQUIRED_RECEIPT_FIELDS <= keys
+        or keys - _REQUIRED_RECEIPT_FIELDS - _OPTIONAL_RECEIPT_FIELDS
+    ):
         raise DataObjectAdmissionError("DATA_OBJECT_ADMISSION_RECEIPT_SCHEMA_MISMATCH")
     result = dict(value)
     if result.get("schema_version") != SCHEMA_VERSION:
@@ -297,6 +394,21 @@ def validate_data_object_admission_receipt(value: Mapping[str, Any]) -> dict[str
     if any(value not in RIGHTS_VALUES for value in normalized_rights.values()):
         raise DataObjectAdmissionError("DATA_OBJECT_ADMISSION_RIGHTS_VALUE_INVALID")
     result["rights"] = normalized_rights
+    rights_evidence = result.get("rights_evidence")
+    if rights_evidence is not None:
+        try:
+            rights_evidence = validate_provider_operation_rights_evidence(rights_evidence)
+        except ProviderOperationRightsError as exc:
+            raise DataObjectAdmissionError("DATA_OBJECT_ADMISSION_RIGHTS_EVIDENCE_INVALID") from exc
+        if rights_evidence.get("provider_identity") != result.get("provider_identity"):
+            raise DataObjectAdmissionError("DATA_OBJECT_ADMISSION_RIGHTS_PROVIDER_MISMATCH")
+        if rights_evidence.get("provider_route") != result.get("provider_route"):
+            raise DataObjectAdmissionError("DATA_OBJECT_ADMISSION_RIGHTS_ROUTE_MISMATCH")
+        if rights_evidence.get("rights") != normalized_rights:
+            raise DataObjectAdmissionError("DATA_OBJECT_ADMISSION_RIGHTS_DECISION_MISMATCH")
+        result["rights_evidence"] = rights_evidence
+    elif normalized_rights["product_use"] == "ALLOWED":
+        raise DataObjectAdmissionError("DATA_OBJECT_ADMISSION_RIGHTS_EVIDENCE_MISSING")
     if type(result.get("historical_pit_eligible")) is not bool:
         raise DataObjectAdmissionError("DATA_OBJECT_ADMISSION_PIT_FLAG_INVALID")
     _parse_aware_datetime(result["observed_at"])
@@ -358,6 +470,20 @@ def _text(value: Any) -> str:
 def _is_sha256(value: Any) -> bool:
     text = _text(value).lower()
     return len(text) == 64 and all(char in "0123456789abcdef" for char in text)
+
+
+def _aware_text(value: Any) -> str:
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text = _text(value).replace("Z", "+00:00")
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError as exc:
+            raise DataObjectAdmissionError("DATA_OBJECT_ADMISSION_TIMESTAMP_INVALID") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise DataObjectAdmissionError("DATA_OBJECT_ADMISSION_TIMESTAMP_NAIVE")
+    return parsed.astimezone(timezone.utc).isoformat()
 
 
 def _parse_aware_datetime(value: Any) -> datetime:

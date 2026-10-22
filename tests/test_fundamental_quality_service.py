@@ -15,6 +15,11 @@ from src.services.fundamental_quality_service import (
     compile_fundamental_quality,
     validate_fundamental_quality,
 )
+from src.services.provider_operation_rights import (
+    TEST_PURPOSE,
+    TEST_SCOPE,
+    compile_provider_operation_rights_evidence,
+)
 
 
 _META = {
@@ -27,7 +32,7 @@ _META = {
 
 def _admission(dataset_id: str, **receipt_overrides):
     frequency = _META[dataset_id]
-    receipt = seal_data_object_admission_receipt({
+    payload = {
         "schema_version": "data-object-admission-receipt-v1",
         "dataset_id": dataset_id,
         "provider_identity": "synthetic-lawful-provider",
@@ -52,7 +57,23 @@ def _admission(dataset_id: str, **receipt_overrides):
         "historical_pit_eligible": False,
         "consumer_scope": "ASSET_RESEARCH_BRIEF",
         **receipt_overrides,
-    })
+    }
+    payload.setdefault(
+        "rights_evidence",
+        compile_provider_operation_rights_evidence(
+            provider_identity=payload["provider_identity"],
+            provider_route=payload["provider_route"],
+            operation_purpose=TEST_PURPOSE,
+            delivery_scope=TEST_SCOPE,
+            requested_actions={
+                key: payload["rights"][key] == "ALLOWED"
+                for key in ("product_use", "storage", "training", "redistribution")
+            },
+            commercial_use=False,
+            observed_at=payload["observed_at"],
+        ),
+    )
+    receipt = seal_data_object_admission_receipt(payload)
     return compile_data_object_admission({
         "dataset_id": dataset_id,
         "native_frequency": frequency,

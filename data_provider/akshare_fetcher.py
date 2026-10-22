@@ -29,8 +29,9 @@ import os
 import random
 import threading
 import time
+from importlib import metadata
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List, Tuple
 
 import pandas as pd
@@ -52,6 +53,16 @@ from .realtime_types import (
     safe_float, safe_int  # 使用统一的类型转换函数
 )
 from .us_index_mapping import is_us_index_code, is_us_stock_code
+from .daily_data_identity import (
+    attach_daily_data_identity,
+    build_daily_data_identity,
+    sha256_payload,
+)
+from .intraday_data_identity import (
+    attach_intraday_data_identity,
+    build_intraday_data_identity,
+)
+from src.services.intraday_bar_service import normalize_cn_completed_5m_bars
 
 
 # 保留旧的 RealtimeQuote 别名，用于向后兼容
@@ -558,6 +569,28 @@ class AkshareFetcher(BaseFetcher):
 
             if df is not None and not df.empty:
                 logger.info(f"[API返回] ak.stock_zh_a_hist 成功: {len(df)} 行, 耗时 {api_elapsed:.2f}s")
+                normalized = self._normalize_data(df, stock_code)
+                identity = build_daily_data_identity(
+                    normalized,
+                    provider_identity=self.name,
+                    provider_route="akshare.stock_zh_a_hist",
+                    actual_response_branch="period=daily;adjust=qfq",
+                    requested_adjustment_basis="qfq",
+                    observed_adjustment_basis="qfq",
+                    basis_evidence=(
+                        "successful_nonempty_query:adjust=qfq;"
+                        "akshare_docs@fe10d1decb705e5f43cc8ca3339ca39e580fb8f4"
+                    ),
+                    requested_start=start_date,
+                    requested_end=end_date,
+                    currency="CNY",
+                    volume_unit="LOT_100_SHARES",
+                    amount_unit="CNY",
+                    identity_state="OBSERVED",
+                    observed_at=datetime.now(timezone.utc),
+                    instrument=stock_code,
+                )
+                attach_daily_data_identity(df, identity)
                 return df
             else:
                 logger.warning(f"[API返回] ak.stock_zh_a_hist 返回空数据")
@@ -710,6 +743,28 @@ class AkshareFetcher(BaseFetcher):
                 logger.info(f"[API返回] 列名: {list(df.columns)}")
                 logger.info(f"[API返回] 日期范围: {df['日期'].iloc[0]} ~ {df['日期'].iloc[-1]}")
                 logger.debug(f"[API返回] 最新3条数据:\n{df.tail(3).to_string()}")
+                normalized = self._normalize_data(df, stock_code)
+                identity = build_daily_data_identity(
+                    normalized,
+                    provider_identity=self.name,
+                    provider_route="akshare.fund_etf_hist_em",
+                    actual_response_branch="period=daily;adjust=qfq",
+                    requested_adjustment_basis="qfq",
+                    observed_adjustment_basis="qfq",
+                    basis_evidence=(
+                        "successful_nonempty_query:adjust=qfq;"
+                        "akshare_docs@fe10d1decb705e5f43cc8ca3339ca39e580fb8f4"
+                    ),
+                    requested_start=start_date,
+                    requested_end=end_date,
+                    currency="CNY",
+                    volume_unit="UNKNOWN",
+                    amount_unit="UNKNOWN",
+                    identity_state="OBSERVED",
+                    observed_at=datetime.now(timezone.utc),
+                    instrument=stock_code,
+                )
+                attach_daily_data_identity(df, identity)
             else:
                 logger.warning(f"[API返回] ak.fund_etf_hist_em 返回空数据, 耗时 {api_elapsed:.2f}s")
             
@@ -884,6 +939,128 @@ class AkshareFetcher(BaseFetcher):
             
             raise DataFetchError(f"Akshare 获取港股数据失败: {e}") from e
     
+    def get_intraday_data(
+        self,
+        stock_code: str,
+        *,
+        start_date: str,
+        end_date: str,
+        frequency: str = "5",
+        observed_at: Optional[datetime] = None,
+    ) -> pd.DataFrame:
+        """Fetch one explicit AKShare completed-5m Stock/ETF route.
+
+        This method binds source/query identity only. Product use is owned by
+        operation-specific rights admission and never grants storage, training,
+        redistribution, strategy or delivery authority.
+        """
+        if str(frequency) != "5":
+            raise DataFetchError("AKShare intraday only admits canonical 5m input")
+        code = normalize_stock_code(stock_code)
+        if _is_us_code(code) or _is_hk_code(code) or is_bse_code(code):
+            raise DataFetchError(f"AKShare CN intraday does not support market code {stock_code}")
+        try:
+            start = datetime.strptime(start_date, "%Y-%m-%d")
+            end = datetime.strptime(end_date, "%Y-%m-%d")
+        except (TypeError, ValueError) as exc:
+            raise DataFetchError("AKShare intraday request date invalid") from exc
+        if start > end:
+            raise DataFetchError("AKShare intraday request range reversed")
+
+        import akshare as ak
+
+        self._set_random_user_agent()
+        self._enforce_rate_limit()
+        is_etf = _is_etf_code(code)
+        provider_route = (
+            "akshare.fund_etf_hist_min_em"
+            if is_etf
+            else "akshare.stock_zh_a_hist_min_em"
+        )
+        query = {
+            "symbol": code,
+            "start_date": f"{start_date} 09:30:00",
+            "end_date": f"{end_date} 15:00:00",
+            "period": "5",
+            "adjust": "qfq",
+        }
+        try:
+            raw_source = (
+                ak.fund_etf_hist_min_em(**query)
+                if is_etf
+                else ak.stock_zh_a_hist_min_em(**query)
+            )
+        except Exception as exc:
+            raise DataFetchError(f"AKShare intraday fetch failed: {exc}") from exc
+        if not isinstance(raw_source, pd.DataFrame) or raw_source.empty:
+            raise DataFetchError(f"AKShare intraday returned no rows for {stock_code}")
+        required = {"时间", "开盘", "收盘", "最高", "最低", "成交量", "成交额"}
+        if not required.issubset(raw_source.columns):
+            raise DataFetchError(
+                "AKShare intraday field drift: " + ",".join(map(str, raw_source.columns))
+            )
+
+        timestamps = pd.to_datetime(raw_source["时间"], errors="coerce")
+        if timestamps.isna().any():
+            raise DataFetchError("AKShare intraday timestamp invalid")
+        if (
+            (timestamps < pd.Timestamp(f"{start_date} 00:00:00"))
+            | (timestamps > pd.Timestamp(f"{end_date} 23:59:59"))
+        ).any():
+            raise DataFetchError("AKShare intraday response outside requested date range")
+        raw = pd.DataFrame(
+            {
+                "date": timestamps.dt.strftime("%Y-%m-%d"),
+                "time": timestamps.dt.strftime("%Y%m%d%H%M%S") + "000",
+                "code": code,
+                "open": raw_source["开盘"],
+                "high": raw_source["最高"],
+                "low": raw_source["最低"],
+                "close": raw_source["收盘"],
+                "volume": raw_source["成交量"],
+                "amount": raw_source["成交额"],
+                "adjustflag": "qfq",
+            }
+        )
+        observed = observed_at or datetime.now(timezone.utc)
+        if observed.tzinfo is None or observed.utcoffset() is None:
+            observed = observed.replace(tzinfo=timezone.utc)
+        frame = normalize_cn_completed_5m_bars(
+            raw,
+            stock_code=code,
+            data_source=self.name,
+            observed_at=observed,
+        )
+        if frame.empty:
+            raise DataFetchError("AKShare intraday returned no completed 5m bars")
+        identity = build_intraday_data_identity(
+            frame,
+            provider_identity=self.name,
+            provider_route=provider_route,
+            package_version=metadata.version("akshare"),
+            query_identity=query,
+            requested_adjustment_basis="qfq",
+            observed_adjustment_basis="qfq",
+            basis_evidence=(
+                "successful_nonempty_query:adjust=qfq;"
+                "akshare_docs@fe10d1decb705e5f43cc8ca3339ca39e580fb8f4"
+            ),
+            timeframe="5m",
+            timezone_name="Asia/Shanghai",
+            session_calendar="XSHG",
+            currency="CNY",
+            volume_unit=("UNKNOWN" if is_etf else "LOT_100_SHARES"),
+            amount_unit="UNKNOWN",
+            requested_start=start_date,
+            requested_end=end_date,
+            identity_state="OBSERVED",
+            observed_at=observed,
+            source_rows_sha256=sha256_payload(raw.astype(str).to_dict("records")),
+        )
+        attach_intraday_data_identity(frame, identity)
+        frame["intraday_data_identity_hash"] = identity["identity_hash"]
+        return frame
+
     def _normalize_data(self, df: pd.DataFrame, stock_code: str) -> pd.DataFrame:
         """
         标准化 Akshare 数据

@@ -6,10 +6,16 @@ import pytest
 
 from src.services.data_object_admission import (
     DataObjectAdmissionError,
+    build_operation_specific_data_admission_receipt,
     compile_data_object_admission,
     compile_data_object_admission_view,
     seal_data_object_admission_receipt,
     validate_compiled_data_object_admission,
+)
+from src.services.provider_operation_rights import (
+    TEST_PURPOSE,
+    TEST_SCOPE,
+    compile_provider_operation_rights_evidence,
 )
 
 
@@ -54,6 +60,21 @@ def _receipt(**overrides):
         "consumer_scope": "STOCK_ASSET_RESEARCH",
     }
     payload.update(overrides)
+    payload.setdefault(
+        "rights_evidence",
+        compile_provider_operation_rights_evidence(
+            provider_identity=payload["provider_identity"],
+            provider_route=payload["provider_route"],
+            operation_purpose=TEST_PURPOSE,
+            delivery_scope=TEST_SCOPE,
+            requested_actions={
+                key: payload["rights"][key] == "ALLOWED"
+                for key in ("product_use", "storage", "training", "redistribution")
+            },
+            commercial_use=False,
+            observed_at=payload["observed_at"],
+        ),
+    )
     return seal_data_object_admission_receipt(payload)
 
 
@@ -71,6 +92,59 @@ def test_product_admission_requires_explicit_identity_semantics_and_rights():
     assert row["independent_action_authority"] is False
     assert len(row["admission_hash"]) == 64
     assert validate_compiled_data_object_admission(row) == row
+    assert len(row["rights_evidence_hash"]) == 64
+    assert row["operation_purpose"] == TEST_PURPOSE
+    assert row["delivery_scope"] == TEST_SCOPE
+
+
+def test_allowed_rights_without_operation_evidence_are_rejected():
+    receipt = _receipt()
+    receipt.pop("receipt_hash")
+    receipt.pop("rights_evidence")
+    receipt = seal_data_object_admission_receipt(receipt)
+    with pytest.raises(DataObjectAdmissionError, match="RIGHTS_EVIDENCE_MISSING"):
+        compile_data_object_admission(OBLIGATION, receipt)
+
+
+def test_operation_specific_builder_binds_source_and_rights_evidence():
+    evidence = compile_provider_operation_rights_evidence(
+        provider_identity="synthetic-lawful-provider",
+        provider_route="synthetic.completed_daily",
+        operation_purpose=TEST_PURPOSE,
+        delivery_scope=TEST_SCOPE,
+        requested_actions={
+            "product_use": True,
+            "storage": False,
+            "training": False,
+            "redistribution": False,
+        },
+        commercial_use=False,
+        observed_at="2026-10-21T10:00:00+00:00",
+    )
+    receipt = build_operation_specific_data_admission_receipt(
+        OBLIGATION,
+        {
+            "provider_identity": "synthetic-lawful-provider",
+            "provider_route": "synthetic.completed_daily",
+            "identity_hash": "a" * 64,
+            "content_sha256": "b" * 64,
+            "observed_at": "2026-10-21T10:00:00+00:00",
+            "returned_end": "2026-10-20",
+            "observed_adjustment_basis": "qfq",
+            "currency": "CNY",
+        },
+        evidence,
+        units={"price": "CNY_PER_SHARE", "volume": "SHARE", "amount": "CNY"},
+        available_at="2026-10-21T09:00:00+00:00",
+        revision="ORIGINAL_OBSERVATION",
+        vintage="2026-10-21T09:00:00+00:00",
+    )
+    row = compile_data_object_admission(OBLIGATION, receipt)
+    assert row["product_admitted"] is True
+    assert row["storage_admitted"] is False
+    assert row["operation_purpose"] == TEST_PURPOSE
+
+
 
 
 def test_unknown_product_rights_and_unknown_units_remain_identity_only():

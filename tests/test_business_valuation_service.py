@@ -17,6 +17,11 @@ from src.services.data_object_admission import (
     seal_data_object_admission_receipt,
 )
 from src.services import evidence_traceability_registry as registry
+from src.services.provider_operation_rights import (
+    TEST_PURPOSE,
+    TEST_SCOPE,
+    compile_provider_operation_rights_evidence,
+)
 
 
 _DATASET_META = {
@@ -76,7 +81,7 @@ def _admission(dataset_id="P_FIN_VINTAGE", **receipt_overrides):
         if dataset_id in {"P_FIN_VINTAGE", "E_NAV_IOPV"}
         else "2026-10-20"
     )
-    receipt = seal_data_object_admission_receipt({
+    payload = {
         "schema_version": "data-object-admission-receipt-v1",
         "dataset_id": dataset_id,
         "provider_identity": "synthetic-lawful-provider",
@@ -101,7 +106,23 @@ def _admission(dataset_id="P_FIN_VINTAGE", **receipt_overrides):
         "historical_pit_eligible": False,
         "consumer_scope": consumer,
         **receipt_overrides,
-    })
+    }
+    payload.setdefault(
+        "rights_evidence",
+        compile_provider_operation_rights_evidence(
+            provider_identity=payload["provider_identity"],
+            provider_route=payload["provider_route"],
+            operation_purpose=TEST_PURPOSE,
+            delivery_scope=TEST_SCOPE,
+            requested_actions={
+                key: payload["rights"][key] == "ALLOWED"
+                for key in ("product_use", "storage", "training", "redistribution")
+            },
+            commercial_use=False,
+            observed_at=payload["observed_at"],
+        ),
+    )
+    receipt = seal_data_object_admission_receipt(payload)
     return compile_data_object_admission(obligation, receipt)
 
 
