@@ -312,7 +312,9 @@ def test_method_window_policy_view_is_complete_manifest_bound_and_non_mutating()
     assert methods["CHAN"]["window_classes"] == ("INCREMENTAL_STATE_MACHINE",)
     assert methods["CHAN"]["current_execution_timeframes"] == ()
     assert methods["VALUATION"]["target_timeframes"] == ("asset",)
-    assert methods["VALUATION"]["window_classes"] == ("VINTAGE_ASOF",)
+    assert methods["VALUATION"]["window_classes"] == ("VINTAGE_ASOF", "CROSS_SECTIONAL_ASOF")
+    assert methods["VALUATION"]["consumer_scope"] == "ASSET_LAYER"
+    assert methods["VALUATION"]["current_execution_timeframes"] == ("asset",)
 
     pattern_slots = {
         slot["id"]
@@ -349,8 +351,10 @@ def test_method_window_policy_view_is_complete_manifest_bound_and_non_mutating()
         "warmup": 26,
         "config_hash": "5ea82ff077b04d411d4f62b41800d07ebbd7a547726db2481e3aa07db61c5b0f",
     }
-    assert reg.digest(pre_intraday_manifest) == "f5e3a015bcdcfae5f74f91008f037414a234c2bb4c2eb9c51297006b5109fa19"
-    assert reg.MANIFEST_HASH == "3e3fbf1160cedf84f326b2a4183c306c4b58b78e83001f70e865575f5bbd9375"
+    # Explicit manifest-version refreeze for accepted source-bound Quality/Valuation
+    # owners; historical pre-admission digests remain in Git. V2.5 is unchanged.
+    assert reg.digest(pre_intraday_manifest) == "93755e701f5be6d2262ec5cdd8413fe4f232f9ae71e85778f86e4c6f672c338f"
+    assert reg.MANIFEST_HASH == "72626f853407bac7ac7a500707aa40b6c89b307f944c39a303b5601f15fbd64e"
     assert reg.MANIFEST_HASH == manifest_before == reg.digest(reg.manifest_document())
     assert reg.digest(reg.METRIC_BINDINGS) == metrics_before == "ac2e214238229453592464d99ed6341651f7d232c9339da66d2fec7fc4d6729a"
     assert not any(
@@ -923,9 +927,9 @@ def test_current_intraday_context_keeps_unconfirmed_structure_and_trigger_unadmi
         assert cells[(timeframe, "MOMENTUM")]["state"] == "PARTIAL"
         assert cells[(timeframe, "MTF")]["state"] == "PARTIAL"
         assert cells[(timeframe, "COST")]["state"] == "NOT_ADMITTED"
-        assert cells[(timeframe, "STRUCTURE")]["state"] == (
-            "MISSING" if timeframe in {"60m", "30m"} else "NOT_ADMITTED"
-        )
+        # Four descriptive pivot owners exist; absent confirmation is MISSING,
+        # not READY or a strategy trigger.
+        assert cells[(timeframe, "STRUCTURE")]["state"] == "MISSING"
         assert cells[(timeframe, "PATTERN")]["state"] == "NOT_ADMITTED"
         assert cells[(timeframe, "REGIME")]["state"] == "NOT_APPLICABLE"
     assert factor["strategy_eligibility"]["required_evidence"]["thirty_minute_trigger"] == "UNKNOWN"
@@ -1053,8 +1057,13 @@ def test_method_window_policy_keeps_asset_only_valuation_as_legal_nontrigger():
     profiles = reg.validate_method_window_profiles()
     valuation = next(profile for profile in profiles if profile.method_id == "VALUATION")
     assert valuation.target_timeframes == ("asset",)
-    assert valuation.current_execution_timeframes == ()
-    assert valuation.implementation_state == "DEFERRED_WITH_OWNER_AND_REENTRY"
+    assert valuation.current_execution_timeframes == ("asset",)
+    assert valuation.implementation_state == "EXISTING_REUSED"
+    assert valuation.consumer_scope == "ASSET_LAYER"
+    assert valuation.family_targets == ()
+    assert "VALUATION" in {
+        row["method_id"] for row in reg.compile_timeframe_family_matrix(native_summary())["non_matrix_methods"]
+    }
 
 
 def test_score_trace_addition_preserves_independent_main_preimage_when_receipt_absent():
