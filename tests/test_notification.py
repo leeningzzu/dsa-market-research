@@ -2039,7 +2039,7 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         # must not certify omission of asset, classic-method or research planes.
         result = _make_investor_brief_result()
         required = (
-            "QUALITY：未准入", "VALUATION：未准入",
+            "QUALITY：证据不足", "VALUATION：证据不足",
             "GLOBAL：未准入", "BREADTH：未准入",
             "CHAN：未准入", "WAVE：未准入",
             "EXTRA_INDICATORS：未准入", "ATR_WILDER", "ADX_DMI",
@@ -2048,6 +2048,16 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
             "INTRADAY_30m：未准入", "RISK_REWARD：未准入",
             "PROBABILITY：未准入", "ETF_SPECIFIC：股票路径不适用",
         )
+        # These two methods are implemented, but this fixture has no
+        # admissible dated financial facts. No source => no READY verdict.
+        from src.services.evidence_traceability_registry import compile_method_window_policy_view
+        profiles = {
+            item["method_id"]: item["leaf_implementation_state"]
+            for item in compile_method_window_policy_view()["methods"]
+        }
+        self.assertEqual(profiles["QUALITY"], "EXISTING_REUSED")
+        self.assertEqual(profiles["VALUATION"], "EXISTING_REUSED")
+
         from html.parser import HTMLParser
         from src.formatters import markdown_to_html_document
 
