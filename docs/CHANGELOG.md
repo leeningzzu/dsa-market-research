@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [修复] AUTO_SCREEN 的股票/ETF重点分组不再把默认插补分、缺失或过期快照来源、以及绕过原筛选执行链的旧候选当作FOCUS；候选仍保留在可审计的REMAINING池，只有评分输入完整、快照来源可核且原screening execution receipt完成三项均显式成立时才可进入重点Top3。该门禁不改变粗筛分数、候选配额、canonical/veto、V2.5结构或概率语义。
 - [文档] 同步当前控制页到候选HEAD a66ec7df：记录首个MTF MACD/RSI方法窗口runtime trace、77项目标回归、四资产证明上限与下一source-capability切片；确认Project 01/05 v3.470已安装，避免其他模型重复执行已完成切片。功能分支仍无PR/Linux CI，不能冒充main。
 - [文档] 在既有stock-dsa-roadmap前置当前控制页、四资产七周期依赖投影、九条保留工作线、两条产品反馈链与工程旁路、阶段Owner/退出条件及唯一下一切片；明确6cd2b04d候选回执不等于四对象全READY/全仓CI/收益，修正旧PR30仍等待复验的过期“当前”叙述。保持原775边图、V2.5、分数、数据抓取和业务代码不变；配套01/05必要checkpoint恢复跨Chat连续性，而非增加新架构或复盘Agent。
 - [改进] 粗筛机器合同继续接入真实消费者：原screening.pipeline在八个实际seam记录run-local数量/耗时、未请求/未到达、日线预算未算与失败/过滤排除，并在最终截断前统计DSA完成/失败/跳过；ScreenResult及普通/AUTO服务响应携带同一execution_receipt，无新DB/原始行情、无评分变化或胜率主张。跨Chat路线复核澄清四资产七周期、方法特定窗口、行政相关组与统计增量、产品第二条Outcome/PIT反馈链和工程旁路的区别；真实HTTP计数/全Universe提速与漏选仍未证明，保持B1与同一canonical/V2.5边界。

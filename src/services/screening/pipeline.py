@@ -221,6 +221,32 @@ def screen(
     snapshot_count = len(snapshot_df)
     snapshot_source = str(snapshot_df.attrs.get("snapshot_source", ""))
     source_errors = [str(item) for item in snapshot_df.attrs.get("source_errors", [])]
+    snapshot_cache_used = bool(snapshot_df.attrs.get("cache_used"))
+    snapshot_fallback_used = bool(snapshot_df.attrs.get("fallback_used"))
+    snapshot_stale = bool(snapshot_df.attrs.get("stale"))
+    snapshot_stale_age_hours = _safe_float(
+        snapshot_df.attrs.get("stale_age_hours")
+    )
+    snapshot_last_good_source = str(
+        snapshot_df.attrs.get("last_good_snapshot_source", "") or ""
+    )
+    source_identity = (
+        snapshot_last_good_source if snapshot_cache_used else snapshot_source
+    )
+    snapshot_source_focus_eligible = bool(source_identity) and not (
+        snapshot_fallback_used or snapshot_stale
+    )
+    snapshot_source_state = (
+        "UNVERIFIED"
+        if not source_identity
+        else "FALLBACK_STALE"
+        if snapshot_fallback_used or snapshot_stale
+        else "FRESH_CACHE"
+        if snapshot_cache_used
+        else "LIVE_OR_DIRECT"
+    )
+    snapshot_df["snapshot_source_state"] = snapshot_source_state
+    snapshot_df["snapshot_source_focus_eligible"] = snapshot_source_focus_eligible
     degradation.extend(f"Snapshot source fallback: {item}" for item in source_errors)
 
     record_stage("snapshot", started=snapshot_started, output_count=snapshot_count)
@@ -287,6 +313,11 @@ def screen(
             degradation=[*degradation, "No candidates after hard filter"],
             snapshot_source=snapshot_source,
             source_errors=source_errors,
+            snapshot_cache_used=snapshot_cache_used,
+            snapshot_fallback_used=snapshot_fallback_used,
+            snapshot_stale=snapshot_stale,
+            snapshot_stale_age_hours=snapshot_stale_age_hours,
+            snapshot_last_good_source=snapshot_last_good_source,
             strategy_version=strat.version,
             strategy_category=strat.category,
             post_analyzers=analyzer_names,
@@ -413,12 +444,24 @@ def screen(
             degradation=[*degradation, "No candidates after daily hard filter"],
             snapshot_source=snapshot_source,
             source_errors=source_errors,
+            snapshot_cache_used=snapshot_cache_used,
+            snapshot_fallback_used=snapshot_fallback_used,
+            snapshot_stale=snapshot_stale,
+            snapshot_stale_age_hours=snapshot_stale_age_hours,
+            snapshot_last_good_source=snapshot_last_good_source,
             post_analyzers=analyzer_names,
             daily_enriched=daily_enriched,
             daily_enrich_count=daily_enrich_count,
             risk_enabled=config.risk_enabled,
             portfolio_diversity_enabled=config.portfolio_diversity_enabled,
         ), "EMPTY_AFTER_DAILY_FILTER")
+
+    # Daily enrichment may rebuild a DataFrame. Rebind the one run-level source
+    # readiness fact immediately before scoring so every retained candidate has
+    # the same auditable source state.
+    df = df.copy()
+    df["snapshot_source_state"] = snapshot_source_state
+    df["snapshot_source_focus_eligible"] = snapshot_source_focus_eligible
 
     # 4. Compute screen_score
     shortlist_started = perf_counter()
@@ -669,6 +712,11 @@ def screen(
         degradation=degradation,
         snapshot_source=snapshot_source,
         source_errors=source_errors,
+        snapshot_cache_used=snapshot_cache_used,
+        snapshot_fallback_used=snapshot_fallback_used,
+        snapshot_stale=snapshot_stale,
+        snapshot_stale_age_hours=snapshot_stale_age_hours,
+        snapshot_last_good_source=snapshot_last_good_source,
         deep_analysis_requested=("dsa" in analyzer_names),
         post_analyzers=analyzer_names,
         daily_enriched=daily_enriched,
@@ -752,8 +800,38 @@ def _df_to_picks(df: pd.DataFrame) -> list[Pick]:
             daily_quality_flags=_safe_text(row.get("daily_quality_flags")),
             daily_source=_safe_text(row.get("daily_source")),
             factor_scores=factor_scores,
+            screen_score_input_state=_safe_text(row.get("screen_score_input_state")) or "UNVERIFIED",
+            screen_score_missing_inputs=_safe_string_list(row.get("screen_score_missing_inputs")),
+            screen_score_imputed_factors=_safe_string_list(row.get("screen_score_imputed_factors")),
+            screen_score_focus_eligible=(
+                bool(row.get("screen_score_focus_eligible"))
+                if row.get("screen_score_focus_eligible") is not None
+                else None
+            ),
+            screen_score_readiness_scope=_safe_text(row.get("screen_score_readiness_scope")),
+            snapshot_source_state=_safe_text(row.get("snapshot_source_state")) or "UNVERIFIED",
+            snapshot_source_focus_eligible=(
+                bool(row.get("snapshot_source_focus_eligible"))
+                if row.get("snapshot_source_focus_eligible") is not None
+                else None
+            ),
         ))
     return picks
+
+
+def _safe_string_list(value: object) -> list[str]:
+    if isinstance(value, str):
+        values = [value]
+    elif isinstance(value, (list, tuple, set)):
+        values = list(value)
+    else:
+        return []
+    result: list[str] = []
+    for item in values:
+        text = str(item or "").strip()
+        if text and text not in result:
+            result.append(text)
+    return result
 
 
 def _sort_screened_candidates(df: pd.DataFrame, screening=None) -> pd.DataFrame:

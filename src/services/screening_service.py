@@ -1907,6 +1907,88 @@ def _apply_auto_stock_prefilter_frame(
     return filtered, diagnostics
 
 
+_SCREENING_EXECUTION_STAGE_NAMES = frozenset({
+    "snapshot", "host_prefilter", "snapshot_filter", "daily_enrichment",
+    "daily_filter", "shortlist", "post_analysis", "selection",
+})
+
+
+def _screening_execution_focus_readiness(
+    raw_data: Dict[str, Any],
+    *,
+    asset_type: str,
+    candidate_count: int,
+) -> Tuple[str, bool]:
+    """Prove that candidates came through the existing completed screen path.
+
+    This run-local receipt is not data-rights, 7TF, probability, or canonical
+    authority. It only prevents direct/legacy payloads from gaining FOCUS.
+    """
+    receipt = raw_data.get("execution_receipt")
+    if not isinstance(receipt, dict):
+        return "UNVERIFIED", False
+    if receipt.get("schema_version") != "screening-execution-receipt-v1":
+        return "INVALID_SCHEMA", False
+    run_id = _env_text(raw_data.get("run_id"))
+    if not run_id or _env_text(receipt.get("run_id")) != run_id:
+        return "RUN_ID_MISMATCH", False
+    if _env_text(receipt.get("asset_type")).lower() != asset_type:
+        return "ASSET_TYPE_MISMATCH", False
+    if receipt.get("terminal_reason") != "SELECTION_COMPLETED":
+        return "INCOMPLETE", False
+    stages = receipt.get("stages")
+    if not isinstance(stages, list):
+        return "STAGES_MISSING", False
+    stage_map = {
+        _env_text(item.get("stage")): item
+        for item in stages
+        if isinstance(item, dict) and _env_text(item.get("stage"))
+    }
+    if not _SCREENING_EXECUTION_STAGE_NAMES <= set(stage_map):
+        return "STAGES_INCOMPLETE", False
+    for stage in ("snapshot", "snapshot_filter", "shortlist", "selection"):
+        if stage_map[stage].get("status") != "COMPLETED":
+            return f"STAGE_INCOMPLETE:{stage}", False
+    for stage in ("host_prefilter", "daily_enrichment", "daily_filter", "post_analysis"):
+        if stage_map[stage].get("status") not in {"COMPLETED", "NOT_REQUESTED"}:
+            return f"STAGE_INVALID:{stage}", False
+    selection = stage_map["selection"]
+    output_count = selection.get("output_count")
+    if type(output_count) is not int or output_count != candidate_count:
+        return "SELECTION_COUNT_MISMATCH", False
+    return "COMPLETED", True
+
+
+def _screening_snapshot_focus_readiness(
+    raw_data: Dict[str, Any],
+) -> Tuple[str, bool]:
+    snapshot_source = _env_text(raw_data.get("snapshot_source"))
+    cache_used = bool(raw_data.get("snapshot_cache_used"))
+    fallback_used = bool(raw_data.get("snapshot_fallback_used"))
+    stale = bool(raw_data.get("snapshot_stale"))
+    last_good_source = _env_text(raw_data.get("snapshot_last_good_source"))
+    source_identity = last_good_source if cache_used else snapshot_source
+    if not source_identity:
+        return "UNVERIFIED", False
+    if fallback_used or stale:
+        return "FALLBACK_STALE", False
+    return ("FRESH_CACHE" if cache_used else "LIVE_OR_DIRECT"), True
+
+
+def _candidate_score_focus_ready(candidate: Dict[str, Any]) -> bool:
+    score = _safe_float(candidate.get("screen_score"))
+    return (
+        candidate.get("screen_score_focus_eligible") is True
+        and candidate.get("screen_score_input_state") == "OBSERVED_COMPLETE"
+        and not candidate.get("screen_score_missing_inputs")
+        and not candidate.get("screen_score_imputed_factors")
+        and candidate.get("screen_score_readiness_scope")
+        == "INPUT_COMPLETENESS_ONLY_NOT_SOURCE_RIGHTS_OR_7TF"
+        and score is not None
+        and 0.0 <= score <= 100.0
+    )
+
+
 def _apply_auto_stock_preferences(
     candidates: List[Dict[str, Any]],
     config: Config,
@@ -1934,7 +2016,15 @@ def _apply_auto_stock_preferences(
         candidate = dict(raw_candidate)
         board = _stock_listing_board(candidate.get("code") or "")
         industry = _screening_safe_text(candidate.get("industry"))
-        focus_eligible = not excluded_sectors or bool(industry)
+        score_focus_eligible = candidate.get("screen_score_focus_eligible")
+        source_focus_eligible = candidate.get("snapshot_source_focus_eligible")
+        execution_focus_eligible = candidate.get("screening_execution_focus_eligible")
+        focus_eligible = (
+            (not excluded_sectors or bool(industry))
+            and score_focus_eligible is True
+            and source_focus_eligible is True
+            and execution_focus_eligible is True
+        )
         candidate["listing_market"] = "A股"
         candidate["listing_board"] = board
         candidate["classification_status"] = (
@@ -1942,7 +2032,17 @@ def _apply_auto_stock_preferences(
         )
         candidate["focus_eligible"] = focus_eligible
         candidate["preference_status"] = (
-            "CLASSIFICATION_INSUFFICIENT"
+            "SCREENING_EXECUTION_UNVERIFIED"
+            if execution_focus_eligible is not True
+            else "SNAPSHOT_SOURCE_NOT_CURRENT"
+            if source_focus_eligible is False
+            else "SNAPSHOT_SOURCE_UNVERIFIED"
+            if source_focus_eligible is not True
+            else "SCREEN_INPUTS_INCOMPLETE"
+            if score_focus_eligible is False
+            else "SCREEN_INPUTS_UNVERIFIED"
+            if score_focus_eligible is not True
+            else "CLASSIFICATION_INSUFFICIENT"
             if not focus_eligible
             else "PREFERRED_BOARD"
             if board in preferred_boards
@@ -2003,6 +2103,30 @@ def _resolve_auto_screen_bucket(
         )
 
     normalized_candidates = _normalize_candidates(raw_data)
+    execution_state, execution_focus_eligible = (
+        _screening_execution_focus_readiness(
+            raw_data,
+            asset_type=asset_type,
+            candidate_count=len(normalized_candidates),
+        )
+    )
+    source_state, source_run_focus_eligible = (
+        _screening_snapshot_focus_readiness(raw_data)
+    )
+    for candidate in normalized_candidates:
+        candidate["screening_execution_state"] = execution_state
+        candidate["screening_execution_focus_eligible"] = execution_focus_eligible
+        candidate["screen_score_focus_eligible"] = (
+            _candidate_score_focus_ready(candidate)
+        )
+        candidate_source_state = _env_text(
+            candidate.get("snapshot_source_state")
+        ).upper()
+        candidate["snapshot_source_focus_eligible"] = (
+            candidate.get("snapshot_source_focus_eligible") is True
+            and source_run_focus_eligible
+            and candidate_source_state == source_state
+        )
     preference_diagnostics = dict(
         raw_data.get("candidate_prefilter_diagnostics") or {}
     )
@@ -2029,10 +2153,19 @@ def _resolve_auto_screen_bucket(
         codes.append(code)
         group_rank = len(codes)
         group_prefix = "AUTO_ETF" if asset_type == "etf" else "AUTO_STOCK"
+        score_focus_eligible = candidate.get("screen_score_focus_eligible")
+        source_focus_eligible = candidate.get("snapshot_source_focus_eligible")
+        candidate_execution_focus_eligible = candidate.get(
+            "screening_execution_focus_eligible"
+        )
         focus_eligible = (
-            True
-            if asset_type == "etf"
-            else candidate.get("focus_eligible") is not False
+            score_focus_eligible is True
+            and source_focus_eligible is True
+            and candidate_execution_focus_eligible is True
+            and (
+                asset_type == "etf"
+                or candidate.get("focus_eligible") is True
+            )
         )
         focus_count = sum(
             1
@@ -2071,6 +2204,15 @@ def _resolve_auto_screen_bucket(
                 "preference_status": candidate.get("preference_status") or "",
                 "classification_status": candidate.get("classification_status") or "",
                 "focus_eligible": focus_eligible,
+                "screen_score_input_state": candidate.get("screen_score_input_state") or "UNVERIFIED",
+                "screen_score_missing_inputs": list(candidate.get("screen_score_missing_inputs") or []),
+                "screen_score_imputed_factors": list(candidate.get("screen_score_imputed_factors") or []),
+                "screen_score_focus_eligible": score_focus_eligible,
+                "screen_score_readiness_scope": candidate.get("screen_score_readiness_scope") or "",
+                "snapshot_source_state": candidate.get("snapshot_source_state") or "UNVERIFIED",
+                "snapshot_source_focus_eligible": source_focus_eligible,
+                "screening_execution_state": candidate.get("screening_execution_state") or "UNVERIFIED",
+                "screening_execution_focus_eligible": candidate_execution_focus_eligible,
             }
         )
 
@@ -2082,8 +2224,17 @@ def _resolve_auto_screen_bucket(
         "run_id": raw_data.get("run_id") or "",
         "snapshot_count": raw_data.get("snapshot_count"),
         "snapshot_source": raw_data.get("snapshot_source") or "",
+        "snapshot_cache_used": bool(raw_data.get("snapshot_cache_used")),
+        "snapshot_fallback_used": bool(raw_data.get("snapshot_fallback_used")),
+        "snapshot_stale": bool(raw_data.get("snapshot_stale")),
+        "snapshot_stale_age_hours": raw_data.get("snapshot_stale_age_hours"),
+        "snapshot_last_good_source": raw_data.get("snapshot_last_good_source") or "",
+        "snapshot_source_state": source_state,
+        "snapshot_source_focus_eligible": source_run_focus_eligible,
         "after_filter_count": raw_data.get("after_filter_count"),
         "execution_receipt": raw_data.get("execution_receipt") or {},
+        "screening_execution_state": execution_state,
+        "screening_execution_focus_eligible": execution_focus_eligible,
         "ranking_mode": ranking_mode,
         "llm_ranked": False,
         "post_analyzers": post_analyzer_names,
@@ -4219,6 +4370,13 @@ def _normalize_candidate(raw: Any, rank: int) -> Dict[str, Any]:
         "name": item.get("name") or source.get("name") or item.get("stock_name") or source.get("stock_name") or "",
         "score": _first_present(item, source, "score", "final_score"),
         "screen_score": _first_present(item, source, "screen_score"),
+        "screen_score_input_state": item.get("screen_score_input_state") or source.get("screen_score_input_state") or "UNVERIFIED",
+        "screen_score_missing_inputs": item.get("screen_score_missing_inputs") or source.get("screen_score_missing_inputs") or [],
+        "screen_score_imputed_factors": item.get("screen_score_imputed_factors") or source.get("screen_score_imputed_factors") or [],
+        "screen_score_focus_eligible": _first_present(item, source, "screen_score_focus_eligible"),
+        "screen_score_readiness_scope": item.get("screen_score_readiness_scope") or source.get("screen_score_readiness_scope") or "",
+        "snapshot_source_state": item.get("snapshot_source_state") or source.get("snapshot_source_state") or "UNVERIFIED",
+        "snapshot_source_focus_eligible": _first_present(item, source, "snapshot_source_focus_eligible"),
         "reason": item.get("reason") or source.get("reason") or source.get("ranking_reason") or source.get("risk_summary") or item.get("summary") or _build_candidate_reason(source),
         "risk_level": item.get("risk_level") or source.get("risk_level") or "",
         "risk_flags": item.get("risk_flags") or source.get("risk_flags") or [],

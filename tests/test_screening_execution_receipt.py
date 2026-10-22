@@ -54,7 +54,20 @@ def _run(monkeypatch, *, minimum=300.0, daily=False, cap=2, fail_daily=False,
     monkeypatch.setattr(pipeline, "fetch_snapshot_with_fallback", snapshot)
     # Isolate cost instrumentation from price formulas: ordering is fixed and
     # the actual native hard-filter, budget, selection and return paths execute.
-    monkeypatch.setattr(pipeline, "compute_screen_scores", lambda df, _: df.assign(screen_score=df["amount"]))
+    monkeypatch.setattr(
+        pipeline,
+        "compute_screen_scores",
+        lambda df, _: df.assign(
+            screen_score=(df["amount"] / df["amount"].max() * 100.0),
+            screen_score_input_state="OBSERVED_COMPLETE",
+            screen_score_missing_inputs=[tuple() for _ in range(len(df))],
+            screen_score_imputed_factors=[tuple() for _ in range(len(df))],
+            screen_score_focus_eligible=True,
+            screen_score_readiness_scope=(
+                "INPUT_COMPLETENESS_ONLY_NOT_SOURCE_RIGHTS_OR_7TF"
+            ),
+        ),
+    )
     monkeypatch.setattr(pipeline, "enrich_daily_features", enrich)
     monkeypatch.setattr(pipeline, "apply_dsa_provider_context", lambda *args: [])
     result = pipeline.screen(strategy.name, use_llm=False, config=cfg)
@@ -79,6 +92,10 @@ def test_auto_screen_provenance_preserves_the_actual_cheap_execution_receipt(mon
     assert resolved["provenance"]["execution_receipts"]["etf"] == {}
     assert resolved["provenance"]["production_boundary"]["llm_ranking"] is False
     assert resolved["stock_codes"] == ["600005", "600004"]
+    assert [
+        item["product_group"]
+        for item in resolved["provenance"]["selected_candidates"]
+    ] == ["AUTO_STOCK_FOCUS", "AUTO_STOCK_FOCUS"]
 
 
 def test_actual_dsa_cap_statuses_count_before_final_trim(monkeypatch):
@@ -118,6 +135,12 @@ def test_real_screen_receipt_preserves_ranking_and_does_not_claim_7tf(monkeypatc
     receipt = result.execution_receipt
     stages = {s["stage"]: s for s in receipt["stages"]}
     assert calls == {"snapshot": 1, "daily": 0}
+    assert result.snapshot_source == "SYNTHETIC"
+    assert result.snapshot_fallback_used is False
+    assert result.snapshot_stale is False
+    assert all(pick.snapshot_source_state == "LIVE_OR_DIRECT" for pick in result.picks)
+    assert all(pick.snapshot_source_focus_eligible is True for pick in result.picks)
+    assert all(pick.screen_score_focus_eligible is True for pick in result.picks)
     assert [p.code for p in result.picks] == ["600005", "600004"]
     assert stages["snapshot"]["output_count"] == 6
     assert stages["snapshot_filter"]["input_count"] == 6
