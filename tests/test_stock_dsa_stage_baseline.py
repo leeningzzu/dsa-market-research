@@ -59,8 +59,8 @@ def test_stage_baseline_is_derived_from_the_existing_machine_graph() -> None:
     assert locked["accepted_machine_graph_sha256"] == ACCEPTED_DATA_OBJECT_GRAPH_SHA256
     assert locked["requirements"] == len(ACCEPTED_REQUIREMENT_ROLES) == 26
     assert locked["method_profiles"] == len(policy["methods"]) == 43
-    assert locked["methods_existing_reused"] == states["EXISTING_REUSED"] == 26
-    assert locked["methods_deferred_with_owner"] == states["DEFERRED_WITH_OWNER_AND_REENTRY"] == 17
+    assert locked["methods_existing_reused"] == states["EXISTING_REUSED"] == 28
+    assert locked["methods_deferred_with_owner"] == states["DEFERRED_WITH_OWNER_AND_REENTRY"] == 15
     assert locked["strategy_bindings"] == len(STRATEGY_BINDINGS) == 13
     assert locked["technical_matrix_cells"] == len(trace["timeframe_family_matrix"]["cells"]) == 56
     assert locked["data_obligations"] == len(trace["complete_research_universe"]["data_objects"]) == 76
