@@ -1,7 +1,7 @@
 import argparse
 import os
 import threading
-from datetime import date
+from datetime import date, datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -11,11 +11,19 @@ import pytest
 
 import main
 from src.analyzer import AnalysisResult, GeminiAnalyzer, P0ModelBoundaryError
-from src.core.pipeline import P0BoundedTrialError, StockAnalysisPipeline
+from src.core.pipeline import (
+    P0BoundedTrialError,
+    StockAnalysisPipeline,
+    _current_daily_window_plan,
+)
 from src.enums import ReportType
 from src.services.factor_decision_summary import (
     apply_canonical_decision_to_result,
     build_stock_factor_decision_summary,
+)
+from data_provider.daily_data_identity import (
+    attach_daily_data_identity,
+    build_daily_data_identity,
 )
 
 
@@ -433,12 +441,34 @@ def test_receipt_only_fetch_trims_future_provider_bars_before_save():
     pipeline._resolve_resume_target_date = MagicMock(return_value=date(2026, 9, 17))
     pipeline.fetcher_manager.get_stock_name.return_value = "fixture"
     pipeline.db.has_today_data.return_value = False
+    target_date = date(2026, 9, 17)
+    daily_plan = _current_daily_window_plan(
+        market="cn", target_date=target_date,
+    )
     frame = pd.DataFrame(
         {
             "date": [date(2026, 9, 16), date(2026, 9, 17), date(2026, 9, 18)],
             "close": [100.0, 101.0, 999.0],
         }
     )
+    identity = build_daily_data_identity(
+        frame,
+        provider_identity="FixtureSource",
+        provider_route="fixture:receipt_only_future_trim",
+        actual_response_branch="SYNTHETIC_TEST_ONLY",
+        requested_adjustment_basis="qfq",
+        observed_adjustment_basis="qfq",
+        basis_evidence="EXPLICIT_TEST_FIXTURE",
+        requested_start=daily_plan["start_date"].isoformat(),
+        requested_end=target_date.isoformat(),
+        currency="CNY",
+        volume_unit="share",
+        amount_unit="CNY",
+        identity_state="OBSERVED",
+        observed_at=datetime(2026, 9, 17, 10, 0, tzinfo=timezone.utc),
+        instrument="600519",
+    )
+    attach_daily_data_identity(frame, identity)
     pipeline.fetcher_manager.get_daily_data.return_value = (frame, "FixtureSource")
     pipeline.db.save_daily_data.return_value = 2
 

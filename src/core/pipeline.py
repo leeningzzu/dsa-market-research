@@ -38,6 +38,7 @@ from data_provider.daily_data_identity import (
     DailyDataIdentityError,
     attach_daily_acquisition_receipt,
     attach_daily_data_identity,
+    extract_daily_data_identity,
     extract_daily_data_identity_from_records,
     rebind_daily_data_identity,
     seal_daily_acquisition_receipt,
@@ -1118,8 +1119,10 @@ class StockAnalysisPipeline:
             market = get_market_for_stock(normalize_stock_code(code))
             strict_current = (
                 str(market or "").lower() == "cn"
-                and not bool(getattr(self, "p0_bounded_trial", False))
-                and not bool(getattr(self, "p0_receipt_only", False))
+                and (
+                    not bool(getattr(self, "p0_bounded_trial", False))
+                    or bool(getattr(self, "p0_receipt_only", False))
+                )
             )
             daily_window_plan: Optional[Dict[str, Any]] = None
 
@@ -1168,6 +1171,9 @@ class StockAnalysisPipeline:
             if bool(getattr(self, "p0_receipt_only", False)):
                 if "date" not in df.columns:
                     return False, "receipt-only historical replay requires dated bars"
+                source_identity = extract_daily_data_identity(df, strict=True)
+                if source_identity is None:
+                    return False, "receipt-only historical replay requires typed source identity"
                 bounded = df.copy()
                 bounded_dates = pd.to_datetime(
                     bounded["date"], errors="coerce",
@@ -1180,6 +1186,14 @@ class StockAnalysisPipeline:
                 bounded = bounded.loc[mask].copy()
                 if bounded.empty:
                     return False, "receipt-only historical replay returned no in-window bars"
+                # Future-row removal changes the content bytes/range. Rebind the
+                # existing OBSERVED source identity before the normal strict CN
+                # request/calendar/receipt checks below; no storage or PIT right
+                # is granted by this content identity.
+                attach_daily_data_identity(
+                    bounded,
+                    rebind_daily_data_identity(source_identity, bounded),
+                )
                 df = bounded
 
             if not strict_current:
@@ -2097,50 +2111,80 @@ class StockAnalysisPipeline:
                     f"{stock_name}：LLM 正在生成分析结果（已接收 {chars_received} 字符）",
                 )
 
-            self._emit_progress(64, f"{stock_name}：正在请求 LLM 生成报告")
-            llm_started_at = time.monotonic()
-            try:
-                record_llm_run_started(
-                    model=getattr(self.config, "litellm_model", None),
-                    call_type="analysis",
+            if bool(getattr(self, "p0_receipt_only", False)):
+                # Receipt-only is a deterministic evidence/rights probe, not an
+                # explanation request.  Build one neutral result container and
+                # let the existing Factor/canonical owner below replace every
+                # public action field.  Never call a model, invent a score, or
+                # fork a second analysis/report authority for this mode.
+                result = AnalysisResult(
+                    code=code,
+                    name=stock_name,
+                    sentiment_score=0,
+                    trend_prediction="未知",
+                    operation_advice="观望",
+                    decision_type="hold",
+                    confidence_level="低",
+                    report_language=report_language,
+                    action="watch",
+                    action_label="观望",
+                    analysis_summary="仅记录确定性证据回执；未调用模型生成解释",
+                    buy_reason="",
+                    dashboard={},
+                    success=True,
                 )
-                result = self.analyzer.analyze(
-                    enhanced_context,
-                    news_context=news_context,
-                    progress_callback=self._emit_progress,
-                    stream_progress_callback=(
-                        None if self.p0_bounded_trial else _on_llm_stream
-                    ),
-                    analysis_context_pack_summary=analysis_context_pack_summary,
-                    p0_bounded_trial=self.p0_bounded_trial,
+                result.query_id = query_id
+                result.current_price = (enhanced_context.get("realtime") or {}).get("price")
+                result.change_pct = (enhanced_context.get("realtime") or {}).get("change_pct")
+                logger.info(
+                    "[%s] P0 receipt-only mode: skip model explanation and continue with deterministic canonical evidence",
+                    code,
                 )
-                llm_duration_ms = int((time.monotonic() - llm_started_at) * 1000)
-                record_llm_run(
-                    success=bool(result and getattr(result, "success", True)),
-                    model=getattr(result, "model_used", None) if result else None,
-                    call_type="analysis",
-                    duration_ms=llm_duration_ms,
-                    error_type=(
-                        None
-                        if result and getattr(result, "success", True)
-                        else "AnalysisResultError"
-                    ),
-                    error_message=(
-                        getattr(result, "error_message", None)
-                        if result and not getattr(result, "success", True)
-                        else ("LLM returned empty result" if result is None else None)
-                    ),
-                )
-            except Exception as exc:
-                record_llm_run(
-                    success=False,
-                    model=getattr(self.config, "litellm_model", None),
-                    call_type="analysis",
-                    duration_ms=int((time.monotonic() - llm_started_at) * 1000),
-                    error_type=type(exc).__name__,
-                    error_message=exc,
-                )
-                raise
+            else:
+                self._emit_progress(64, f"{stock_name}：正在请求 LLM 生成报告")
+                llm_started_at = time.monotonic()
+                try:
+                    record_llm_run_started(
+                        model=getattr(self.config, "litellm_model", None),
+                        call_type="analysis",
+                    )
+                    result = self.analyzer.analyze(
+                        enhanced_context,
+                        news_context=news_context,
+                        progress_callback=self._emit_progress,
+                        stream_progress_callback=(
+                            None if self.p0_bounded_trial else _on_llm_stream
+                        ),
+                        analysis_context_pack_summary=analysis_context_pack_summary,
+                        p0_bounded_trial=self.p0_bounded_trial,
+                    )
+                    llm_duration_ms = int((time.monotonic() - llm_started_at) * 1000)
+                    record_llm_run(
+                        success=bool(result and getattr(result, "success", True)),
+                        model=getattr(result, "model_used", None) if result else None,
+                        call_type="analysis",
+                        duration_ms=llm_duration_ms,
+                        error_type=(
+                            None
+                            if result and getattr(result, "success", True)
+                            else "AnalysisResultError"
+                        ),
+                        error_message=(
+                            getattr(result, "error_message", None)
+                            if result and not getattr(result, "success", True)
+                            else ("LLM returned empty result" if result is None else None)
+                        ),
+                    )
+                except Exception as exc:
+                    record_llm_run(
+                        success=False,
+                        model=getattr(self.config, "litellm_model", None),
+                        call_type="analysis",
+                        duration_ms=int((time.monotonic() - llm_started_at) * 1000),
+                        error_type=type(exc).__name__,
+                        error_message=exc,
+                    )
+                    raise
 
             # Step 7.5: 填充分析时的价格信息到 result
             if result:
@@ -3588,7 +3632,7 @@ class StockAnalysisPipeline:
         volatility_momentum_context: Optional[Dict[str, Any]],
         pattern_trigger_context: Optional[Dict[str, Any]],
         multi_timeframe_structure_context: Optional[Dict[str, Any]],
-        fundamental_context: Optional[Dict[str, Any]],
+        fundamental_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Dict[str, Any]]:
         """Bind only producer outputs that actually returned from Pipeline calls."""
 

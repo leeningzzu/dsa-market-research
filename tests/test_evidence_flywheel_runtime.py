@@ -17,7 +17,7 @@ from sqlalchemy import inspect, select, text
 
 from src.analyzer import GeminiAnalyzer
 from src.config import Config
-from src.core.pipeline import StockAnalysisPipeline
+from src.core.pipeline import StockAnalysisPipeline, _current_daily_window_plan
 from src.notification import NotificationService
 from src.repositories.prediction_ledger_repo import PredictionLedgerRepository
 from src.services.evidence_flywheel_runtime import (
@@ -44,6 +44,7 @@ from src.services.research_state_projection import (
     build_strategy_eligibility_identity,
 )
 from src.storage import DatabaseManager, PredictionLedgerRecord, StockDaily
+from src.core.trading_calendar import resolve_session_range_fail_closed
 
 
 _PRE_INTRADAY_MANIFEST_HASH = "5818db4878f97f34c732a630ff1a5a41287b661ded299a3076473479123cefca"
@@ -353,7 +354,12 @@ def _pipeline_factory(observed: dict, receipt: dict | None):
 
 
 def _synthetic_daily_history(*, end_date: date, periods: int = 320) -> pd.DataFrame:
-    dates = pd.bdate_range(end=end_date, periods=periods)
+    sessions = resolve_session_range_fail_closed(
+        "cn", date(2006, 10, 23), end_date,
+    )
+    if len(sessions) < periods:
+        raise AssertionError("synthetic fixture requires enough completed XSHG sessions")
+    dates = sessions[-periods:]
     close = [
         100.0 + index * 0.03 + (-0.20 if index % 5 == 0 else 0.05)
         for index in range(periods)
@@ -361,12 +367,13 @@ def _synthetic_daily_history(*, end_date: date, periods: int = 320) -> pd.DataFr
     frame = pd.DataFrame(
         {
             "code": ["600519"] * periods,
-            "date": dates.date,
+            "date": dates,
             "open": [value - 0.10 for value in close],
             "high": [value + 0.40 for value in close],
             "low": [value - 0.40 for value in close],
             "close": close,
             "volume": [1_000_000.0 + (index % 10) * 10_000.0 for index in range(periods)],
+            "data_source": ["test"] * periods,
         }
     )
     frame["amount"] = frame["close"] * frame["volume"]
@@ -1382,6 +1389,9 @@ def test_native_zero_model_record_writes_only_the_admitted_temp_db_surfaces(
     )
 
     target_date = date(2026, 9, 24)  # Independently completed XSHG session
+    daily_plan = _current_daily_window_plan(
+        market="cn", target_date=target_date,
+    )
     frame = _synthetic_daily_history(end_date=target_date)
     typed = build_daily_data_identity(
         frame, provider_identity="test",
@@ -1390,10 +1400,11 @@ def test_native_zero_model_record_writes_only_the_admitted_temp_db_surfaces(
         requested_adjustment_basis="qfq",
         observed_adjustment_basis="qfq",
         basis_evidence="EXPLICIT_ISOLATED_SYNTHETIC_PRICE_SERIES",
-        requested_start=str(frame.iloc[0]["date"]),
-        requested_end=str(target_date),
+        requested_start=daily_plan["start_date"].isoformat(),
+        requested_end=target_date.isoformat(),
         currency="CNY", volume_unit="share", amount_unit="CNY",
         identity_state="OBSERVED",
+        instrument="600519",
         observed_at=datetime(2026, 9, 24, 10, 0, tzinfo=timezone.utc),
     )
     attach_daily_data_identity(frame, typed)
