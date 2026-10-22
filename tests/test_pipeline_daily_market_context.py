@@ -16,11 +16,74 @@ from data_provider.intraday_data_identity import (
     attach_intraday_data_identity,
     build_intraday_data_identity,
 )
+from data_provider.daily_data_identity import (
+    attach_daily_data_identity,
+    build_daily_data_identity,
+    canonical_identity_json,
+)
 
 from src.analyzer import GeminiAnalyzer
 from src.core.pipeline import StockAnalysisPipeline
 from src.enums import ReportType
 from src.services.daily_market_context import DailyMarketContext
+
+
+def _typed_daily_frame(
+    sessions,
+    *,
+    code: str = "600519",
+    requested_start: str | None = None,
+    requested_end: str | None = None,
+    observed_at: datetime | None = None,
+) -> pd.DataFrame:
+    normalized = [value.date() if hasattr(value, "date") else value for value in sessions]
+    frame = pd.DataFrame([
+        {
+            "date": value,
+            "open": 10.0 + index,
+            "high": 11.0 + index,
+            "low": 9.0 + index,
+            "close": 10.5 + index,
+            "volume": 1000.0 + index,
+            "amount": 10500.0 + index,
+            "pct_chg": 0.1 + index,
+            "data_source": "BaostockFetcher",
+        }
+        for index, value in enumerate(normalized)
+    ])
+    identity = build_daily_data_identity(
+        frame,
+        provider_identity="BaostockFetcher",
+        provider_route="unit.daily.provider",
+        actual_response_branch="unit:qfq",
+        requested_adjustment_basis="qfq",
+        observed_adjustment_basis="qfq",
+        basis_evidence="unit-test",
+        requested_start=requested_start or normalized[0].isoformat(),
+        requested_end=requested_end or normalized[-1].isoformat(),
+        currency="CNY",
+        volume_unit="share",
+        amount_unit="CNY",
+        identity_state="OBSERVED",
+        observed_at=observed_at or datetime.now(timezone.utc),
+        instrument=code,
+    )
+    attach_daily_data_identity(frame, identity)
+    return frame
+
+
+def _typed_daily_rows(frame: pd.DataFrame, *, code: str = "600519"):
+    identity = frame.attrs["daily_data_identity"]
+    identity_json = canonical_identity_json(identity)
+    return [
+        SimpleNamespace(
+            code=code,
+            **record,
+            data_identity_json=identity_json,
+            data_identity_hash=identity["identity_hash"],
+        )
+        for record in frame.to_dict("records")
+    ]
 
 
 def _pipeline_config(*, daily_market_context_enabled: bool) -> SimpleNamespace:
@@ -729,10 +792,12 @@ def test_b5_monthly_recursive_window_is_consumed_by_real_fetch_entry_without_db_
     pipeline._resolve_resume_target_date = MagicMock(return_value=target)
     pipeline.db = MagicMock()
     pipeline.db.has_today_data.return_value = False
-    frame = pd.DataFrame([{
-        "date": target, "open": 10., "high": 11., "low": 9.,
-        "close": 10.5, "volume": 1000., "amount": 10500.,
-    }])
+    frame = _typed_daily_frame(
+        [target],
+        requested_start="2015-02-02",
+        requested_end=target.isoformat(),
+        observed_at=datetime(2026, 10, 12, 16, 0, tzinfo=timezone.utc),
+    )
     pipeline.fetcher_manager.get_daily_data.return_value = (
         frame, "BaostockFetcher",
     )
@@ -749,8 +814,15 @@ def test_b5_monthly_recursive_window_is_consumed_by_real_fetch_entry_without_db_
         )
     )
     succeeded, error = pipeline.fetch_and_save_stock_data("600519")
-    assert succeeded is False
-    assert error and "SOURCE_STORAGE_RIGHTS_NOT_ADMITTED" in error
+    assert succeeded is True
+    assert error is None
+    admitted = pipeline._get_run_local_daily_history(
+        code="600519", target_date=target,
+    )
+    assert admitted is not None
+    assert admitted.attrs["dsa_daily_acquisition_receipt"][
+        "persistence_status"
+    ] == "RIGHTS_NOT_ADMITTED_RUN_LOCAL_ONLY"
     pipeline.fetcher_manager.get_daily_data.assert_called_once_with(
         "600519", start_date="2015-02-02", end_date="2026-10-12",
     )
@@ -781,12 +853,25 @@ def test_b5_latest_only_sqlite_cache_cannot_hide_new_recursive_history_window() 
             pipeline.fetcher_manager = MagicMock()
             pipeline.fetcher_manager.get_stock_name.return_value = "SYNTHETIC"
             pipeline._resolve_resume_target_date = MagicMock(return_value=target)
+            provider_bar = _typed_daily_frame(
+                [target],
+                requested_start="2015-02-02",
+                requested_end=target.isoformat(),
+                observed_at=datetime(2026, 10, 12, 16, 0, tzinfo=timezone.utc),
+            )
             pipeline.fetcher_manager.get_daily_data.return_value = (
-                one_bar, "BaostockFetcher",
+                provider_bar, "BaostockFetcher",
             )
             succeeded, error = pipeline.fetch_and_save_stock_data("600519")
-            assert succeeded is False
-            assert "SOURCE_STORAGE_RIGHTS_NOT_ADMITTED" in (error or "")
+            assert succeeded is True
+            assert error is None
+            admitted = pipeline._get_run_local_daily_history(
+                code="600519", target_date=target,
+            )
+            assert admitted is not None
+            assert admitted.attrs["dsa_daily_acquisition_receipt"][
+                "persistence_status"
+            ] == "RIGHTS_NOT_ADMITTED_RUN_LOCAL_ONLY"
             pipeline.fetcher_manager.get_daily_data.assert_called_once_with(
                 "600519", start_date="2015-02-02", end_date="2026-10-12",
             )
@@ -799,7 +884,7 @@ def test_b5_latest_only_sqlite_cache_cannot_hide_new_recursive_history_window() 
 
 
 def test_b5_full_completed_session_cache_keeps_lawful_no_provider_call() -> None:
-    """A truly complete source window still qualifies for fast resume."""
+    """Only a content-bound typed complete source window qualifies for resume."""
     import exchange_calendars as xcals
 
     target = date(2026, 10, 12)
@@ -814,15 +899,27 @@ def test_b5_full_completed_session_cache_keeps_lawful_no_provider_call() -> None
     pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
     pipeline.db = MagicMock()
     pipeline.db.has_today_data.return_value = True
-    pipeline.db.get_data_range.return_value = [
-        SimpleNamespace(date=value) for value in sessions
-    ]
+    cached_frame = _typed_daily_frame(
+        sessions,
+        requested_start=sessions[0].isoformat(),
+        requested_end=target.isoformat(),
+        observed_at=datetime(2026, 10, 12, 16, 0, tzinfo=timezone.utc),
+    )
+    pipeline.db.get_data_range.return_value = _typed_daily_rows(cached_frame)
     pipeline.fetcher_manager = MagicMock()
+    pipeline.fetcher_manager.get_stock_name.return_value = "SYNTHETIC"
     pipeline._resolve_resume_target_date = MagicMock(return_value=target)
     result = pipeline.fetch_and_save_stock_data("600519")
     assert result == (True, None)
     pipeline.fetcher_manager.get_daily_data.assert_not_called()
     pipeline.db.save_daily_data.assert_not_called()
+    admitted = pipeline._get_run_local_daily_history(
+        code="600519", target_date=target,
+    )
+    assert admitted is not None
+    assert admitted.attrs["dsa_daily_acquisition_receipt"][
+        "request_evidence_status"
+    ] == "VERIFIED_LAWFUL_CACHE_HIT"
 
 
 def test_b5_missing_internal_completed_session_does_not_fake_cache_coverage() -> None:
