@@ -3,31 +3,34 @@
 > 本文是现有DSA机器图、执行合同和运行证据的维护者视图，不是新的Source、策略、数据库、调度器或报告权威。机器可读不变量见 `docs/stock-dsa-stage-baseline-v1.json`；真实状态仍由GitHub代码、CI、运行回执和合法数据证据决定。
 
 <!-- CURRENT_MASTER_CONTROL_START -->
-## 当前控制页：总目标、依赖图与退出条件（2026-10-17）
+## 当前控制页：总目标、依赖图与退出条件（2026-10-22）
 
-CONTROL_ID = STOCK_DSA_MASTER_ROUTE_20261017_7TF_DUAL_FEEDBACK_CLOSURE
-CURRENT_CANDIDATE_HEAD = a66ec7df7afe28669288bf166933d13e7b7c17d9
-ROADMAP_CONTROL_COMMIT = ec2a67c5df1185291ee74368c8f65c15b4e171d7
-MAIN_BASELINE = b32570b1562deaefa99f500a9c68eb7d1caf6f56
+CONTROL_ID = STOCK_DSA_MASTER_ROUTE_20261022_G0_CI70_B8_FOCUS_CI71_CLOSURE
+CURRENT_CANDIDATE_HEAD = 9da392c012eb37cd97cc18a27af729be48b44698
+CURRENT_CANDIDATE_PARENT = 36632bb52da5877b621b1aaddad0cf1ad67da87d
+LAST_VERIFIED_MAIN_BASELINE = b32570b1562deaefa99f500a9c68eb7d1caf6f56
+CURRENT_PR = #31 / Draft / Open / not merged
+LATEST_REQUIRED_CI = #71 / Run39751104583 / success on 9da392c0
+SOURCE_CHECKPOINT = Project 01/05 v3.497 with eight unique logical Owners
 AUTHORITY = exact Git/运行证据 > current 01 > 02/03 > 04/05 > Factor > 06 > 旧Chat
 
-**这是一份现有路线的维护者控制页，不是新架构、第二个Source、第二数据库或调度器。下文各dated checkpoint保留历史；本控制页纠正历史段落的“当前/下一步”陈述。原775边图和V2.5原件不变。**
+**这是一份现有路线的维护者状态投影，不是新架构、第二个Source、第二数据库或调度器。原775边图和V2.5原件保持不变；旧dated checkpoint继续作为历史。**
 
 ### 0.1 总目标与成功定义
 
-在DSA/daily_stock_analysis内，做出能够解释“为何入选、为何不选、何时成立、何时失效”的股票/ETF研究，并逐步积累合法、可复现的结果证据，检验净期望与校准质量。不是追求指标最多、测试最多、分数最高、胜率单项最大，也不承诺收益、不自动交易。
+在DSA/daily_stock_analysis内，做出能够解释“为何入选、为何不选、何时成立、何时失效”的股票/ETF研究，并逐步积累合法、可复现的结果证据，检验净期望与校准质量。不是追求指标最多、测试最多、分数最高或单项胜率最大，也不承诺收益、不自动交易。
 
 产品完成至少有五个相互独立的证明：来源/时点/权利合法；方法数值与确认事件正确；候选与veto/唯一canonical一致；完整Report/Email实际消费且交付证据达到当前要求；学习结论来自合法机会分母及独立时间外验证。工程CI绿不能替代后四者，收到邮件也不能替代前面事实。
 
-五级对齐：Program研究可信与有可检验的净价值 → Product四类资产/八族/七周期/完整报告和结果反馈 → Lane B1/B5/M2/B6/B8/L1/M3 → Milestone一个可独立验收的纵向切片 → Atomic实际Owner、consumer、负例、合法nontrigger和回滚。横向始终有Data/Risk/Liquidity/Execution veto、许可/隐私、known-at、版本身份和Stop-Loss。
+五级对齐：Program研究可信与可检验净价值 → Product市场/行业/ETF/股票与完整报告 → Lane B1/B5/M2/B6/B8/L1/M3 → Milestone一个可独立验收的纵向切片 → Atomic实际Owner、consumer、负例、合法nontrigger和回滚。横向始终有Data/Risk/Liquidity/Execution veto、许可/隐私、known-at、版本身份和Stop-Loss。
 
 ### 0.2 当前事实与本次纠偏
 
-- 已核：远端main b32570b1是PR30绿色合并基线；候选分支feat/stock-dsa-m2-source-gates-v1已推送到a66ec7df并与本地一致。提交链为50208fe0指数5m薄适配→9531baf1粗细筛合同→6cd2b04d实际筛选执行回执→ec2a67c5当前总路线控制页→a66ec7df方法窗口就绪跟踪。
-- 已有：a66ec7df复用现有daily/intraday窗口规划与MTF原生MACD/RSI回执，在Pipeline实际运行对象中写入asset×timeframe×method的required/requested/returned/status/reason/consumer_path，并由原MTF执行回执内容绑定；没有第二规划器、评分器、存储许可或学习标签。目标模块77/77 PASS。
-- 当前证明上限：首个纵向切片只覆盖MTF_MOMENTUM_CONTEXT中的MACD/RSI窗口语义；STOCK/ETF有正向与篡改/短历史反例，MARKET仅有target mismatch的fail-closed反例，SECTOR尚无实际价格生产者接线。静态声明支持四类asset route不等于四类真实READY，Notification也尚无独立逐行展示验收。
-- 未有：候选分支的新PR/Linux CI准入、四资产全部方法真实READY、正式行业指数完整价格链、合法PIT学习闭环、可量化提速/零漏选。旧PR30绿灯不能继承给本分支。
-- Source连续性：Project现已物理安装01/05 v3.470并保持八个唯一Owner；该Source对Git状态截止于ec2a67c5，exact Git a66ec7df按权威顺序优先。下一Source只在本分支PR/CI或下一项材料性产品切片形成检查点时成对更新，不立即重复要求用户替换。
+- G0：PR #31 的父提交36632bb5已通过CI #70；backend-gate与Offline test suite成功。该工程门禁CLOSED_SCOPED_NO_REPLAY，不代表真实数据或产品完成。
+- B8 Focus：精确子提交9da392c0只改既有筛选score/source/execution readiness链、对应测试及扁平CHANGELOG；非强制推送后CI #71成功。缺失、插补、stale、legacy或篡改回执的股票/ETF只能进入REMAINING；合法完整输入和0/部分候选nontrigger保留。它不是概率、BUY或真实Provider准入。
+- 七周期carrier、7×8矩阵与runtime trace保持CLOSED_SCOPED_NO_REPLAY；43 Profile为28 reused/15 deferred，56格不等于全READY。动态获取窗口仍由方法Owner和consumer决定，不统一成一个lookback。
+- 当前主产品缺口是同一as-of的一只普通股票和一只普通ETF的operation-specific来源/单位/复权/available_at/vintage/权利回执，以及适用业务估值、30m→15m→5m触发与四类veto；M2.3与学习/Promotion继续HOLD。
+- Source连续性：Project UI和直接读取确认01/05 v3.497及六个稳定Owner共八份；文件索引投影曾滞后，不再用于推翻更新后的直接证据。下一Source只在新的材料性Git/Product checkpoint成对更新。
 
 ### 0.3 详细依赖图：实线是数据/决策依赖，虚线是诊断或显式后继反馈
 
@@ -99,11 +102,11 @@ flowchart TD
 
 | 阶段 | 目标/现有Owner | 最小实施与退出证据 | 阻断范围 |
 |---|---|---|---|
-| G0工程接受 | 已推送候选进入其独立PR/CI，非复用PR30 | 当前分支exact HEAD、变更审查、自然Linux检查；旧5个hotspot失败必须定位，不重写golden | 阻断候选合并/Production主张；不阻断只读来源审计/计划维护 |
+| G0工程接受 | PR #31当前候选9da392c0；父36632bb5 CI70与Focus子提交CI71已通过必需检查 | 保留exact HEAD/parent、非强制push、自然Linux与旧失败谱系；PR仍Draft/Open且未merge | 工程门禁PASS_SCOPED，不替真实数据、产品或Promotion；merge仍需独立明确批准 |
 | B1+B5四对象底座 | data_provider、daily/intraday identity、core pipeline/MTF | 代表市场指数、正式行业指数、ETF、个股分别冻结source-capability manifest；缺项明确；来源与请求身份留在原Owner | 某对象缺源不阻断兄弟对象，版权未知不落库积历史 |
 | B5窗口到方法 | 复用_current_daily_window_plan/_current_intraday_window_plan及Registry | 首个MACD/RSI纵向切片已把required/requested/returned/status/consumer_path接入MTF runtime trace并77/77通过；下一步用真实/类型化600519与510300运行回执核对，再为代表指数和正式行业指数分别建立生产者或明确MISSING；不得因高周期不足删除低周期合法材料 | 阻断相应方法/策略，不一刀切全部周期 |
 | M2上下文到筛选 | MarketStructure/RS/Screening/Factor | 廉价合法指标缩Universe，有限候选完整7TF；共享指数/行业结果；候选跳过/否决/缺数理由分开 | 不能承诺与全市场深析零漏选；保留研究型审计样本 |
-| B6+B8策略与交付 | 原structure/pattern/Factor/Notification | confirmed_at/available_at/invalidation、执行veto、同canonical完整报告；未实现方法不以模板字样填充 | 不真实发信、交易或重训，除非另有明确授权 |
+| B6+B8策略与交付 | 原Screening/structure/pattern/Factor/Notification | Focus的score/source/execution三门已CI通过；后继用合法Stock+ETF实源闭合Quality/适用估值、30m→15m→5m、四类veto和同canonical完整报告 | 不真实发信、交易、落库、训练或merge，除非各自另有明确授权 |
 | L1/M3第二链 | 原History/Journal/Ledger/Outcome与后续实验Owner | 合法写读/PIT/冻结label/成本/选择偏差审计；训练/验证/测试/校准分离，Promotion显式 | B1/HOLD时只做schema/合成测试/只读研究，不训练真实数据 |
 
 阶段是依赖关系，不是所有工作线强制串行。优先一个能够暴露共性缺口的真实纵向切片，保留另三类的显式OPEN；不复制四个分析引擎，也不长期停在一个测试模块。
@@ -140,13 +143,14 @@ flowchart TD
 
 ### 0.9 Role Review、反例与唯一下一步
 
-用户再次提醒总路线/机器图未交付：TRUE_POSITIVE，PROCESS_CONSUMER/LANE_RECURRENT；最早应在6cd2b04d material closure时给完整结果并做01/05 checkpoint。AUTO_RETROSPECTIVE_BEFORE_USER_REMINDER=NO，不能仅凭新增说明声称长期自动复盘已稳定。跨Chat恢复以现有Source/工具证据为本；R019原包未恢复，保留gap，只消费已接受的父目标/consumer、复用/反例、回归/净负担三个模式。
+Role Review（9da392c0）：Program继续KEEP单一DSA；G0 CI70和B8 Focus CI71均PASS_SCOPED，PR仍Draft/Open且未merge。Product仍REVISE，因为真实76对象权利/PIT、九类业务估值实算、全56格READY、30m→15m→5m与四类veto、真实V2.5动态产品和交付均未完成。Data继续HOLD未知权利/单位/修订；Algorithm复用原Owner，不再堆指标或新评分器；Operations只承认actual receipt/CI，不把目录、测试数或本地WIP当Production；原48路WIP继续隔离。
 
-Role Review（a66ec7df）：Program继续KEEP单一DSA；Product仍REVISE，因为四类资产七周期和非K线材料未全接；Lane B5首个方法窗口切片SCOPED_PASS，M2行业/ETF专属与B8逐行消费仍OPEN；Milestone为“现有窗口计划→原生MTF回执→内容绑定执行回执”的真实链；Atomic只新增一个Registry投影及Pipeline接线。Data继续HOLD未知权利/单位/PIT；Algorithm复用原方法Owner，不重复指标引擎；Operations已能区分requested/returned/required但不能证明真实HTTP次数；Review坚持planned/executed/admitted分离；User无需再次替换Source或手动推Git。
+FIXED_STATUS_VECTOR = G0_CI_PASS_SCOPED; B8_FOCUS_CI_PASS_SCOPED; 7TF_CARRIER_IMPLEMENTED; 7TF_MATRIX_IMPLEMENTED; 7TF_RUNTIME_TRACE_SCOPED_PASS; METHOD_READINESS_PARTIAL; REAL_INPUT_AND_RIGHTS_OPEN; VALUATION_REAL_NUMERICS_OPEN; STRATEGY_TRIGGER_OPEN; M2_3_HOLD; LEARNING_PROMOTION_HOLD.
 
-UNIQUE_NEXT_STEP = 在同一a66ec7df基线上执行并冻结“四类价格对象source-capability与方法窗口对照表”：600519股票、510300 ETF使用现有类型化只读路径生成真实runtime trace；大盘代表指数与一个正式行业指数分别给出1d/5m实际可得窗、单位/复权/known-at/权利和缺口。随后只把有实际生产者的对象接到同一MTF/Registry/完整Report消费者；无来源的保持MISSING/UNKNOWN，不以分类标签或ETF代理行业指数。该切片通过后才创建本功能分支PR并接受Linux CI。
+UNIQUE_NEXT_STEP = 在现有DSA内取得同一as-of的一只普通股票与一只普通ETF最小合法纵向切片：逐对象绑定provider/dataset/instrument/units/currency/raw或复权口径/completed_through/observed_at/available_at/revision/vintage及product/storage/training/redistribution rights，进入现有Registry→Quality/业务适用Valuation→7TF/veto/canonical→原V2.5 NO_SEND。无合法回执即STOP，不用合成值、更多指标、第二Shell或整包旧WIP绕过。
 
-PASS = 同一资产身份下原方法/窗口/来源/消费者可追，真实正例与短历史/错单位/错时点/未来确认/未请求反例守边界，股票/ETF/大盘/行业各自有证据或明确缺口；STOP = 一类资产替四类、合成冒实源、UNKNOWN伪造、无授权写库/发送/模型/主分支、为了全READY而改窗口容差或混拼来源。CURRENT_ROUTE_STILL_WORTH_CONTINUING=YES；INSTRUCTIONS_UPDATE_DECISION=NO；SOURCES_UPDATE_DECISION=DEFER_TO_FEATURE_PR_CI_OR_NEXT_MATERIAL_PRODUCT_CHECKPOINT。
+PASS = 精确来源和consumer可追、Stock/ETF各自合法正例与缺失/过期/错单位/未来回填/无权利反例守边界、估值区间与敏感性诚实；STOP = 一类资产替两类、目录冒实值、UNKNOWN升READY、统一PE/WACC、技术分抵消veto、未经授权落库/发送/训练/merge。CURRENT_ROUTE_STILL_WORTH_CONTINUING=YES；INSTRUCTIONS_UPDATE_DECISION=NO；SOURCES_UPDATE_DECISION=DEFER_TO_NEXT_MATERIAL_CHECKPOINT。
+
 <!-- CURRENT_MASTER_CONTROL_END -->
 
 ## 1. GitHub是后续工程基线

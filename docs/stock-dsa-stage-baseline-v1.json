@@ -21,8 +21,14 @@
     "storage_admitted": false
   },
   "acceptance": {
-    "state": "CANDIDATE_UNTIL_GITHUB_PR_CI_AND_EXPLICIT_MERGE",
-    "remote_branch": "main",
+    "state": "B8_FOCUS_CI71_PASS_PR31_DRAFT_PENDING_EXPLICIT_MERGE_AND_REAL_PRODUCT_GATES",
+    "production_branch": "main",
+    "candidate_branch": "feat/stock-dsa-m2-source-gates-v1",
+    "candidate_head": "9da392c012eb37cd97cc18a27af729be48b44698",
+    "candidate_parent": "36632bb52da5877b621b1aaddad0cf1ad67da87d",
+    "pull_request": 31,
+    "pull_request_state": "DRAFT_OPEN_NOT_MERGED",
+    "latest_required_ci": {"run_number": 71, "run_id": 39751104583, "conclusion": "success"},
     "required_checks": [
       "ai-governance",
       "backend-gate",
@@ -141,8 +147,8 @@
   "vertical_alignment": {
     "program": "合法known-at数据到白盒证据、唯一canonical、完整交付、合法Outcome/PIT、独立校准和显式Promotion",
     "product": "Global到A股市场和行业、ETF与股票、七周期全材料、风险和执行veto、FULL Report/Email",
-    "current_lane": "M2多资产known-at与B5七周期证据进入同一筛选、canonical和B8完整报告",
-    "current_milestone": "严格MTF回执按四个层级角色组进入股票/ETF有界L3筛选，同时保留完整76项研究义务",
+    "current_lane": "B8合法真实输入、质量与业务适用估值进入既有七周期、veto、canonical和原V2.5",
+    "current_milestone": "G0 CI70与AUTO Focus CI71均有界通过；下一步是一只普通股票和一只普通ETF同as-of合法纵向切片",
     "atomic_rule": "只复用现有Owner、消费者、测试和拒绝条件，不新建并行Shell或权威"
   },
   "stage_ladder": [
@@ -198,7 +204,7 @@
   ],
   "route_decision": {
     "next_primary": "M2_MULTI_ASSET_KNOWN_AT",
-    "reason": "七周期核心已进入严格报告和有界股票/ETF筛选消费者；主路线继续市场、行业、ETF known-at，同时只按产品触发补技术指标",
+    "reason": "G0和AUTO Focus工程门禁已分别通过CI；主路线转为同as-of普通股票+ETF的合法来源权利、质量与业务适用估值纵向切片，技术延期只按真实产品缺口触发",
     "bounded_indicator_sub_lanes": [
       "MONTHLY_RSI_HISTORY_IF_LEGAL",
       "15M_CONFIRMATION",
