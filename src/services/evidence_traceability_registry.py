@@ -616,6 +616,10 @@ def compile_mtf_method_window_readiness_trace(
             return finish({**base, "reason": "DAILY_ACQUISITION_BINDING_INVALID"})
 
     acquisition = None
+    daily_window_extension = (
+        daily_acquisition.get("bounded_window_extension")
+        if isinstance(daily_acquisition, Mapping) else None
+    )
     source_counts = {}
     source_hashes = {}
     source_frames = intraday_source_frames if isinstance(intraday_source_frames, Mapping) else {}
@@ -952,6 +956,12 @@ def compile_mtf_method_window_readiness_trace(
                 and returned_bars > daily_source_count
             ):
                 state, reason = "UNKNOWN", "METHOD_OBSERVATIONS_EXCEED_BOUND_SOURCE"
+            active_daily_extension = (
+                daily_window_extension
+                if timeframe == "monthly"
+                and component == "MACD_STARTUP_COMPARISON"
+                else None
+            )
             rows.append({
                 "timeframe": timeframe,
                 "method_id": "MTF_MOMENTUM_CONTEXT",
@@ -970,6 +980,22 @@ def compile_mtf_method_window_readiness_trace(
                 "source_returned_bars": source_returned_bars,
                 "source_identity_hash": source_identity_hash,
                 "persistence_status": persistence_status,
+                "bounded_window_extension_status": (
+                    active_daily_extension.get("final_status")
+                    if isinstance(active_daily_extension, Mapping) else None
+                ),
+                "bounded_window_extension_reason": (
+                    active_daily_extension.get("final_reason")
+                    if isinstance(active_daily_extension, Mapping) else None
+                ),
+                "bounded_window_extension_receipt_hash": (
+                    active_daily_extension.get("receipt_hash")
+                    if isinstance(active_daily_extension, Mapping) else None
+                ),
+                "bounded_window_extension_provider_calls": (
+                    active_daily_extension.get("provider_method_call_count")
+                    if isinstance(active_daily_extension, Mapping) else None
+                ),
                 "returned_bars": returned_bars,
                 "acquisition_plan_status": plan_state,
                 "status": state,

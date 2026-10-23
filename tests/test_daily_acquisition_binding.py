@@ -13,7 +13,9 @@ from data_provider.daily_data_identity import (
     attach_daily_data_identity,
     build_daily_data_identity,
     canonical_identity_json,
+    extract_daily_acquisition_receipt,
     sha256_payload,
+    validate_daily_acquisition_receipt,
 )
 from src.core.pipeline import StockAnalysisPipeline
 from src.services.evidence_traceability_registry import (
@@ -555,3 +557,303 @@ def test_daily_acquisition_tamper_fails_entire_trace_closed(tamper: str) -> None
     assert trace["rows"] == []
     assert trace["strategy_admitted"] is False
     assert trace["learning_admitted"] is False
+
+
+def _real_window_sessions(start: date, target: date) -> list[date]:
+    calendar = xcals.get_calendar("XSHG")
+    return [value.date() for value in calendar.sessions_in_range(start, target)]
+
+
+def _monthly_receipt(
+    *, observations: int, status: str = "UNKNOWN", drift: float = 1.0,
+    tolerance: float = 0.1,
+) -> dict:
+    return {
+        "method_owner": "StockTrendAnalyzer._calculate_macd",
+        "status": status,
+        "reason": (
+            "MACD_OBSERVED_MULTI_START_NUMERIC_AND_STATE_AGREE"
+            if status == "READY"
+            else "MACD_MULTI_START_NUMERIC_OR_STATE_DRIFT"
+        ),
+        "observations": observations,
+        "required_observations": pipeline_owner.macd_startup_comparison_required_bars(),
+        "readiness_scope": "OBSERVED_COMPLETED_PREFIXES_ONLY",
+        "max_endpoint_difference": drift,
+        "absolute_tolerance": tolerance,
+        "startup_state_agreement": True,
+        "numeric_agreement": status == "READY",
+        "strategy_admitted": False,
+        "learning_admitted": False,
+    }
+
+
+def _extension_frames(target: date, *, instrument: str = "600519"):
+    base = pipeline_owner._current_daily_window_plan(market="cn", target_date=target)
+    plans = [base]
+    for count in (175, 210, 219):
+        plans.append(
+            pipeline_owner._daily_plan_with_monthly_macd_bars(
+                base_plan=base, target_date=target, monthly_bars=count,
+            )
+        )
+    frames = [
+        _typed_frame(
+            _real_window_sessions(plan["start_date"], target),
+            instrument=instrument,
+            requested_start=plan["start_date"].isoformat(),
+            requested_end=target.isoformat(),
+            observed_at=datetime(2026, 10, 12, 16, tzinfo=timezone.utc),
+        )
+        for plan in plans
+    ]
+    return base, plans, frames
+
+
+def test_production_daily_acquisition_boundedly_extends_monthly_macd_and_binds_trace() -> None:
+    target = date(2026, 10, 12)
+    base, plans, frames = _extension_frames(target)
+    pipeline = _pipeline(target)
+    pipeline.trend_analyzer = MagicMock()
+    pipeline.db.has_today_data.return_value = False
+    pipeline.db.save_daily_data.return_value = len(frames[0])
+    selected_fetcher = MagicMock()
+    selected_fetcher.name = "BaostockFetcher"
+    pipeline.fetcher_manager.get_daily_data.return_value = (
+        frames[0], "BaostockFetcher",
+    )
+    pipeline.fetcher_manager._get_fetcher_by_name.return_value = selected_fetcher
+    pipeline.fetcher_manager._call_fetcher_method.side_effect = frames[1:]
+    receipts = [
+        (_monthly_receipt(observations=140, drift=4.8), 140),
+        (_monthly_receipt(observations=175, drift=0.5), 175),
+        (_monthly_receipt(observations=210, drift=0.145, tolerance=0.125), 210),
+        (_monthly_receipt(observations=219, status="READY", drift=0.05, tolerance=0.125), 219),
+    ]
+    with patch.object(
+        pipeline_owner, "_monthly_macd_receipt_from_daily_history",
+        side_effect=receipts,
+    ):
+        success, error = pipeline.fetch_and_save_stock_data(
+            "600519", current_time=datetime(2026, 10, 12, 16, tzinfo=timezone.utc),
+        )
+    assert success is True and error is None
+    pipeline.fetcher_manager.get_daily_data.assert_called_once_with(
+        "600519",
+        start_date=plans[0]["start_date"].isoformat(),
+        end_date=target.isoformat(),
+    )
+    assert pipeline.fetcher_manager._call_fetcher_method.call_count == 3
+    assert [
+        call.kwargs["start_date"]
+        for call in pipeline.fetcher_manager._call_fetcher_method.call_args_list
+    ] == [plan["start_date"].isoformat() for plan in plans[1:]]
+    admitted = pipeline._get_run_local_daily_history(code="600519", target_date=target)
+    receipt = extract_daily_acquisition_receipt(admitted, strict=True)
+    assert receipt["provider_method_call_count"] == 4
+    assert receipt["plan_hash"] == plans[-1]["plan_hash"]
+    extension = receipt["bounded_window_extension"]
+    assert extension["final_status"] == "READY"
+    assert [row["requested_monthly_bars"] for row in extension["attempts"]] == [
+        140, 175, 210, 219,
+    ]
+    assert extension["final_source_identity_hash"] == receipt["source_identity_hash"]
+    assert receipt["persistence_status"] == "BASE_WINDOW_PERSISTED_EXTENSION_RUN_LOCAL"
+    persisted_frame = pipeline.db.save_daily_data.call_args.args[0]
+    assert len(persisted_frame) == len(frames[0])
+    assert len(admitted) == len(frames[-1])
+    assert persisted_frame.attrs["daily_data_identity"]["identity_hash"] == frames[0].attrs[
+        "daily_data_identity"
+    ]["identity_hash"]
+
+    context = _context(target, 219)
+    context["timeframes"]["monthly"]["macd_startup_stability"].update({
+        "required_observations": 140,
+        "status": "READY",
+        "reason": "MACD_OBSERVED_MULTI_START_NUMERIC_AND_STATE_AGREE",
+    })
+    trace = compile_mtf_method_window_readiness_trace(
+        asset_route="STOCK",
+        instrument="600519",
+        target_date=target,
+        daily_window_plan=plans[-1],
+        intraday_window_plan=pipeline_owner._current_intraday_window_plan(),
+        multi_timeframe_structure_context=context,
+        daily_source_frame=admitted,
+    )
+    row = next(
+        item for item in trace["rows"]
+        if item["timeframe"] == "monthly"
+        and item["component"] == "MACD_STARTUP_COMPARISON"
+    )
+    assert row["bounded_window_extension_status"] == "READY"
+    assert row["bounded_window_extension_provider_calls"] == 4
+    assert row["bounded_window_extension_receipt_hash"] == extension["receipt_hash"]
+
+    forged = deepcopy(receipt)
+    forged["bounded_window_extension"]["attempts"][1]["returned_base_bars"] += 1
+    forged["receipt_hash"] = sha256_payload(
+        {key: value for key, value in forged.items() if key != "receipt_hash"}
+    )
+    with pytest.raises(Exception, match="daily window extension receipt hash mismatch"):
+        validate_daily_acquisition_receipt(forged)
+    semantic_forgery = deepcopy(receipt)
+    semantic_forgery["bounded_window_extension"]["final_status"] = "READY"
+    semantic_forgery["bounded_window_extension"]["attempts"][-1]["macd_status"] = "UNKNOWN"
+    nested = semantic_forgery["bounded_window_extension"]
+    nested["receipt_hash"] = sha256_payload(
+        {key: value for key, value in nested.items() if key != "receipt_hash"}
+    )
+    semantic_forgery["receipt_hash"] = sha256_payload(
+        {key: value for key, value in semantic_forgery.items() if key != "receipt_hash"}
+    )
+    with pytest.raises(Exception, match="READY is not method-bound"):
+        validate_daily_acquisition_receipt(semantic_forgery)
+
+
+def test_production_daily_extension_keeps_listing_history_short_as_nontrigger() -> None:
+    target = date(2026, 10, 12)
+    base, plans, frames = _extension_frames(target, instrument="510300")
+    short = frames[1].iloc[40:].copy()
+    short.attrs = deepcopy(frames[1].attrs)
+    identity = deepcopy(short.attrs["daily_data_identity"])
+    from data_provider.daily_data_identity import rebind_daily_data_identity
+    attach_daily_data_identity(short, rebind_daily_data_identity(identity, short))
+    pipeline = _pipeline(target)
+    pipeline.trend_analyzer = MagicMock()
+    pipeline.db.has_today_data.return_value = False
+    pipeline.db.save_daily_data.side_effect = PermissionError(
+        "SOURCE_STORAGE_RIGHTS_NOT_ADMITTED"
+    )
+    selected_fetcher = MagicMock()
+    selected_fetcher.name = "BaostockFetcher"
+    pipeline.fetcher_manager.get_daily_data.return_value = (
+        frames[0], "BaostockFetcher",
+    )
+    pipeline.fetcher_manager._get_fetcher_by_name.return_value = selected_fetcher
+    pipeline.fetcher_manager._call_fetcher_method.return_value = short
+    with patch.object(
+        pipeline_owner, "_monthly_macd_receipt_from_daily_history",
+        side_effect=[
+            (_monthly_receipt(observations=140, drift=1.0), 140),
+            (_monthly_receipt(observations=173, drift=0.2), 173),
+        ],
+    ):
+        assert pipeline.fetch_and_save_stock_data(
+            "510300",
+            current_time=datetime(2026, 10, 12, 16, tzinfo=timezone.utc),
+        ) == (True, None)
+    admitted = pipeline._get_run_local_daily_history(code="510300", target_date=target)
+    extension = extract_daily_acquisition_receipt(
+        admitted, strict=True,
+    )["bounded_window_extension"]
+    assert extension["final_status"] == "SOURCE_HISTORY_SHORT"
+    assert extension["final_reason"] == "SOURCE_RETURNED_FEWER_COMPLETED_MONTHS_THAN_REQUESTED"
+    assert extension["provider_method_call_count"] == 2
+    assert extension["attempts"][-1]["completed_monthly_bars"] == 173
+    assert extension["attempts"][-1]["requested_monthly_bars"] == 175
+
+
+def test_monthly_macd_ready_is_a_no_extension_provider_nontrigger() -> None:
+    target = date(2026, 10, 12)
+    _base, _plans, frames = _extension_frames(target)
+    pipeline = _pipeline(target)
+    pipeline.trend_analyzer = MagicMock()
+    pipeline.db.has_today_data.return_value = False
+    pipeline.db.save_daily_data.side_effect = PermissionError(
+        "SOURCE_STORAGE_RIGHTS_NOT_ADMITTED"
+    )
+    pipeline.fetcher_manager.get_daily_data.return_value = (
+        frames[0], "BaostockFetcher",
+    )
+    with patch.object(
+        pipeline_owner, "_monthly_macd_receipt_from_daily_history",
+        return_value=(_monthly_receipt(observations=140, status="READY", drift=0.01), 140),
+    ):
+        assert pipeline.fetch_and_save_stock_data(
+            "600519",
+            current_time=datetime(2026, 10, 12, 16, tzinfo=timezone.utc),
+        ) == (True, None)
+    assert pipeline.fetcher_manager.get_daily_data.call_count == 1
+    admitted = pipeline._get_run_local_daily_history(code="600519", target_date=target)
+    assert "bounded_window_extension" not in extract_daily_acquisition_receipt(
+        admitted, strict=True,
+    )
+
+
+def test_live_current_run_uses_actual_provider_clock_while_frozen_replay_rejects_it() -> None:
+    target = date(2026, 10, 12)
+    _base, plans, frames = _extension_frames(target)
+    late = _typed_frame(
+        _real_window_sessions(plans[1]["start_date"], target),
+        requested_start=plans[1]["start_date"].isoformat(),
+        requested_end=target.isoformat(),
+        observed_at=datetime(2026, 10, 12, 17, 30, tzinfo=timezone.utc),
+    )
+    pipeline = _pipeline(target)
+    pipeline.trend_analyzer = MagicMock()
+    pipeline.db.has_today_data.return_value = False
+    pipeline.db.save_daily_data.side_effect = PermissionError(
+        "SOURCE_STORAGE_RIGHTS_NOT_ADMITTED"
+    )
+    selected_fetcher = MagicMock()
+    selected_fetcher.name = "BaostockFetcher"
+    pipeline.fetcher_manager.get_daily_data.return_value = (
+        frames[0], "BaostockFetcher",
+    )
+    pipeline.fetcher_manager._get_fetcher_by_name.return_value = selected_fetcher
+    pipeline.fetcher_manager._call_fetcher_method.return_value = late
+    with patch.object(
+        pipeline_owner, "resolve_latest_completed_session_fail_closed", return_value=target,
+    ), patch.object(
+        pipeline_owner, "_monthly_macd_receipt_from_daily_history",
+        side_effect=[
+            (_monthly_receipt(observations=140, drift=1.0), 140),
+            (_monthly_receipt(observations=173, drift=0.2), 173),
+        ],
+    ):
+        assert pipeline.fetch_and_save_stock_data(
+            "600519",
+            current_time=datetime(2026, 10, 12, 16, tzinfo=timezone.utc),
+            observation_time_frozen=False,
+        ) == (True, None)
+
+
+@pytest.mark.parametrize("mutation", ["provider", "basis", "instrument", "future_clock"])
+def test_monthly_extension_source_drift_fails_before_run_local_or_storage(mutation: str) -> None:
+    target = date(2026, 10, 12)
+    _base, plans, frames = _extension_frames(target)
+    kwargs = {
+        "instrument": "510300" if mutation == "instrument" else "600519",
+        "provider": "OtherFetcher" if mutation == "provider" else "BaostockFetcher",
+        "requested_start": plans[1]["start_date"].isoformat(),
+        "requested_end": target.isoformat(),
+        "observed_basis": "hfq" if mutation == "basis" else "qfq",
+        "observed_at": (
+            datetime(2026, 10, 13, 17, tzinfo=timezone.utc)
+            if mutation == "future_clock"
+            else datetime(2026, 10, 12, 16, tzinfo=timezone.utc)
+        ),
+    }
+    bad = _typed_frame(_real_window_sessions(plans[1]["start_date"], target), **kwargs)
+    pipeline = _pipeline(target)
+    pipeline.trend_analyzer = MagicMock()
+    pipeline.db.has_today_data.return_value = False
+    selected_fetcher = MagicMock()
+    selected_fetcher.name = "BaostockFetcher"
+    pipeline.fetcher_manager.get_daily_data.return_value = (
+        frames[0], "BaostockFetcher",
+    )
+    pipeline.fetcher_manager._get_fetcher_by_name.return_value = selected_fetcher
+    pipeline.fetcher_manager._call_fetcher_method.return_value = bad
+    with patch.object(
+        pipeline_owner, "_monthly_macd_receipt_from_daily_history",
+        return_value=(_monthly_receipt(observations=140, drift=1.0), 140),
+    ):
+        success, error = pipeline.fetch_and_save_stock_data(
+            "600519", current_time=datetime(2026, 10, 12, 16, tzinfo=timezone.utc),
+        )
+    assert success is False
+    assert "DAILY_ACQUISITION_BINDING_INVALID" in (error or "")
+    assert pipeline._get_run_local_daily_history(code="600519", target_date=target) is None
+    pipeline.db.save_daily_data.assert_not_called()

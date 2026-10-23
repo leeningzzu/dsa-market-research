@@ -35,13 +35,16 @@ from src.data.stock_mapping import resolve_cn_price_asset
 
 from data_provider.daily_data_identity import (
     DAILY_ACQUISITION_RECEIPT_SCHEMA_VERSION,
+    DAILY_WINDOW_EXTENSION_RECEIPT_SCHEMA_VERSION,
     DailyDataIdentityError,
     attach_daily_acquisition_receipt,
     attach_daily_data_identity,
+    extract_daily_acquisition_receipt,
     extract_daily_data_identity,
     extract_daily_data_identity_from_records,
     rebind_daily_data_identity,
     seal_daily_acquisition_receipt,
+    seal_daily_window_extension_receipt,
     verify_observed_daily_frame_request,
 )
 from data_provider.us_index_mapping import is_us_index_code
@@ -479,6 +482,76 @@ def _next_bounded_monthly_macd_window(
     }
 
 
+def _daily_plan_with_monthly_macd_bars(
+    *, base_plan: Mapping[str, Any], target_date: date, monthly_bars: int,
+) -> Dict[str, Any]:
+    """Rebuild one exact calendar plan after the existing MACD owner requests more months."""
+    if (
+        not isinstance(base_plan, Mapping)
+        or isinstance(monthly_bars, bool)
+        or not isinstance(monthly_bars, int)
+        or monthly_bars <= 0
+        or base_plan.get("market") != "cn"
+        or base_plan.get("target_date") != target_date.isoformat()
+    ):
+        raise RuntimeError("DAILY_MONTHLY_EXTENSION_PLAN_INVALID")
+    required = dict(base_plan.get("timeframe_required_bars") or {})
+    current = required.get("monthly")
+    if not isinstance(current, int) or monthly_bars < current:
+        raise RuntimeError("DAILY_MONTHLY_EXTENSION_BARS_INVALID")
+    required["monthly"] = monthly_bars
+    calendar_plan = resolve_required_daily_history_start_fail_closed(
+        "cn", target_date, required,
+    )
+    if calendar_plan is None:
+        raise RuntimeError("DAILY_MONTHLY_EXTENSION_CALENDAR_UNAVAILABLE")
+    identity = {
+        "version": base_plan.get("version"),
+        "market": base_plan.get("market"),
+        "target_date": base_plan.get("target_date"),
+        "timeframe_required_bars": required,
+        "source_only_timeframe_required_bars": dict(
+            base_plan.get("source_only_timeframe_required_bars") or {}
+        ),
+        "method_required_bars": deepcopy(base_plan.get("method_required_bars") or {}),
+        "method_window_classes": deepcopy(base_plan.get("method_window_classes") or {}),
+        "mtf_recursive_comparison_required_bars": dict(
+            base_plan.get("mtf_recursive_comparison_required_bars") or {}
+        ),
+        "mtf_recursive_calendar_status": deepcopy(
+            base_plan.get("mtf_recursive_calendar_status") or {}
+        ),
+    }
+    return {
+        **calendar_plan,
+        **identity,
+        "plan_hash": sha256_payload(identity),
+    }
+
+
+def _monthly_macd_receipt_from_daily_history(
+    *, frame: pd.DataFrame, code: str, market: str, target_date: date,
+    trend_analyzer: Any, source_observed_at: Any,
+) -> Tuple[Mapping[str, Any], int]:
+    trend_result = trend_analyzer.analyze(frame.copy(), code)
+    observed = pd.to_datetime(source_observed_at, utc=True, errors="raise").to_pydatetime()
+    context = build_multi_timeframe_structure_context(
+        stock_code=code,
+        history=frame,
+        target_date=target_date,
+        market=market,
+        trend_analyzer=trend_analyzer,
+        daily_trend_result=trend_result,
+        snapshot_observed_at=observed,
+    )
+    monthly = (context.get("timeframes") or {}).get("monthly") or {}
+    receipt = monthly.get("macd_startup_stability")
+    observations = monthly.get("observations")
+    if not isinstance(receipt, Mapping) or not isinstance(observations, int):
+        raise DailyDataIdentityError("MONTHLY_MACD_EXECUTION_RECEIPT_MISSING")
+    return receipt, observations
+
+
 def _daily_row_record(row: Any) -> Dict[str, Any]:
     to_dict = getattr(row, "to_dict", None)
     if callable(to_dict):
@@ -499,6 +572,22 @@ def _daily_observation_ceiling(current_time: Optional[datetime]) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def _provider_observation_ceiling(
+    current_time: Optional[datetime],
+    *,
+    market: Optional[str],
+    target_date: date,
+    observation_time_frozen: bool,
+) -> datetime:
+    """Keep replay clocks frozen while current runs use actual response time."""
+    if observation_time_frozen:
+        return _daily_observation_ceiling(current_time)
+    latest = resolve_latest_completed_session_fail_closed(market)
+    if latest != target_date:
+        return _daily_observation_ceiling(current_time)
+    return datetime.now(timezone.utc)
 
 
 def _load_verified_cached_daily_history(
@@ -1087,11 +1176,199 @@ class StockAnalysisPipeline:
         with self._run_local_daily_history_lock:
             self._run_local_daily_history.pop(key, None)
 
+    def _extend_daily_history_for_monthly_macd(
+        self,
+        *,
+        frame: pd.DataFrame,
+        source_name: str,
+        identity: Mapping[str, Any],
+        code: str,
+        market: str,
+        target_date: date,
+        current_time: Optional[datetime],
+        observation_time_frozen: bool,
+        base_plan: Mapping[str, Any],
+        requested_sessions: List[date],
+        returned_dates: List[date],
+    ) -> Tuple[
+        pd.DataFrame, Mapping[str, Any], Dict[str, Any], List[date], List[date],
+        Optional[Dict[str, Any]],
+    ]:
+        """Boundedly extend the same daily source only after native monthly MACD drift."""
+        analyzer = getattr(self, "trend_analyzer", None)
+        if analyzer is None or market != "cn" or bool(getattr(self, "p0_receipt_only", False)):
+            return frame, identity, dict(base_plan), requested_sessions, returned_dates, None
+        if (
+            not observation_time_frozen
+            and resolve_latest_completed_session_fail_closed(market) != target_date
+        ):
+            return frame, identity, dict(base_plan), requested_sessions, returned_dates, None
+        current_frame = frame
+        current_identity = dict(identity)
+        current_plan = dict(base_plan)
+        current_requested = list(requested_sessions)
+        current_returned = list(returned_dates)
+        initial_identity = dict(identity)
+        attempts: List[Dict[str, Any]] = []
+        final_status = "NO_EXTENSION"
+        final_reason = "NATIVE_MACD_NOT_EVALUATED"
+        while True:
+            receipt, completed_months = _monthly_macd_receipt_from_daily_history(
+                frame=current_frame,
+                code=code,
+                market=market,
+                target_date=target_date,
+                trend_analyzer=analyzer,
+                source_observed_at=current_identity.get("observed_at"),
+            )
+            requested_months = int(current_plan["timeframe_required_bars"]["monthly"])
+            attempts.append({
+                "attempt_number": len(attempts) + 1,
+                "requested_monthly_bars": requested_months,
+                "request_start": current_plan["start_date"].isoformat(),
+                "request_end": target_date.isoformat(),
+                "returned_start": current_returned[0].isoformat(),
+                "returned_end": current_returned[-1].isoformat(),
+                "returned_base_bars": len(current_frame),
+                "completed_monthly_bars": completed_months,
+                "source_identity_hash": current_identity["identity_hash"],
+                "provider_identity": current_identity["provider_identity"],
+                "provider_route": current_identity["provider_route"],
+                "adjustment_basis": current_identity.get("observed_adjustment_basis"),
+                "currency": current_identity.get("currency"),
+                "volume_unit": current_identity.get("volume_unit"),
+                "amount_unit": current_identity.get("amount_unit"),
+                "macd_status": receipt.get("status"),
+                "macd_reason": receipt.get("reason"),
+                "macd_observations": receipt.get("observations"),
+                "macd_required_observations": receipt.get("required_observations"),
+                "max_endpoint_difference": receipt.get("max_endpoint_difference"),
+                "absolute_tolerance": receipt.get("absolute_tolerance"),
+                "startup_state_agreement": receipt.get("startup_state_agreement"),
+                "numeric_agreement": receipt.get("numeric_agreement"),
+            })
+            if completed_months < requested_months:
+                final_status = "SOURCE_HISTORY_SHORT"
+                final_reason = "SOURCE_RETURNED_FEWER_COMPLETED_MONTHS_THAN_REQUESTED"
+                break
+            advice = _next_bounded_monthly_macd_window(
+                base_plan=base_plan,
+                target_date=target_date,
+                receipt=receipt,
+                attempted_monthly_bars=tuple(
+                    item["requested_monthly_bars"] for item in attempts
+                ),
+            )
+            if advice.get("status") != "READ_ONLY_EXTENSION_AVAILABLE":
+                final_status = "READY" if receipt.get("status") == "READY" else "NO_EXTENSION"
+                final_reason = str(advice.get("reason") or receipt.get("reason") or "NO_EXTENSION")
+                break
+            next_plan = _daily_plan_with_monthly_macd_bars(
+                base_plan=base_plan,
+                target_date=target_date,
+                monthly_bars=int(advice["proposed_monthly_bars"]),
+            )
+            source_fetcher = self.fetcher_manager._get_fetcher_by_name(
+                source_name, capability="daily_data",
+            )
+            if source_fetcher is None:
+                raise DailyDataIdentityError(
+                    "DAILY_MONTHLY_EXTENSION_SELECTED_PROVIDER_UNAVAILABLE"
+                )
+            next_frame = self.fetcher_manager._call_fetcher_method(
+                source_fetcher,
+                "get_daily_data",
+                code,
+                start_date=next_plan["start_date"].isoformat(),
+                end_date=target_date.isoformat(),
+            )
+            next_identity = verify_observed_daily_frame_request(
+                next_frame,
+                instrument=code,
+                provider_identity=source_name,
+                requested_start=next_plan["start_date"],
+                requested_end=target_date,
+                target_date=target_date,
+                observed_at_ceiling=_provider_observation_ceiling(
+                    current_time,
+                    market=market,
+                    target_date=target_date,
+                    observation_time_frozen=observation_time_frozen,
+                ),
+            )
+            for key in (
+                "provider_identity", "provider_route", "instrument",
+                "requested_adjustment_basis", "observed_adjustment_basis", "currency",
+                "volume_unit", "amount_unit",
+            ):
+                if next_identity.get(key) != initial_identity.get(key):
+                    raise DailyDataIdentityError(
+                        "DAILY_MONTHLY_EXTENSION_SOURCE_IDENTITY_MISMATCH:" + key
+                    )
+            next_sessions = resolve_session_range_fail_closed(
+                market, next_plan["start_date"], target_date,
+            )
+            if not next_sessions:
+                raise DailyDataIdentityError("daily extension exchange-session range unavailable")
+            next_dates = [
+                value.date() for value in pd.to_datetime(next_frame["date"], errors="raise")
+            ]
+            if (
+                len(next_dates) > len(next_sessions)
+                or next_dates != next_sessions[-len(next_dates):]
+            ):
+                raise DailyDataIdentityError(
+                    "daily extension response is not an exact completed-session suffix"
+                )
+            current_frame = next_frame
+            current_identity = next_identity
+            current_plan = next_plan
+            current_requested = next_sessions
+            current_returned = next_dates
+        if len(attempts) < 2:
+            return (
+                current_frame, current_identity, current_plan,
+                current_requested, current_returned, None,
+            )
+        extension = seal_daily_window_extension_receipt({
+            "schema_version": DAILY_WINDOW_EXTENSION_RECEIPT_SCHEMA_VERSION,
+            "caller": "StockAnalysisPipeline.fetch_and_save_stock_data",
+            "instrument": normalize_stock_code(code),
+            "market": market,
+            "target_date": target_date.isoformat(),
+            "method_id": "MTF_MOMENTUM_CONTEXT.MONTHLY.MACD_STARTUP_COMPARISON",
+            "method_owner": "StockTrendAnalyzer._calculate_macd",
+            "provider_identity": initial_identity["provider_identity"],
+            "provider_route": initial_identity["provider_route"],
+            "initial_plan_hash": base_plan["plan_hash"],
+            "final_plan_hash": current_plan["plan_hash"],
+            "initial_source_identity_hash": initial_identity["identity_hash"],
+            "final_source_identity_hash": current_identity["identity_hash"],
+            "initial_request_start": base_plan["start_date"].isoformat(),
+            "final_request_start": current_plan["start_date"].isoformat(),
+            "final_requested_monthly_bars": int(
+                current_plan["timeframe_required_bars"]["monthly"]
+            ),
+            "provider_method_call_count": len(attempts),
+            "attempts": attempts,
+            "final_status": final_status,
+            "final_reason": final_reason,
+            "storage_admitted": False,
+            "strategy_admitted": False,
+            "training_admitted": False,
+            "independent_action_authority": False,
+        })
+        return (
+            current_frame, current_identity, current_plan,
+            current_requested, current_returned, extension,
+        )
+
     def fetch_and_save_stock_data(
         self,
         code: str,
         force_refresh: bool = False,
         current_time: Optional[datetime] = None,
+        observation_time_frozen: Optional[bool] = None,
     ) -> Tuple[bool, Optional[str]]:
         """Acquire one daily window with request/cache/source identity separated.
 
@@ -1101,6 +1378,8 @@ class StockAnalysisPipeline:
         """
         stock_name = code
         target_date: Optional[date] = None
+        if observation_time_frozen is None:
+            observation_time_frozen = current_time is not None
         try:
             asset_admission = resolve_cn_price_asset(code)
             if asset_admission["market"] == "cn":
@@ -1211,7 +1490,12 @@ class StockAnalysisPipeline:
                 requested_start=history_start,
                 requested_end=target_date,
                 target_date=target_date,
-                observed_at_ceiling=_daily_observation_ceiling(current_time),
+                observed_at_ceiling=_provider_observation_ceiling(
+                    current_time,
+                    market=market,
+                    target_date=target_date,
+                    observation_time_frozen=bool(observation_time_frozen),
+                ),
             )
             if (
                 asset_admission["asset_route"] == "ETF"
@@ -1236,6 +1520,25 @@ class StockAnalysisPipeline:
                 raise DailyDataIdentityError(
                     "daily response is not an exact completed-session suffix"
                 )
+            storage_frame = df.copy(deep=True)
+            storage_frame.attrs = deepcopy(df.attrs)
+            (
+                df, identity, daily_window_plan, requested_sessions, returned_dates,
+                window_extension,
+            ) = self._extend_daily_history_for_monthly_macd(
+                frame=df,
+                source_name=source_name,
+                identity=identity,
+                code=code,
+                market=str(market or "").strip().lower(),
+                target_date=target_date,
+                current_time=current_time,
+                base_plan=daily_window_plan,
+                observation_time_frozen=bool(observation_time_frozen),
+                requested_sessions=requested_sessions,
+                returned_dates=returned_dates,
+            )
+            history_start = daily_window_plan["start_date"]
             receipt = seal_daily_acquisition_receipt({
                 "schema_version": DAILY_ACQUISITION_RECEIPT_SCHEMA_VERSION,
                 "caller": "StockAnalysisPipeline.fetch_and_save_stock_data",
@@ -1266,9 +1569,16 @@ class StockAnalysisPipeline:
                 ),
                 "provider_identity": identity["provider_identity"],
                 "provider_route": identity["provider_route"],
-                "provider_method_call_count": 1,
+                "provider_method_call_count": (
+                    window_extension["provider_method_call_count"]
+                    if window_extension is not None else 1
+                ),
                 "provider_http_request_count": None,
                 "persistence_status": "NOT_ATTEMPTED",
+                **(
+                    {"bounded_window_extension": window_extension}
+                    if window_extension is not None else {}
+                ),
                 "actual_consumer": "StockAnalysisPipeline.analyze_stock",
             })
             attach_daily_acquisition_receipt(df, receipt)
@@ -1276,7 +1586,7 @@ class StockAnalysisPipeline:
                 code=code, target_date=target_date, frame=df,
             )
             try:
-                saved_count = self.db.save_daily_data(df, code, source_name)
+                saved_count = self.db.save_daily_data(storage_frame, code, source_name)
             except PermissionError as exc:
                 if "SOURCE_STORAGE_RIGHTS_NOT_ADMITTED" not in str(exc):
                     self._clear_run_local_daily_history(
@@ -1304,7 +1614,11 @@ class StockAnalysisPipeline:
 
             receipt = seal_daily_acquisition_receipt({
                 **receipt,
-                "persistence_status": "PERSISTED_BY_EXISTING_STORAGE_GATE",
+                "persistence_status": (
+                    "BASE_WINDOW_PERSISTED_EXTENSION_RUN_LOCAL"
+                    if window_extension is not None
+                    else "PERSISTED_BY_EXISTING_STORAGE_GATE"
+                ),
                 "persisted_rows": int(saved_count),
             })
             attach_daily_acquisition_receipt(df, receipt)
@@ -1312,8 +1626,8 @@ class StockAnalysisPipeline:
                 code=code, target_date=target_date, frame=df,
             )
             logger.info(
-                "%s(%s) typed daily data saved（来源: %s，新增 %s 条）",
-                stock_name, code, source_name, saved_count,
+                "%s(%s) typed daily base saved（来源: %s，新增 %s 条；动态续长仅run-local=%s）",
+                stock_name, code, source_name, saved_count, window_extension is not None,
             )
             return True, None
 
@@ -1577,6 +1891,7 @@ class StockAnalysisPipeline:
         report_type: ReportType,
         query_id: str,
         current_time: Optional[datetime] = None,
+        observation_time_frozen: Optional[bool] = None,
     ) -> Optional[AnalysisResult]:
         """
         分析单只股票（增强版：含量比、换手率、筹码分析、多维度情报）
@@ -1601,6 +1916,8 @@ class StockAnalysisPipeline:
         stock_name = code
         try:
             asset_admission = resolve_cn_price_asset(code)
+            if observation_time_frozen is None:
+                observation_time_frozen = current_time is not None
             if asset_admission["market"] == "cn":
                 if asset_admission["status"] != "ADMITTED":
                     logger.warning("%s price admission: %s", code, asset_admission["reason"])
@@ -1771,6 +2088,24 @@ class StockAnalysisPipeline:
                             target_date=end_date,
                             frame=completed_daily_history,
                         )
+                if completed_daily_history is not None:
+                    daily_receipt = extract_daily_acquisition_receipt(
+                        completed_daily_history, strict=True,
+                    )
+                    extension = (
+                        daily_receipt.get("bounded_window_extension")
+                        if isinstance(daily_receipt, Mapping) else None
+                    )
+                    if isinstance(extension, Mapping):
+                        daily_window_plan = _daily_plan_with_monthly_macd_bars(
+                            base_plan=daily_window_plan,
+                            target_date=end_date,
+                            monthly_bars=int(extension["final_requested_monthly_bars"]),
+                        )
+                        if daily_window_plan["plan_hash"] != daily_receipt.get("plan_hash"):
+                            raise DailyDataIdentityError(
+                                "DAILY_MONTHLY_EXTENSION_PLAN_RECEIPT_MISMATCH"
+                            )
                 start_date = daily_window_plan["start_date"]
                 if completed_daily_history is None:
                     historical_bars = self.db.get_data_range(
@@ -1826,13 +2161,18 @@ class StockAnalysisPipeline:
                 market=market,
                 target_date=daily_market_target_date,
                 completed_daily_history=completed_daily_history,
-                current_time=current_time,
+                current_time=(current_time if observation_time_frozen else None),
             )
-            # Replay/current-time callers own the known-at cutoff. Using the
+            # Replay callers retain their exact known-at cutoff; live runs use
             # wall clock here would make an otherwise frozen source snapshot
             # appear after its decision/send time and can also cross a later
             # exchange session while the target bars remain unchanged.
-            market_data_snapshot_observed_at = _daily_observation_ceiling(current_time)
+            market_data_snapshot_observed_at = _provider_observation_ceiling(
+                current_time,
+                market=market,
+                target_date=daily_market_target_date,
+                observation_time_frozen=bool(observation_time_frozen),
+            )
             completed_history_identity = (
                 build_completed_history_identity(
                     completed_daily_history,
@@ -5361,6 +5701,7 @@ class StockAnalysisPipeline:
         report_type: ReportType = ReportType.SIMPLE,
         analysis_query_id: Optional[str] = None,
         current_time: Optional[datetime] = None,
+        observation_time_frozen: Optional[bool] = None,
     ) -> Optional[AnalysisResult]:
         """
         处理单只股票的完整流程
@@ -5385,6 +5726,8 @@ class StockAnalysisPipeline:
             AnalysisResult 或 None
         """
         logger.info(f"========== 开始处理 {code} ==========")
+        if observation_time_frozen is None:
+            observation_time_frozen = current_time is not None
 
         from src.services.history_loader import set_frozen_target_date, reset_frozen_target_date
         frozen_td = self._resolve_resume_target_date(code, current_time=current_time)
@@ -5403,7 +5746,9 @@ class StockAnalysisPipeline:
             self._emit_progress(12, f"{code}：正在准备分析任务")
             # Step 1: 获取并保存数据
             success, error = self.fetch_and_save_stock_data(
-                code, current_time=current_time
+                code,
+                current_time=current_time,
+                observation_time_frozen=observation_time_frozen,
             )
             
             if not success:
@@ -5420,6 +5765,7 @@ class StockAnalysisPipeline:
             analyze_kwargs = {"query_id": effective_query_id}
             if current_time is not None:
                 analyze_kwargs["current_time"] = current_time
+            analyze_kwargs["observation_time_frozen"] = observation_time_frozen
             result = self.analyze_stock(code, report_type, **analyze_kwargs)
             
             if result and result.success:
@@ -5511,6 +5857,7 @@ class StockAnalysisPipeline:
 
         # 冻结本轮运行的统一参考时间，避免跨市场收盘边界时同批股票使用不同目标交易日。
         resume_reference_time = current_time or datetime.now(timezone.utc)
+        observation_time_frozen = current_time is not None
         # One Pipeline.run invocation is one intended learning cohort even though
         # each worker receives its own AnalysisHistory query id.  An explicit
         # research_intended_cohort_id (for example historical replay) remains
@@ -5590,6 +5937,7 @@ class StockAnalysisPipeline:
                     report_type=report_type,  # Issue #119: 传递报告类型
                     analysis_query_id=uuid.uuid4().hex,
                     current_time=resume_reference_time,
+                    observation_time_frozen=observation_time_frozen,
                 ): code
                 for code in stock_codes
             }

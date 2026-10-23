@@ -21,6 +21,7 @@ DAILY_DATA_IDENTITY_SCHEMA_VERSION = "daily-data-identity-v1"
 DAILY_DATA_IDENTITY_FRAME_ATTR = "daily_data_identity"
 DAILY_ACQUISITION_RECEIPT_SCHEMA_VERSION = "dsa-daily-acquisition-v1"
 DAILY_ACQUISITION_RECEIPT_FRAME_ATTR = "dsa_daily_acquisition_receipt"
+DAILY_WINDOW_EXTENSION_RECEIPT_SCHEMA_VERSION = "dsa-daily-window-extension-v1"
 
 _IDENTITY_STATES = frozenset({"OBSERVED", "UNCLASSIFIED"})
 _ADJUSTMENT_BASES = frozenset({"raw", "qfq", "hfq", "total_return"})
@@ -355,6 +356,123 @@ def verify_observed_daily_frame_request(
     return identity
 
 
+def seal_daily_window_extension_receipt(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Seal the bounded same-provider daily-history extension genealogy."""
+    payload = dict(value)
+    payload.pop("receipt_hash", None)
+    payload["receipt_hash"] = sha256_payload(payload)
+    return validate_daily_window_extension_receipt(payload)
+
+
+def validate_daily_window_extension_receipt(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise DailyDataIdentityError("daily window extension receipt must be an object")
+    payload = json.loads(canonical_json(dict(value)))
+    if payload.get("schema_version") != DAILY_WINDOW_EXTENSION_RECEIPT_SCHEMA_VERSION:
+        raise DailyDataIdentityError("daily window extension schema_version mismatch")
+    for key in (
+        "caller", "instrument", "market", "target_date", "method_id", "method_owner",
+        "provider_identity", "provider_route", "initial_plan_hash", "final_plan_hash",
+        "initial_source_identity_hash", "final_source_identity_hash", "final_status",
+        "final_reason", "receipt_hash",
+    ):
+        if not str(payload.get(key) or "").strip():
+            raise DailyDataIdentityError(f"daily window extension receipt missing {key}")
+    for key in (
+        "initial_plan_hash", "final_plan_hash", "initial_source_identity_hash",
+        "final_source_identity_hash", "receipt_hash",
+    ):
+        if not _is_sha256(payload.get(key)):
+            raise DailyDataIdentityError("daily window extension hashes must be exact 64-hex")
+    if payload.get("method_id") != "MTF_MOMENTUM_CONTEXT.MONTHLY.MACD_STARTUP_COMPARISON":
+        raise DailyDataIdentityError("daily window extension method_id mismatch")
+    if payload.get("method_owner") != "StockTrendAnalyzer._calculate_macd":
+        raise DailyDataIdentityError("daily window extension method_owner mismatch")
+    if any(payload.get(key) is not False for key in (
+        "storage_admitted", "strategy_admitted", "training_admitted",
+        "independent_action_authority",
+    )):
+        raise DailyDataIdentityError("daily window extension cannot escalate authority")
+    attempts = payload.get("attempts")
+    call_count = payload.get("provider_method_call_count")
+    if not isinstance(attempts, list) or len(attempts) < 2:
+        raise DailyDataIdentityError("daily window extension requires at least two attempts")
+    if isinstance(call_count, bool) or not isinstance(call_count, int) or call_count != len(attempts):
+        raise DailyDataIdentityError("daily window extension provider call count mismatch")
+    prior_months = 0
+    prior_start: Optional[date] = None
+    prior_completed = 0
+    for index, attempt in enumerate(attempts, start=1):
+        if not isinstance(attempt, Mapping) or attempt.get("attempt_number") != index:
+            raise DailyDataIdentityError("daily window extension attempt sequence mismatch")
+        requested_months = attempt.get("requested_monthly_bars")
+        completed_months = attempt.get("completed_monthly_bars")
+        returned_bars = attempt.get("returned_base_bars")
+        if (
+            isinstance(requested_months, bool) or not isinstance(requested_months, int)
+            or requested_months <= prior_months
+            or isinstance(completed_months, bool) or not isinstance(completed_months, int)
+            or completed_months <= 0 or completed_months > requested_months
+            or isinstance(returned_bars, bool) or not isinstance(returned_bars, int)
+            or returned_bars <= 0
+        ):
+            raise DailyDataIdentityError("daily window extension attempt counts are invalid")
+        request_start = _date_text(attempt.get("request_start"))
+        request_end = _date_text(attempt.get("request_end"))
+        returned_start = _date_text(attempt.get("returned_start"))
+        returned_end = _date_text(attempt.get("returned_end"))
+        if not all((request_start, request_end, returned_start, returned_end)):
+            raise DailyDataIdentityError("daily window extension attempt dates are missing")
+        current_start = date.fromisoformat(request_start)
+        if prior_start is not None and current_start >= prior_start:
+            raise DailyDataIdentityError("daily window extension starts must move backward")
+        if completed_months < prior_completed:
+            raise DailyDataIdentityError("daily window extension completed months regressed")
+        if date.fromisoformat(returned_start) < current_start:
+            raise DailyDataIdentityError("daily window extension returned before request start")
+        if request_end != payload["target_date"] or returned_end != payload["target_date"]:
+            raise DailyDataIdentityError("daily window extension target date mismatch")
+        if (
+            attempt.get("provider_identity") != payload["provider_identity"]
+            or attempt.get("provider_route") != payload["provider_route"]
+            or not _is_sha256(attempt.get("source_identity_hash"))
+        ):
+            raise DailyDataIdentityError("daily window extension source identity mismatch")
+        if not str(attempt.get("adjustment_basis") or "").strip() or not str(
+            attempt.get("currency") or ""
+        ).strip():
+            raise DailyDataIdentityError("daily window extension source basis is missing")
+        if str(attempt.get("macd_status") or "") not in {
+            "READY", "PARTIAL", "MISSING", "UNKNOWN",
+        }:
+            raise DailyDataIdentityError("daily window extension MACD state is invalid")
+        if not str(attempt.get("macd_reason") or "").strip():
+            raise DailyDataIdentityError("daily window extension MACD reason is missing")
+        prior_months = requested_months
+        prior_start = current_start
+        prior_completed = completed_months
+    first, last = attempts[0], attempts[-1]
+    final_status = payload.get("final_status")
+    if final_status == "READY" and last.get("macd_status") != "READY":
+        raise DailyDataIdentityError("daily window extension READY is not method-bound")
+    if final_status == "SOURCE_HISTORY_SHORT" and not (
+        last.get("completed_monthly_bars") < last.get("requested_monthly_bars")
+    ):
+        raise DailyDataIdentityError("daily window extension short status is not source-bound")
+    if (
+        first.get("source_identity_hash") != payload["initial_source_identity_hash"]
+        or last.get("source_identity_hash") != payload["final_source_identity_hash"]
+        or payload.get("initial_request_start") != first.get("request_start")
+        or payload.get("final_request_start") != last.get("request_start")
+        or payload.get("final_requested_monthly_bars") != last.get("requested_monthly_bars")
+    ):
+        raise DailyDataIdentityError("daily window extension final binding mismatch")
+    expected_hash = sha256_payload({key: item for key, item in payload.items() if key != "receipt_hash"})
+    if payload.get("receipt_hash") != expected_hash:
+        raise DailyDataIdentityError("daily window extension receipt hash mismatch")
+    return payload
+
+
 def seal_daily_acquisition_receipt(value: Mapping[str, Any]) -> dict[str, Any]:
     payload = dict(value)
     payload.pop("receipt_hash", None)
@@ -398,7 +516,9 @@ def validate_daily_acquisition_receipt(value: Any) -> dict[str, Any]:
     if mode == "VERIFIED_PROVIDER_CALL":
         if (
             payload.get("request_evidence_status") != "VERIFIED_PROVIDER_CALL"
-            or payload.get("provider_method_call_count") != 1
+            or not isinstance(payload.get("provider_method_call_count"), int)
+            or isinstance(payload.get("provider_method_call_count"), bool)
+            or payload.get("provider_method_call_count") < 1
             or isinstance(requested_count, bool)
             or not isinstance(requested_count, int)
             or requested_count <= 0
@@ -419,6 +539,28 @@ def validate_daily_acquisition_receipt(value: Any) -> dict[str, Any]:
             or not payload.get("cache_lookup_end")
         ):
             raise DailyDataIdentityError("daily cache-hit receipt is inconsistent")
+    extension = payload.get("bounded_window_extension")
+    provider_calls = payload.get("provider_method_call_count")
+    if extension is None:
+        if mode == "VERIFIED_PROVIDER_CALL" and provider_calls != 1:
+            raise DailyDataIdentityError("multiple daily provider calls require extension receipt")
+    else:
+        if mode != "VERIFIED_PROVIDER_CALL":
+            raise DailyDataIdentityError("daily cache hit cannot contain extension receipt")
+        extension = validate_daily_window_extension_receipt(extension)
+        payload["bounded_window_extension"] = extension
+        if (
+            provider_calls != extension["provider_method_call_count"]
+            or payload.get("instrument") != extension["instrument"]
+            or payload.get("target_date") != extension["target_date"]
+            or payload.get("provider_identity") != extension["provider_identity"]
+            or payload.get("provider_route") != extension["provider_route"]
+            or payload.get("plan_hash") != extension["final_plan_hash"]
+            or payload.get("source_identity_hash") != extension["final_source_identity_hash"]
+            or payload.get("actual_request_start") != extension["final_request_start"]
+        ):
+            raise DailyDataIdentityError("daily acquisition extension binding mismatch")
+
     expected_hash = sha256_payload({key: item for key, item in payload.items() if key != "receipt_hash"})
     if payload.get("receipt_hash") != expected_hash:
         raise DailyDataIdentityError("daily acquisition receipt hash mismatch")
