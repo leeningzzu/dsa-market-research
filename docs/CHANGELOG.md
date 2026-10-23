@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [文档] PR31的观察时钟兼容修复a10327经CI #78（Run39935111422）在Linux backend Offline、AI治理、Docker与变更检测全部通过；原CI77四失败保留历史RED。原roadmap与stage合同同步精确工程SHA、PR Draft与B1真实数据权利OPEN；工程绿灯不等于全部方法READY、真实Product、交付或学习，原V2.5及775边图不变。
 - [修复] 修复CI #77四项Pipeline离线回归：复用现有可调用参数兼容检查，只向明确支持的单股worker传递观察时间冻结标记；在实时时钟与显式历史回放可自行推导的边界不注入冗余参数，保留同一批次目标时点、实时来源观测与历史known-at截断。维持单股通知串行、TickFlow预取的既有合法行为，不修改V2.5/策略/数据许可/模型，不删除或弱化旧反例。
 - [修复] 将既有月线MACD递归稳定性建议器接入唯一日线获取链：只有当前完成月线的原生多起点数值漂移成立时，才在同一Provider、证券、复权、币种、单位和known-at边界内有界向前扩展历史；每次请求、返回、方法状态和最终来源身份进入不可变扩展回执并由MTF Registry消费。上市历史不足保持UNKNOWN，已READY不追加，任何来源/复权/证券/时钟漂移均失败；不授予存储、策略、训练或发送权限，也不改变V2.5。
 - [文档] 将GitHub维护入口同步到权利门禁净化提交`858e0f34`与CI #75：保留CI #74“底层条款未知却准入Product”的FALSE_POSITIVE谱系，明确当前唯一父路线是精确上游条款证据和同一as-of Stock+ETF数据，而非继续增加指标、Provider专用权限框架或把绿色CI当真实许可。

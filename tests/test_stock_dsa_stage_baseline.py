@@ -101,13 +101,23 @@ def test_stage_ladder_keeps_parent_product_and_blocking_order_explicit() -> None
         "ai-governance", "backend-gate", "docker-build",
     ]
     acceptance = baseline["acceptance"]
-    assert acceptance["candidate_head"] == "858e0f349727ebf1b57b7288a220dd82683b463a"
-    assert acceptance["candidate_parent"] == "5d1717e5bbc75fec40ec6dd8c5e2bf8db0e68eec"
+    # Exact independently accepted code+CI snapshot, not a moving Git ref or Product Promotion.
+    assert acceptance["state"] == "G0_CI78_B5_DYNAMIC_WINDOW_PASS_SCOPED_PR31_DRAFT_B1_REAL_INPUTS_OPEN"
+    assert acceptance["candidate_head"] == "a10327cb0c39514011b4dd862788edf8d8471859"
+    assert acceptance["candidate_parent"] == "bfca958baefe9bf1e97d322ab414c1186646c7c9"
+    assert acceptance["candidate_head_scope"] == "LAST_ACCEPTED_ENGINEERING_CHECKPOINT_NOT_MOVING_REMOTE_REF"
     assert acceptance["latest_required_ci"] == {
-        "run_number": 75,
-        "run_id": 39885269620,
+        "run_number": 78,
+        "run_id": 39935111422,
         "conclusion": "success",
     }
+    assert acceptance["prior_failed_ci"] == {
+        "run_number": 77,
+        "run_id": 39901137680,
+        "head": "bfca958baefe9bf1e97d322ab414c1186646c7c9",
+        "conclusion": "failure",
+    }
+    assert acceptance["pull_request_state"] == "DRAFT_OPEN_NOT_MERGED"
 
 
 def test_stage_baseline_preserves_formal_email_contract_and_no_auto_trade() -> None:
