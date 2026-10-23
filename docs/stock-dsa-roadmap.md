@@ -3,15 +3,15 @@
 > 本文是现有DSA机器图、执行合同和运行证据的维护者视图，不是新的Source、策略、数据库、调度器或报告权威。机器可读不变量见 `docs/stock-dsa-stage-baseline-v1.json`；真实状态仍由GitHub代码、CI、运行回执和合法数据证据决定。
 
 <!-- CURRENT_MASTER_CONTROL_START -->
-## 当前控制页：总目标、依赖图与退出条件（2026-10-22）
+## 当前控制页：总目标、依赖图与退出条件（2026-10-23）
 
-CONTROL_ID = STOCK_DSA_MASTER_ROUTE_20261022_G0_CI70_B8_FOCUS_CI71_CLOSURE
-CURRENT_CANDIDATE_HEAD = 9da392c012eb37cd97cc18a27af729be48b44698
-CURRENT_CANDIDATE_PARENT = 36632bb52da5877b621b1aaddad0cf1ad67da87d
+CONTROL_ID = STOCK_DSA_MASTER_ROUTE_20261023_OPERATION_RIGHTS_CI75_CLOSURE
+CURRENT_CANDIDATE_HEAD = 858e0f349727ebf1b57b7288a220dd82683b463a
+CURRENT_CANDIDATE_PARENT = 5d1717e5bbc75fec40ec6dd8c5e2bf8db0e68eec
 LAST_VERIFIED_MAIN_BASELINE = b32570b1562deaefa99f500a9c68eb7d1caf6f56
 CURRENT_PR = #31 / Draft / Open / not merged
-LATEST_REQUIRED_CI = #71 / Run39751104583 / success on 9da392c0
-SOURCE_CHECKPOINT = Project 01/05 v3.497 with eight unique logical Owners
+LATEST_REQUIRED_CI = #75 / Run39885269620 / success on 858e0f34
+SOURCE_CHECKPOINT = Current Project 01/05 authority; latest checkpoint v3.499; physical installation is governed by Project Gate B, not Git
 AUTHORITY = exact Git/运行证据 > current 01 > 02/03 > 04/05 > Factor > 06 > 旧Chat
 
 **这是一份现有路线的维护者状态投影，不是新架构、第二个Source、第二数据库或调度器。原775边图和V2.5原件保持不变；旧dated checkpoint继续作为历史。**
@@ -26,11 +26,11 @@ AUTHORITY = exact Git/运行证据 > current 01 > 02/03 > 04/05 > Factor > 06 > 
 
 ### 0.2 当前事实与本次纠偏
 
-- G0：PR #31 的父提交36632bb5已通过CI #70；backend-gate与Offline test suite成功。该工程门禁CLOSED_SCOPED_NO_REPLAY，不代表真实数据或产品完成。
-- B8 Focus：精确子提交9da392c0只改既有筛选score/source/execution readiness链、对应测试及扁平CHANGELOG；非强制推送后CI #71成功。缺失、插补、stale、legacy或篡改回执的股票/ETF只能进入REMAINING；合法完整输入和0/部分候选nontrigger保留。它不是概率、BUY或真实Provider准入。
+- 工程与消费者基线：G0 CI #70、AUTO Focus CI #71、路线投影 CI #72、Quality/九类Valuation进入Factor→Brief→Email的CI #73均为CLOSED_SCOPED_NO_REPLAY；它们不证明真实数据、策略动作或邮件交付完成。
+- Operation-specific权利纠偏：CI #74对应提交5d1717e5虽为绿色，但独立反例证明其在底层来源条款`NOT_INDEPENDENTLY_VERIFIED`时仍可产生`PRODUCT_ADMITTED`，因此只保留为历史FALSE_POSITIVE。子提交858e0f34删除Provider专用权利服务和AkShare耦合，恢复到同一`data_object_admission` Owner：必须同时绑定当前operation、用途、运行时source/content identity、精确上游条款证据和四类rights；UNKNOWN只保留来源身份。346/346本地回归及CI #75成功，CLOSED_SCOPED_NO_REPLAY。
 - 七周期carrier、7×8矩阵与runtime trace保持CLOSED_SCOPED_NO_REPLAY；43 Profile为28 reused/15 deferred，56格不等于全READY。动态获取窗口仍由方法Owner和consumer决定，不统一成一个lookback。
-- 当前主产品缺口是同一as-of的一只普通股票和一只普通ETF的operation-specific来源/单位/复权/available_at/vintage/权利回执，以及适用业务估值、30m→15m→5m触发与四类veto；M2.3与学习/Promotion继续HOLD。
-- Source连续性：Project UI和直接读取确认01/05 v3.497及六个稳定Owner共八份；文件索引投影曾滞后，不再用于推翻更新后的直接证据。下一Source只在新的材料性Git/Product checkpoint成对更新。
+- 当前主产品缺口已收敛为外部事实：同一as-of普通股票和普通ETF的精确上游条款证据、实际source/单位/复权/available_at/vintage，以及适用业务估值、30m→15m→5m触发与四类veto；在权利证据缺失时不调用Provider、不落库、不训练、不发送。M2.3与学习/Promotion继续HOLD。
+- Source连续性：最新checkpoint为v3.499；物理安装/旧副本属于Project Gate B维护，不再阻断已获授权的主线工程。下一Source只在本次CI #75材料性关闭后成对更新。
 
 ### 0.3 详细依赖图：实线是数据/决策依赖，虚线是诊断或显式后继反馈
 
@@ -102,11 +102,11 @@ flowchart TD
 
 | 阶段 | 目标/现有Owner | 最小实施与退出证据 | 阻断范围 |
 |---|---|---|---|
-| G0工程接受 | PR #31当前候选9da392c0；父36632bb5 CI70与Focus子提交CI71已通过必需检查 | 保留exact HEAD/parent、非强制push、自然Linux与旧失败谱系；PR仍Draft/Open且未merge | 工程门禁PASS_SCOPED，不替真实数据、产品或Promotion；merge仍需独立明确批准 |
-| B1+B5四对象底座 | data_provider、daily/intraday identity、core pipeline/MTF | 代表市场指数、正式行业指数、ETF、个股分别冻结source-capability manifest；缺项明确；来源与请求身份留在原Owner | 某对象缺源不阻断兄弟对象，版权未知不落库积历史 |
-| B5窗口到方法 | 复用_current_daily_window_plan/_current_intraday_window_plan及Registry | 首个MACD/RSI纵向切片已把required/requested/returned/status/consumer_path接入MTF runtime trace并77/77通过；下一步用真实/类型化600519与510300运行回执核对，再为代表指数和正式行业指数分别建立生产者或明确MISSING；不得因高周期不足删除低周期合法材料 | 阻断相应方法/策略，不一刀切全部周期 |
+| G0工程接受 | PR #31当前候选858e0f34；CI70/71/72/73/75分别证明测试根修、Focus、路线、Quality/Valuation消费与权利门禁；CI74保留为被反例推翻的历史FALSE_POSITIVE | 保留exact HEAD/parent、非强制push、自然Linux与失败谱系；PR仍Draft/Open且未merge | 工程门禁PASS_SCOPED，不替真实数据、产品或Promotion；merge仍需独立明确批准 |
+| B1来源与权利 | 现有data_object_admission、daily/intraday identity与Registry | 每个Product对象必须绑定当前operation、NO_SEND/LEARNING用途、运行时source/content identity、上游Owner/条款hash/观测时点和四类rights；UNKNOWN只保留来源身份 | CI75只证明门禁；未取得真实上游授权时不得调用Provider、持久化、训练或发送 |
+| B5窗口到方法 | 复用_current_daily_window_plan/_current_intraday_window_plan及Registry | 首个MACD/RSI纵向切片已把required/requested/returned/status/consumer_path接入MTF runtime trace；后继只在合法Stock+ETF实际回执上重算，缺失方法保持MISSING/DEFERRED | 阻断相应方法/策略，不一刀切全部周期，也不把静态56格当READY |
 | M2上下文到筛选 | MarketStructure/RS/Screening/Factor | 廉价合法指标缩Universe，有限候选完整7TF；共享指数/行业结果；候选跳过/否决/缺数理由分开 | 不能承诺与全市场深析零漏选；保留研究型审计样本 |
-| B6+B8策略与交付 | 原Screening/structure/pattern/Factor/Notification | Focus的score/source/execution三门已CI通过；后继用合法Stock+ETF实源闭合Quality/适用估值、30m→15m→5m、四类veto和同canonical完整报告 | 不真实发信、交易、落库、训练或merge，除非各自另有明确授权 |
+| B6+B8策略与交付 | 原Screening/structure/pattern/Factor/Notification | Focus、Quality/Valuation消费和operation rights门禁已CI通过；后继用合法Stock+ETF实源闭合30m→15m→5m、四类veto和同canonical完整报告 | 不真实发信、交易、落库、训练或merge，除非各自另有明确授权 |
 | L1/M3第二链 | 原History/Journal/Ledger/Outcome与后续实验Owner | 合法写读/PIT/冻结label/成本/选择偏差审计；训练/验证/测试/校准分离，Promotion显式 | B1/HOLD时只做schema/合成测试/只读研究，不训练真实数据 |
 
 阶段是依赖关系，不是所有工作线强制串行。优先一个能够暴露共性缺口的真实纵向切片，保留另三类的显式OPEN；不复制四个分析引擎，也不长期停在一个测试模块。
@@ -143,13 +143,13 @@ flowchart TD
 
 ### 0.9 Role Review、反例与唯一下一步
 
-Role Review（9da392c0）：Program继续KEEP单一DSA；G0 CI70和B8 Focus CI71均PASS_SCOPED，PR仍Draft/Open且未merge。Product仍REVISE，因为真实76对象权利/PIT、九类业务估值实算、全56格READY、30m→15m→5m与四类veto、真实V2.5动态产品和交付均未完成。Data继续HOLD未知权利/单位/修订；Algorithm复用原Owner，不再堆指标或新评分器；Operations只承认actual receipt/CI，不把目录、测试数或本地WIP当Production；原48路WIP继续隔离。
+Role Review（858e0f34）：Program继续KEEP单一DSA；G0、Focus、路线、Quality/Valuation产品消费与operation rights门禁均有独立Linux PASS，PR仍Draft/Open且未merge。Product仍REVISE：CI75只证明UNKNOWN上游权利不能升级Product，不证明真实Stock+ETF授权、76对象实值、九类估值实算、全56格READY、30m→15m→5m与四类veto、V2.5动态产品或交付。Data继续STOP于外部条款证据与同一as-of数据；Algorithm复用原Owner；Operations没有Provider/DB/发送/训练/merge效果；远端5d1717过宽实现已由非强制子提交净化，原48路WIP继续隔离。
 
-FIXED_STATUS_VECTOR = G0_CI_PASS_SCOPED; B8_FOCUS_CI_PASS_SCOPED; 7TF_CARRIER_IMPLEMENTED; 7TF_MATRIX_IMPLEMENTED; 7TF_RUNTIME_TRACE_SCOPED_PASS; METHOD_READINESS_PARTIAL; REAL_INPUT_AND_RIGHTS_OPEN; VALUATION_REAL_NUMERICS_OPEN; STRATEGY_TRIGGER_OPEN; M2_3_HOLD; LEARNING_PROMOTION_HOLD.
+FIXED_STATUS_VECTOR = G0_CI_PASS_SCOPED; B8_FOCUS_CI_PASS_SCOPED; QUALITY_VALUATION_PRODUCT_CI73_PASS_SCOPED; OPERATION_RIGHTS_GATE_CI75_PASS_SCOPED; UPSTREAM_RIGHTS_EVIDENCE_OPEN; 7TF_CARRIER_IMPLEMENTED; 7TF_MATRIX_IMPLEMENTED; 7TF_RUNTIME_TRACE_SCOPED_PASS; METHOD_READINESS_PARTIAL; REAL_INPUT_OPEN; VALUATION_REAL_NUMERICS_OPEN; STRATEGY_TRIGGER_OPEN; M2_3_HOLD; LEARNING_PROMOTION_HOLD.
 
-UNIQUE_NEXT_STEP = 在现有DSA内取得同一as-of的一只普通股票与一只普通ETF最小合法纵向切片：逐对象绑定provider/dataset/instrument/units/currency/raw或复权口径/completed_through/observed_at/available_at/revision/vintage及product/storage/training/redistribution rights，进入现有Registry→Quality/业务适用Valuation→7TF/veto/canonical→原V2.5 NO_SEND。无合法回执即STOP，不用合成值、更多指标、第二Shell或整包旧WIP绕过。
+UNIQUE_NEXT_STEP = 为同一as-of的一只普通股票和一只普通ETF取得精确上游条款原件/哈希/观察时点与operation-specific四类rights；只有通过现有data_object_admission后才调用现有Provider取得1d/5m及财务/ETF专属数据，进入Registry→Quality/业务适用Valuation→7TF/veto/canonical→原V2.5 NO_SEND。无合法权利证据即STOP，不用SDK可用性、合成值、更多指标、第二Shell或整包旧WIP绕过。
 
-PASS = 精确来源和consumer可追、Stock/ETF各自合法正例与缺失/过期/错单位/未来回填/无权利反例守边界、估值区间与敏感性诚实；STOP = 一类资产替两类、目录冒实值、UNKNOWN升READY、统一PE/WACC、技术分抵消veto、未经授权落库/发送/训练/merge。CURRENT_ROUTE_STILL_WORTH_CONTINUING=YES；INSTRUCTIONS_UPDATE_DECISION=NO；SOURCES_UPDATE_DECISION=DEFER_TO_NEXT_MATERIAL_CHECKPOINT。
+PASS = exact operation/source/terms/consumer可追、Stock/ETF各自合法正例与缺失/过期/错单位/未来回填/无权利反例守边界、估值区间与敏感性诚实；STOP = 学术声明替代底层条款、Provider可调用替代数据许可、一类资产替两类、目录冒实值、UNKNOWN升READY、统一PE/WACC、技术分抵消veto、未经授权落库/发送/训练/merge。CURRENT_ROUTE_STILL_WORTH_CONTINUING=YES；INSTRUCTIONS_UPDATE_DECISION=NO；SOURCES_UPDATE_DECISION=YES_AFTER_CI75_MATERIAL_CHECKPOINT。
 
 <!-- CURRENT_MASTER_CONTROL_END -->
 

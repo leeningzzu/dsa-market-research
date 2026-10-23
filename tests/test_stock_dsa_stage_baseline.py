@@ -91,8 +91,8 @@ def test_stage_ladder_keeps_parent_product_and_blocking_order_explicit() -> None
         "M3_CALIBRATION_SHADOW",
         "P1_PROMOTION_RELEASE",
     ]
-    assert baseline["route_decision"]["next_primary"] == "M2_MULTI_ASSET_KNOWN_AT"
-    assert [stage["id"] for stage in stages if stage.get("next_primary")] == ["M2_MULTI_ASSET_KNOWN_AT"]
+    assert baseline["route_decision"]["next_primary"] == "B1_SOURCE_RIGHTS"
+    assert [stage["id"] for stage in stages if stage.get("next_primary")] == ["B1_SOURCE_RIGHTS"]
     assert stages[5]["blocked_by"] == "B1_SOURCE_RIGHTS"
     assert stages[6]["blocked_by"] == "L1_LEGAL_LEDGER_OUTCOME_PIT"
     assert stages[7]["blocked_by"] == "M3_CALIBRATION_SHADOW"
@@ -100,6 +100,14 @@ def test_stage_ladder_keeps_parent_product_and_blocking_order_explicit() -> None
     assert baseline["acceptance"]["required_checks"] == [
         "ai-governance", "backend-gate", "docker-build",
     ]
+    acceptance = baseline["acceptance"]
+    assert acceptance["candidate_head"] == "858e0f349727ebf1b57b7288a220dd82683b463a"
+    assert acceptance["candidate_parent"] == "5d1717e5bbc75fec40ec6dd8c5e2bf8db0e68eec"
+    assert acceptance["latest_required_ci"] == {
+        "run_number": 75,
+        "run_id": 39885269620,
+        "conclusion": "success",
+    }
 
 
 def test_stage_baseline_preserves_formal_email_contract_and_no_auto_trade() -> None:
@@ -110,6 +118,9 @@ def test_stage_baseline_preserves_formal_email_contract_and_no_auto_trade() -> N
     assert invariants["formal_report_telegram_optional"] is True
     assert invariants["other_chat_or_webhook_channels_are_formal_report_substitutes"] is False
     assert invariants["source_identity_implies_storage_or_training_rights"] is False
+    assert invariants["operation_specific_upstream_rights_required"] is True
+    assert invariants["unknown_upstream_rights_admit_product"] is False
+    assert invariants["no_send_product_rights_imply_redistribution"] is False
 
     cfg = Config(
         stock_list=[],
@@ -148,9 +159,9 @@ def test_stage_baseline_locks_bounded_hierarchical_mtf_screening() -> None:
     ] is True
 
 
-def test_indicator_backlog_is_subordinate_to_the_multi_asset_parent_route() -> None:
+def test_indicator_backlog_is_subordinate_to_the_lawful_input_parent_route() -> None:
     decision = _baseline()["route_decision"]
-    assert decision["next_primary"] == "M2_MULTI_ASSET_KNOWN_AT"
+    assert decision["next_primary"] == "B1_SOURCE_RIGHTS"
     assert decision["bounded_indicator_sub_lanes"] == [
         "MONTHLY_RSI_HISTORY_IF_LEGAL",
         "15M_CONFIRMATION",
