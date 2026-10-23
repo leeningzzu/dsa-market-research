@@ -5745,11 +5745,10 @@ class StockAnalysisPipeline:
         try:
             self._emit_progress(12, f"{code}：正在准备分析任务")
             # Step 1: 获取并保存数据
-            success, error = self.fetch_and_save_stock_data(
-                code,
-                current_time=current_time,
-                observation_time_frozen=observation_time_frozen,
-            )
+            fetch_kwargs = {"current_time": current_time}
+            if observation_time_frozen != (current_time is not None):
+                fetch_kwargs["observation_time_frozen"] = observation_time_frozen
+            success, error = self.fetch_and_save_stock_data(code, **fetch_kwargs)
             
             if not success:
                 logger.warning(f"[{code}] 数据获取失败: {error}")
@@ -5765,7 +5764,8 @@ class StockAnalysisPipeline:
             analyze_kwargs = {"query_id": effective_query_id}
             if current_time is not None:
                 analyze_kwargs["current_time"] = current_time
-            analyze_kwargs["observation_time_frozen"] = observation_time_frozen
+            if observation_time_frozen != (current_time is not None):
+                analyze_kwargs["observation_time_frozen"] = observation_time_frozen
             result = self.analyze_stock(code, report_type, **analyze_kwargs)
             
             if result and result.success:
@@ -5924,6 +5924,13 @@ class StockAnalysisPipeline:
         
         results: List[AnalysisResult] = []
         
+        # 仅向显式支持新时间标记的worker传参，兼容原有调用入口。
+        # 原生worker始终获取该标记，避免实时运行被误判为历史冻结回放。
+        worker_observation_kwargs = (
+            {"observation_time_frozen": observation_time_frozen}
+            if _supports_explicit_keyword(self.process_single_stock, "observation_time_frozen")
+            else {}
+        )
         # 使用线程池并发处理
         # 注意：max_workers 设置较低（默认3）以避免触发反爬
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
@@ -5937,7 +5944,7 @@ class StockAnalysisPipeline:
                     report_type=report_type,  # Issue #119: 传递报告类型
                     analysis_query_id=uuid.uuid4().hex,
                     current_time=resume_reference_time,
-                    observation_time_frozen=observation_time_frozen,
+                    **worker_observation_kwargs,
                 ): code
                 for code in stock_codes
             }

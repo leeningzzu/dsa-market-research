@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [修复] 修复CI #77四项Pipeline离线回归：复用现有可调用参数兼容检查，只向明确支持的单股worker传递观察时间冻结标记；在实时时钟与显式历史回放可自行推导的边界不注入冗余参数，保留同一批次目标时点、实时来源观测与历史known-at截断。维持单股通知串行、TickFlow预取的既有合法行为，不修改V2.5/策略/数据许可/模型，不删除或弱化旧反例。
 - [修复] 将既有月线MACD递归稳定性建议器接入唯一日线获取链：只有当前完成月线的原生多起点数值漂移成立时，才在同一Provider、证券、复权、币种、单位和known-at边界内有界向前扩展历史；每次请求、返回、方法状态和最终来源身份进入不可变扩展回执并由MTF Registry消费。上市历史不足保持UNKNOWN，已READY不追加，任何来源/复权/证券/时钟漂移均失败；不授予存储、策略、训练或发送权限，也不改变V2.5。
 - [文档] 将GitHub维护入口同步到权利门禁净化提交`858e0f34`与CI #75：保留CI #74“底层条款未知却准入Product”的FALSE_POSITIVE谱系，明确当前唯一父路线是精确上游条款证据和同一as-of Stock+ETF数据，而非继续增加指标、Provider专用权限框架或把绿色CI当真实许可。
 - [改进] 现有76对象数据准入不再接受裸`product_use=ALLOWED`声明：NO_SEND研究产品必须同时携带不可变operation-specific来源权利证据，并与当前operation、用途、运行时source/content identity、provider、上游来源Owner、dataset、consumer、条款URI/hash/观测时点及完整rights逐项绑定；缺当前operation/运行快照、上游权利未知、来源/对象不匹配、条款晚于数据观测、NO_SEND却允许再分发均只保留来源身份。NO_SEND产品许可不能解锁Learning，Learning另需独立`LEARNING_RESEARCH`operation及storage/training/PIT条件；不新增Provider/DB/报告/策略或V2.5布局。
