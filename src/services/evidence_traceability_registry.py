@@ -2982,7 +2982,12 @@ def _verified_typed_price_bar_scope(factor: Mapping) -> dict[str, dict]:
     scope = {}
     daily = frames.get("daily")
     identity = str(mtf.get("daily_data_identity_hash") or "")
+    # The existing MTF carrier publishes the exact consumed snapshot identity,
+    # not the provider frame's nested content hash. Bind both identities instead
+    # of adding a second provenance producer or guessing a hidden field.
+    daily_content = str(mtf.get("data_snapshot_identity") or "")
     if (isinstance(daily, Mapping) and len(identity) == 64
+        and len(daily_content) == 64
         and daily.get("status") == "READY"
         and daily.get("completed_bar_only") is True
         and daily.get("completed_through") == target
@@ -2990,7 +2995,13 @@ def _verified_typed_price_bar_scope(factor: Mapping) -> dict[str, dict]:
         scope["P_DAILY"] = {
             "state": "PARTIAL",
             "reason": "TYPED_1D_SOURCE_OBSERVED_RIGHTS_HISTORICAL_PIT_NOT_PROVEN",
-            "source_identity_hash": identity, "source_observed_at": observed,
+            "provider_identity": provider,
+            "source_identity_hash": identity,
+            "source_content_sha256": daily_content,
+            "source_observed_at": observed,
+            "source_available_at": observed,
+            "completed_through": target,
+            "adjustment_basis": basis,
         }
     minute = frames.get("5m")
     session = minute.get("completed_source_session_receipt") if isinstance(minute, Mapping) else None
@@ -3023,8 +3034,16 @@ def _verified_typed_price_bar_scope(factor: Mapping) -> dict[str, dict]:
                 "state": "PARTIAL",
                 "reason": ("TYPED_5M_PRICE_ONLY_UNITS_UNKNOWN_RIGHTS_PIT_NOT_PROVEN"
                            if unknown_units else "TYPED_5M_SOURCE_RIGHTS_PIT_NOT_PROVEN"),
+                "provider_identity": session["provider_identity"],
                 "source_identity_hash": minute_hash,
+                "source_content_sha256": session["content_sha256"],
                 "source_observed_at": session["observed_at"],
+                "source_available_at": session["available_at_max"],
+                "completed_through": target,
+                "adjustment_basis": session["observed_adjustment_basis"],
+                "currency": session["currency"],
+                "volume_unit": session["volume_unit"],
+                "amount_unit": session["amount_unit"],
                 "completed_sessions": sessions,
             }
     return scope
@@ -3669,11 +3688,21 @@ def compile_complete_research_universe_view(
             raise TraceabilityError(
                 "DATA_OBJECT_ADMISSION_RESEARCH_ASOF_MISSING"
             )
+        research_operation_id = str(factor.get("research_operation_id") or "").strip()
+        research_intended_use = str(factor.get("research_intended_use") or "").strip()
+        if admission_receipts and (
+            not research_operation_id or research_intended_use != "NO_SEND_RESEARCH"
+        ):
+            raise TraceabilityError(
+                "DATA_OBJECT_ADMISSION_OPERATION_CONTEXT_MISSING_OR_INVALID"
+            )
         try:
             admission_view = compile_data_object_admission_view(
                 data_objects,
                 admission_receipts,
                 as_of=target_as_of,
+                operation_id=research_operation_id,
+                intended_use=research_intended_use,
             )
         except DataObjectAdmissionError as exc:
             raise TraceabilityError(str(exc)) from exc

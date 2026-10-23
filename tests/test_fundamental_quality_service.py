@@ -7,6 +7,7 @@ import pytest
 from src.services.data_object_admission import (
     compile_data_object_admission,
     seal_data_object_admission_receipt,
+    seal_source_rights_evidence,
 )
 from src.services.fundamental_quality_service import (
     FIELD_SOURCES,
@@ -14,11 +15,6 @@ from src.services.fundamental_quality_service import (
     FundamentalQualityError,
     compile_fundamental_quality,
     validate_fundamental_quality,
-)
-from src.services.provider_operation_rights import (
-    TEST_PURPOSE,
-    TEST_SCOPE,
-    compile_provider_operation_rights_evidence,
 )
 
 
@@ -32,7 +28,27 @@ _META = {
 
 def _admission(dataset_id: str, **receipt_overrides):
     frequency = _META[dataset_id]
-    payload = {
+    rights = {
+        "product_use": "ALLOWED",
+        "storage": "FORBIDDEN",
+        "training": "FORBIDDEN",
+        "redistribution": "FORBIDDEN",
+    }
+    rights_evidence = seal_source_rights_evidence({
+        "schema_version": "source-rights-evidence-v1",
+        "operation_id": "op-quality-nosend-20261016-r001",
+        "intended_use": "NO_SEND_RESEARCH",
+        "provider_identity": "synthetic-lawful-provider",
+        "upstream_source_owner": "synthetic-licensed-upstream",
+        "upstream_rights_state": "VERIFIED",
+        "dataset_id": dataset_id,
+        "consumer_scope": "ASSET_RESEARCH_BRIEF",
+        "terms_uri": "https://example.invalid/terms/synthetic",
+        "terms_sha256": "c" * 64,
+        "terms_observed_at": "2026-10-15T07:00:00+00:00",
+        "rights": rights,
+    })
+    receipt = seal_data_object_admission_receipt({
         "schema_version": "data-object-admission-receipt-v1",
         "dataset_id": dataset_id,
         "provider_identity": "synthetic-lawful-provider",
@@ -48,38 +64,29 @@ def _admission(dataset_id: str, **receipt_overrides):
         "adjustment_basis": "NOT_APPLICABLE",
         "revision": "ORIGINAL_DISCLOSURE",
         "vintage": "2026-10-15T08:00:00+00:00",
-        "rights": {
-            "product_use": "ALLOWED",
-            "storage": "FORBIDDEN",
-            "training": "FORBIDDEN",
-            "redistribution": "FORBIDDEN",
-        },
+        "rights": rights,
+        "rights_evidence": rights_evidence,
         "historical_pit_eligible": False,
         "consumer_scope": "ASSET_RESEARCH_BRIEF",
         **receipt_overrides,
-    }
-    payload.setdefault(
-        "rights_evidence",
-        compile_provider_operation_rights_evidence(
-            provider_identity=payload["provider_identity"],
-            provider_route=payload["provider_route"],
-            operation_purpose=TEST_PURPOSE,
-            delivery_scope=TEST_SCOPE,
-            requested_actions={
-                key: payload["rights"][key] == "ALLOWED"
-                for key in ("product_use", "storage", "training", "redistribution")
-            },
-            commercial_use=False,
-            observed_at=payload["observed_at"],
-        ),
+    })
+    return compile_data_object_admission(
+        {
+            "dataset_id": dataset_id,
+            "native_frequency": frequency,
+            "product_consumer": "ASSET_RESEARCH_BRIEF",
+            "state": "UNKNOWN",
+            "provider_identity": "synthetic-lawful-provider",
+            "source_identity_hash": "a" * 64,
+            "source_content_sha256": "b" * 64,
+            "source_observed_at": "2026-10-16T10:00:00+00:00",
+            "completed_through": "2026-09-30",
+        },
+        receipt,
+        as_of="2026-10-16T23:59:59+00:00",
+        operation_id="op-quality-nosend-20261016-r001",
+        intended_use="NO_SEND_RESEARCH",
     )
-    receipt = seal_data_object_admission_receipt(payload)
-    return compile_data_object_admission({
-        "dataset_id": dataset_id,
-        "native_frequency": frequency,
-        "product_consumer": "ASSET_RESEARCH_BRIEF",
-        "state": "UNKNOWN",
-    }, receipt, as_of="2026-10-16T23:59:59+00:00")
 
 
 def _payload(**overrides):

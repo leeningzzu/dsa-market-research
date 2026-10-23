@@ -15,13 +15,9 @@ from src.services.business_valuation_service import (
 from src.services.data_object_admission import (
     compile_data_object_admission,
     seal_data_object_admission_receipt,
+    seal_source_rights_evidence,
 )
 from src.services import evidence_traceability_registry as registry
-from src.services.provider_operation_rights import (
-    TEST_PURPOSE,
-    TEST_SCOPE,
-    compile_provider_operation_rights_evidence,
-)
 
 
 _DATASET_META = {
@@ -76,12 +72,42 @@ def _admission(dataset_id="P_FIN_VINTAGE", **receipt_overrides):
         "product_consumer": consumer,
         "state": "UNKNOWN",
     }
-    completed_through = (
+    default_completed_through = (
         "2026-09-30"
         if dataset_id in {"P_FIN_VINTAGE", "E_NAV_IOPV"}
         else "2026-10-20"
     )
-    payload = {
+    completed_through = str(
+        receipt_overrides.get("completed_through", default_completed_through)
+    )
+    obligation.update({
+        "provider_identity": "synthetic-lawful-provider",
+        "source_identity_hash": "a" * 64,
+        "source_content_sha256": "b" * 64,
+        "source_observed_at": "2026-10-21T10:00:00+00:00",
+        "completed_through": completed_through,
+    })
+    rights = {
+        "product_use": "ALLOWED",
+        "storage": "FORBIDDEN",
+        "training": "FORBIDDEN",
+        "redistribution": "FORBIDDEN",
+    }
+    rights_evidence = seal_source_rights_evidence({
+        "schema_version": "source-rights-evidence-v1",
+        "operation_id": "op-valuation-nosend-20261021-r001",
+        "intended_use": "NO_SEND_RESEARCH",
+        "provider_identity": "synthetic-lawful-provider",
+        "upstream_source_owner": "synthetic-licensed-upstream",
+        "upstream_rights_state": "VERIFIED",
+        "dataset_id": dataset_id,
+        "consumer_scope": consumer,
+        "terms_uri": "https://example.invalid/terms/synthetic",
+        "terms_sha256": "c" * 64,
+        "terms_observed_at": "2026-10-20T07:00:00+00:00",
+        "rights": rights,
+    })
+    receipt = seal_data_object_admission_receipt({
         "schema_version": "data-object-admission-receipt-v1",
         "dataset_id": dataset_id,
         "provider_identity": "synthetic-lawful-provider",
@@ -97,33 +123,18 @@ def _admission(dataset_id="P_FIN_VINTAGE", **receipt_overrides):
         "adjustment_basis": "NOT_APPLICABLE",
         "revision": "ORIGINAL_DISCLOSURE",
         "vintage": "2026-10-20T08:00:00+00:00",
-        "rights": {
-            "product_use": "ALLOWED",
-            "storage": "FORBIDDEN",
-            "training": "FORBIDDEN",
-            "redistribution": "FORBIDDEN",
-        },
+        "rights": rights,
+        "rights_evidence": rights_evidence,
         "historical_pit_eligible": False,
         "consumer_scope": consumer,
         **receipt_overrides,
-    }
-    payload.setdefault(
-        "rights_evidence",
-        compile_provider_operation_rights_evidence(
-            provider_identity=payload["provider_identity"],
-            provider_route=payload["provider_route"],
-            operation_purpose=TEST_PURPOSE,
-            delivery_scope=TEST_SCOPE,
-            requested_actions={
-                key: payload["rights"][key] == "ALLOWED"
-                for key in ("product_use", "storage", "training", "redistribution")
-            },
-            commercial_use=False,
-            observed_at=payload["observed_at"],
-        ),
+    })
+    return compile_data_object_admission(
+        obligation,
+        receipt,
+        operation_id="op-valuation-nosend-20261021-r001",
+        intended_use="NO_SEND_RESEARCH",
     )
-    receipt = seal_data_object_admission_receipt(payload)
-    return compile_data_object_admission(obligation, receipt)
 
 
 def _route_dataset_ids(route_id):

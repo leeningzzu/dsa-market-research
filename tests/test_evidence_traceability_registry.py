@@ -16,6 +16,10 @@ from src.config import Config
 
 from src.services import evidence_traceability_registry as reg
 from src.services.cost_structure_service import build_cost_structure_context
+from src.services.data_object_admission import (
+    seal_data_object_admission_receipt,
+    seal_source_rights_evidence,
+)
 from src.services.factor_decision_summary import build_stock_factor_decision_summary
 from src.services.multi_timeframe_structure_service import build_multi_timeframe_structure_context
 from src.services.pattern_trigger_service import build_pattern_trigger_context, _dedupe_patterns
@@ -760,6 +764,90 @@ def test_accepted_p_daily_and_p_5m_real_source_receipt_progress_is_scoped_not_fu
     assert data["G_VIX"]["state"] == "UNKNOWN"
     assert data["E_NAV_IOPV"]["state"] == "NOT_APPLICABLE"
     assert factor["multi_timeframe_structure_context"]["timeframes"]["5m"]["strategy_admitted"] is False
+
+
+def test_operation_rights_receipt_must_bind_the_current_registry_source_bytes():
+    factor, _ = _closed_typed_stock_source_factor()
+    source_trace = reg.build_runtime_trace(factor)
+    source_row = next(
+        row for row in source_trace["complete_research_universe"]["data_objects"]
+        if row["dataset_id"] == "P_DAILY"
+    )
+    assert len(source_row["source_identity_hash"]) == 64
+    assert len(source_row["source_content_sha256"]) == 64
+
+    operation_id = "op-current-stock-nosend-20261002-r001"
+    rights = {
+        "product_use": "ALLOWED",
+        "storage": "FORBIDDEN",
+        "training": "FORBIDDEN",
+        "redistribution": "FORBIDDEN",
+    }
+    rights_evidence = seal_source_rights_evidence({
+        "schema_version": "source-rights-evidence-v1",
+        "operation_id": operation_id,
+        "intended_use": "NO_SEND_RESEARCH",
+        "provider_identity": source_row["provider_identity"],
+        "upstream_source_owner": "synthetic-licensed-upstream",
+        "upstream_rights_state": "VERIFIED",
+        "dataset_id": "P_DAILY",
+        "consumer_scope": source_row["product_consumer"],
+        "terms_uri": "https://example.invalid/terms/current-stock",
+        "terms_sha256": "c" * 64,
+        "terms_observed_at": "2026-10-01T00:00:00+00:00",
+        "rights": rights,
+    })
+    receipt = seal_data_object_admission_receipt({
+        "schema_version": "data-object-admission-receipt-v1",
+        "dataset_id": "P_DAILY",
+        "provider_identity": source_row["provider_identity"],
+        "provider_route": "baostock.query_history_k_data_plus",
+        "native_frequency": source_row["native_frequency"],
+        "source_identity_hash": source_row["source_identity_hash"],
+        "content_sha256": source_row["source_content_sha256"],
+        "observed_at": source_row["source_observed_at"],
+        "available_at": source_row["source_available_at"],
+        "completed_through": source_row["completed_through"],
+        "units": {
+            "price": "CNY_PER_SHARE",
+            "volume": "SHARE",
+            "amount": "CNY",
+        },
+        "currency": "CNY",
+        "adjustment_basis": source_row["adjustment_basis"].upper(),
+        "revision": "CURRENT_PROVIDER_OBSERVATION",
+        "vintage": source_row["source_observed_at"],
+        "rights": rights,
+        "rights_evidence": rights_evidence,
+        "historical_pit_eligible": False,
+        "consumer_scope": source_row["product_consumer"],
+    })
+    admitted = deepcopy(factor)
+    admitted.update({
+        "research_as_of": "2026-10-02T01:00:00+00:00",
+        "research_operation_id": operation_id,
+        "research_intended_use": "NO_SEND_RESEARCH",
+        "data_object_admission_receipts": {"P_DAILY": receipt},
+    })
+    trace = reg.build_runtime_trace(admitted)
+    admission = trace["complete_research_universe"]["data_object_admission"]
+    row = next(item for item in admission["objects"] if item["dataset_id"] == "P_DAILY")
+    assert row["product_admitted"] is True
+    assert row["runtime_source_bound"] is True
+    assert admission["product_admitted_count"] == 1
+    assert admission["learning_admitted_count"] == 0
+
+    other_snapshot = deepcopy(receipt)
+    other_snapshot["source_identity_hash"] = "d" * 64
+    other_snapshot = seal_data_object_admission_receipt(other_snapshot)
+    mismatched = deepcopy(admitted)
+    mismatched["data_object_admission_receipts"] = {"P_DAILY": other_snapshot}
+    trace = reg.build_runtime_trace(mismatched)
+    admission = trace["complete_research_universe"]["data_object_admission"]
+    row = next(item for item in admission["objects"] if item["dataset_id"] == "P_DAILY")
+    assert row["product_admitted"] is False
+    assert "RUNTIME_SOURCE_IDENTITY_MISMATCH" in row["reasons"]
+    assert admission["product_admitted_count"] == 0
 
 
 def test_accepted_source_p_daily_p_5m_fail_closed_without_invocation_or_with_wrong_clock():

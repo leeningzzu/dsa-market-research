@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
-- [新增] 为唯一 DSA 数据准入链增加 operation-specific provider-rights evidence：仅在固定 AKShare/BaoStock 版本、固定接口、私人研究、NO_SEND、非商业且不请求持久化/训练/再分发时，允许价格数据进入 Product；所有扩大用途、未固定接口、篡改证据或缺证据均 fail-closed。AKShare 股票/ETF 日线及 5m 适配补充来源、复权、单位和内容身份；官方未声明的 ETF/分钟量额单位保持 UNKNOWN，不创建第二 Provider、数据库、报告或策略权威。
+- [改进] 现有76对象数据准入不再接受裸`product_use=ALLOWED`声明：NO_SEND研究产品必须同时携带不可变operation-specific来源权利证据，并与当前operation、用途、运行时source/content identity、provider、上游来源Owner、dataset、consumer、条款URI/hash/观测时点及完整rights逐项绑定；缺当前operation/运行快照、上游权利未知、来源/对象不匹配、条款晚于数据观测、NO_SEND却允许再分发均只保留来源身份。NO_SEND产品许可不能解锁Learning，Learning另需独立`LEARNING_RESEARCH`operation及storage/training/PIT条件；不新增Provider/DB/报告/策略或V2.5布局。
 - [修复] 将既有 fundamental_quality 与九类 business_valuation 回执实际绑定到 Factor、投资者简报和原邮件消费者：股票展示可核质量事实与业务适用估值方法/区间/不确定性，ETF展示NAV估值路线且质量标记不适用；材料纳入 canonical/brief 身份并拒绝跨资产或封存后篡改。该消费修复不改变评分、策略、veto、候选配额、V2.5固定框架或发送行为。
 - [修复] AUTO_SCREEN 的股票/ETF重点分组不再把默认插补分、缺失或过期快照来源、以及绕过原筛选执行链的旧候选当作FOCUS；候选仍保留在可审计的REMAINING池，只有评分输入完整、快照来源可核且原screening execution receipt完成三项均显式成立时才可进入重点Top3。该门禁不改变粗筛分数、候选配额、canonical/veto、V2.5结构或概率语义。
 - [文档] 同步当前控制页到候选HEAD a66ec7df：记录首个MTF MACD/RSI方法窗口runtime trace、77项目标回归、四资产证明上限与下一source-capability切片；确认Project 01/05 v3.470已安装，避免其他模型重复执行已完成切片。功能分支仍无PR/Linux CI，不能冒充main。
