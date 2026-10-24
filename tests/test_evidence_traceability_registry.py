@@ -16,6 +16,10 @@ from src.config import Config
 
 from src.services import evidence_traceability_registry as reg
 from src.services.cost_structure_service import build_cost_structure_context
+from src.services.data_object_admission import (
+    seal_data_object_admission_receipt,
+    seal_source_rights_evidence,
+)
 from src.services.factor_decision_summary import build_stock_factor_decision_summary
 from src.services.multi_timeframe_structure_service import build_multi_timeframe_structure_context
 from src.services.pattern_trigger_service import build_pattern_trigger_context, _dedupe_patterns
@@ -312,7 +316,9 @@ def test_method_window_policy_view_is_complete_manifest_bound_and_non_mutating()
     assert methods["CHAN"]["window_classes"] == ("INCREMENTAL_STATE_MACHINE",)
     assert methods["CHAN"]["current_execution_timeframes"] == ()
     assert methods["VALUATION"]["target_timeframes"] == ("asset",)
-    assert methods["VALUATION"]["window_classes"] == ("VINTAGE_ASOF",)
+    assert methods["VALUATION"]["window_classes"] == ("VINTAGE_ASOF", "CROSS_SECTIONAL_ASOF")
+    assert methods["VALUATION"]["consumer_scope"] == "ASSET_LAYER"
+    assert methods["VALUATION"]["current_execution_timeframes"] == ("asset",)
 
     pattern_slots = {
         slot["id"]
@@ -349,8 +355,10 @@ def test_method_window_policy_view_is_complete_manifest_bound_and_non_mutating()
         "warmup": 26,
         "config_hash": "5ea82ff077b04d411d4f62b41800d07ebbd7a547726db2481e3aa07db61c5b0f",
     }
-    assert reg.digest(pre_intraday_manifest) == "f5e3a015bcdcfae5f74f91008f037414a234c2bb4c2eb9c51297006b5109fa19"
-    assert reg.MANIFEST_HASH == "3e3fbf1160cedf84f326b2a4183c306c4b58b78e83001f70e865575f5bbd9375"
+    # Explicit manifest-version refreeze for accepted source-bound Quality/Valuation
+    # owners; historical pre-admission digests remain in Git. V2.5 is unchanged.
+    assert reg.digest(pre_intraday_manifest) == "93755e701f5be6d2262ec5cdd8413fe4f232f9ae71e85778f86e4c6f672c338f"
+    assert reg.MANIFEST_HASH == "72626f853407bac7ac7a500707aa40b6c89b307f944c39a303b5601f15fbd64e"
     assert reg.MANIFEST_HASH == manifest_before == reg.digest(reg.manifest_document())
     assert reg.digest(reg.METRIC_BINDINGS) == metrics_before == "ac2e214238229453592464d99ed6341651f7d232c9339da66d2fec7fc4d6729a"
     assert not any(
@@ -543,7 +551,7 @@ def test_complete_research_universe_view_prevents_scope_collapse_beyond_7x8():
 
 
 
-def _closed_typed_stock_source_factor():
+def _closed_typed_stock_source_factor(*, source_version_known: bool = False):
     """Original DSA price identity + ten completed XSHG sessions + real MTF receipt."""
     from datetime import datetime, date, timezone
     from data_provider.daily_data_identity import (
@@ -576,6 +584,8 @@ def _closed_typed_stock_source_factor():
         requested_start="2025-01-01", requested_end="2026-09-25",
         currency="CNY", volume_unit="share", amount_unit="CNY",
         identity_state="OBSERVED", observed_at=observed,
+        revision=("SYNTHETIC_FIXTURE_REVISION_1" if source_version_known else None),
+        vintage=(observed.isoformat() if source_version_known else None),
     )
     attach_daily_data_identity(frame, identity)
     target = dates[-1]
@@ -753,10 +763,119 @@ def test_accepted_p_daily_and_p_5m_real_source_receipt_progress_is_scoped_not_fu
     assert data["P_5M"]["independent_source_value_admitted"] is False
     assert data["P_5M"]["strategy_upgrade_authority"] is False
     assert "UNITS" in data["P_5M"]["reason"]
+    assert data["P_DAILY"]["revision"] == "UNKNOWN"
+    assert data["P_DAILY"]["vintage"] == "UNKNOWN"
+    assert data["P_5M"]["revision"] == "UNKNOWN"
+    assert data["P_5M"]["vintage"] == "UNKNOWN"
     assert data["G_VIX"]["state"] == "UNKNOWN"
     assert data["E_NAV_IOPV"]["state"] == "NOT_APPLICABLE"
     assert factor["multi_timeframe_structure_context"]["timeframes"]["5m"]["strategy_admitted"] is False
 
+
+def _p_daily_operation_admission(factor):
+    source_trace = reg.build_runtime_trace(factor)
+    source_row = next(
+        row for row in source_trace["complete_research_universe"]["data_objects"]
+        if row["dataset_id"] == "P_DAILY"
+    )
+    operation_id = "op-current-stock-nosend-20261002-r001"
+    rights = {
+        "product_use": "ALLOWED",
+        "storage": "FORBIDDEN",
+        "training": "FORBIDDEN",
+        "redistribution": "FORBIDDEN",
+    }
+    rights_evidence = seal_source_rights_evidence({
+        "schema_version": "source-rights-evidence-v1",
+        "operation_id": operation_id,
+        "intended_use": "NO_SEND_RESEARCH",
+        "provider_identity": source_row["provider_identity"],
+        "upstream_source_owner": "synthetic-licensed-upstream",
+        "upstream_rights_state": "VERIFIED",
+        "dataset_id": "P_DAILY",
+        "consumer_scope": source_row["product_consumer"],
+        "terms_uri": "https://example.invalid/terms/current-stock",
+        "terms_sha256": "c" * 64,
+        "terms_observed_at": "2026-10-01T00:00:00+00:00",
+        "rights": rights,
+    })
+    receipt = seal_data_object_admission_receipt({
+        "schema_version": "data-object-admission-receipt-v1",
+        "dataset_id": "P_DAILY",
+        "provider_identity": source_row["provider_identity"],
+        "provider_route": source_row["provider_route"],
+        "native_frequency": source_row["native_frequency"],
+        "source_identity_hash": source_row["source_identity_hash"],
+        "content_sha256": source_row["source_content_sha256"],
+        "observed_at": source_row["source_observed_at"],
+        "available_at": source_row["source_available_at"],
+        "completed_through": source_row["completed_through"],
+        "units": source_row["units"],
+        "currency": source_row["currency"],
+        "adjustment_basis": source_row["adjustment_basis"],
+        "revision": source_row["revision"],
+        "vintage": source_row["vintage"],
+        "rights": rights,
+        "rights_evidence": rights_evidence,
+        "historical_pit_eligible": False,
+        "consumer_scope": source_row["product_consumer"],
+    })
+    admitted = deepcopy(factor)
+    admitted.update({
+        "research_as_of": "2026-10-02T01:00:00+00:00",
+        "research_operation_id": operation_id,
+        "research_intended_use": "NO_SEND_RESEARCH",
+        "data_object_admission_receipts": {"P_DAILY": receipt},
+    })
+    return source_row, receipt, admitted
+
+
+def test_operation_rights_receipt_must_bind_the_current_registry_source_bytes():
+    factor, _ = _closed_typed_stock_source_factor(source_version_known=True)
+    source_row, receipt, admitted = _p_daily_operation_admission(factor)
+    assert len(source_row["source_identity_hash"]) == 64
+    assert len(source_row["source_content_sha256"]) == 64
+    assert source_row["revision"] == "SYNTHETIC_FIXTURE_REVISION_1"
+
+    trace = reg.build_runtime_trace(admitted)
+    admission = trace["complete_research_universe"]["data_object_admission"]
+    row = next(item for item in admission["objects"] if item["dataset_id"] == "P_DAILY")
+    assert row["product_admitted"] is True
+    assert row["runtime_source_bound"] is True
+    assert admission["product_admitted_count"] == 1
+    assert admission["learning_admitted_count"] == 0
+
+    other_snapshot = deepcopy(receipt)
+    other_snapshot["source_identity_hash"] = "d" * 64
+    other_snapshot = seal_data_object_admission_receipt(other_snapshot)
+    mismatched = deepcopy(admitted)
+    mismatched["data_object_admission_receipts"] = {"P_DAILY": other_snapshot}
+    trace = reg.build_runtime_trace(mismatched)
+    admission = trace["complete_research_universe"]["data_object_admission"]
+    row = next(item for item in admission["objects"] if item["dataset_id"] == "P_DAILY")
+    assert row["product_admitted"] is False
+    assert "RUNTIME_SOURCE_IDENTITY_MISMATCH" in row["reasons"]
+    assert admission["product_admitted_count"] == 0
+
+
+def test_operation_receipt_cannot_invent_unknown_registry_revision_or_vintage():
+    factor, _ = _closed_typed_stock_source_factor()
+    source_row, receipt, admitted = _p_daily_operation_admission(factor)
+    assert source_row["revision"] == "UNKNOWN"
+    assert source_row["vintage"] == "UNKNOWN"
+    forged = deepcopy(receipt)
+    forged["revision"] = "INVENTED_PROVIDER_REVISION"
+    forged["vintage"] = source_row["source_observed_at"]
+    forged = seal_data_object_admission_receipt(forged)
+    admitted["data_object_admission_receipts"] = {"P_DAILY": forged}
+
+    trace = reg.build_runtime_trace(admitted)
+    admission = trace["complete_research_universe"]["data_object_admission"]
+    row = next(item for item in admission["objects"] if item["dataset_id"] == "P_DAILY")
+    assert row["product_admitted"] is False
+    assert "RUNTIME_SOURCE_REVISION_MISMATCH" in row["reasons"]
+    assert "RUNTIME_SOURCE_VINTAGE_MISMATCH" in row["reasons"]
+    assert admission["product_admitted_count"] == 0
 
 def test_accepted_source_p_daily_p_5m_fail_closed_without_invocation_or_with_wrong_clock():
     """Counterfeit state flags must not be treated as original machine-graph data facts."""
@@ -923,9 +1042,9 @@ def test_current_intraday_context_keeps_unconfirmed_structure_and_trigger_unadmi
         assert cells[(timeframe, "MOMENTUM")]["state"] == "PARTIAL"
         assert cells[(timeframe, "MTF")]["state"] == "PARTIAL"
         assert cells[(timeframe, "COST")]["state"] == "NOT_ADMITTED"
-        assert cells[(timeframe, "STRUCTURE")]["state"] == (
-            "MISSING" if timeframe in {"60m", "30m"} else "NOT_ADMITTED"
-        )
+        # Four descriptive pivot owners exist; absent confirmation is MISSING,
+        # not READY or a strategy trigger.
+        assert cells[(timeframe, "STRUCTURE")]["state"] == "MISSING"
         assert cells[(timeframe, "PATTERN")]["state"] == "NOT_ADMITTED"
         assert cells[(timeframe, "REGIME")]["state"] == "NOT_APPLICABLE"
     assert factor["strategy_eligibility"]["required_evidence"]["thirty_minute_trigger"] == "UNKNOWN"
@@ -1053,8 +1172,13 @@ def test_method_window_policy_keeps_asset_only_valuation_as_legal_nontrigger():
     profiles = reg.validate_method_window_profiles()
     valuation = next(profile for profile in profiles if profile.method_id == "VALUATION")
     assert valuation.target_timeframes == ("asset",)
-    assert valuation.current_execution_timeframes == ()
-    assert valuation.implementation_state == "DEFERRED_WITH_OWNER_AND_REENTRY"
+    assert valuation.current_execution_timeframes == ("asset",)
+    assert valuation.implementation_state == "EXISTING_REUSED"
+    assert valuation.consumer_scope == "ASSET_LAYER"
+    assert valuation.family_targets == ()
+    assert "VALUATION" in {
+        row["method_id"] for row in reg.compile_timeframe_family_matrix(native_summary())["non_matrix_methods"]
+    }
 
 
 def test_score_trace_addition_preserves_independent_main_preimage_when_receipt_absent():

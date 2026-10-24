@@ -84,6 +84,25 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_load_from_env_reads_b1_rights_evidence_path(
+        self, _mock_parse_litellm_yaml, _mock_setup_env
+    ):
+        with patch.dict(
+            os.environ,
+            {
+                "STOCK_LIST": "600519,510300",
+                "B1_RIGHTS_EVIDENCE_PATH": "config/b1-source-rights.json",
+            },
+            clear=True,
+        ):
+            config = Config._load_from_env()
+        self.assertEqual(
+            config.b1_rights_evidence_path,
+            "config/b1-source-rights.json",
+        )
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
     def test_market_review_region_accepts_comma_separated_supported_values(
         self, _mock_parse_litellm_yaml, _mock_setup_env
     ):

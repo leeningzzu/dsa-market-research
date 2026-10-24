@@ -353,7 +353,43 @@ def test_phase_a_pipeline_wiring_keeps_etf_p0_boundary_and_normal_canonical_cons
     assert "is_market_index = is_us_index_code(normalized_code)" in rendered
     assert "if is_market_index" in rendered
     assert "if is_index_or_etf and self.p0_bounded_trial" in rendered
-    assert "asset_type = 'etf' if is_index_or_etf else 'stock'" in rendered
+    # Use the approved typed CN asset admission instead of the superseded
+    # two-way string test; retain the P0 and canonical forwarding assertions.
+    admission_value = next(
+        node.value for node in ast.walk(attach)
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "asset_admission"
+                for target in node.targets)
+    )
+    assert isinstance(admission_value, ast.Call)
+    assert isinstance(admission_value.func, ast.Name)
+    assert admission_value.func.id == "resolve_cn_price_asset"
+    assert len(admission_value.args) == 1
+    assert isinstance(admission_value.args[0], ast.Name)
+    assert admission_value.args[0].id == "code"
+
+    route_value = next(
+        node.value for node in ast.walk(attach)
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "asset_type"
+                for target in node.targets)
+    )
+    assert isinstance(route_value, ast.IfExp)
+    names = {n.id for n in ast.walk(route_value) if isinstance(n, ast.Name)}
+    keys = {
+        n.slice.value for n in ast.walk(route_value)
+        if isinstance(n, ast.Subscript)
+        and isinstance(n.value, ast.Name)
+        and n.value.id == "asset_admission"
+        and isinstance(n.slice, ast.Constant)
+    }
+    literals = {
+        n.value for n in ast.walk(route_value)
+        if isinstance(n, ast.Constant) and isinstance(n.value, str)
+    }
+    assert {"asset_admission", "is_index_or_etf"} <= names
+    assert {"market", "asset_route"} <= keys
+    assert {"cn", "etf", "stock"} <= literals
     receipt_keyword = builder_keywords["method_execution_receipts"]
     assert isinstance(receipt_keyword, ast.Name)
     assert receipt_keyword.id == "method_execution_receipts"

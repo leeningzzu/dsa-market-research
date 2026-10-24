@@ -42,6 +42,9 @@ def test_completed_single_source_demand_pressure_is_ready_and_auditable():
     assert context["close_location_flow"]["cmf_20"] > 0
     assert context["data_quality"]["observations"] == 21
     assert context["institutional_intent_claim"] == "NOT_INFERRED"
+    assert context["completed_bar_only"] is True
+    assert context["algorithm_version"] == "supply-demand-volume-price-v1"
+    assert len(context["config_hash"]) == 64
 
 
 def test_supply_pressure_is_observable_without_asserting_institutional_intent():

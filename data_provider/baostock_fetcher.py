@@ -336,6 +336,12 @@ class BaostockFetcher(BaseFetcher):
                     raise DataFetchError(f"Baostock 未查询到 {stock_code} 的数据")
                 
                 df = pd.DataFrame(data_list, columns=rs.fields)
+                observed_at = datetime.now(timezone.utc)
+                # Revision is the received response's actual local fingerprint,
+                # never the client package version or an invented vendor release.
+                raw_response_sha256 = sha256_payload(
+                    df.astype(str).to_dict("records")
+                )
                 identity = build_daily_data_identity(
                     df,
                     provider_identity=self.name,
@@ -350,6 +356,12 @@ class BaostockFetcher(BaseFetcher):
                     volume_unit="share",
                     amount_unit="CNY",
                     identity_state="OBSERVED",
+                    instrument=stock_code,
+                    observed_at=observed_at,
+                    raw_response_sha256=raw_response_sha256,
+                    revision="observed-response-sha256:" + raw_response_sha256,
+                    # This is a *current observation* vintage, not historical PIT.
+                    vintage=observed_at.isoformat(),
                 )
                 attach_daily_data_identity(df, identity)
                 
@@ -551,11 +563,12 @@ class BaostockFetcher(BaseFetcher):
         if frame.empty:
             raise DataFetchError("BaoStock intraday returned no completed 5m bars")
         source_rows_sha256 = sha256_payload(raw.astype(str).to_dict("records"))
+        package_version = metadata.version("baostock")
         identity = build_intraday_data_identity(
             frame,
             provider_identity=self.name,
             provider_route="baostock.query_history_k_data_plus",
-            package_version=metadata.version("baostock"),
+            package_version=package_version,
             query_identity={
                 "code": bs_code,
                 "fields": fields,
@@ -571,13 +584,19 @@ class BaostockFetcher(BaseFetcher):
             timezone_name="Asia/Shanghai",
             session_calendar="XSHG",
             currency="CNY",
-            volume_unit="UNKNOWN",
-            amount_unit="UNKNOWN",
+            # BaoStock's official Python API documents volume as shares and
+            # amount as CNY.  These are source semantics, not storage/PIT rights.
+            volume_unit="share",
+            amount_unit="CNY",
             requested_start=start_date,
             requested_end=end_date,
             identity_state="OBSERVED",
             observed_at=observed_at,
             source_rows_sha256=source_rows_sha256,
+            # Source response revision is measured from received rows;
+            # package_version above independently records client software.
+            revision="observed-response-sha256:" + source_rows_sha256,
+            vintage=observed_at.isoformat(),
         )
         attach_intraday_data_identity(frame, identity)
         frame["intraday_data_identity_hash"] = identity["identity_hash"]

@@ -4,6 +4,12 @@
 
 如果本文件与仓库中的脚本、工作流、代码现状不一致，以实际可执行内容为准，并在相关改动中顺手修正文档，避免规则继续漂移。
 
+## 0. STOCK_DSA 连续实施入口
+
+涉及股票／ETF主线的material action，先读取 `docs/stock-dsa-roadmap.md` 顶部 `CURRENT_MASTER_CONTROL`，再读取 `docs/stock-dsa-stage-baseline-v1.json`。两者是现有机器图和执行合同的GitHub维护入口，不是第二个Source或运行证明。
+
+继续实施前必须重新核对实际 `origin / branch / HEAD / worktree / PR / CI`；功能分支计划不能冒充 `main`。静态方法数、数据对象数和图节点只证明覆盖义务，实际READY/PARTIAL必须来自当前运行回执。若Git事实与路线文档冲突，以实际Git和运行证据为准，并在同一变更中修正文档。
+
 ## 1. 硬规则
 
 - 遵循现有目录边界：

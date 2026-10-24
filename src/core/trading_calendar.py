@@ -283,6 +283,32 @@ def resolve_forward_sessions_fail_closed(
         return None
 
 
+def resolve_session_range_fail_closed(
+    market: Optional[str],
+    start_date: date,
+    end_date: date,
+) -> Optional[List[date]]:
+    """Return the exact inclusive exchange-session range, failing closed."""
+    if (
+        market not in MARKET_EXCHANGE
+        or not _XCALS_AVAILABLE
+        or not isinstance(start_date, date)
+        or isinstance(start_date, datetime)
+        or not isinstance(end_date, date)
+        or isinstance(end_date, datetime)
+        or start_date > end_date
+    ):
+        return None
+    try:
+        cal = xcals.get_calendar(MARKET_EXCHANGE[market])
+        if not bool(cal.is_session(start_date)) or not bool(cal.is_session(end_date)):
+            return None
+        return [value.date() for value in cal.sessions_in_range(start_date, end_date)]
+    except Exception as exc:
+        logger.warning("trading_calendar.resolve_session_range_fail_closed: %s", exc)
+        return None
+
+
 def resolve_latest_completed_session_fail_closed(
     market: Optional[str],
     current_time: Optional[datetime] = None,

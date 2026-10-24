@@ -968,6 +968,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         market_light_snapshot: Optional[Dict[str, Any]] = None,
         *,
         cn_index_completed_close_source: Optional[pd.DataFrame] = None,
+        cn_index_completed_5m_source: Optional[pd.DataFrame] = None,
     ) -> Dict[str, Any]:
         """Build the structured market-review contract consumed by API, Web, and notifications."""
         language = self._get_output_language()
@@ -1055,6 +1056,35 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             payload["markdown_report"] = augmented_report
             payload["sections"] = self._split_report_sections(augmented_report)
             payload["cn_index_completed_close_source"] = observation
+
+        if cn_index_completed_5m_source is not None:
+            if self.region != "cn":
+                raise ValueError("INDEX_5M_SOURCE_REGION_MISMATCH")
+            from data_provider.cn_index_minute_source import (
+                verify_cn_index_completed_5m_source_frame,
+            )
+            minute = verify_cn_index_completed_5m_source_frame(
+                cn_index_completed_5m_source, trade_date=str(overview.date),
+            )
+            tick = chr(96)
+            source_block = (
+                "### 指数5分钟完成K线来源（源级PARTIAL；指标未升级）\n"
+                f"- {tick}M_INDEX_BARS{tick} / {tick}{minute['source_code']}{tick}: "
+                f"{tick}PARTIAL{tick}，已验证 {minute['session_count']}个完整交易日、"
+                f"{minute['row_count']}根5m，完成至 {minute['completed_through']}，"
+                f"实际观测于 {minute['observed_at']}。\n"
+                f"- 提供方 {minute['provider_identity']}；内容摘要 {tick}"
+                f"{minute['content_sha256']}{tick}；身份 {tick}"
+                f"{minute['identity_hash']}{tick}。\n"
+                "- 仅可由同源5m在交易时段内确定性导出15m／30m／60m；"
+                "实际历史不足时递归MACD/RSI、结构确认均不得补齐。"
+                "指数原始价量单位/复权返回证明、数据权利、历史PIT仍不足；"
+                "不得独立升级Market Light、canonical、BUY或模型概率。"
+            )
+            augmented = payload["markdown_report"].rstrip() + "\n\n" + source_block
+            payload["markdown_report"] = augmented
+            payload["sections"] = self._split_report_sections(augmented)
+            payload["cn_index_completed_5m_source"] = minute
 
         if light is not None:
             payload["market_light"] = light
@@ -2198,6 +2228,43 @@ Market conditions can change quickly. The data above is for reference only and d
             )
             return None
 
+    def _load_cn_index_completed_5m_source(self, overview: MarketOverview) -> Optional[pd.DataFrame]:
+        """Bounded M2 current-source-only index 5m; never historical PIT.
+
+        Only today's or the immediately previous completed XSHG session can
+        trigger a provider request, avoiding old MarketReview fixture dates
+        and any backfilled source masquerading as contemporaneous research.
+        """
+        if self.region != "cn":
+            return None
+        try:
+            from datetime import timezone
+            import exchange_calendars as xcals
+            from src.core.trading_calendar import resolve_latest_completed_session_fail_closed
+            from data_provider.cn_index_minute_source import get_cn_index_completed_5m_source
+
+            observed = datetime.now(timezone.utc)
+            latest = resolve_latest_completed_session_fail_closed(
+                "cn", current_time=observed,
+            )
+            if latest is None:
+                return None
+            trade_date = pd.Timestamp(str(overview.date)).date()
+            previous = xcals.get_calendar("XSHG").previous_session(
+                pd.Timestamp(latest),
+            ).date()
+            if trade_date not in {latest, previous}:
+                return None
+            return get_cn_index_completed_5m_source(
+                "sh.000001", target_date=trade_date, observed_at=observed,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[大盘] %s action=load_completed_index_5m_source status=failed error=%s",
+                self._log_context(), exc,
+            )
+            return None
+
     def _run_daily_review_parts(self) -> MarketLightReviewResult:
         """Run market review once and keep report/snapshot on the same overview."""
         logger.info("========== 开始大盘复盘分析 ==========")
@@ -2215,12 +2282,16 @@ Market conditions can change quickly. The data above is for reference only and d
         cn_index_completed_close_source = self._load_cn_index_completed_close_source(
             overview
         )
+        cn_index_completed_5m_source = self._load_cn_index_completed_5m_source(
+            overview
+        )
         structured_payload = self.build_market_review_payload(
             overview,
             news,
             report,
             snapshot,
             cn_index_completed_close_source=cn_index_completed_close_source,
+            cn_index_completed_5m_source=cn_index_completed_5m_source,
         )
 
         logger.info("========== 大盘复盘分析完成 ==========")

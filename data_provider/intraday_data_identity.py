@@ -62,6 +62,8 @@ def build_intraday_data_identity(
     source_rows_sha256: Optional[str] = None,
     parent_identity_hash: Optional[str] = None,
     derivation: Optional[str] = None,
+    revision: Optional[str] = None,
+    vintage: Optional[str] = None,
 ) -> dict[str, Any]:
     returned_start, returned_end = _returned_range(frame)
     payload: dict[str, Any] = {
@@ -92,6 +94,12 @@ def build_intraday_data_identity(
         "parent_identity_hash": _optional_sha256(parent_identity_hash),
         "derivation": _optional_text(derivation),
     }
+    revision_text = _optional_text(revision)
+    vintage_text = _optional_text(vintage)
+    if revision_text is not None:
+        payload["revision"] = revision_text
+    if vintage_text is not None:
+        payload["vintage"] = vintage_text
     payload["identity_hash"] = _identity_hash(payload)
     return validate_intraday_data_identity(payload)
 
@@ -150,6 +158,12 @@ def validate_intraday_data_identity(value: Any) -> dict[str, Any]:
     if row_count < 0:
         raise IntradayDataIdentityError("row_count must be non-negative")
     payload["row_count"] = row_count
+    for key in ("revision", "vintage"):
+        if key in payload:
+            semantic_value = _optional_text(payload.get(key))
+            if semantic_value is None:
+                raise IntradayDataIdentityError(f"intraday identity {key} cannot be blank")
+            payload[key] = semantic_value
     if _identity_hash(payload) != str(payload.get("identity_hash") or "").lower():
         raise IntradayDataIdentityError("intraday data identity hash mismatch")
     return payload

@@ -163,6 +163,18 @@ class Pick:
     daily_quality_flags: str = ""
     daily_source: str = ""
     factor_scores: dict[str, float] = field(default_factory=dict)
+    # Ranking may use deterministic fallback values, but fallback inputs never
+    # grant AUTO focus authority. These fields carry the original scorer's
+    # explicit input-completeness receipt into the existing selection consumer.
+    screen_score_input_state: str = "UNVERIFIED"
+    screen_score_missing_inputs: list[str] = field(default_factory=list)
+    screen_score_imputed_factors: list[str] = field(default_factory=list)
+    screen_score_focus_eligible: bool | None = None
+    screen_score_readiness_scope: str = ""
+    # Snapshot freshness is independent from score-input completeness. A stale
+    # fallback may stay auditable in REMAINING, but cannot become FOCUS.
+    snapshot_source_state: str = "UNVERIFIED"
+    snapshot_source_focus_eligible: bool | None = None
     llm_confidence: float | None = None
     llm_sector: str = ""
     llm_theme: str = ""
@@ -232,6 +244,11 @@ class ScreenResult:
     degradation: list[str] = field(default_factory=list)
     snapshot_source: str = ""
     source_errors: list[str] = field(default_factory=list)
+    snapshot_cache_used: bool = False
+    snapshot_fallback_used: bool = False
+    snapshot_stale: bool = False
+    snapshot_stale_age_hours: float | None = None
+    snapshot_last_good_source: str = ""
     deep_analysis_requested: bool = False
     post_analyzers: list[str] = field(default_factory=list)
     daily_enriched: bool = False
@@ -244,6 +261,8 @@ class ScreenResult:
     result_variant_rotated_slots: int = 0
     saved_path: str = ""
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    # Run-local execution metadata only; not source licensing or market labels.
+    execution_receipt: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

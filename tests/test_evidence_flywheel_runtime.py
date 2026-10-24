@@ -11,13 +11,14 @@ import sqlite3
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import exchange_calendars as xcals
 import pandas as pd
 import pytest
 from sqlalchemy import inspect, select, text
 
 from src.analyzer import GeminiAnalyzer
 from src.config import Config
-from src.core.pipeline import StockAnalysisPipeline
+from src.core.pipeline import StockAnalysisPipeline, _current_daily_window_plan
 from src.notification import NotificationService
 from src.repositories.prediction_ledger_repo import PredictionLedgerRepository
 from src.services.evidence_flywheel_runtime import (
@@ -35,6 +36,7 @@ from src.services.evidence_flywheel_runtime import (
 )
 from src.services.pit_dataset_service import PITDatasetService
 from src.services.evidence_traceability_registry import MANIFEST_HASH, METRIC_BINDINGS, digest
+from src.services.data_object_admission import seal_source_rights_evidence
 from src.services.prediction_ledger_service import (
     TRACE_FEATURE_SCHEMA_VERSION,
     traced_feature_schema_hash,
@@ -353,7 +355,19 @@ def _pipeline_factory(observed: dict, receipt: dict | None):
 
 
 def _synthetic_daily_history(*, end_date: date, periods: int = 320) -> pd.DataFrame:
-    dates = pd.bdate_range(end=end_date, periods=periods)
+    calendar = xcals.get_calendar("XSHG")
+    end_session = calendar.date_to_session(end_date, direction="previous")
+    # Keep this isolated fixture inside the installed exchange calendar.  A
+    # backward sessions_window call may cross the calendar's first supported
+    # session and return no usable window on some calendar versions; that is
+    # an environment boundary, not evidence that production may backfill bars.
+    available = calendar.sessions_in_range(calendar.first_session, end_session)
+    if len(available) < periods:
+        raise AssertionError("synthetic fixture lacks enough completed XSHG sessions")
+    sessions = available[-periods:]
+    if len(sessions) != periods:
+        raise AssertionError("synthetic fixture requires exact completed XSHG sessions")
+    dates = [session.date() for session in sessions]
     close = [
         100.0 + index * 0.03 + (-0.20 if index % 5 == 0 else 0.05)
         for index in range(periods)
@@ -361,12 +375,13 @@ def _synthetic_daily_history(*, end_date: date, periods: int = 320) -> pd.DataFr
     frame = pd.DataFrame(
         {
             "code": ["600519"] * periods,
-            "date": dates.date,
+            "date": dates,
             "open": [value - 0.10 for value in close],
             "high": [value + 0.40 for value in close],
             "low": [value - 0.40 for value in close],
             "close": close,
             "volume": [1_000_000.0 + (index % 10) * 10_000.0 for index in range(periods)],
+            "data_source": ["test"] * periods,
         }
     )
     frame["amount"] = frame["close"] * frame["volume"]
@@ -1382,6 +1397,9 @@ def test_native_zero_model_record_writes_only_the_admitted_temp_db_surfaces(
     )
 
     target_date = date(2026, 9, 24)  # Independently completed XSHG session
+    daily_plan = _current_daily_window_plan(
+        market="cn", target_date=target_date,
+    )
     frame = _synthetic_daily_history(end_date=target_date)
     typed = build_daily_data_identity(
         frame, provider_identity="test",
@@ -1390,10 +1408,11 @@ def test_native_zero_model_record_writes_only_the_admitted_temp_db_surfaces(
         requested_adjustment_basis="qfq",
         observed_adjustment_basis="qfq",
         basis_evidence="EXPLICIT_ISOLATED_SYNTHETIC_PRICE_SERIES",
-        requested_start=str(frame.iloc[0]["date"]),
-        requested_end=str(target_date),
+        requested_start=daily_plan["start_date"].isoformat(),
+        requested_end=target_date.isoformat(),
         currency="CNY", volume_unit="share", amount_unit="CNY",
         identity_state="OBSERVED",
+        instrument="600519",
         observed_at=datetime(2026, 9, 24, 10, 0, tzinfo=timezone.utc),
     )
     attach_daily_data_identity(frame, typed)
@@ -1418,6 +1437,34 @@ def test_native_zero_model_record_writes_only_the_admitted_temp_db_surfaces(
     config.agent_skills = []
     config.report_language = "zh"
     config.max_workers = 1
+    synthetic_rights = {
+        "product_use": "ALLOWED",
+        "storage": "ALLOWED",
+        "training": "FORBIDDEN",
+        "redistribution": "FORBIDDEN",
+    }
+    synthetic_grant = seal_source_rights_evidence({
+        "schema_version": "source-rights-evidence-v1",
+        "operation_id": "test-flywheel-p0-daily",
+        "intended_use": "NO_SEND_RESEARCH",
+        "provider_identity": "test",
+        "upstream_source_owner": "TEST_FIXTURE_ONLY_NOT_REAL_LICENSE",
+        "upstream_rights_state": "VERIFIED",
+        "dataset_id": "P_DAILY",
+        "consumer_scope": "ASSET_RESEARCH_BRIEF",
+        "terms_uri": "https://example.org/unit-fixture-only",
+        "terms_sha256": "a" * 64,
+        "terms_observed_at": "2026-09-01T00:00:00+00:00",
+        "rights": synthetic_rights,
+    })
+    rights_file = tmp_path / "b1-synthetic-rights.json"
+    rights_file.write_text(json.dumps({
+        "schema_version": "b1-operation-rights-context-v1",
+        "operation_id": "test-flywheel-p0-daily",
+        "intended_use": "NO_SEND_RESEARCH",
+        "allowed_instruments": ["600519"],
+        "rights_by_dataset": {"P_DAILY": synthetic_grant},
+    }), encoding="utf-8")
 
     market_structure = MagicMock()
     market_structure.build_context.return_value = None
@@ -1481,7 +1528,8 @@ def test_native_zero_model_record_writes_only_the_admitted_temp_db_surfaces(
              side_effect=AssertionError("strict unlicensed Ledger write attempted"),
          ) as ledger_persist, \
          patch("src.analyzer.get_api_keys_for_model") as get_keys, \
-         patch("src.analyzer.litellm.completion") as completion:
+         patch("src.analyzer.litellm.completion") as completion, \
+         patch.object(config, "b1_rights_evidence_path", str(rights_file)):
         with pytest.raises(
             EvidenceFlywheelRuntimeError,
             match="canonical result is missing a Prediction Ledger receipt",

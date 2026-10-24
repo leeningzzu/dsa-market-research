@@ -8,7 +8,7 @@ import pytest
 
 from data_provider.baostock_fetcher import BaostockFetcher
 from data_provider.base import DataFetchError
-from data_provider.daily_data_identity import extract_daily_data_identity
+from data_provider.daily_data_identity import extract_daily_data_identity, sha256_payload
 from data_provider.intraday_data_identity import extract_intraday_data_identity
 
 
@@ -74,6 +74,12 @@ def test_baostock_successful_adjustflag_two_binds_observed_qfq_identity() -> Non
     assert identity["provider_identity"] == "BaostockFetcher"
     assert identity["volume_unit"] == "share"
     assert identity["amount_unit"] == "CNY"
+    # Revision of the actually observed response is data-dependent, not the
+    # installed Python client version or an unobserved vendor release number.
+    source_rows = [dict(zip(_Result.fields, row)) for row in fake.result._rows]
+    raw_hash = sha256_payload(source_rows)
+    assert identity["raw_response_sha256"] == raw_hash
+    assert identity["revision"] == "observed-response-sha256:" + raw_hash
 
 
 def test_baostock_failed_query_never_emits_observed_identity() -> None:
@@ -122,8 +128,14 @@ def test_baostock_intraday_5m_seam_binds_identity_without_touching_daily_route()
     assert identity["timeframe"] == "5m"
     assert identity["provider_identity"] == "BaostockFetcher"
     assert identity["observed_adjustment_basis"] == "qfq"
-    assert identity["volume_unit"] == "UNKNOWN"
-    assert identity["amount_unit"] == "UNKNOWN"
+    assert identity["volume_unit"] == "share"
+    assert identity["amount_unit"] == "CNY"
+    minute_raw = [dict(zip(_MinuteResult.fields, row)) for row in rows]
+    expected_source_hash = sha256_payload(minute_raw)
+    assert identity["package_version"] == "0.9.4"
+    assert identity["source_rows_sha256"] == expected_source_hash
+    assert identity["revision"] == "observed-response-sha256:" + expected_source_hash
+    assert identity["vintage"] == observed_at.isoformat()
     assert frame["session"].tolist() == ["2026-09-23:AM"] * 3
 
 

@@ -3,9 +3,34 @@
   "baseline_id": "STOCK_DSA_GITHUB_7TF_FULL_PRODUCT_BASELINE_V1",
   "authority": "CI_DERIVED_GUARDRAIL_ONLY_NOT_RUNTIME_PROOF",
   "production_shell": "DSA/daily_stock_analysis",
+  "continuity_entrypoints": {
+    "agent_rules": "AGENTS.md#0-stock_dsa-连续实施入口",
+    "current_master_route": "docs/stock-dsa-roadmap.md#当前控制页总目标依赖图与退出条件2026-10-23",
+    "machine_guardrail": "docs/stock-dsa-stage-baseline-v1.json",
+    "exact_git_and_ci_recheck_required": true,
+    "feature_branch_plan_is_not_main_production": true
+  },
+  "runtime_method_window_readiness": {
+    "schema_version": "asset-timeframe-method-window-readiness-v1",
+    "first_vertical_slice": "MTF_MOMENTUM_CONTEXT_MACD_RSI",
+    "asset_routes": ["MARKET", "SECTOR", "ETF", "STOCK"],
+    "timeframes": ["monthly", "weekly", "daily", "60m", "30m", "15m", "5m"],
+    "fields": ["required_bars", "requested_bars", "returned_bars", "status", "reason", "consumer_path"],
+    "strategy_admitted": false,
+    "learning_admitted": false,
+    "storage_admitted": false
+  },
   "acceptance": {
-    "state": "CANDIDATE_UNTIL_GITHUB_PR_CI_AND_EXPLICIT_MERGE",
-    "remote_branch": "main",
+    "state": "G0_CI82_B1_REAL_RUN_BOUNDARY_PASS_SCOPED_PR31_DRAFT_REAL_GRANT_RUN_OPEN",
+    "production_branch": "main",
+    "candidate_branch": "feat/stock-dsa-m2-source-gates-v1",
+    "candidate_head": "99106c6715ae70ccc6708d95166fd6c5104f06cc",
+    "candidate_parent": "df82f93e8de3c84700b096e76b15b38d41595b46",
+    "candidate_head_scope": "LAST_ACCEPTED_ENGINEERING_CHECKPOINT_NOT_MOVING_REMOTE_REF",
+    "pull_request": 31,
+    "pull_request_state": "DRAFT_OPEN_NOT_MERGED",
+    "latest_required_ci": {"run_number": 82, "run_id": 40068248419, "conclusion": "success"},
+    "prior_failed_ci": {"run_number": 77, "run_id": 39901137680, "head": "bfca958baefe9bf1e97d322ab414c1186646c7c9", "conclusion": "failure"},
     "required_checks": [
       "ai-governance",
       "backend-gate",
@@ -21,8 +46,8 @@
     "v2_5_baseline_bytes": 125919,
     "requirements": 26,
     "method_profiles": 43,
-    "methods_existing_reused": 26,
-    "methods_deferred_with_owner": 17,
+    "methods_existing_reused": 28,
+    "methods_deferred_with_owner": 15,
     "strategy_bindings": 13,
     "technical_matrix_cells": 56,
     "data_obligations": 76,
@@ -38,6 +63,9 @@
     "formal_report_telegram_optional": true,
     "other_chat_or_webhook_channels_are_formal_report_substitutes": false,
     "source_identity_implies_storage_or_training_rights": false,
+    "operation_specific_upstream_rights_required": true,
+    "unknown_upstream_rights_admit_product": false,
+    "no_send_product_rights_imply_redistribution": false,
     "future_outcome_backfills_historical_evidence": false
   },
   "screening_contract": {
@@ -52,11 +80,80 @@
     "cross_timeframe_vote_counting": false,
     "independent_action_authority": false
   },
+  "screening_funnel_contract": {
+    "schema_version": "screening-funnel-contract-v1",
+    "stages": [
+      "L0_SOURCE_ADMISSION",
+      "L1_MARKET_SECTOR_PERMISSION",
+      "L2_ASSET_COARSE_FILTER",
+      "L3_ASSET_FINE_RANK",
+      "L4_BOUNDED_7TF_DEEP_OVERLAY",
+      "L5_CANONICAL_VETO_AND_FULL_REPORT"
+    ],
+    "weight_mode": "GATES_THEN_BOUNDED_HEURISTIC_CAPS_NOT_PROBABILITY",
+    "hard_veto_is_unweighted": true,
+    "missing_unknown_is_zero_vote": true,
+    "learned_weights": "DEFERRED_UNTIL_LEGAL_PIT_OOT",
+    "active_numeric_weights": {
+      "mtf_role_deltas": {
+        "context": {"SUPPORTIVE": 1.25, "ADVERSE": -2.0},
+        "setup": {"SUPPORTIVE": 1.75, "ADVERSE": -2.5},
+        "bridge_structure": {"SUPPORTIVE": 0.75, "ADVERSE": -1.0},
+        "confirmation_timing": {
+          "SUPPORTIVE_CONDITIONAL": 0.25,
+          "ADVERSE": -0.5
+        }
+      },
+      "mtf_delta_bounds": [-6.0, 4.0]
+    },
+    "correlation_group_count": 15,
+    "email_section_order": [
+      "canonical_conclusion",
+      "market_sector_permission",
+      "asset_specific_quality_valuation_or_etf",
+      "eight_evidence_families",
+      "seven_timeframe_role_summary",
+      "correlation_dedup",
+      "data_risk_liquidity_execution_veto",
+      "trigger_invalidation",
+      "source_time_rights_and_missingness"
+    ],
+    "asset_routes": {
+      "stock": {
+        "coarse_filters": [
+          "source_currentness", "completed_daily_bar", "minimum_liquidity",
+          "market_permission", "sector_classification_if_available"
+        ],
+        "fine_rank_priority": [
+          "sector_peer_relative_strength", "quality_growth", "valuation",
+          "daily_setup", "liquidity_execution"
+        ],
+        "deep_analysis": [
+          "eight_evidence_families", "seven_timeframes",
+          "risk_reward", "canonical"
+        ]
+      },
+      "etf": {
+        "coarse_filters": [
+          "source_currentness", "completed_daily_bar", "minimum_liquidity",
+          "market_permission", "peer_universe"
+        ],
+        "fine_rank_priority": [
+          "peer_relative_strength", "liquidity_spread", "nav_premium_tracking",
+          "shares_flow", "daily_setup"
+        ],
+        "deep_analysis": [
+          "eight_evidence_families", "seven_timeframes",
+          "etf_specific", "canonical"
+        ]
+      }
+    }
+  },
   "vertical_alignment": {
     "program": "合法known-at数据到白盒证据、唯一canonical、完整交付、合法Outcome/PIT、独立校准和显式Promotion",
     "product": "Global到A股市场和行业、ETF与股票、七周期全材料、风险和执行veto、FULL Report/Email",
-    "current_lane": "M2多资产known-at与B5七周期证据进入同一筛选、canonical和B8完整报告",
-    "current_milestone": "严格MTF回执按四个层级角色组进入股票/ETF有界L3筛选，同时保留完整76项研究义务",
+    "current_lane": "B1/B8 operation-specific上游权利与同一as-of普通股票+ETF合法真实输入",
+    "current_milestone": "CI80基础接线、CI81状态投影、CI82在99106c67真实B1 preacquire-asof/无副作用构造/5m市场传参/响应来源指纹的Linux修复均PASS_SCOPED；后继仍为真实权利证据与同一as-of Stock+ETF完整NO_SEND Product回执",
     "atomic_rule": "只复用现有Owner、消费者、测试和拒绝条件，不新建并行Shell或权威"
   },
   "stage_ladder": [
@@ -68,9 +165,10 @@
     },
     {
       "id": "B1_SOURCE_RIGHTS",
-      "scope": "StockDaily/AnalysisHistory/Ledger最早写入拒绝未知存储和训练权利",
-      "exit": "合法来源许可和写后读回独立证明",
-      "proof_ceiling": "只读研究可继续，未知权利不得持久化或训练"
+      "scope": "Product使用、存储、训练、再分发权利分别绑定当前operation、运行时source identity和精确上游条款",
+      "exit": "同一as-of Stock+ETF取得可核上游条款证据与当前数据回执；未知权利保持SOURCE_IDENTITY_ONLY",
+      "proof_ceiling": "CI80证明接线、CI82证明真实运行缺口的工程修复与Linux Offline；不授予供应商真实Product/storage/training/redistribution权利，不证明两资产合法完整Product、历史PIT、策略、邮件交付或模型晋升",
+      "next_primary": true
     },
     {
       "id": "B5_7TF_METHOD_PRODUCT",
@@ -88,8 +186,7 @@
       "id": "M2_MULTI_ASSET_KNOWN_AT",
       "scope": "A股市场、行业和ETF独立来源、known-at时点、资产适用性和veto",
       "exit": "合法非股票证据与股票七周期共用同一canonical和完整报告",
-      "proof_ceiling": "Global或市场绿灯不得独立升级BUY",
-      "next_primary": true
+      "proof_ceiling": "Global或市场绿灯不得独立升级BUY"
     },
     {
       "id": "L1_LEGAL_LEDGER_OUTCOME_PIT",
@@ -111,8 +208,8 @@
     }
   ],
   "route_decision": {
-    "next_primary": "M2_MULTI_ASSET_KNOWN_AT",
-    "reason": "七周期核心已进入严格报告和有界股票/ETF筛选消费者；主路线继续市场、行业、ETF known-at，同时只按产品触发补技术指标",
+    "next_primary": "B1_SOURCE_RIGHTS",
+    "reason": "CI75权利UNKNOWN门禁、CI78动态窗口、CI80 B1接线、CI81路线投影、CI82真实运行边界修复均CLOSED_SCOPED；CI77历史RED不重跑；当前唯一承重前置仍是供应商原始条款/四权利、同一as-of Stock+ETF实际来源与完整NO_SEND消费者回执，绝不由工程绿灯/合成测试/客户端版本替代历史PIT或真实Product；M2与模型仍按独立门禁",
     "bounded_indicator_sub_lanes": [
       "MONTHLY_RSI_HISTORY_IF_LEGAL",
       "15M_CONFIRMATION",

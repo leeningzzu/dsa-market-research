@@ -12,6 +12,7 @@ from src.notification import NotificationChannel, NotificationService
 from src.services.screening.dsa import (
     MTF_SCREENING_DELTA_BOUNDS,
     MTF_SCREENING_ROLE_GROUPS,
+    compile_screening_funnel_contract,
 )
 from src.services.evidence_traceability_registry import (
     ACCEPTED_DATA_OBJECT_GRAPH_SHA256,
@@ -42,11 +43,24 @@ def test_stage_baseline_is_derived_from_the_existing_machine_graph() -> None:
 
     assert baseline["authority"] == "CI_DERIVED_GUARDRAIL_ONLY_NOT_RUNTIME_PROOF"
     assert baseline["production_shell"] == "DSA/daily_stock_analysis"
+    continuity = baseline["continuity_entrypoints"]
+    assert continuity["agent_rules"].startswith("AGENTS.md#0-")
+    assert continuity["current_master_route"].startswith("docs/stock-dsa-roadmap.md#")
+    assert continuity["exact_git_and_ci_recheck_required"] is True
+    assert continuity["feature_branch_plan_is_not_main_production"] is True
+    readiness = baseline["runtime_method_window_readiness"]
+    assert readiness["schema_version"] == "asset-timeframe-method-window-readiness-v1"
+    assert readiness["first_vertical_slice"] == "MTF_MOMENTUM_CONTEXT_MACD_RSI"
+    assert readiness["asset_routes"] == ["MARKET", "SECTOR", "ETF", "STOCK"]
+    assert readiness["timeframes"] == list(TIMEFRAMES)
+    assert readiness["strategy_admitted"] is False
+    assert readiness["learning_admitted"] is False
+    assert readiness["storage_admitted"] is False
     assert locked["accepted_machine_graph_sha256"] == ACCEPTED_DATA_OBJECT_GRAPH_SHA256
     assert locked["requirements"] == len(ACCEPTED_REQUIREMENT_ROLES) == 26
     assert locked["method_profiles"] == len(policy["methods"]) == 43
-    assert locked["methods_existing_reused"] == states["EXISTING_REUSED"] == 26
-    assert locked["methods_deferred_with_owner"] == states["DEFERRED_WITH_OWNER_AND_REENTRY"] == 17
+    assert locked["methods_existing_reused"] == states["EXISTING_REUSED"] == 28
+    assert locked["methods_deferred_with_owner"] == states["DEFERRED_WITH_OWNER_AND_REENTRY"] == 15
     assert locked["strategy_bindings"] == len(STRATEGY_BINDINGS) == 13
     assert locked["technical_matrix_cells"] == len(trace["timeframe_family_matrix"]["cells"]) == 56
     assert locked["data_obligations"] == len(trace["complete_research_universe"]["data_objects"]) == 76
@@ -77,15 +91,36 @@ def test_stage_ladder_keeps_parent_product_and_blocking_order_explicit() -> None
         "M3_CALIBRATION_SHADOW",
         "P1_PROMOTION_RELEASE",
     ]
-    assert baseline["route_decision"]["next_primary"] == "M2_MULTI_ASSET_KNOWN_AT"
-    assert [stage["id"] for stage in stages if stage.get("next_primary")] == ["M2_MULTI_ASSET_KNOWN_AT"]
+    assert baseline["route_decision"]["next_primary"] == "B1_SOURCE_RIGHTS"
+    assert [stage["id"] for stage in stages if stage.get("next_primary")] == ["B1_SOURCE_RIGHTS"]
     assert stages[5]["blocked_by"] == "B1_SOURCE_RIGHTS"
     assert stages[6]["blocked_by"] == "L1_LEGAL_LEDGER_OUTCOME_PIT"
     assert stages[7]["blocked_by"] == "M3_CALIBRATION_SHADOW"
     assert baseline["acceptance"]["direct_main_push"] is False
+    # Independently observed CI82 is the accepted *engineering* snapshot,
+    # not the moving Git ref, upstream data rights or Product Promotion.
     assert baseline["acceptance"]["required_checks"] == [
         "ai-governance", "backend-gate", "docker-build",
     ]
+    acceptance = baseline["acceptance"]
+    assert acceptance["state"] == "G0_CI82_B1_REAL_RUN_BOUNDARY_PASS_SCOPED_PR31_DRAFT_REAL_GRANT_RUN_OPEN"
+    assert acceptance["candidate_head"] == "99106c6715ae70ccc6708d95166fd6c5104f06cc"
+    assert acceptance["candidate_parent"] == "df82f93e8de3c84700b096e76b15b38d41595b46"
+    assert acceptance["candidate_head_scope"] == "LAST_ACCEPTED_ENGINEERING_CHECKPOINT_NOT_MOVING_REMOTE_REF"
+    assert acceptance["latest_required_ci"] == {
+        "run_number": 82,
+        "run_id": 40068248419,
+        "conclusion": "success",
+    }
+    # Do not rewrite the failed CI77; CI80 and CI81 remain historical PASS.
+    assert acceptance["prior_failed_ci"] == {
+        "run_number": 77,
+        "run_id": 39901137680,
+        "head": "bfca958baefe9bf1e97d322ab414c1186646c7c9",
+        "conclusion": "failure",
+    }
+    assert acceptance["pull_request_state"] == "DRAFT_OPEN_NOT_MERGED"
+    assert baseline["route_decision"]["next_primary"] == "B1_SOURCE_RIGHTS"
 
 
 def test_stage_baseline_preserves_formal_email_contract_and_no_auto_trade() -> None:
@@ -96,6 +131,9 @@ def test_stage_baseline_preserves_formal_email_contract_and_no_auto_trade() -> N
     assert invariants["formal_report_telegram_optional"] is True
     assert invariants["other_chat_or_webhook_channels_are_formal_report_substitutes"] is False
     assert invariants["source_identity_implies_storage_or_training_rights"] is False
+    assert invariants["operation_specific_upstream_rights_required"] is True
+    assert invariants["unknown_upstream_rights_admit_product"] is False
+    assert invariants["no_send_product_rights_imply_redistribution"] is False
 
     cfg = Config(
         stock_list=[],
@@ -134,9 +172,9 @@ def test_stage_baseline_locks_bounded_hierarchical_mtf_screening() -> None:
     ] is True
 
 
-def test_indicator_backlog_is_subordinate_to_the_multi_asset_parent_route() -> None:
+def test_indicator_backlog_is_subordinate_to_the_lawful_input_parent_route() -> None:
     decision = _baseline()["route_decision"]
-    assert decision["next_primary"] == "M2_MULTI_ASSET_KNOWN_AT"
+    assert decision["next_primary"] == "B1_SOURCE_RIGHTS"
     assert decision["bounded_indicator_sub_lanes"] == [
         "MONTHLY_RSI_HISTORY_IF_LEGAL",
         "15M_CONFIRMATION",
@@ -145,3 +183,80 @@ def test_indicator_backlog_is_subordinate_to_the_multi_asset_parent_route() -> N
     ]
     assert "CHAN_WAVE" in decision["deferred_until_product_trigger"]
     assert _baseline()["regression_policy"]["static_counts_never_prove_runtime_ready"] is True
+
+
+def test_screening_funnel_contract_keeps_gates_caps_and_dedup_machine_readable() -> None:
+    compiled = compile_screening_funnel_contract()
+    locked = _baseline()["screening_funnel_contract"]
+
+    assert compiled["schema_version"] == "screening-funnel-contract-v1"
+    assert compiled["stages"] == [
+        "L0_SOURCE_ADMISSION",
+        "L1_MARKET_SECTOR_PERMISSION",
+        "L2_ASSET_COARSE_FILTER",
+        "L3_ASSET_FINE_RANK",
+        "L4_BOUNDED_7TF_DEEP_OVERLAY",
+        "L5_CANONICAL_VETO_AND_FULL_REPORT",
+    ]
+    assert locked["stages"] == compiled["stages"]
+    assert locked["weight_mode"] == compiled["weight_mode"] == (
+        "GATES_THEN_BOUNDED_HEURISTIC_CAPS_NOT_PROBABILITY"
+    )
+    assert compiled["hard_veto_is_unweighted"] is True
+    assert compiled["missing_unknown_is_zero_vote"] is True
+    assert compiled["learned_weights"] == "DEFERRED_UNTIL_LEGAL_PIT_OOT"
+    assert compiled["active_numeric_weights"]["mtf_role_deltas"] == {
+        "context": {"SUPPORTIVE": 1.25, "ADVERSE": -2.0},
+        "setup": {"SUPPORTIVE": 1.75, "ADVERSE": -2.5},
+        "bridge_structure": {"SUPPORTIVE": 0.75, "ADVERSE": -1.0},
+        "confirmation_timing": {
+            "SUPPORTIVE_CONDITIONAL": 0.25,
+            "ADVERSE": -0.5,
+        },
+    }
+    assert locked["active_numeric_weights"] == compiled["active_numeric_weights"]
+
+    groups = compiled["correlation_groups"]
+    assert {"MACD", "RSI", "ROC", "CONFIRMED_DIVERGENCE"}.issubset(
+        groups["same_swing_momentum"]
+    )
+    assert {"PRICE_PIVOT_SWING", "BREAKOUT_RETEST_FAILED", "CHAN", "WAVE"}.issubset(
+        groups["confirmed_price_swing"]
+    )
+    assert {"VCP", "CUP_HANDLE", "DOUBLE_BOTTOM", "FLAT_BASE"}.issubset(
+        groups["price_contraction"]
+    )
+    flattened = [method for values in groups.values() for method in values]
+    assert len(flattened) == len(set(flattened)) == 43
+    assert locked["correlation_group_count"] == len(groups)
+
+    composition = compiled["email_evidence_composition"]
+    assert composition["TREND_RS"]["includes"] == [
+        "relative_strength", "ma_level_alignment", "ma_slope_compression",
+    ]
+    assert "chan_fx_bi_zs" in composition["STRUCTURE"]["includes"]
+    assert composition["MOMENTUM"]["max_independent_contribution_per_group"] == 1
+    assert composition["MTF"]["recomputes_underlying_indicators"] is False
+    assert compiled["email_section_order"] == [
+        "canonical_conclusion",
+        "market_sector_permission",
+        "asset_specific_quality_valuation_or_etf",
+        "eight_evidence_families",
+        "seven_timeframe_role_summary",
+        "correlation_dedup",
+        "data_risk_liquidity_execution_veto",
+        "trigger_invalidation",
+        "source_time_rights_and_missingness",
+    ]
+    assert locked["email_section_order"] == compiled["email_section_order"]
+    assert compiled["nontechnical_lanes"] == [
+        "QUALITY_GROWTH", "VALUATION", "ETF_SPECIFIC",
+        "DATA_RISK_LIQUIDITY_EXECUTION",
+    ]
+    assert locked["asset_routes"] == compiled["asset_routes"]
+    assert compiled["asset_routes"]["stock"]["fine_rank_priority"][:3] == [
+        "sector_peer_relative_strength", "quality_growth", "valuation",
+    ]
+    assert compiled["asset_routes"]["etf"]["fine_rank_priority"][:3] == [
+        "peer_relative_strength", "liquidity_spread", "nav_premium_tracking",
+    ]

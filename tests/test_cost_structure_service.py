@@ -63,6 +63,9 @@ def test_completed_20_60_bar_reference_is_ready_and_not_holder_cost():
     assert bar["window_60"]["semantics"] == "BAR_DERIVED_REFERENCE_PRICE_NOT_HOLDER_COST"
     assert context["composition"]["provider_vs_bar_relation"] == "SINGLE_SOURCE_ONLY"
     assert context["hard_veto"] is False
+    assert context["completed_bar_only"] is True
+    assert context["algorithm_version"] == "cost-structure-bar-reference-v1"
+    assert len(context["config_hash"]) == 64
 
 
 def test_provider_snapshot_is_current_only_and_exact_date_match_can_converge():
