@@ -383,6 +383,7 @@ def _build_intraday_timeframe(
             completed_source_session_receipt = {
                 **session_receipt,
                 "provider_identity": identity["provider_identity"],
+                "provider_route": identity["provider_route"],
                 "observed_adjustment_basis": identity["observed_adjustment_basis"],
                 "identity_state": identity["identity_state"],
                 "content_sha256": identity["content_sha256"],
@@ -391,6 +392,8 @@ def _build_intraday_timeframe(
                 "amount_unit": identity["amount_unit"],
                 "observed_at": identity["observed_at"],
                 "available_at_max": identity["available_at_max"],
+                "revision": str(identity.get("revision") or "UNKNOWN"),
+                "vintage": str(identity.get("vintage") or "UNKNOWN"),
             }
     # The price-only methods remain available without a volume unit, but the
     # legacy analyzer's volume labels are not evidence until the source unit is typed.

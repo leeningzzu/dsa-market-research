@@ -21,6 +21,7 @@ from src.services.factor_decision_summary import (
     apply_canonical_decision_to_result,
     build_stock_factor_decision_summary,
 )
+from src.services.data_object_admission import seal_source_rights_evidence
 from data_provider.daily_data_identity import (
     attach_daily_data_identity,
     build_daily_data_identity,
@@ -436,15 +437,43 @@ def test_bounded_receipt_only_mode_skips_report_projection_and_files():
 def test_receipt_only_fetch_trims_future_provider_bars_before_save():
     pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
     pipeline.p0_receipt_only = True
+    pipeline.b1_rights_context = {
+        "schema_version": "b1-operation-rights-context-v1",
+        "operation_id": "test-p0-receipt-only-future-trim",
+        "intended_use": "NO_SEND_RESEARCH",
+        "allowed_instruments": ["600519"],
+        "rights_by_dataset": {
+            "P_DAILY": seal_source_rights_evidence({
+                "schema_version": "source-rights-evidence-v1",
+                "operation_id": "test-p0-receipt-only-future-trim",
+                "intended_use": "NO_SEND_RESEARCH",
+                "provider_identity": "FixtureSource",
+                "upstream_source_owner": "SYNTHETIC_FIXTURE_ONLY_NOT_REAL_LICENSE",
+                "upstream_rights_state": "VERIFIED",
+                "dataset_id": "P_DAILY",
+                "consumer_scope": "ASSET_RESEARCH_BRIEF",
+                "terms_uri": "https://example.invalid/test-fixture-only",
+                "terms_sha256": "a" * 64,
+                "terms_observed_at": "2026-09-01T00:00:00+00:00",
+                "rights": {
+                    "product_use": "ALLOWED",
+                    "storage": "ALLOWED",
+                    "training": "FORBIDDEN",
+                    "redistribution": "FORBIDDEN",
+                },
+            }),
+        },
+    }
     pipeline.fetcher_manager = MagicMock()
     pipeline.db = MagicMock()
     pipeline._resolve_resume_target_date = MagicMock(return_value=date(2026, 9, 17))
     pipeline.fetcher_manager.get_stock_name.return_value = "fixture"
     pipeline.db.has_today_data.return_value = False
     target_date = date(2026, 9, 17)
-    daily_plan = _current_daily_window_plan(
-        market="cn", target_date=target_date,
-    )
+    daily_plan = {
+        "start_date": date(2026, 9, 16),
+        "plan_hash": "a" * 64,
+    }
     frame = pd.DataFrame(
         {
             "date": [date(2026, 9, 16), date(2026, 9, 17), date(2026, 9, 18)],
@@ -472,12 +501,16 @@ def test_receipt_only_fetch_trims_future_provider_bars_before_save():
     pipeline.fetcher_manager.get_daily_data.return_value = (frame, "FixtureSource")
     pipeline.db.save_daily_data.return_value = 2
 
-    success, error = pipeline.fetch_and_save_stock_data(
-        "600519",
-        current_time=None,
-    )
+    with patch(
+        "src.core.pipeline._current_daily_window_plan",
+        return_value=daily_plan,
+    ):
+        success, error = pipeline.fetch_and_save_stock_data(
+            "600519",
+            current_time=None,
+        )
 
-    assert success is True
+    assert success is True, error
     assert error is None
     fetch_call = pipeline.fetcher_manager.get_daily_data.call_args
     assert fetch_call.kwargs["end_date"] == "2026-09-17"

@@ -9,6 +9,8 @@ UNKNOWN rights, units, vintages or clocks remain not admitted.
 from __future__ import annotations
 
 from collections.abc import Mapping
+import json
+from pathlib import Path
 from datetime import date, datetime, time, timezone
 import math
 from typing import Any
@@ -18,6 +20,7 @@ from src.services.pit_identity import sha256_payload
 
 SCHEMA_VERSION = "data-object-admission-receipt-v1"
 RIGHTS_EVIDENCE_SCHEMA_VERSION = "source-rights-evidence-v1"
+B1_RIGHTS_CONTEXT_SCHEMA_VERSION = "b1-operation-rights-context-v1"
 RIGHTS_EVIDENCE_PURPOSE_NO_SEND = "NO_SEND_RESEARCH"
 RIGHTS_EVIDENCE_PURPOSE_LEARNING = "LEARNING_RESEARCH"
 RIGHTS_EVIDENCE_PURPOSES = frozenset({
@@ -130,6 +133,32 @@ def validate_compiled_data_object_admission(
         ):
             raise DataObjectAdmissionError(
                 "DATA_OBJECT_COMPILED_ADMISSION_RUNTIME_SOURCE_MISMATCH"
+            )
+        try:
+            runtime_clocks_match = (
+                _parse_aware_datetime(result.get("runtime_source_observed_at"))
+                == _parse_aware_datetime(result.get("observed_at"))
+                and _parse_aware_datetime(result.get("runtime_source_available_at"))
+                == _parse_aware_datetime(result.get("available_at"))
+            )
+        except DataObjectAdmissionError:
+            runtime_clocks_match = False
+        if (
+            result.get("runtime_provider_identity") != result.get("provider_identity")
+            or result.get("runtime_provider_route") != result.get("provider_route")
+            or result.get("runtime_completed_through") != result.get("completed_through")
+            or _normalized_units(result.get("runtime_units"))
+            != _normalized_units(result.get("units"))
+            or _text(result.get("runtime_currency")).upper()
+            != _text(result.get("currency")).upper()
+            or _text(result.get("runtime_adjustment_basis")).lower()
+            != _text(result.get("adjustment_basis")).lower()
+            or result.get("runtime_revision") != result.get("revision")
+            or result.get("runtime_vintage") != result.get("vintage")
+            or not runtime_clocks_match
+        ):
+            raise DataObjectAdmissionError(
+                "DATA_OBJECT_COMPILED_ADMISSION_RUNTIME_SEMANTICS_MISMATCH"
             )
     if result.get("learning_admitted") is True:
         rights = result.get("rights")
@@ -247,6 +276,259 @@ def validate_source_rights_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
+def validate_b1_rights_context(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate one external operation-rights package without inventing a run clock."""
+    required = {
+        "schema_version", "operation_id", "intended_use",
+        "allowed_instruments", "rights_by_dataset",
+    }
+    if not isinstance(value, Mapping) or set(value) != required:
+        raise DataObjectAdmissionError("B1_RIGHTS_CONTEXT_SCHEMA_MISMATCH")
+    result = dict(value)
+    if result.get("schema_version") != B1_RIGHTS_CONTEXT_SCHEMA_VERSION:
+        raise DataObjectAdmissionError("B1_RIGHTS_CONTEXT_VERSION_MISMATCH")
+    operation_id = _text(result.get("operation_id"))
+    intended_use = _text(result.get("intended_use"))
+    grants = result.get("rights_by_dataset")
+    instruments = result.get("allowed_instruments")
+    if not operation_id or intended_use != RIGHTS_EVIDENCE_PURPOSE_NO_SEND:
+        raise DataObjectAdmissionError("B1_RIGHTS_CONTEXT_OPERATION_INVALID")
+    if not isinstance(grants, Mapping) or not grants:
+        raise DataObjectAdmissionError("B1_RIGHTS_CONTEXT_GRANTS_MISSING")
+    if (
+        not isinstance(instruments, (list, tuple))
+        or not instruments
+        or len(instruments) > 50
+    ):
+        raise DataObjectAdmissionError("B1_RIGHTS_CONTEXT_INSTRUMENTS_INVALID")
+    normalized_instruments = tuple(
+        dict.fromkeys(_text(item).upper() for item in instruments if _text(item))
+    )
+    if len(normalized_instruments) != len(instruments):
+        raise DataObjectAdmissionError("B1_RIGHTS_CONTEXT_INSTRUMENTS_INVALID")
+    normalized: dict[str, dict[str, Any]] = {}
+    for dataset_id, raw_grant in grants.items():
+        key = _text(dataset_id)
+        if not key or not isinstance(raw_grant, Mapping):
+            raise DataObjectAdmissionError("B1_RIGHTS_CONTEXT_GRANT_INVALID")
+        grant = validate_source_rights_evidence(raw_grant)
+        if (
+            grant["dataset_id"] != key
+            or grant["operation_id"] != operation_id
+            or grant["intended_use"] != intended_use
+            or grant["upstream_rights_state"] != "VERIFIED"
+            or grant["rights"]["product_use"] != "ALLOWED"
+            or grant["rights"]["redistribution"] != "FORBIDDEN"
+        ):
+            raise DataObjectAdmissionError("B1_RIGHTS_CONTEXT_GRANT_SCOPE_MISMATCH")
+        normalized[key] = grant
+    result["operation_id"] = operation_id
+    result["intended_use"] = intended_use
+    result["allowed_instruments"] = normalized_instruments
+    result["rights_by_dataset"] = normalized
+    result["rights_context_sha256"] = sha256_payload({
+        key: result[key] for key in required
+    })
+    return result
+
+
+def load_b1_rights_context(path: str | Path | None) -> dict[str, Any] | None:
+    """Read one bounded UTF-8 JSON authorization package; no secret/token lookup."""
+    if path is None:
+        return None
+    # Legacy tests and callers may expose an unspecified attribute through a
+    # dynamic object (for example MagicMock). Only a real configured path turns
+    # B1 on; never stringify arbitrary runtime objects into filesystem paths.
+    if not isinstance(path, (str, Path)):
+        return None
+    raw_path = str(path).strip()
+    if not raw_path:
+        return None
+    target = Path(raw_path).expanduser()
+    try:
+        payload = target.read_bytes()
+    except OSError as exc:
+        raise DataObjectAdmissionError("B1_RIGHTS_CONTEXT_FILE_UNREADABLE") from exc
+    if not payload or len(payload) > 1024 * 1024:
+        raise DataObjectAdmissionError("B1_RIGHTS_CONTEXT_FILE_SIZE_INVALID")
+    try:
+        document = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise DataObjectAdmissionError("B1_RIGHTS_CONTEXT_FILE_JSON_INVALID") from exc
+    return validate_b1_rights_context(document)
+
+
+def bind_b1_rights_context_as_of(
+    context: Mapping[str, Any], research_as_of: datetime,
+) -> dict[str, Any]:
+    """Bind a validated external grant package to one exact aware run instant."""
+    if not isinstance(research_as_of, datetime) or research_as_of.tzinfo is None or research_as_of.utcoffset() is None:
+        raise DataObjectAdmissionError("B1_RESEARCH_ASOF_REQUIRES_AWARE_DATETIME")
+    base = validate_b1_rights_context({
+        key: context[key]
+        for key in (
+            "schema_version", "operation_id", "intended_use",
+            "allowed_instruments", "rights_by_dataset",
+        )
+        if key in context
+    })
+    base["research_as_of"] = research_as_of.astimezone(timezone.utc).isoformat()
+    return base
+
+
+def validate_b1_provider_preflight(
+    grant: Mapping[str, Any] | None,
+    *,
+    operation_id: str,
+    intended_use: str,
+    dataset_id: str,
+    consumer_scope: str,
+    research_as_of: str | datetime,
+) -> dict[str, Any]:
+    """Admit only a precisely scoped *supplied* upstream grant before fetching.
+
+    The sealed claim is NOT an independent verification of its external terms.
+    Its owner must supply independently checked upstream authorization; this
+    code never invents terms bytes, vendor rights or a source observation.
+    """
+    if not isinstance(grant, Mapping):
+        raise DataObjectAdmissionError("B1_UPSTREAM_RIGHTS_EVIDENCE_MISSING")
+    try:
+        rights = validate_source_rights_evidence(grant)
+    except (DataObjectAdmissionError, ValueError) as exc:
+        raise DataObjectAdmissionError("B1_UPSTREAM_RIGHTS_EVIDENCE_INVALID") from exc
+    expected = {
+        "operation_id": operation_id,
+        "intended_use": intended_use,
+        "dataset_id": dataset_id,
+        "consumer_scope": consumer_scope,
+    }
+    if any(not _text(value) or rights.get(key) != value for key, value in expected.items()):
+        raise DataObjectAdmissionError("B1_OPERATION_DATASET_CONSUMER_MISMATCH")
+    if intended_use != RIGHTS_EVIDENCE_PURPOSE_NO_SEND:
+        raise DataObjectAdmissionError("B1_ONLY_NO_SEND_RESEARCH_IS_ADMITTED")
+    if rights["upstream_rights_state"] != "VERIFIED":
+        raise DataObjectAdmissionError("B1_UPSTREAM_GRANT_UNVERIFIED")
+    if (rights["rights"]["product_use"] != "ALLOWED"
+        or rights["rights"]["redistribution"] != "FORBIDDEN"):
+        raise DataObjectAdmissionError("B1_NO_SEND_PRODUCT_RIGHT_NOT_ADMITTED")
+    if not _text(rights["provider_identity"]) or not str(rights["terms_uri"]).startswith("https://"):
+        raise DataObjectAdmissionError("B1_PROVIDER_OR_TERMS_URI_INVALID")
+    if isinstance(research_as_of, date) and not isinstance(research_as_of, datetime):
+        raise DataObjectAdmissionError("B1_RESEARCH_ASOF_REQUIRES_INSTANT")
+    if isinstance(research_as_of, str) and "T" not in research_as_of:
+        raise DataObjectAdmissionError("B1_RESEARCH_ASOF_REQUIRES_INSTANT")
+    try:
+        ceiling = _as_of_ceiling(research_as_of)
+        if ceiling is None:
+            raise DataObjectAdmissionError("B1_RESEARCH_ASOF_MISSING")
+        if _parse_aware_datetime(rights["terms_observed_at"]) > ceiling:
+            raise DataObjectAdmissionError("B1_TERMS_AFTER_RESEARCH_ASOF")
+    except (ValueError, TypeError) as exc:
+        raise DataObjectAdmissionError("B1_RESEARCH_ASOF_INVALID") from exc
+    return rights
+
+
+
+def compile_b1_runtime_admission_receipts(
+    obligations: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
+    *,
+    b1_context: Mapping[str, Any],
+) -> dict[str, dict[str, Any]]:
+    """Bind observed original-Registry rows to the external B1 grant package.
+
+    Source metadata is produced by the existing MTF/Registry path.  A caller may
+    supply an exact duplicate for independent comparison, but cannot supply a
+    missing source, provider route, units, revision or vintage into existence.
+    """
+    if not isinstance(b1_context, Mapping):
+        raise DataObjectAdmissionError("B1_OPERATION_CONTEXT_MISSING")
+    operation_id = _text(b1_context.get("operation_id"))
+    intended_use = _text(b1_context.get("intended_use"))
+    as_of = b1_context.get("research_as_of")
+    rights_by_dataset = b1_context.get("rights_by_dataset") or {}
+    supplied_metadata = b1_context.get("source_metadata_by_dataset") or {}
+    if not isinstance(rights_by_dataset, Mapping) or not isinstance(supplied_metadata, Mapping):
+        raise DataObjectAdmissionError("B1_RECEIPT_PRODUCER_SCHEMA_INVALID")
+    accepted = {"P_DAILY", "P_5M", "E_PRICE_1D", "E_PRICE_5M"}
+    known = {
+        _text(item.get("dataset_id")): dict(item)
+        for item in obligations
+        if item.get("state") != "NOT_APPLICABLE"
+    }
+    if set(supplied_metadata) - (set(known) & accepted):
+        raise DataObjectAdmissionError("B1_RECEIPT_PRODUCER_ORPHAN_SOURCE")
+
+    receipts: dict[str, dict[str, Any]] = {}
+    for dataset_id in sorted(set(rights_by_dataset) & set(known) & accepted):
+        scope = known[dataset_id]
+        required_source = (
+            "provider_identity", "provider_route", "source_identity_hash",
+            "source_content_sha256", "source_observed_at",
+            "source_available_at", "completed_through",
+        )
+        # A lawful grant without an observed same-run source is a nontrigger.
+        if any(not _text(scope.get(key)) for key in required_source):
+            continue
+        grant = validate_b1_provider_preflight(
+            rights_by_dataset.get(dataset_id),
+            operation_id=operation_id,
+            intended_use=intended_use,
+            dataset_id=dataset_id,
+            consumer_scope=_text(scope.get("product_consumer")),
+            research_as_of=as_of,
+        )
+        metadata = {
+            "provider_identity": scope.get("provider_identity"),
+            "provider_route": scope.get("provider_route"),
+            "source_identity_hash": scope.get("source_identity_hash"),
+            "source_content_sha256": scope.get("source_content_sha256"),
+            "source_observed_at": scope.get("source_observed_at"),
+            "source_available_at": scope.get("source_available_at"),
+            "completed_through": scope.get("completed_through"),
+            "units": scope.get("units"),
+            "currency": scope.get("currency"),
+            "adjustment_basis": scope.get("adjustment_basis"),
+            "revision": scope.get("revision"),
+            "vintage": scope.get("vintage"),
+            "volume_unit": scope.get("volume_unit"),
+            "amount_unit": scope.get("amount_unit"),
+        }
+        duplicate = supplied_metadata.get(dataset_id)
+        if duplicate is not None:
+            if not isinstance(duplicate, Mapping):
+                raise DataObjectAdmissionError("B1_SOURCE_METADATA_INVALID")
+            for key, source_value in metadata.items():
+                if source_value not in (None, "", {}, []) and duplicate.get(key) != source_value:
+                    raise DataObjectAdmissionError("B1_RUNTIME_METADATA_SOURCE_MISMATCH")
+        if metadata["provider_identity"] != grant["provider_identity"]:
+            raise DataObjectAdmissionError("B1_RUNTIME_PROVIDER_RIGHTS_MISMATCH")
+        units = metadata.get("units")
+        if not isinstance(units, Mapping) or not units:
+            raise DataObjectAdmissionError("B1_RUNTIME_UNITS_MISSING")
+        receipts[dataset_id] = seal_data_object_admission_receipt({
+            "schema_version": SCHEMA_VERSION,
+            "dataset_id": dataset_id,
+            "provider_identity": grant["provider_identity"],
+            "provider_route": metadata["provider_route"],
+            "native_frequency": scope["native_frequency"],
+            "source_identity_hash": metadata["source_identity_hash"],
+            "content_sha256": metadata["source_content_sha256"],
+            "observed_at": metadata["source_observed_at"],
+            "available_at": metadata["source_available_at"],
+            "completed_through": metadata["completed_through"],
+            "units": dict(units),
+            "currency": _text(metadata.get("currency")) or "UNKNOWN",
+            "adjustment_basis": _text(metadata.get("adjustment_basis")) or "UNKNOWN",
+            "revision": _text(metadata.get("revision")) or "UNKNOWN",
+            "vintage": _text(metadata.get("vintage")) or "UNKNOWN",
+            "rights": grant["rights"],
+            "rights_evidence": grant,
+            "historical_pit_eligible": False,
+            "consumer_scope": scope["product_consumer"],
+        })
+    return receipts
+
 def compile_data_object_admission(
     obligation: Mapping[str, Any],
     receipt: Mapping[str, Any] | None,
@@ -277,7 +559,15 @@ def compile_data_object_admission(
         "runtime_source_identity_hash": None,
         "runtime_source_content_sha256": None,
         "runtime_provider_identity": None,
+        "runtime_provider_route": None,
+        "runtime_source_observed_at": None,
+        "runtime_source_available_at": None,
         "runtime_completed_through": None,
+        "runtime_units": None,
+        "runtime_currency": None,
+        "runtime_adjustment_basis": None,
+        "runtime_revision": None,
+        "runtime_vintage": None,
         "rights_evidence_hash": None,
         "operation_id": None,
         "intended_use": None,
@@ -339,32 +629,74 @@ def compile_data_object_admission(
     runtime_source_identity_hash = _text(obligation.get("source_identity_hash")).lower()
     runtime_source_content_sha256 = _text(obligation.get("source_content_sha256")).lower()
     runtime_provider_identity = _text(obligation.get("provider_identity"))
+    runtime_provider_route = _text(obligation.get("provider_route"))
     runtime_completed_through = _text(obligation.get("completed_through"))
     runtime_source_observed_at = _text(obligation.get("source_observed_at"))
-    runtime_source_bound = bool(
+    runtime_source_available_at = _text(obligation.get("source_available_at"))
+    runtime_units = _normalized_units(obligation.get("units"))
+    runtime_currency = _text(obligation.get("currency"))
+    runtime_adjustment_basis = _text(obligation.get("adjustment_basis"))
+    runtime_revision = _text(obligation.get("revision"))
+    runtime_vintage = _text(obligation.get("vintage"))
+    runtime_identity_complete = bool(
         _is_sha256(runtime_source_identity_hash)
         and _is_sha256(runtime_source_content_sha256)
     )
-    if not runtime_source_bound:
+    runtime_semantics_complete = bool(
+        runtime_provider_identity
+        and runtime_provider_route
+        and runtime_completed_through
+        and runtime_source_observed_at
+        and runtime_source_available_at
+        and runtime_units
+        and runtime_currency
+        and runtime_adjustment_basis
+        and runtime_revision
+        and runtime_vintage
+    )
+    runtime_source_bound = runtime_identity_complete and runtime_semantics_complete
+    if not runtime_identity_complete:
         reasons.append("RUNTIME_SOURCE_IDENTITY_OR_CONTENT_MISSING")
-    else:
+    if not runtime_semantics_complete:
+        reasons.append("RUNTIME_SOURCE_SEMANTICS_MISSING")
+    if runtime_identity_complete:
         if runtime_source_identity_hash != normalized["source_identity_hash"]:
             reasons.append("RUNTIME_SOURCE_IDENTITY_MISMATCH")
             runtime_source_bound = False
         if runtime_source_content_sha256 != normalized["content_sha256"]:
             reasons.append("RUNTIME_SOURCE_CONTENT_MISMATCH")
             runtime_source_bound = False
-        if runtime_provider_identity and runtime_provider_identity != normalized["provider_identity"]:
+    if runtime_semantics_complete:
+        if runtime_provider_identity != normalized["provider_identity"]:
             reasons.append("RUNTIME_SOURCE_PROVIDER_MISMATCH")
             runtime_source_bound = False
-        if runtime_completed_through and runtime_completed_through != normalized["completed_through"]:
+        if runtime_provider_route != normalized["provider_route"]:
+            reasons.append("RUNTIME_SOURCE_PROVIDER_ROUTE_MISMATCH")
+            runtime_source_bound = False
+        if runtime_completed_through != normalized["completed_through"]:
             reasons.append("RUNTIME_SOURCE_COMPLETED_THROUGH_MISMATCH")
             runtime_source_bound = False
-        if runtime_source_observed_at:
-            runtime_observed_at = _parse_aware_datetime(runtime_source_observed_at)
-            if runtime_observed_at != observed_at:
-                reasons.append("RUNTIME_SOURCE_OBSERVED_AT_MISMATCH")
-                runtime_source_bound = False
+        if _parse_aware_datetime(runtime_source_observed_at) != observed_at:
+            reasons.append("RUNTIME_SOURCE_OBSERVED_AT_MISMATCH")
+            runtime_source_bound = False
+        if _parse_aware_datetime(runtime_source_available_at) != available_at:
+            reasons.append("RUNTIME_SOURCE_AVAILABLE_AT_MISMATCH")
+            runtime_source_bound = False
+        if runtime_units != _normalized_units(normalized["units"]):
+            reasons.append("RUNTIME_SOURCE_UNITS_MISMATCH")
+            runtime_source_bound = False
+        if runtime_currency.upper() != _text(normalized["currency"]).upper():
+            reasons.append("RUNTIME_SOURCE_CURRENCY_MISMATCH")
+            runtime_source_bound = False
+        if runtime_adjustment_basis.lower() != _text(normalized["adjustment_basis"]).lower():
+            reasons.append("RUNTIME_SOURCE_ADJUSTMENT_BASIS_MISMATCH")
+            runtime_source_bound = False
+        if runtime_revision != _text(normalized["revision"]):
+            reasons.append("RUNTIME_SOURCE_REVISION_MISMATCH")
+            runtime_source_bound = False
+        if runtime_vintage != _text(normalized["vintage"]):
+            reasons.append("RUNTIME_SOURCE_VINTAGE_MISMATCH")
+            runtime_source_bound = False
     expected_operation_id = _text(operation_id)
     expected_intended_use = _text(intended_use)
     if rights["product_use"] == "ALLOWED":
@@ -462,7 +794,15 @@ def compile_data_object_admission(
         "runtime_source_identity_hash": runtime_source_identity_hash or None,
         "runtime_source_content_sha256": runtime_source_content_sha256 or None,
         "runtime_provider_identity": runtime_provider_identity or None,
+        "runtime_provider_route": runtime_provider_route or None,
+        "runtime_source_observed_at": runtime_source_observed_at or None,
+        "runtime_source_available_at": runtime_source_available_at or None,
         "runtime_completed_through": runtime_completed_through or None,
+        "runtime_units": dict(runtime_units) if runtime_units else None,
+        "runtime_currency": runtime_currency or None,
+        "runtime_adjustment_basis": runtime_adjustment_basis or None,
+        "runtime_revision": runtime_revision or None,
+        "runtime_vintage": runtime_vintage or None,
         "rights_evidence_hash": rights_evidence.get("evidence_hash") if isinstance(rights_evidence, Mapping) else None,
         "operation_id": rights_evidence.get("operation_id") if isinstance(rights_evidence, Mapping) else None,
         "intended_use": rights_evidence.get("intended_use") if isinstance(rights_evidence, Mapping) else None,
@@ -573,6 +913,16 @@ def compile_data_object_admission_view(
     }
     document["view_hash"] = sha256_payload(document)
     return document
+
+
+def _normalized_units(value: Any) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        return {}
+    return {
+        _text(key): _text(item).upper()
+        for key, item in value.items()
+        if _text(key)
+    }
 
 
 def _known_semantic(value: Any) -> bool:

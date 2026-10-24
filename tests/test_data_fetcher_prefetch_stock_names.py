@@ -20,7 +20,6 @@ from data_provider.base import DataFetcherManager
 from data_provider.daily_data_identity import (
     build_daily_data_identity,
     attach_daily_data_identity,
-    extract_daily_acquisition_receipt,
 )
 from data_provider.pytdx_fetcher import PytdxFetcher
 from src.core.pipeline import StockAnalysisPipeline
@@ -165,8 +164,10 @@ class TestPrefetchStockNames(unittest.TestCase):
         self.assertEqual(name, "平安银行")
         manager.get_realtime_quote.assert_called_once_with("000001.SZ", log_final_failure=False)
 
-    def test_fetch_and_save_stock_data_uses_lightweight_name_lookup(self):
+    def test_legacy_non_b1_fetch_uses_lightweight_name_lookup(self):
         pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+        pipeline.p0_bounded_trial = True
+        pipeline.p0_receipt_only = False
         pipeline.fetcher_manager = MagicMock()
         pipeline.db = MagicMock()
         pipeline.fetcher_manager.get_stock_name.return_value = "贵州茅台"
@@ -195,20 +196,15 @@ class TestPrefetchStockNames(unittest.TestCase):
         )
         attach_daily_data_identity(frame, identity)
         pipeline.fetcher_manager.get_daily_data.return_value = (frame, "dummy")
-        # Storage rights remain blocked in this otherwise lawful run-local case.
-        pipeline.db.save_daily_data.side_effect = PermissionError(
-            "SOURCE_STORAGE_RIGHTS_NOT_ADMITTED"
-        )
+        # This legacy non-B1 test owns only name lookup and old persistence.
+        # Strict B1 NO_SEND run-local storage denial is covered separately.
+        pipeline.db.save_daily_data.return_value = 1
 
         success, error = StockAnalysisPipeline.fetch_and_save_stock_data(pipeline, "600519")
 
         self.assertTrue(success)
         self.assertIsNone(error)
         pipeline.fetcher_manager.get_stock_name.assert_called_once_with("600519", allow_realtime=False)
-        self.assertEqual(
-            extract_daily_acquisition_receipt(frame, strict=True)["persistence_status"],
-            "RIGHTS_NOT_ADMITTED_RUN_LOCAL_ONLY",
-        )
         pipeline.db.save_daily_data.assert_called_once()
         fetch_args = pipeline.fetcher_manager.get_daily_data.call_args
         self.assertEqual(fetch_args.args, ("600519",))

@@ -170,6 +170,7 @@ def build_completed_history_identity(
         "data_snapshot_schema_version": DATA_SNAPSHOT_IDENTITY_VERSION,
         "provider_identity": provider_identity,
         "adjustment_basis": adjustment_basis,
+        "daily_data_identity": _identity_semantics(identity),
         "daily_data_identity_hash": identity.get("identity_hash") if identity else None,
         "daily_data_identity_state": identity.get("identity_state") if identity else None,
         "price_identity_reasons": reasons,
@@ -240,6 +241,7 @@ def build_bar_sequence_identity(
         "data_snapshot_schema_version": FORWARD_BAR_SEQUENCE_IDENTITY_VERSION,
         "provider_identity": provider_identity,
         "adjustment_basis": adjustment_basis,
+        "daily_data_identity": _identity_semantics(identity),
         "daily_data_identity_hash": identity.get("identity_hash") if identity else None,
         "daily_data_identity_state": identity.get("identity_state") if identity else None,
         "price_identity_reasons": reasons,
@@ -267,7 +269,7 @@ def _daily_identity_reasons(
 def _identity_semantics(identity: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     if not identity:
         return None
-    return {
+    result = {
         key: identity.get(key)
         for key in (
             "schema_version",
@@ -285,7 +287,14 @@ def _identity_semantics(identity: Optional[Dict[str, Any]]) -> Optional[Dict[str
             "row_count",
         )
     }
-
+    # Revision/vintage are source semantics, not observation-clock aliases.
+    # Preserve them only when the typed provider identity explicitly supplied
+    # non-empty values, so old identities keep their exact payload/hash shape.
+    for key in ("revision", "vintage"):
+        value = str(identity.get(key) or "").strip()
+        if value:
+            result[key] = value
+    return result
 
 def _identity_observed_utc(identity: Optional[Dict[str, Any]]) -> Optional[datetime]:
     if not identity:

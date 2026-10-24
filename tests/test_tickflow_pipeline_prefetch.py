@@ -15,6 +15,7 @@ ensure_litellm_stub()
 
 from src.analyzer import AnalysisResult
 from src.core.pipeline import StockAnalysisPipeline
+from src.services.data_object_admission import seal_source_rights_evidence
 
 
 def _make_result(code: str) -> AnalysisResult:
@@ -27,6 +28,51 @@ def _make_result(code: str) -> AnalysisResult:
         analysis_summary="ok",
         success=True,
     )
+
+
+def _b1_grant(dataset_id: str):
+    return seal_source_rights_evidence({
+        "schema_version": "source-rights-evidence-v1",
+        "operation_id": "test-b1-prefetch-veto",
+        "intended_use": "NO_SEND_RESEARCH",
+        "provider_identity": "BaostockFetcher",
+        "upstream_source_owner": "TEST_FIXTURE_ONLY_NOT_REAL_LICENSE",
+        "upstream_rights_state": "VERIFIED",
+        "dataset_id": dataset_id,
+        "consumer_scope": "ASSET_RESEARCH_BRIEF",
+        "terms_uri": "https://example.org/test-fixture-only",
+        "terms_sha256": "a" * 64,
+        "terms_observed_at": "2026-10-01T00:00:00+00:00",
+        "rights": {
+            "product_use": "ALLOWED",
+            "storage": "FORBIDDEN",
+            "training": "FORBIDDEN",
+            "redistribution": "FORBIDDEN",
+        },
+    })
+
+
+def _make_b1_admitted_result(code: str) -> AnalysisResult:
+    result = _make_result(code)
+    result.dashboard = {
+        "factor_decision": {
+            "evidence_traceability": {
+                "complete_research_universe": {
+                    "data_object_admission": {
+                        "objects": [
+                            {
+                                "dataset_id": dataset_id,
+                                "product_admitted": True,
+                                "learning_admitted": False,
+                            }
+                            for dataset_id in ("P_DAILY", "P_5M")
+                        ]
+                    }
+                }
+            }
+        }
+    }
+    return result
 
 
 class _TrackingFetcherManager:
@@ -69,7 +115,7 @@ class TestTickFlowPipelinePrefetch(unittest.TestCase):
         pipeline.process_single_stock = MagicMock(side_effect=_process)
 
         results = pipeline.run(
-            stock_codes=["600519", "000001", "300750", "000858", "601318"],
+            stock_codes=["AAPL", "MSFT", "GOOG", "AMZN", "NVDA"],
             dry_run=False,
             send_notification=False,
         )
@@ -81,6 +127,43 @@ class TestTickFlowPipelinePrefetch(unittest.TestCase):
         self.assertEqual(events[2][0], "name_prefetch")
         self.assertTrue(all(event[0] != "process" for event in events[:3]))
         self.assertEqual([event[0] for event in events[3:]], ["process"] * 5)
+
+    def test_cn_bulk_prefetch_cannot_borrow_unverified_provider_rights(self):
+        events = []
+        pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+        pipeline.max_workers = 1
+        pipeline.fetcher_manager = _TrackingFetcherManager(events)
+        pipeline._save_local_report = MagicMock()
+        pipeline._send_notifications = MagicMock()
+        pipeline.config = SimpleNamespace(
+            stock_list=[], refresh_stock_list=lambda: None,
+            single_stock_notify=False, report_type="simple", analysis_delay=0,
+        )
+        codes = ["600519", "000001", "300750", "000858", "601318"]
+        pipeline.b1_rights_context = {
+            "schema_version": "b1-operation-rights-context-v1",
+            "operation_id": "test-b1-prefetch-veto",
+            "intended_use": "NO_SEND_RESEARCH",
+            "allowed_instruments": codes,
+            "rights_by_dataset": {
+                dataset_id: _b1_grant(dataset_id)
+                for dataset_id in ("P_DAILY", "P_5M")
+            },
+        }
+        pipeline._generate_aggregate_report = MagicMock(
+            return_value="B1_PREFETCH_VETO_REPORT_IN_MEMORY"
+        )
+        pipeline.process_single_stock = MagicMock(
+            side_effect=lambda code, **kwargs: _make_b1_admitted_result(code)
+        )
+        results = pipeline.run(
+            stock_codes=codes,
+            send_notification=False,
+        )
+        self.assertEqual(len(results), 5)
+        self.assertEqual(events, [])
+        self.assertEqual(pipeline.process_single_stock.call_count, 5)
+        pipeline._send_notifications.assert_not_called()
 
 
 if __name__ == "__main__":

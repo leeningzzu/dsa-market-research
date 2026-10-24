@@ -65,6 +65,8 @@ def build_daily_data_identity(
     observed_at: Optional[datetime] = None,
     raw_response_sha256: Optional[str] = None,
     instrument: Optional[str] = None,
+    revision: Optional[str] = None,
+    vintage: Optional[str] = None,
 ) -> dict[str, Any]:
     returned_start, returned_end = _returned_range(frame)
     content_payload = _frame_content_payload(frame)
@@ -91,6 +93,12 @@ def build_daily_data_identity(
         "content_sha256": sha256_payload(content_payload),
         "row_count": int(len(content_payload)),
     }
+    revision_text = _optional_text(revision)
+    vintage_text = _optional_text(vintage)
+    if revision_text is not None:
+        payload["revision"] = revision_text
+    if vintage_text is not None:
+        payload["vintage"] = vintage_text
     payload["identity_hash"] = _identity_hash(payload)
     return validate_daily_data_identity(payload)
 
@@ -181,6 +189,12 @@ def validate_daily_data_identity(value: Any) -> dict[str, Any]:
     payload["requested_end"] = _date_text(payload.get("requested_end"))
     if "instrument" in payload:
         payload["instrument"] = _instrument_text(payload.get("instrument"))
+    for key in ("revision", "vintage"):
+        if key in payload:
+            semantic_value = _optional_text(payload.get(key))
+            if semantic_value is None:
+                raise DailyDataIdentityError(f"daily data identity {key} cannot be blank")
+            payload[key] = semantic_value
     if payload["requested_start"] and payload["requested_end"] and payload["requested_start"] > payload["requested_end"]:
         raise DailyDataIdentityError("requested date range is reversed")
     if _identity_hash(payload) != payload.get("identity_hash"):
@@ -733,6 +747,11 @@ def _instrument_text(value: Any) -> Optional[str]:
     if len(text) == 9 and text[6:] in {".SH", ".SZ", ".BJ"} and text[:6].isdigit():
         return text[:6]
     return text
+
+
+def _optional_text(value: Any) -> Optional[str]:
+    text = str(value or "").strip()
+    return text or None
 
 
 def _utc_datetime(value: Any) -> Optional[datetime]:

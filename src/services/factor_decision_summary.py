@@ -15,6 +15,7 @@ from src.services.evidence_traceability_registry import (
     EVIDENCE_BINDINGS,
     build_method_execution_receipt,
     build_runtime_trace,
+    _compile_accepted_data_object_scope,
     build_strategy_eligibility,
     describe_macd_state,
     digest,
@@ -28,6 +29,7 @@ from src.services.research_state_projection import (
 )
 from src.services.v2_5_evidence_coverage import compile_product_coverage
 from src.services.business_valuation_service import validate_business_valuation
+from src.services.data_object_admission import compile_b1_runtime_admission_receipts
 from src.services.fundamental_quality_service import validate_fundamental_quality
 
 
@@ -1957,6 +1959,7 @@ def build_stock_factor_decision_summary(
     method_execution_receipts: Optional[Dict[str, Any]] = None,
     include_canonical: bool = False,
     asset_type: str = "stock",
+    b1_rights_context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build a deterministic, human-readable stock summary for report rendering.
 
@@ -2362,6 +2365,17 @@ def build_stock_factor_decision_summary(
         summary["multi_timeframe_structure_context"] = dict(multi_timeframe_structure_context)
     if canonical_decision is not None:
         summary["canonical_decision"] = canonical_decision
+    if b1_rights_context is not None:
+        # Bind the existing operation and source rights to the same canonical
+        # Factor before its one Registry trace / Product coverage is sealed.
+        # Missing provider data is a lawful empty-receipt nontrigger.
+        summary["research_as_of"] = b1_rights_context.get("research_as_of")
+        summary["research_operation_id"] = b1_rights_context.get("operation_id")
+        summary["research_intended_use"] = b1_rights_context.get("intended_use")
+        summary["data_object_admission_receipts"] = compile_b1_runtime_admission_receipts(
+            _compile_accepted_data_object_scope(summary),
+            b1_context=b1_rights_context,
+        )
     if include_canonical:
         # Actual producer: same accepted evidence and unchanged Registry.
         # A risk fact must be sealed only AFTER both Product layers exist.

@@ -4,6 +4,8 @@ from copy import deepcopy
 
 import pytest
 
+from data_provider.daily_data_identity import sha256_payload
+
 from src.services.data_object_admission import (
     DataObjectAdmissionError,
     compile_data_object_admission,
@@ -22,10 +24,21 @@ OBLIGATION = {
     "product_consumer": "STOCK_ASSET_RESEARCH",
     "state": "UNKNOWN",
     "provider_identity": "synthetic-lawful-provider",
+    "provider_route": "synthetic.completed_daily",
     "source_identity_hash": "a" * 64,
     "source_content_sha256": "b" * 64,
     "source_observed_at": "2026-10-21T10:00:00+00:00",
+    "source_available_at": "2026-10-21T09:00:00+00:00",
     "completed_through": "2026-10-20",
+    "units": {
+        "price": "CNY_PER_SHARE",
+        "volume": "SHARE",
+        "amount": "CNY",
+    },
+    "currency": "CNY",
+    "adjustment_basis": "QFQ",
+    "revision": "ORIGINAL_OBSERVATION",
+    "vintage": "2026-10-21T09:00:00+00:00",
 }
 
 NO_SEND_OPERATION_ID = "op-stock-etf-nosend-20261021-r001"
@@ -131,6 +144,40 @@ def test_product_admission_requires_explicit_identity_semantics_and_rights():
     assert row["runtime_source_content_sha256"] == "b" * 64
     assert row["intended_use"] == "NO_SEND_RESEARCH"
     assert row["operation_id"] == "op-stock-etf-nosend-20261021-r001"
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "reason"),
+    (
+        ("provider_route", "other.route", "RUNTIME_SOURCE_PROVIDER_ROUTE_MISMATCH"),
+        ("source_available_at", "2026-10-21T08:59:00+00:00", "RUNTIME_SOURCE_AVAILABLE_AT_MISMATCH"),
+        ("units", {"price": "CNY_PER_SHARE", "volume": "LOT", "amount": "CNY"}, "RUNTIME_SOURCE_UNITS_MISMATCH"),
+        ("currency", "USD", "RUNTIME_SOURCE_CURRENCY_MISMATCH"),
+        ("adjustment_basis", "HFQ", "RUNTIME_SOURCE_ADJUSTMENT_BASIS_MISMATCH"),
+        ("revision", "OTHER_REVISION", "RUNTIME_SOURCE_REVISION_MISMATCH"),
+        ("vintage", "2026Q4_OTHER_RELEASE", "RUNTIME_SOURCE_VINTAGE_MISMATCH"),
+    ),
+)
+def test_product_admission_binds_complete_runtime_semantics(field, value, reason):
+    obligation = deepcopy(OBLIGATION)
+    obligation[field] = value
+    row = compile_data_object_admission(
+        obligation, _receipt(), **NO_SEND_CONTEXT,
+    )
+    assert row["product_admitted"] is False
+    assert row["runtime_source_bound"] is False
+    assert reason in row["reasons"]
+
+
+def test_receipt_cannot_fill_missing_runtime_revision_or_vintage():
+    for field in ("revision", "vintage"):
+        obligation = deepcopy(OBLIGATION)
+        obligation.pop(field)
+        row = compile_data_object_admission(
+            obligation, _receipt(), **NO_SEND_CONTEXT,
+        )
+        assert row["product_admitted"] is False
+        assert "RUNTIME_SOURCE_SEMANTICS_MISSING" in row["reasons"]
 
 
 def test_allowed_claim_without_operation_specific_rights_evidence_is_identity_only():
@@ -310,6 +357,21 @@ def test_compiled_admission_tamper_is_detected():
         validate_compiled_data_object_admission(forged)
 
 
+def test_compiled_admission_resealed_runtime_semantic_tamper_is_rejected():
+    row = compile_data_object_admission(
+        OBLIGATION, _receipt(), **NO_SEND_CONTEXT,
+    )
+    forged = deepcopy(row)
+    forged["runtime_revision"] = "RESEALED_OTHER_REVISION"
+    forged.pop("admission_hash")
+    forged["admission_hash"] = sha256_payload(forged)
+    with pytest.raises(
+        DataObjectAdmissionError,
+        match="COMPILED_ADMISSION_RUNTIME_SEMANTICS_MISMATCH",
+    ):
+        validate_compiled_data_object_admission(forged)
+
+
 def test_complete_view_keeps_missing_and_not_applicable_distinct():
     other = {
         **OBLIGATION,
@@ -351,8 +413,14 @@ def test_source_compiler_rejects_not_yet_observed_even_if_published_earlier():
         observed_at="2026-10-21T10:00:00+00:00",
         vintage="2026-10-20T08:00:00+00:00",
     )
+    runtime_obligation = {
+        **OBLIGATION,
+        "source_available_at": "2026-10-20T08:00:00+00:00",
+        "source_observed_at": "2026-10-21T10:00:00+00:00",
+        "vintage": "2026-10-20T08:00:00+00:00",
+    }
     row = compile_data_object_admission(
-        OBLIGATION, receipt, as_of="2026-10-21T09:30:00+00:00",
+        runtime_obligation, receipt, as_of="2026-10-21T09:30:00+00:00",
     )
     assert row["product_admitted"] is False
     assert row["admission_state"] == "NOT_OBSERVED"
@@ -365,16 +433,23 @@ def test_source_compiler_rejects_later_vintage_despite_early_observation():
         available_at="2026-10-21T08:00:00+00:00",
         vintage="2026-10-22T08:00:00+00:00",
     )
+    runtime_obligation = {
+        **OBLIGATION,
+        "source_observed_at": "2026-10-21T09:00:00+00:00",
+        "source_available_at": "2026-10-21T08:00:00+00:00",
+        "vintage": "2026-10-22T08:00:00+00:00",
+    }
     row = compile_data_object_admission(
-        OBLIGATION, receipt, as_of="2026-10-21T10:00:00+00:00",
+        runtime_obligation, receipt, as_of="2026-10-21T10:00:00+00:00",
     )
     assert row["product_admitted"] is False
     assert "VINTAGE_AFTER_RESEARCH_ASOF" in row["reasons"]
 
 def test_source_compiler_date_only_vintage_after_cutoff_is_not_product_ready():
     receipt = _receipt(vintage="2026-10-22")
+    runtime_obligation = {**OBLIGATION, "vintage": "2026-10-22"}
     row = compile_data_object_admission(
-        OBLIGATION, receipt, as_of="2026-10-21T10:30:00+00:00",
+        runtime_obligation, receipt, as_of="2026-10-21T10:30:00+00:00",
     )
     assert row["product_admitted"] is False
     assert "VINTAGE_AFTER_RESEARCH_ASOF" in row["reasons"]
@@ -390,8 +465,12 @@ def test_source_compiler_naive_timestamp_vintage_cannot_bypass_cutoff():
 def test_known_at_vintage_guard_preserves_opaque_version_label_nontrigger():
     """A source-backed opaque version label must not be guessed as a future clock."""
     receipt = _receipt(vintage="2026Q3_ORIGINAL_RELEASE")
+    runtime_obligation = {
+        **OBLIGATION,
+        "vintage": "2026Q3_ORIGINAL_RELEASE",
+    }
     result = compile_data_object_admission(
-        OBLIGATION, receipt, as_of="2026-10-21T10:30:00+00:00",
+        runtime_obligation, receipt, as_of="2026-10-21T10:30:00+00:00",
         **NO_SEND_CONTEXT,
     )
     assert result["product_admitted"] is True
@@ -400,8 +479,12 @@ def test_known_at_vintage_guard_preserves_opaque_version_label_nontrigger():
 
 
 def test_future_completed_period_cannot_be_product_admitted():
+    runtime_obligation = {
+        **OBLIGATION,
+        "completed_through": "2026-10-22",
+    }
     result = compile_data_object_admission(
-        OBLIGATION,
+        runtime_obligation,
         _receipt(completed_through="2026-10-22"),
         as_of="2026-10-21T10:30:00+00:00",
     )

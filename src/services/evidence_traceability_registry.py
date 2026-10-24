@@ -3001,6 +3001,13 @@ def _verified_typed_price_bar_scope(factor: Mapping) -> dict[str, dict]:
     provider = str(mtf.get("provider_identity") or "")
     basis = str(mtf.get("adjustment_basis") or "")
     observed = str(mtf.get("available_at_max") or "")
+    daily_identity = mtf.get("daily_data_identity") or {}
+    daily_route = str(daily_identity.get("provider_route") or "") if isinstance(daily_identity, Mapping) else ""
+    daily_currency = str(daily_identity.get("currency") or "UNKNOWN") if isinstance(daily_identity, Mapping) else "UNKNOWN"
+    daily_volume_unit = str(daily_identity.get("volume_unit") or "UNKNOWN") if isinstance(daily_identity, Mapping) else "UNKNOWN"
+    daily_amount_unit = str(daily_identity.get("amount_unit") or "UNKNOWN") if isinstance(daily_identity, Mapping) else "UNKNOWN"
+    daily_revision = str(daily_identity.get("revision") or "UNKNOWN") if isinstance(daily_identity, Mapping) else "UNKNOWN"
+    daily_vintage = str(daily_identity.get("vintage") or "UNKNOWN") if isinstance(daily_identity, Mapping) else "UNKNOWN"
     if not (target and provider and basis and observed):
         return {}
     if mtf.get("price_identity_reasons") or mtf.get("daily_data_identity_state") != "OBSERVED":
@@ -3028,6 +3035,17 @@ def _verified_typed_price_bar_scope(factor: Mapping) -> dict[str, dict]:
             "source_available_at": observed,
             "completed_through": target,
             "adjustment_basis": basis,
+            "provider_route": daily_route,
+            "currency": daily_currency,
+            "volume_unit": daily_volume_unit,
+            "amount_unit": daily_amount_unit,
+            "units": {
+                "price": f"{daily_currency}_PER_LISTED_UNIT" if daily_currency != "UNKNOWN" else "UNKNOWN",
+                "volume": daily_volume_unit.upper(),
+                "amount": daily_amount_unit.upper(),
+            },
+            "revision": daily_revision,
+            "vintage": daily_vintage,
         }
     minute = frames.get("5m")
     session = minute.get("completed_source_session_receipt") if isinstance(minute, Mapping) else None
@@ -3061,6 +3079,7 @@ def _verified_typed_price_bar_scope(factor: Mapping) -> dict[str, dict]:
                 "reason": ("TYPED_5M_PRICE_ONLY_UNITS_UNKNOWN_RIGHTS_PIT_NOT_PROVEN"
                            if unknown_units else "TYPED_5M_SOURCE_RIGHTS_PIT_NOT_PROVEN"),
                 "provider_identity": session["provider_identity"],
+                "provider_route": session.get("provider_route"),
                 "source_identity_hash": minute_hash,
                 "source_content_sha256": session["content_sha256"],
                 "source_observed_at": session["observed_at"],
@@ -3071,6 +3090,13 @@ def _verified_typed_price_bar_scope(factor: Mapping) -> dict[str, dict]:
                 "volume_unit": session["volume_unit"],
                 "amount_unit": session["amount_unit"],
                 "completed_sessions": sessions,
+                "units": {
+                    "price": f"{session['currency']}_PER_LISTED_UNIT",
+                    "volume": str(session["volume_unit"] or "UNKNOWN").upper(),
+                    "amount": str(session["amount_unit"] or "UNKNOWN").upper(),
+                },
+                "revision": str(session.get("revision") or "UNKNOWN"),
+                "vintage": str(session.get("vintage") or "UNKNOWN"),
             }
     return scope
 

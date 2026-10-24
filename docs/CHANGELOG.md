@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [改进] 闭合B1真实生产接线的fail-closed工程链：新增唯一操作级来源权利JSON入口，Stock/ETF的1d与5m在任何Provider/缓存/DB前分别校验operation、dataset、consumer、Provider、条款hash/时点和四类rights；Provider fallback不能切到未授权来源。原Daily/Intraday Identity与76对象Registry绑定实际source/content/units/basis及供应商明确给出的revision/vintage，观测时点不得冒充版本事实；外部回执必须与运行时Provider route、时钟、单位、币种、复权、revision、vintage逐项一致，未知或错配均不准入。NO_SEND只在内存生成原完整Report，不读写History/Ledger、不调未准入实时/基本面/新闻/模型、不发Email/Telegram；Product许可不解锁storage/training/redistribution/策略，原V2.5字节和既有canonical保持不变。
 - [文档] PR31的观察时钟兼容修复a10327经CI #78（Run39935111422）在Linux backend Offline、AI治理、Docker与变更检测全部通过；原CI77四失败保留历史RED。原roadmap与stage合同同步精确工程SHA、PR Draft与B1真实数据权利OPEN；工程绿灯不等于全部方法READY、真实Product、交付或学习，原V2.5及775边图不变。
 - [修复] 修复CI #77四项Pipeline离线回归：复用现有可调用参数兼容检查，只向明确支持的单股worker传递观察时间冻结标记；在实时时钟与显式历史回放可自行推导的边界不注入冗余参数，保留同一批次目标时点、实时来源观测与历史known-at截断。维持单股通知串行、TickFlow预取的既有合法行为，不修改V2.5/策略/数据许可/模型，不删除或弱化旧反例。
 - [修复] 将既有月线MACD递归稳定性建议器接入唯一日线获取链：只有当前完成月线的原生多起点数值漂移成立时，才在同一Provider、证券、复权、币种、单位和known-at边界内有界向前扩展历史；每次请求、返回、方法状态和最终来源身份进入不可变扩展回执并由MTF Registry消费。上市历史不足保持UNKNOWN，已READY不追加，任何来源/复权/证券/时钟漂移均失败；不授予存储、策略、训练或发送权限，也不改变V2.5。

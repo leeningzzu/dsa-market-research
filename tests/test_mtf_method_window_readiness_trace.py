@@ -21,6 +21,7 @@ from src.core import pipeline as pipeline_owner
 from src.services.evidence_traceability_registry import (
     compile_mtf_method_window_readiness_trace,
 )
+from src.services.data_object_admission import seal_source_rights_evidence
 
 
 def _receipt(status, reason, observations, required):
@@ -284,6 +285,36 @@ def _actual_short_dispatch(*, wrong_instrument=False):
     sessions = [bar.date() for bar in calendar.sessions_window(end, -67)]
     source = _pipeline_canonical_5m(sessions[-10:], requested_start=sessions[0])
     pipeline = _intraday_pipeline_for_helper()
+    # Explicit synthetic P_5M grant reaches the original dispatcher/identity
+    # negatives. It is test-only evidence, never an upstream vendor license.
+    pipeline.b1_rights_context = {
+        "schema_version": "b1-operation-rights-context-v1",
+        "operation_id": "test-mtf-intraday-current",
+        "intended_use": "NO_SEND_RESEARCH",
+        "research_as_of": "2026-10-23T10:45:00+00:00",
+        "allowed_instruments": ("600519", "600000"),
+        "rights_by_dataset": {
+            "P_5M": seal_source_rights_evidence({
+                "schema_version": "source-rights-evidence-v1",
+                "operation_id": "test-mtf-intraday-current",
+                "intended_use": "NO_SEND_RESEARCH",
+                "provider_identity": "BaostockFetcher",
+                "upstream_source_owner": "TEST_FIXTURE_ONLY_NOT_REAL_LICENSE",
+                "upstream_rights_state": "VERIFIED",
+                "dataset_id": "P_5M",
+                "consumer_scope": "ASSET_RESEARCH_BRIEF",
+                "terms_uri": "https://example.org/unit-fixture-only",
+                "terms_sha256": "a" * 64,
+                "terms_observed_at": "2026-10-01T00:00:00+00:00",
+                "rights": {
+                    "product_use": "ALLOWED",
+                    "storage": "FORBIDDEN",
+                    "training": "FORBIDDEN",
+                    "redistribution": "FORBIDDEN",
+                },
+            }),
+        },
+    }
     pipeline.fetcher_manager._call_fetcher_method.return_value = source
     with patch.object(pipeline_owner, "resolve_latest_completed_session_fail_closed", return_value=sessions[-1]), patch.object(pipeline_owner.SearchService, "is_index_or_etf", return_value=False):
         frames = pipeline._load_current_stock_intraday_timeframes(

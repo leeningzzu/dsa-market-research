@@ -721,6 +721,9 @@ class Config:
     tickflow_priority: int = 2
     tickflow_batch_daily_enabled: bool = True
     tickflow_batch_size: int = 100
+    # Operation-specific external source-rights package for B1 NO_SEND research.
+    # The JSON contains terms evidence/hashes and rights, never provider API keys.
+    b1_rights_evidence_path: Optional[str] = None
     finnhub_api_key: Optional[str] = None
     alphavantage_api_key: Optional[str] = None
     longbridge_app_key: Optional[str] = None
@@ -1648,6 +1651,7 @@ class Config:
             tickflow_priority=parse_env_int(os.getenv('TICKFLOW_PRIORITY'), 2, field_name='TICKFLOW_PRIORITY', minimum=0),
             tickflow_batch_daily_enabled=parse_env_bool(os.getenv('TICKFLOW_BATCH_DAILY_ENABLED'), default=True),
             tickflow_batch_size=parse_env_int(os.getenv('TICKFLOW_BATCH_SIZE'), 100, field_name='TICKFLOW_BATCH_SIZE', minimum=1),
+            b1_rights_evidence_path=os.getenv('B1_RIGHTS_EVIDENCE_PATH') or None,
             finnhub_api_key=os.getenv('FINNHUB_API_KEY') or None,
             alphavantage_api_key=os.getenv('ALPHAVANTAGE_API_KEY') or None,
             longbridge_app_key=os.getenv('LONGBRIDGE_APP_KEY') or None,

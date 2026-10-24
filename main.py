@@ -882,14 +882,24 @@ def run_full_analysis(
     ``raise_errors`` 只控制持仓解析成功后的分析流程异常语义。
     """
     p0_bounded_trial = bool(getattr(args, "p0_bounded_trial", False))
+    b1_no_send = bool(
+        str(getattr(config, "b1_rights_evidence_path", "") or "").strip()
+    )
+    if b1_no_send and p0_bounded_trial:
+        raise ValueError("B1_NO_SEND_P0_ROUTE_FORBIDDEN")
+    if b1_no_send and getattr(args, "portfolio", None):
+        raise ValueError("B1_NO_SEND_BROKER_PORTFOLIO_FORBIDDEN")
 
     # Portfolio resolution is its own CLI contract boundary. A broker import
     # failure must reach the one-shot caller, while all later work keeps the
     # existing run_full_analysis return-value semantics.
-    portfolio_stock_codes = _resolve_portfolio_stock_codes(args)
+    portfolio_stock_codes = (
+        None if b1_no_send else _resolve_portfolio_stock_codes(args)
+    )
     portfolio_is_empty = portfolio_stock_codes == []
     market_review_requested = (
-        getattr(config, 'market_review_enabled', False)
+        not b1_no_send
+        and getattr(config, 'market_review_enabled', False)
         and not getattr(args, 'no_market_review', False)
     )
     if portfolio_is_empty and not market_review_requested:
@@ -910,7 +920,7 @@ def run_full_analysis(
     from src.core.pipeline import StockAnalysisPipeline, _supports_explicit_keyword
 
     try:
-        if not p0_bounded_trial:
+        if not p0_bounded_trial and not b1_no_send:
             _refresh_stock_index_cache_for_analysis(config)
         if portfolio_stock_codes is not None:
             stock_codes = portfolio_stock_codes
@@ -948,9 +958,15 @@ def run_full_analysis(
         if getattr(args, 'single_notify', False):
             config.single_stock_notify = True
 
+        if b1_no_send:
+            # B1 is a specified-code, in-memory NO_SEND route. Configuration
+            # defaults cannot reopen notification, market review or broker paths.
+            config.single_stock_notify = False
+
         # Issue #190: 个股与大盘复盘合并推送
         merge_notification = (
-            getattr(config, 'merge_email_notification', False)
+            not b1_no_send
+            and getattr(config, 'merge_email_notification', False)
             and config.market_review_enabled
             and not getattr(args, 'no_market_review', False)
             and not config.single_stock_notify
@@ -967,7 +983,8 @@ def run_full_analysis(
             else (getattr(config, 'market_review_region', 'cn') or 'cn')
         )
         should_run_market_review = (
-            config.market_review_enabled
+            not b1_no_send
+            and config.market_review_enabled
             and not args.no_market_review
             and (market_review_region or '') != ''
         )
@@ -1054,10 +1071,24 @@ def run_full_analysis(
             results = pipeline.run(
                 stock_codes=stock_codes,
                 dry_run=args.dry_run,
-                send_notification=not args.no_notify,
-                merge_notification=merge_notification,
+                send_notification=(False if b1_no_send else not args.no_notify),
+                merge_notification=(False if b1_no_send else merge_notification),
                 current_time=analysis_reference_time,
             )
+
+        if b1_no_send:
+            expected_count = len(stock_codes or [])
+            if len(results) != expected_count:
+                raise ValueError(
+                    "B1_NO_SEND_RESEARCH_INCOMPLETE: "
+                    f"expected={expected_count} observed={len(results)}"
+                )
+            logger.info(
+                "B1 NO_SEND 完成：%d 个指定资产，原报告仅驻留内存；"
+                "大盘复盘、通知、文档、回测和学习均未执行。",
+                len(results),
+            )
+            return True
 
         if p0_bounded_trial:
             if len(results) != len(stock_codes or []):
@@ -1738,6 +1769,26 @@ def main() -> int:
     for warning in warnings:
         logger.warning(warning)
 
+    b1_entry_enabled = bool(
+        str(getattr(config, "b1_rights_evidence_path", "") or "").strip()
+    )
+    if b1_entry_enabled and any((
+        getattr(args, "serve", False),
+        getattr(args, "serve_only", False),
+        getattr(args, "webui", False),
+        getattr(args, "webui_only", False),
+        getattr(args, "market_review", False),
+        getattr(args, "auto_screen", False),
+        getattr(args, "backtest", False),
+        getattr(args, "check_notify", False),
+        getattr(args, "portfolio", None),
+    )):
+        logger.error(
+            "B1_NO_SEND_ENTRY_BOUNDARY_VIOLATION: only explicit/scheduled "
+            "specified-code NO_SEND research is admitted"
+        )
+        return 2
+
     if getattr(args, "check_notify", False):
         from src.services.notification_diagnostics import (
             format_notification_diagnostics,
@@ -1950,6 +2001,8 @@ def main() -> int:
 
         # 模式1: 仅大盘复盘
         if args.market_review:
+            if getattr(config, "b1_rights_evidence_path", None):
+                raise ValueError("B1_NO_SEND_MARKET_REVIEW_ROUTE_FORBIDDEN")
             from src.core.market_review import run_market_review
             from src.core.market_review_runtime import build_market_review_runtime
 
@@ -1985,6 +2038,8 @@ def main() -> int:
 
         # 模式1.5: 手动 AUTO_SCREEN（workflow_dispatch-only）
         if auto_screen:
+            if getattr(config, "b1_rights_evidence_path", None):
+                raise ValueError("B1_NO_SEND_AUTO_SCREEN_ROUTE_FORBIDDEN")
             logger.info("模式: AUTO_SCREEN → 共享深析链")
             succeeded, _ = _run_auto_screen_shared_analysis(
                 config,

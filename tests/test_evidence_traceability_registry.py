@@ -551,7 +551,7 @@ def test_complete_research_universe_view_prevents_scope_collapse_beyond_7x8():
 
 
 
-def _closed_typed_stock_source_factor():
+def _closed_typed_stock_source_factor(*, source_version_known: bool = False):
     """Original DSA price identity + ten completed XSHG sessions + real MTF receipt."""
     from datetime import datetime, date, timezone
     from data_provider.daily_data_identity import (
@@ -584,6 +584,8 @@ def _closed_typed_stock_source_factor():
         requested_start="2025-01-01", requested_end="2026-09-25",
         currency="CNY", volume_unit="share", amount_unit="CNY",
         identity_state="OBSERVED", observed_at=observed,
+        revision=("SYNTHETIC_FIXTURE_REVISION_1" if source_version_known else None),
+        vintage=(observed.isoformat() if source_version_known else None),
     )
     attach_daily_data_identity(frame, identity)
     target = dates[-1]
@@ -761,21 +763,21 @@ def test_accepted_p_daily_and_p_5m_real_source_receipt_progress_is_scoped_not_fu
     assert data["P_5M"]["independent_source_value_admitted"] is False
     assert data["P_5M"]["strategy_upgrade_authority"] is False
     assert "UNITS" in data["P_5M"]["reason"]
+    assert data["P_DAILY"]["revision"] == "UNKNOWN"
+    assert data["P_DAILY"]["vintage"] == "UNKNOWN"
+    assert data["P_5M"]["revision"] == "UNKNOWN"
+    assert data["P_5M"]["vintage"] == "UNKNOWN"
     assert data["G_VIX"]["state"] == "UNKNOWN"
     assert data["E_NAV_IOPV"]["state"] == "NOT_APPLICABLE"
     assert factor["multi_timeframe_structure_context"]["timeframes"]["5m"]["strategy_admitted"] is False
 
 
-def test_operation_rights_receipt_must_bind_the_current_registry_source_bytes():
-    factor, _ = _closed_typed_stock_source_factor()
+def _p_daily_operation_admission(factor):
     source_trace = reg.build_runtime_trace(factor)
     source_row = next(
         row for row in source_trace["complete_research_universe"]["data_objects"]
         if row["dataset_id"] == "P_DAILY"
     )
-    assert len(source_row["source_identity_hash"]) == 64
-    assert len(source_row["source_content_sha256"]) == 64
-
     operation_id = "op-current-stock-nosend-20261002-r001"
     rights = {
         "product_use": "ALLOWED",
@@ -801,22 +803,18 @@ def test_operation_rights_receipt_must_bind_the_current_registry_source_bytes():
         "schema_version": "data-object-admission-receipt-v1",
         "dataset_id": "P_DAILY",
         "provider_identity": source_row["provider_identity"],
-        "provider_route": "baostock.query_history_k_data_plus",
+        "provider_route": source_row["provider_route"],
         "native_frequency": source_row["native_frequency"],
         "source_identity_hash": source_row["source_identity_hash"],
         "content_sha256": source_row["source_content_sha256"],
         "observed_at": source_row["source_observed_at"],
         "available_at": source_row["source_available_at"],
         "completed_through": source_row["completed_through"],
-        "units": {
-            "price": "CNY_PER_SHARE",
-            "volume": "SHARE",
-            "amount": "CNY",
-        },
-        "currency": "CNY",
-        "adjustment_basis": source_row["adjustment_basis"].upper(),
-        "revision": "CURRENT_PROVIDER_OBSERVATION",
-        "vintage": source_row["source_observed_at"],
+        "units": source_row["units"],
+        "currency": source_row["currency"],
+        "adjustment_basis": source_row["adjustment_basis"],
+        "revision": source_row["revision"],
+        "vintage": source_row["vintage"],
         "rights": rights,
         "rights_evidence": rights_evidence,
         "historical_pit_eligible": False,
@@ -829,6 +827,16 @@ def test_operation_rights_receipt_must_bind_the_current_registry_source_bytes():
         "research_intended_use": "NO_SEND_RESEARCH",
         "data_object_admission_receipts": {"P_DAILY": receipt},
     })
+    return source_row, receipt, admitted
+
+
+def test_operation_rights_receipt_must_bind_the_current_registry_source_bytes():
+    factor, _ = _closed_typed_stock_source_factor(source_version_known=True)
+    source_row, receipt, admitted = _p_daily_operation_admission(factor)
+    assert len(source_row["source_identity_hash"]) == 64
+    assert len(source_row["source_content_sha256"]) == 64
+    assert source_row["revision"] == "SYNTHETIC_FIXTURE_REVISION_1"
+
     trace = reg.build_runtime_trace(admitted)
     admission = trace["complete_research_universe"]["data_object_admission"]
     row = next(item for item in admission["objects"] if item["dataset_id"] == "P_DAILY")
@@ -849,6 +857,25 @@ def test_operation_rights_receipt_must_bind_the_current_registry_source_bytes():
     assert "RUNTIME_SOURCE_IDENTITY_MISMATCH" in row["reasons"]
     assert admission["product_admitted_count"] == 0
 
+
+def test_operation_receipt_cannot_invent_unknown_registry_revision_or_vintage():
+    factor, _ = _closed_typed_stock_source_factor()
+    source_row, receipt, admitted = _p_daily_operation_admission(factor)
+    assert source_row["revision"] == "UNKNOWN"
+    assert source_row["vintage"] == "UNKNOWN"
+    forged = deepcopy(receipt)
+    forged["revision"] = "INVENTED_PROVIDER_REVISION"
+    forged["vintage"] = source_row["source_observed_at"]
+    forged = seal_data_object_admission_receipt(forged)
+    admitted["data_object_admission_receipts"] = {"P_DAILY": forged}
+
+    trace = reg.build_runtime_trace(admitted)
+    admission = trace["complete_research_universe"]["data_object_admission"]
+    row = next(item for item in admission["objects"] if item["dataset_id"] == "P_DAILY")
+    assert row["product_admitted"] is False
+    assert "RUNTIME_SOURCE_REVISION_MISMATCH" in row["reasons"]
+    assert "RUNTIME_SOURCE_VINTAGE_MISMATCH" in row["reasons"]
+    assert admission["product_admitted_count"] == 0
 
 def test_accepted_source_p_daily_p_5m_fail_closed_without_invocation_or_with_wrong_clock():
     """Counterfeit state flags must not be treated as original machine-graph data facts."""

@@ -129,6 +129,20 @@ def _admission(dataset_id="P_FIN_VINTAGE", **receipt_overrides):
         "consumer_scope": consumer,
         **receipt_overrides,
     })
+    obligation.update({
+        "provider_identity": receipt["provider_identity"],
+        "provider_route": receipt["provider_route"],
+        "source_identity_hash": receipt["source_identity_hash"],
+        "source_content_sha256": receipt["content_sha256"],
+        "source_observed_at": receipt["observed_at"],
+        "source_available_at": receipt["available_at"],
+        "completed_through": receipt["completed_through"],
+        "units": dict(receipt["units"]),
+        "currency": receipt["currency"],
+        "adjustment_basis": receipt["adjustment_basis"],
+        "revision": receipt["revision"],
+        "vintage": receipt["vintage"],
+    })
     return compile_data_object_admission(
         obligation,
         receipt,

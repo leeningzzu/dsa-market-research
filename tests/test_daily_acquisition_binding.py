@@ -18,6 +18,7 @@ from data_provider.daily_data_identity import (
     validate_daily_acquisition_receipt,
 )
 from src.core.pipeline import StockAnalysisPipeline
+from src.services.data_object_admission import seal_source_rights_evidence
 from src.services.evidence_traceability_registry import (
     compile_mtf_method_window_readiness_trace,
 )
@@ -170,6 +171,40 @@ def _pipeline(target: date) -> StockAnalysisPipeline:
     pipeline.fetcher_manager.get_stock_name.return_value = "SYNTHETIC"
     pipeline.db = MagicMock()
     pipeline._resolve_resume_target_date = MagicMock(return_value=target)
+    # Independently scoped *synthetic* grant to reach the original daily
+    # identity/cache/window negatives. It is never an upstream vendor license.
+    rights = {
+        "product_use": "ALLOWED", "storage": "ALLOWED",
+        "training": "FORBIDDEN", "redistribution": "FORBIDDEN",
+    }
+    pipeline.b1_rights_context = {
+        "schema_version": "b1-operation-rights-context-v1",
+        "operation_id": "test-daily-acquisition-current",
+        "intended_use": "NO_SEND_RESEARCH",
+        "research_as_of": "2026-10-23T10:45:00+00:00",
+        "allowed_instruments": ("600519", "510300"),
+        "rights_by_dataset": {
+            "P_DAILY": seal_source_rights_evidence({
+                "schema_version": "source-rights-evidence-v1",
+                "operation_id": "test-daily-acquisition-current",
+                "intended_use": "NO_SEND_RESEARCH",
+                "provider_identity": "BaostockFetcher",
+                "upstream_source_owner": "TEST_FIXTURE_ONLY_NOT_REAL_LICENSE",
+                "upstream_rights_state": "VERIFIED",
+                "dataset_id": "P_DAILY",
+                "consumer_scope": "ASSET_RESEARCH_BRIEF",
+                "terms_uri": "https://example.org/unit-fixture-only",
+                "terms_sha256": "a" * 64,
+                "terms_observed_at": "2026-10-01T00:00:00+00:00",
+                "rights": rights,
+            }),
+        },
+    }
+    stock_grant = pipeline.b1_rights_context["rights_by_dataset"]["P_DAILY"]
+    etf_payload = {key: value for key, value in stock_grant.items() if key != "evidence_hash"}
+    etf_payload["dataset_id"] = "E_PRICE_1D"
+    etf_payload["consumer_scope"] = "ETF_ASSET_BRIEF"
+    pipeline.b1_rights_context["rights_by_dataset"]["E_PRICE_1D"] = seal_source_rights_evidence(etf_payload)
     return pipeline
 
 
@@ -642,6 +677,7 @@ def test_production_daily_acquisition_boundedly_extends_monthly_macd_and_binds_t
         "600519",
         start_date=plans[0]["start_date"].isoformat(),
         end_date=target.isoformat(),
+        allowed_provider_names={"BaostockFetcher"},
     )
     assert pipeline.fetcher_manager._call_fetcher_method.call_count == 3
     assert [

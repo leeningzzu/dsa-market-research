@@ -121,6 +121,13 @@ from src.services.volatility_momentum_service import (
 )
 from src.services.pattern_trigger_service import build_pattern_trigger_context
 from src.services.business_valuation_service import compile_business_valuation
+from src.services.data_object_admission import (
+    DataObjectAdmissionError,
+    bind_b1_rights_context_as_of,
+    load_b1_rights_context,
+    validate_b1_rights_context,
+    validate_b1_provider_preflight,
+)
 from src.services.fundamental_quality_service import compile_fundamental_quality
 from src.services.pattern_trigger_service import (
     CUP_MAX_DURATION_SESSIONS,
@@ -969,6 +976,7 @@ class StockAnalysisPipeline:
         p0_model_request_budget: Optional[int] = None,
         research_selection_context: Optional[Dict[str, Any]] = None,
         research_code_sha: Optional[str] = None,
+        b1_rights_context: Optional[Dict[str, Any]] = None,
     ):
         """
         初始化调度器
@@ -990,6 +998,15 @@ class StockAnalysisPipeline:
             research_selection_context
         )
         self.research_code_sha = str(research_code_sha or "").strip() or None
+        # Explicit external source grant for bounded B1 NO_SEND; absent by default.
+        # Never infer a provider license from code availability or the user query.
+        self.b1_rights_context = (
+            dict(b1_rights_context)
+            if isinstance(b1_rights_context, Mapping)
+            else load_b1_rights_context(
+                getattr(self.config, "b1_rights_evidence_path", None)
+            )
+        )
         if self.p0_acceptance_context and not (
             self.p0_bounded_trial and self.p0_suppress_notification
         ):
@@ -1011,6 +1028,13 @@ class StockAnalysisPipeline:
         self.query_id = query_id
         self.trace_id = trace_id or query_id
         self.query_source = self._resolve_query_source(query_source)
+        if (
+            self.b1_rights_context is not None
+            and self.query_source in {"bot", "web", "api"}
+        ):
+            raise DataObjectAdmissionError(
+                "B1_NO_SEND_INTERACTIVE_ROUTE_FORBIDDEN"
+            )
         self.save_context_snapshot = (
             self.config.save_context_snapshot if save_context_snapshot is None else save_context_snapshot
         )
@@ -1363,6 +1387,163 @@ class StockAnalysisPipeline:
             current_requested, current_returned, extension,
         )
 
+    def _bind_b1_run_context(
+        self, current_time: Optional[datetime] = None,
+    ) -> Optional[Dict[str, Any]]:
+        context = getattr(self, "b1_rights_context", None)
+        if not isinstance(context, Mapping):
+            return None
+        required_fields = (
+            "schema_version", "operation_id", "intended_use",
+            "allowed_instruments", "rights_by_dataset",
+        )
+        allowed_fields = {
+            *required_fields,
+            "rights_context_sha256",
+            "research_as_of",
+            "source_metadata_by_dataset",
+        }
+        if set(context) - allowed_fields:
+            raise DataObjectAdmissionError(
+                "B1_RIGHTS_CONTEXT_SCHEMA_MISMATCH"
+            )
+        base = validate_b1_rights_context({
+            key: context[key] for key in required_fields if key in context
+        })
+        supplied_hash = str(context.get("rights_context_sha256") or "").strip()
+        if supplied_hash and supplied_hash != base["rights_context_sha256"]:
+            raise DataObjectAdmissionError(
+                "B1_RIGHTS_CONTEXT_HASH_MISMATCH"
+            )
+        raw_as_of = context.get("research_as_of")
+        if raw_as_of:
+            if isinstance(raw_as_of, datetime):
+                instant = raw_as_of
+            elif isinstance(raw_as_of, str):
+                try:
+                    instant = datetime.fromisoformat(
+                        raw_as_of.strip().replace("Z", "+00:00")
+                    )
+                except ValueError as exc:
+                    raise DataObjectAdmissionError(
+                        "B1_RESEARCH_ASOF_INVALID"
+                    ) from exc
+            else:
+                raise DataObjectAdmissionError("B1_RESEARCH_ASOF_INVALID")
+        else:
+            instant = current_time or datetime.now(timezone.utc)
+        bound = bind_b1_rights_context_as_of(base, instant)
+        duplicate = context.get("source_metadata_by_dataset")
+        if isinstance(duplicate, Mapping):
+            bound["source_metadata_by_dataset"] = dict(duplicate)
+        self.b1_rights_context = bound
+        return bound
+
+    @staticmethod
+    def _b1_target_contract(
+        code: str,
+    ) -> Tuple[str, Tuple[Tuple[str, str], ...]]:
+        asset = resolve_cn_price_asset(code)
+        if asset["market"] != "cn" or asset["status"] != "ADMITTED":
+            raise DataObjectAdmissionError("B1_TARGET_ASSET_NOT_ADMITTED")
+        instrument = str(asset["instrument"] or "").strip().upper()
+        datasets = (
+            (
+                ("E_PRICE_1D", "ETF_ASSET_BRIEF"),
+                ("E_PRICE_5M", "ETF_ASSET_BRIEF"),
+            )
+            if asset["asset_route"] == "ETF"
+            else (
+                ("P_DAILY", "ASSET_RESEARCH_BRIEF"),
+                ("P_5M", "ASSET_RESEARCH_BRIEF"),
+            )
+        )
+        return instrument, datasets
+
+    def _validate_b1_targets(
+        self,
+        codes: List[str],
+        *,
+        current_time: datetime,
+    ) -> None:
+        context = self._bind_b1_run_context(current_time)
+        if not isinstance(context, Mapping) or not codes:
+            raise DataObjectAdmissionError("B1_SPECIFIED_TARGETS_REQUIRED")
+        allowed = {
+            str(item or "").strip().upper()
+            for item in context.get("allowed_instruments") or ()
+        }
+        for code in codes:
+            instrument, datasets = self._b1_target_contract(code)
+            if instrument not in allowed:
+                raise DataObjectAdmissionError(
+                    "B1_TARGET_INSTRUMENT_NOT_ADMITTED:" + instrument
+                )
+            for dataset_id, consumer_scope in datasets:
+                validate_b1_provider_preflight(
+                    (context.get("rights_by_dataset") or {}).get(dataset_id),
+                    operation_id=context.get("operation_id"),
+                    intended_use=context.get("intended_use"),
+                    dataset_id=dataset_id,
+                    consumer_scope=consumer_scope,
+                    research_as_of=context.get("research_as_of"),
+                )
+
+    def _assert_b1_results_product_admitted(
+        self,
+        results: List[AnalysisResult],
+        codes: List[str],
+    ) -> None:
+        by_code = {
+            normalize_stock_code(str(getattr(result, "code", "") or "")): result
+            for result in results
+        }
+        for code in codes:
+            instrument, datasets = self._b1_target_contract(code)
+            result = by_code.get(normalize_stock_code(instrument))
+            dashboard = getattr(result, "dashboard", None)
+            factor = (
+                dashboard.get("factor_decision")
+                if isinstance(dashboard, dict) else None
+            )
+            trace = (
+                factor.get("evidence_traceability")
+                if isinstance(factor, dict) else None
+            )
+            universe = (
+                trace.get("complete_research_universe")
+                if isinstance(trace, dict) else None
+            )
+            admission = (
+                universe.get("data_object_admission")
+                if isinstance(universe, dict) else None
+            )
+            rows = {
+                str(row.get("dataset_id") or ""): row
+                for row in (
+                    admission.get("objects")
+                    if isinstance(admission, dict) else []
+                )
+                if isinstance(row, dict)
+            }
+            missing = [
+                dataset_id
+                for dataset_id, _consumer_scope in datasets
+                if rows.get(dataset_id, {}).get("product_admitted") is not True
+            ]
+            if missing:
+                raise DataObjectAdmissionError(
+                    "B1_REQUIRED_PRICE_DATASETS_NOT_PRODUCT_ADMITTED:"
+                    + instrument + ":" + ",".join(missing)
+                )
+            if any(
+                row.get("learning_admitted") is True
+                for row in rows.values()
+            ):
+                raise DataObjectAdmissionError(
+                    "B1_NO_SEND_LEARNING_ADMISSION_FORBIDDEN"
+                )
+
     def fetch_and_save_stock_data(
         self,
         code: str,
@@ -1386,9 +1567,47 @@ class StockAnalysisPipeline:
                 if asset_admission["status"] != "ADMITTED":
                     return False, "PRICE_ASSET_NOT_ADMITTED: " + asset_admission["reason"]
                 code = asset_admission["instrument"]
-            stock_name = self.fetcher_manager.get_stock_name(
-                code, allow_realtime=False,
+            # B1 is an explicit operation-specific NO_SEND route.  Do not
+            # reinterpret every legacy/current CN source-identity consumer as
+            # carrying an external rights grant; its original strict source
+            # and method-window checks remain below regardless of B1 mode.
+            b1_active = (
+                asset_admission["market"] == "cn"
+                and isinstance(getattr(self, "b1_rights_context", None), Mapping)
             )
+            b1_daily_grant = None
+            if b1_active:
+                b1 = self._bind_b1_run_context(current_time)
+                dataset = "E_PRICE_1D" if asset_admission["asset_route"] == "ETF" else "P_DAILY"
+                consumer = "ETF_ASSET_BRIEF" if asset_admission["asset_route"] == "ETF" else "ASSET_RESEARCH_BRIEF"
+                try:
+                    if not isinstance(b1, Mapping):
+                        raise DataObjectAdmissionError("B1_OPERATION_CONTEXT_MISSING")
+                    allowed = {
+                        str(item or "").strip().upper()
+                        for item in b1.get("allowed_instruments") or ()
+                    }
+                    if str(code or "").strip().upper() not in allowed:
+                        raise DataObjectAdmissionError(
+                            "B1_TARGET_INSTRUMENT_NOT_ADMITTED"
+                        )
+                    b1_daily_grant = validate_b1_provider_preflight(
+                        (b1.get("rights_by_dataset") or {}).get(dataset),
+                        operation_id=b1.get("operation_id"),
+                        intended_use=b1.get("intended_use"),
+                        dataset_id=dataset, consumer_scope=consumer,
+                        research_as_of=b1.get("research_as_of"),
+                    )
+                except (DataObjectAdmissionError, AttributeError, TypeError) as exc:
+                    return False, str(exc) if str(exc).startswith("B1_") else "B1_OPERATION_RIGHTS_INVALID"
+                # Stock name lookups can themselves call other providers.
+                # In strict research, the user-facing code is used until a
+                # name is obtained from an independently admitted source.
+                stock_name = code
+            else:
+                stock_name = self.fetcher_manager.get_stock_name(
+                    code, allow_realtime=False,
+                )
             target_date = self._resolve_resume_target_date(
                 code, current_time=current_time,
             )
@@ -1405,7 +1624,15 @@ class StockAnalysisPipeline:
             )
             daily_window_plan: Optional[Dict[str, Any]] = None
 
-            if not force_refresh and self.db.has_today_data(code, target_date):
+            b1_storage_allowed = (
+                b1_daily_grant is None
+                or b1_daily_grant["rights"]["storage"] == "ALLOWED"
+            )
+            if (
+                b1_storage_allowed
+                and not force_refresh
+                and self.db.has_today_data(code, target_date)
+            ):
                 if not strict_current:
                     logger.info(
                         "%s(%s) %s legacy resume cache present; skip fetch",
@@ -1443,7 +1670,11 @@ class StockAnalysisPipeline:
                 code,
                 start_date=history_start.isoformat(),
                 end_date=target_date.isoformat(),
+                **({"allowed_provider_names": {b1_daily_grant["provider_identity"]}}
+                   if b1_daily_grant is not None else {}),
             )
+            if b1_daily_grant is not None and source_name != b1_daily_grant["provider_identity"]:
+                raise DailyDataIdentityError("B1_UNADMITTED_PROVIDER_FALLBACK")
             if df is None or df.empty:
                 return False, "获取数据为空"
 
@@ -1585,6 +1816,16 @@ class StockAnalysisPipeline:
             self._remember_run_local_daily_history(
                 code=code, target_date=target_date, frame=df,
             )
+            if (b1_daily_grant is not None
+                and b1_daily_grant["rights"]["storage"] != "ALLOWED"):
+                receipt = seal_daily_acquisition_receipt({
+                    **receipt, "persistence_status": "RIGHTS_NOT_ADMITTED_RUN_LOCAL_ONLY",
+                })
+                attach_daily_acquisition_receipt(df, receipt)
+                self._remember_run_local_daily_history(
+                    code=code, target_date=target_date, frame=df,
+                )
+                return True, None
             try:
                 saved_count = self.db.save_daily_data(storage_frame, code, source_name)
             except PermissionError as exc:
@@ -1741,6 +1982,37 @@ class StockAnalysisPipeline:
             )
             return {}
 
+        # The 5m source has independent rights from the daily source only
+        # inside an explicitly selected B1 operation.  Outside B1, preserve
+        # the accepted B5 source-identity/method-window path without inventing
+        # a grant or treating its absence as a provider failure.
+        minute_grant = None
+        if isinstance(getattr(self, "b1_rights_context", None), Mapping):
+            b1 = self._bind_b1_run_context(current_time)
+            try:
+                if not isinstance(b1, Mapping):
+                    raise DataObjectAdmissionError("B1_OPERATION_CONTEXT_MISSING")
+                allowed = {
+                    str(item or "").strip().upper()
+                    for item in b1.get("allowed_instruments") or ()
+                }
+                if str(code or "").strip().upper() not in allowed:
+                    raise DataObjectAdmissionError(
+                        "B1_TARGET_INSTRUMENT_NOT_ADMITTED"
+                    )
+                minute_dataset = "E_PRICE_5M" if asset_admission["asset_route"] == "ETF" else "P_5M"
+                minute_consumer = "ETF_ASSET_BRIEF" if asset_admission["asset_route"] == "ETF" else "ASSET_RESEARCH_BRIEF"
+                minute_grant = validate_b1_provider_preflight(
+                    (b1.get("rights_by_dataset") or {}).get(minute_dataset),
+                    operation_id=b1.get("operation_id"),
+                    intended_use=b1.get("intended_use"),
+                    dataset_id=minute_dataset, consumer_scope=minute_consumer,
+                    research_as_of=b1.get("research_as_of"),
+                )
+                if minute_grant["provider_identity"] != "BaostockFetcher":
+                    raise DataObjectAdmissionError("B1_INTRADAY_PROVIDER_MISMATCH")
+            except (DataObjectAdmissionError, AttributeError, TypeError):
+                return {}
         try:
             fetcher = self.fetcher_manager._get_fetcher_by_name(
                 "BaostockFetcher",
@@ -1923,6 +2195,13 @@ class StockAnalysisPipeline:
                     logger.warning("%s price admission: %s", code, asset_admission["reason"])
                     return None
                 code = asset_admission["instrument"]
+            b1_no_send = (
+                asset_admission["market"] == "cn"
+                and not bool(getattr(self, "p0_bounded_trial", False))
+                and isinstance(getattr(self, "b1_rights_context", None), Mapping)
+            )
+            if b1_no_send:
+                self._bind_b1_run_context(current_time)
             portfolio_context = getattr(self, "portfolio_context", None)
             if not isinstance(portfolio_context, dict):
                 portfolio_context = None
@@ -1945,19 +2224,27 @@ class StockAnalysisPipeline:
                     market,
                     current_time=current_time,
                 )
-            daily_market_context = self._load_daily_market_context(
-                market,
-                target_date=daily_market_target_date,
+            daily_market_context = (
+                None
+                if b1_no_send
+                else self._load_daily_market_context(
+                    market,
+                    target_date=daily_market_target_date,
+                )
             )
 
             self._emit_progress(18, f"{code}：正在获取行情与筹码数据")
-            # 获取股票名称（先走轻量名称路径，后续若 realtime_quote 有 name 再覆盖）
-            stock_name = self.fetcher_manager.get_stock_name(code, allow_realtime=False)
+            # Name/realtime endpoints have independent rights from price bars.
+            stock_name = (
+                code
+                if b1_no_send
+                else self.fetcher_manager.get_stock_name(code, allow_realtime=False)
+            )
 
             # Step 1: 获取实时行情（量比、换手率等）- 使用统一入口，自动故障切换
             realtime_quote = None
             try:
-                if self.config.enable_realtime_quote:
+                if not b1_no_send and self.config.enable_realtime_quote:
                     realtime_quote = self.fetcher_manager.get_realtime_quote(code, log_final_failure=False)
                     if realtime_quote:
                         # 使用实时行情返回的真实股票名称
@@ -1983,7 +2270,10 @@ class StockAnalysisPipeline:
             # Step 2: 获取筹码分布 - 使用统一入口，带熔断保护
             chip_data = None
             try:
-                chip_data = self.fetcher_manager.get_chip_distribution(code)
+                if b1_no_send:
+                    chip_data = None
+                else:
+                    chip_data = self.fetcher_manager.get_chip_distribution(code)
                 if chip_data:
                     logger.info(f"{stock_name}({code}) 筹码分布: 获利比例={chip_data.profit_ratio:.1%}, "
                               f"90%集中度={chip_data.concentration_90:.2%}")
@@ -1997,12 +2287,16 @@ class StockAnalysisPipeline:
             # config.is_agent_available() so that users who only configured an
             # API Key for the traditional analysis path are not silently
             # switched to Agent mode (which is slower and more expensive).
-            use_agent = False if self.p0_bounded_trial else getattr(self.config, 'agent_mode', False)
-            if not self.p0_bounded_trial and not use_agent:
+            use_agent = (
+                False
+                if self.p0_bounded_trial or b1_no_send
+                else getattr(self.config, 'agent_mode', False)
+            )
+            if not self.p0_bounded_trial and not b1_no_send and not use_agent:
                 if self.analysis_skills:
                     use_agent = True
                     logger.info(f"{stock_name}({code}) Auto-enabled agent mode due to request skills: {self.analysis_skills}")
-            if not self.p0_bounded_trial and not use_agent:
+            if not self.p0_bounded_trial and not b1_no_send and not use_agent:
                 # Auto-enable agent mode when specific skills are configured (e.g., scheduled task with strategy)
                 configured_skills = getattr(self.config, 'agent_skills', [])
                 if configured_skills and configured_skills != ['all']:
@@ -2015,43 +2309,56 @@ class StockAnalysisPipeline:
             # - 失败时返回 partial/failed，不影响既有技术面/新闻链路
             # - 关闭开关时仍返回 not_supported 结构
             fundamental_context = None
-            try:
-                fundamental_context = self.fetcher_manager.get_fundamental_context(
+            if b1_no_send:
+                fundamental_context = {
+                    "market": market,
+                    "status": "NOT_ADMITTED",
+                    "reason": "B1_FUNDAMENTAL_SOURCE_NOT_ADMITTED",
+                    "source_chain": [],
+                    "coverage": {},
+                    "belong_boards": [],
+                }
+                market_structure_context = None
+            else:
+                try:
+                    fundamental_context = self.fetcher_manager.get_fundamental_context(
+                        code,
+                        budget_seconds=getattr(
+                            self.config,
+                            'fundamental_stage_timeout_seconds',
+                            FUNDAMENTAL_STAGE_TIMEOUT_SECONDS_DEFAULT,
+                        ),
+                    )
+                except Exception as e:
+                    logger.warning(f"{stock_name}({code}) 基本面聚合失败: {e}")
+                    fundamental_context = self.fetcher_manager.build_failed_fundamental_context(code, str(e))
+
+                fundamental_context = self._attach_belong_boards_to_fundamental_context(
                     code,
-                    budget_seconds=getattr(
-                        self.config,
-                        'fundamental_stage_timeout_seconds',
-                        FUNDAMENTAL_STAGE_TIMEOUT_SECONDS_DEFAULT,
-                    ),
+                    fundamental_context,
                 )
-            except Exception as e:
-                logger.warning(f"{stock_name}({code}) 基本面聚合失败: {e}")
-                fundamental_context = self.fetcher_manager.build_failed_fundamental_context(code, str(e))
-
-            fundamental_context = self._attach_belong_boards_to_fundamental_context(
-                code,
-                fundamental_context,
-            )
-            market_structure_context = self._build_market_structure_context(
-                code=code,
-                stock_name=stock_name,
-                market=market,
-                fundamental_context=fundamental_context,
-                trade_date=daily_market_target_date,
-                market_phase_summary=market_phase_summary,
-            )
-
-            # P0: write-only snapshot, fail-open, no read dependency on this table.
-            try:
-                self.db.save_fundamental_snapshot(
-                    query_id=query_id,
+                market_structure_context = self._build_market_structure_context(
                     code=code,
-                    payload=fundamental_context,
-                    source_chain=fundamental_context.get("source_chain", []),
-                    coverage=fundamental_context.get("coverage", {}),
+                    stock_name=stock_name,
+                    market=market,
+                    fundamental_context=fundamental_context,
+                    trade_date=daily_market_target_date,
+                    market_phase_summary=market_phase_summary,
                 )
-            except Exception as e:
-                logger.debug(f"{stock_name}({code}) 基本面快照写入失败: {e}")
+
+            # B1 NO_SEND has no database durability. Other routes keep the
+            # original best-effort snapshot behavior.
+            if not b1_no_send:
+                try:
+                    self.db.save_fundamental_snapshot(
+                        query_id=query_id,
+                        code=code,
+                        payload=fundamental_context,
+                        source_chain=fundamental_context.get("source_chain", []),
+                        coverage=fundamental_context.get("coverage", {}),
+                    )
+                except Exception as e:
+                    logger.debug(f"{stock_name}({code}) 基本面快照写入失败: {e}")
 
             # Step 3: canonical daily evidence consumes only a verified provider
             # call or a content-bound typed cache. Legacy rows may still support
@@ -2073,7 +2380,7 @@ class StockAnalysisPipeline:
                 completed_daily_history = self._get_run_local_daily_history(
                     code=code, target_date=end_date,
                 )
-                if completed_daily_history is None:
+                if completed_daily_history is None and not b1_no_send:
                     completed_daily_history = _load_verified_cached_daily_history(
                         db=self.db,
                         code=code,
@@ -2108,13 +2415,14 @@ class StockAnalysisPipeline:
                             )
                 start_date = daily_window_plan["start_date"]
                 if completed_daily_history is None:
-                    historical_bars = self.db.get_data_range(
-                        code, start_date, end_date,
-                    )
-                    if historical_bars:
-                        legacy_trend_history = pd.DataFrame(
-                            [bar.to_dict() for bar in historical_bars]
+                    if not b1_no_send:
+                        historical_bars = self.db.get_data_range(
+                            code, start_date, end_date,
                         )
+                        if historical_bars:
+                            legacy_trend_history = pd.DataFrame(
+                                [bar.to_dict() for bar in historical_bars]
+                            )
                 else:
                     legacy_trend_history = completed_daily_history.copy()
                     if len(completed_daily_history) >= 60:
@@ -2144,7 +2452,11 @@ class StockAnalysisPipeline:
                 )
 
             relative_strength_context = None
-            if canonical_trend_result is not None and not SearchService.is_index_or_etf(code, stock_name):
+            if (
+                not b1_no_send
+                and canonical_trend_result is not None
+                and not SearchService.is_index_or_etf(code, stock_name)
+            ):
                 try:
                     relative_strength_context = self.relative_strength_service.build_context(
                         stock_code=code,
@@ -2308,7 +2620,7 @@ class StockAnalysisPipeline:
             # Step 4: 多维度情报搜索（最新消息+风险排查+业绩预期）
             news_context = None
             persisted_intelligence_context = ""
-            if not self.p0_bounded_trial:
+            if not self.p0_bounded_trial and not b1_no_send:
                 persisted_intelligence_context = self._load_persisted_intelligence_context(
                     code=code,
                     stock_name=stock_name,
@@ -2316,7 +2628,11 @@ class StockAnalysisPipeline:
                 )
             news_result_count: Optional[int] = None
             self._emit_progress(46, f"{stock_name}：正在检索新闻与舆情")
-            if self.search_service is not None and self.search_service.is_available:
+            if (
+                not b1_no_send
+                and self.search_service is not None
+                and self.search_service.is_available
+            ):
                 logger.info(f"{stock_name}({code}) 开始多维度情报搜索...")
 
                 # 使用多维度搜索（最多5次搜索）
@@ -2376,7 +2692,11 @@ class StockAnalysisPipeline:
 
             # Step 5: 获取分析上下文（技术面数据）
             self._emit_progress(58, f"{stock_name}：正在整理分析上下文")
-            context = self._get_analysis_context_with_market_fallback(code)
+            context = (
+                self._build_analysis_context_from_daily_df(code, completed_daily_history)
+                if b1_no_send
+                else self._get_analysis_context_with_market_fallback(code)
+            )
 
             if context is None:
                 logger.warning(f"{stock_name}({code}) 无法获取历史行情数据，将仅基于新闻和实时行情分析")
@@ -2451,7 +2771,7 @@ class StockAnalysisPipeline:
                     f"{stock_name}：LLM 正在生成分析结果（已接收 {chars_received} 字符）",
                 )
 
-            if bool(getattr(self, "p0_receipt_only", False)):
+            if bool(getattr(self, "p0_receipt_only", False)) or b1_no_send:
                 # Receipt-only is a deterministic evidence/rights probe, not an
                 # explanation request.  Build one neutral result container and
                 # let the existing Factor/canonical owner below replace every
@@ -2468,7 +2788,11 @@ class StockAnalysisPipeline:
                     report_language=report_language,
                     action="watch",
                     action_label="观望",
-                    analysis_summary="仅记录确定性证据回执；未调用模型生成解释",
+                    analysis_summary=(
+                        "仅消费获准的确定性价格证据；未调用模型或其他未准入来源"
+                        if b1_no_send
+                        else "仅记录确定性证据回执；未调用模型生成解释"
+                    ),
                     buy_reason="",
                     dashboard={},
                     success=True,
@@ -2477,7 +2801,7 @@ class StockAnalysisPipeline:
                 result.current_price = (enhanced_context.get("realtime") or {}).get("price")
                 result.change_pct = (enhanced_context.get("realtime") or {}).get("change_pct")
                 logger.info(
-                    "[%s] P0 receipt-only mode: skip model explanation and continue with deterministic canonical evidence",
+                    "[%s] deterministic no-model mode: continue with canonical evidence",
                     code,
                 )
             else:
@@ -2592,6 +2916,13 @@ class StockAnalysisPipeline:
                     multi_timeframe_structure_context=multi_timeframe_structure_context,
                     method_execution_receipts=method_execution_receipts,
                 )
+                if b1_no_send:
+                    # Direct analyze_stock/process_single_stock callers cannot
+                    # bypass the same 1d+5m Registry Product admission enforced
+                    # by run() before the original report is exposed.
+                    self._assert_b1_results_product_admitted(
+                        [result], [code],
+                    )
                 self._attach_research_delivery_state(
                     result,
                     query_id=query_id,
@@ -2602,7 +2933,7 @@ class StockAnalysisPipeline:
                 )
 
             # Step 8: 保存分析历史记录
-            if result and result.success:
+            if result and result.success and not b1_no_send:
                 try:
                     self._emit_progress(97, f"{stock_name}：正在保存分析报告")
                     context_snapshot = self._build_context_snapshot(
@@ -4221,6 +4552,8 @@ class StockAnalysisPipeline:
                 method_execution_receipts=method_execution_receipts,
                 include_canonical=True,
                 asset_type=asset_type,
+                **({"b1_rights_context": getattr(self, "b1_rights_context", None)}
+                   if getattr(self, "b1_rights_context", None) is not None else {}),
             )
         except Exception as exc:
             if self.p0_bounded_trial:
@@ -5726,6 +6059,11 @@ class StockAnalysisPipeline:
             AnalysisResult 或 None
         """
         logger.info(f"========== 开始处理 {code} ==========")
+        if getattr(self, "b1_rights_context", None) is not None:
+            if single_stock_notify:
+                logger.warning("B1_NO_SEND_RESEARCH_FORBIDS_SINGLE_STOCK_NOTIFICATION")
+                return None
+            self._bind_b1_run_context(current_time)
         if observation_time_frozen is None:
             observation_time_frozen = current_time is not None
 
@@ -5752,7 +6090,11 @@ class StockAnalysisPipeline:
             
             if not success:
                 logger.warning(f"[{code}] 数据获取失败: {error}")
-                # 即使获取失败，也尝试用已有数据分析
+                if str(error or "").startswith("B1_"):
+                    # A missing/invalid grant cannot be bypassed by stale DB,
+                    # LLM analysis, historical reports or notification.
+                    return None
+                # Older non-B1 acquisition errors may still use admitted history.
             else:
                 self._emit_progress(16, f"{code}：行情数据准备完成")
             
@@ -5824,6 +6166,8 @@ class StockAnalysisPipeline:
             分析结果列表
         """
         start_time = time.time()
+        if getattr(self, "b1_rights_context", None) is not None and send_notification:
+            raise ValueError("B1_NO_SEND_RESEARCH_FORBIDS_OUTBOUND_NOTIFICATION")
 
         if self.p0_bounded_trial:
             if stock_codes is None or list(stock_codes) != self.p0_stock_codes:
@@ -5857,6 +6201,13 @@ class StockAnalysisPipeline:
 
         # 冻结本轮运行的统一参考时间，避免跨市场收盘边界时同批股票使用不同目标交易日。
         resume_reference_time = current_time or datetime.now(timezone.utc)
+        if getattr(self, "b1_rights_context", None) is not None:
+            if self.p0_bounded_trial:
+                self._bind_b1_run_context(resume_reference_time)
+            else:
+                self._validate_b1_targets(
+                    list(stock_codes), current_time=resume_reference_time,
+                )
         observation_time_frozen = current_time is not None
         # One Pipeline.run invocation is one intended learning cohort even though
         # each worker receives its own AnalysisHistory query id.  An explicit
@@ -5870,10 +6221,18 @@ class StockAnalysisPipeline:
         # === 批量预取实时行情（优化：避免每只股票都触发全量拉取）===
         # 只有股票数量 >= 5 时才进行预取，少量股票直接逐个查询更高效
         prefetch_codes = []
+        b1_prefetch_veto = isinstance(
+            getattr(self, "b1_rights_context", None), Mapping
+        )
         for candidate in stock_codes:
             admission = resolve_cn_price_asset(candidate)
-            if admission["market"] != "cn" or admission["status"] == "ADMITTED":
-                prefetch_codes.append(candidate)
+            # Only an explicit B1 operation suppresses CN bulk quote/name/daily
+            # prefetch: those endpoints have independent grants and cannot
+            # borrow the admitted 1d/5m price-bar rights. Legacy/non-B1 routes
+            # retain their accepted prefetch and dry-run accounting behavior.
+            if b1_prefetch_veto and admission["market"] == "cn":
+                continue
+            prefetch_codes.append(candidate)
         # Keep ALL requests for worker failure reporting and the denominator;
         # only the eager acquisition optimization is filtered here.
         if len(prefetch_codes) >= 5:
@@ -6001,6 +6360,15 @@ class StockAnalysisPipeline:
             success_count = len(results)
             fail_count = len(stock_codes) - success_count
         
+        if (
+            getattr(self, "b1_rights_context", None) is not None
+            and not self.p0_bounded_trial
+            and not dry_run
+        ):
+            self._assert_b1_results_product_admitted(
+                results, list(stock_codes),
+            )
+
         logger.info("===== 分析完成 =====")
         logger.info(f"成功: {success_count}, 失败: {fail_count}, 耗时: {elapsed_time:.2f} 秒")
 
@@ -6013,9 +6381,15 @@ class StockAnalysisPipeline:
             )
             return results
         
-        # 保存报告到本地文件（无论是否推送通知都保存）
+        # B1 NO_SEND may render the original Product only in memory. File/DB/
+        # recipient durability remains independently gated by storage/redistribution.
         if results and not dry_run:
-            self._save_local_report(results, report_type)
+            if getattr(self, "b1_rights_context", None) is not None:
+                self.b1_no_send_report = self._generate_aggregate_report(
+                    results, report_type
+                )
+            else:
+                self._save_local_report(results, report_type)
 
         # 发送通知（单股推送模式下跳过汇总推送，避免重复）
         notification_results = list(results)
