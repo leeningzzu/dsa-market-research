@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from types import SimpleNamespace
 from unittest.mock import ANY, MagicMock, patch
 
@@ -107,6 +109,44 @@ def test_b1_mainline_rejects_broker_before_portfolio_loader():
          pytest.raises(ValueError, match="BROKER_PORTFOLIO_FORBIDDEN"):
         main.run_full_analysis(config, args, ["600519"], raise_errors=True)
     resolver.assert_not_called()
+
+
+def test_b1_scheduler_uses_failure_propagating_task_runner():
+    config = _config()
+    args = _args()
+    with patch(
+        "src.services.research_state_runtime.durability_enabled",
+        return_value=False,
+    ), patch(
+        "src.services.runtime_scheduler.run_with_global_analysis_lock",
+    ) as locked:
+        main._run_analysis_with_runtime_scheduler_lock(
+            config, args, ["600519", "510300"],
+        )
+    assert locked.call_args.kwargs["task_runner"] is main.run_scheduled_analysis
+
+
+def test_b1_main_sets_local_litellm_cost_map_before_pipeline_import():
+    config = _config()
+    args = _args()
+    codes = ["600519", "510300"]
+    pipeline = MagicMock()
+    pipeline.run.return_value = [
+        SimpleNamespace(code="600519", success=True),
+        SimpleNamespace(code="510300", success=True),
+    ]
+    with patch.dict(
+        os.environ, {"LITELLM_LOCAL_MODEL_COST_MAP": "false"}, clear=False,
+    ), patch.object(
+        main, "_compute_trading_day_filter",
+        return_value=(codes, "cn", False),
+    ), patch(
+        "src.core.pipeline.StockAnalysisPipeline", return_value=pipeline,
+    ):
+        assert main.run_full_analysis(
+            config, args, codes, raise_errors=True,
+        ) is True
+        assert os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] == "true"
 
 
 @pytest.mark.parametrize(

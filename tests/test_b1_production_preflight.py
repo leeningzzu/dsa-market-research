@@ -2,10 +2,20 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 import json
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 from types import SimpleNamespace
 
 import pytest
+import pandas as pd
+
+from data_provider.daily_data_identity import (
+    attach_daily_data_identity,
+    build_daily_data_identity,
+)
+from data_provider.intraday_data_identity import (
+    attach_intraday_data_identity,
+    build_intraday_data_identity,
+)
 
 from src.core.pipeline import StockAnalysisPipeline
 from src.enums import ReportType
@@ -278,6 +288,152 @@ def _rights_package():
     }
 
 
+def _clocked_daily_frame(code: str, observed_at: datetime) -> pd.DataFrame:
+    frame = pd.DataFrame([{
+        "date": "2026-10-23", "open": 10.0, "high": 11.0,
+        "low": 9.5, "close": 10.5, "volume": 1000,
+        "amount": 10500.0, "pct_chg": 1.0,
+    }])
+    identity = build_daily_data_identity(
+        frame,
+        provider_identity="BaostockFetcher",
+        provider_route="synthetic.preacquire.daily",
+        actual_response_branch="frequency=d;adjustflag=2",
+        requested_adjustment_basis="qfq",
+        observed_adjustment_basis="qfq",
+        basis_evidence="SYNTHETIC_TEST_ONLY",
+        requested_start="2026-10-23",
+        requested_end="2026-10-23",
+        currency="CNY", volume_unit="share", amount_unit="CNY",
+        identity_state="OBSERVED", observed_at=observed_at,
+        instrument=code, revision="synthetic-revision",
+        vintage=observed_at.isoformat(),
+    )
+    attach_daily_data_identity(frame, identity)
+    return frame
+
+
+def _clocked_intraday_frames(code: str, observed_at: datetime) -> dict:
+    bar_end = pd.Timestamp("2026-10-23T07:00:00+00:00")
+    frame = pd.DataFrame([{
+        "date": "2026-10-23", "time": "20261023150000000",
+        "datetime": bar_end, "bar_start": bar_end - pd.Timedelta(minutes=5),
+        "bar_end": bar_end, "available_at": bar_end,
+        "code": code, "open": 10.0, "high": 10.5, "low": 9.8,
+        "close": 10.2, "volume": 1000, "amount": 10200.0,
+        "data_source": "BaostockFetcher", "session": "2026-10-23:PM",
+    }])
+    identity = build_intraday_data_identity(
+        frame,
+        provider_identity="BaostockFetcher",
+        provider_route="synthetic.preacquire.5m",
+        package_version="0.9.4",
+        query_identity={
+            "code": "sh." + code, "fields": "synthetic",
+            "start_date": "2026-10-23", "end_date": "2026-10-23",
+            "frequency": "5", "adjustflag": "2",
+        },
+        requested_adjustment_basis="qfq",
+        observed_adjustment_basis="qfq",
+        basis_evidence="SYNTHETIC_TEST_ONLY",
+        timeframe="5m", timezone_name="Asia/Shanghai",
+        session_calendar="XSHG", currency="CNY",
+        volume_unit="share", amount_unit="CNY",
+        requested_start="2026-10-23", requested_end="2026-10-23",
+        identity_state="OBSERVED", observed_at=observed_at,
+        source_rows_sha256="f" * 64,
+        revision="synthetic-revision", vintage=observed_at.isoformat(),
+    )
+    attach_intraday_data_identity(frame, identity)
+    return {"5m": frame}
+
+
+def test_b1_constructor_skips_database_model_search_and_context_services():
+    config = SimpleNamespace(
+        max_workers=4, save_context_snapshot=False,
+        b1_rights_evidence_path=None,
+        enable_realtime_quote=True, realtime_source_priority=[],
+        enable_chip_distribution=True,
+    )
+    with patch("src.core.pipeline.get_db") as get_db, \
+         patch("src.core.pipeline.GeminiAnalyzer") as analyzer, \
+         patch("src.core.pipeline.SearchService") as search, \
+         patch("src.core.pipeline.MarketHotspotService") as hotspot, \
+         patch("src.core.pipeline.SocialSentimentService") as social, \
+         patch("src.core.pipeline.MarketStructureService") as market_structure, \
+         patch("src.core.pipeline.RelativeStrengthService") as relative_strength, \
+         patch("src.core.pipeline.DataFetcherManager"), \
+         patch("src.core.pipeline.StockTrendAnalyzer"), \
+         patch("src.core.pipeline.NotificationService"):
+        pipeline = StockAnalysisPipeline(
+            config=config,
+            query_source="cli",
+            b1_rights_context=_rights_package(),
+        )
+    get_db.assert_not_called()
+    analyzer.assert_not_called()
+    search.assert_not_called()
+    hotspot.assert_not_called()
+    social.assert_not_called()
+    market_structure.assert_not_called()
+    relative_strength.assert_not_called()
+    assert pipeline.max_workers == 1
+    assert pipeline.search_service is None
+    assert pipeline.social_sentiment_service is None
+    with pytest.raises(DataObjectAdmissionError, match="PERSISTENCE_FORBIDDEN"):
+        pipeline.db.has_today_data("600519", date(2026, 10, 23))
+    with pytest.raises(DataObjectAdmissionError, match="MODEL_CALL_FORBIDDEN"):
+        pipeline.analyzer.analyze({})
+
+
+def test_b1_preacquires_all_assets_before_one_common_decision_clock():
+    pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+    pipeline.b1_rights_context = _rights_package()
+    pipeline.p0_bounded_trial = False
+    target = date(2026, 10, 23)
+    observed = datetime(2026, 10, 23, 9, 0, tzinfo=timezone.utc)
+    daily = {
+        code: _clocked_daily_frame(code, observed)
+        for code in ("600519", "510300")
+    }
+    intraday = {
+        code: _clocked_intraday_frames(code, observed)
+        for code in ("600519", "510300")
+    }
+    pipeline._resolve_resume_target_date = MagicMock(return_value=target)
+    pipeline.fetch_and_save_stock_data = MagicMock(return_value=(True, None))
+    pipeline._get_run_local_daily_history = MagicMock(
+        side_effect=lambda *, code, target_date: daily[code]
+    )
+    pipeline._load_current_stock_intraday_timeframes = MagicMock(
+        side_effect=lambda *, code, **_kwargs: intraday[code]
+    )
+    pipeline._get_run_local_intraday_timeframes = MagicMock(
+        side_effect=lambda *, code, target_date: intraday[code]
+    )
+
+    decision = pipeline._preacquire_b1_sources(
+        ["600519", "510300"],
+        target_reference_time=datetime(
+            2026, 10, 23, 8, 55, tzinfo=timezone.utc,
+        ),
+    )
+
+    assert decision > observed
+    assert pipeline.b1_rights_context["research_as_of"] == decision.isoformat()
+    assert pipeline.fetch_and_save_stock_data.call_count == 2
+    assert pipeline._load_current_stock_intraday_timeframes.call_count == 2
+    assert all(
+        call.kwargs["market"] == "cn"
+        for call in pipeline._load_current_stock_intraday_timeframes.call_args_list
+    )
+    assert all(
+        call.kwargs["observation_time_frozen"] is False
+        for call in pipeline.fetch_and_save_stock_data.call_args_list
+    )
+    assert pipeline._b1_preacquisition_active is False
+
+
 def test_rights_package_loader_and_run_clock_binding(tmp_path):
     path = tmp_path / "b1-rights.json"
     path.write_text(json.dumps(_rights_package()), encoding="utf-8")
@@ -409,6 +565,8 @@ def test_b1_run_renders_original_report_only_in_memory():
     )
     result = _admitted_result("600519")
     pipeline.process_single_stock = MagicMock(return_value=result)
+    decision_time = datetime(2026, 10, 23, 10, 5, tzinfo=timezone.utc)
+    pipeline._preacquire_b1_sources = MagicMock(return_value=decision_time)
     pipeline._generate_aggregate_report = MagicMock(
         return_value="B1_ORIGINAL_REPORT_IN_MEMORY"
     )
@@ -430,6 +588,34 @@ def test_b1_run_renders_original_report_only_in_memory():
     pipeline.fetcher_manager.prefetch_daily_klines.assert_not_called()
     pipeline.fetcher_manager.prefetch_realtime_quotes.assert_not_called()
     pipeline.fetcher_manager.prefetch_stock_names.assert_not_called()
+    pipeline._preacquire_b1_sources.assert_called_once()
+    assert pipeline.process_single_stock.call_args.kwargs["current_time"] == decision_time
+
+
+def test_b1_daily_context_ma_status_is_pure_pipeline_computation():
+    pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+    pipeline.db = MagicMock()
+    # This isolated pure-function fixture enables B1 without claiming any
+    # source grant or invoking Provider/Registry/production storage.
+    pipeline.b1_rights_context = {"intended_use": "NO_SEND_RESEARCH"}
+    frame = pd.DataFrame([
+        {
+            "date": "2026-10-22", "close": 9.0, "volume": 100,
+            "ma5": 8.5, "ma10": 8.0, "ma20": 7.5,
+        },
+        {
+            "date": "2026-10-23", "close": 11.0, "volume": 120,
+            "ma5": 10.0, "ma10": 9.5, "ma20": 9.0,
+        },
+    ])
+
+    context = pipeline._build_analysis_context_from_daily_df("600519", frame)
+
+    assert context["ma_status"].startswith("多头排列")
+    assert context["volume_change_ratio"] == 1.2
+    assert context["price_change_ratio"] == pytest.approx(22.22)
+    pipeline.db._analyze_ma_status.assert_not_called()
+    assert pipeline.db.mock_calls == []
 
 
 def test_b1_analyze_stock_skips_unadmitted_sources_db_and_model():

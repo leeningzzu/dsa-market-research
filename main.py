@@ -910,13 +910,17 @@ def run_full_analysis(
         _run_auto_backtest(config)
         return True
 
-    # Import pipeline modules outside the broad try/except so that import-time
-    # failures propagate to the caller instead of being silently swallowed.
-    from src.core.market_review import (
-        _build_market_review_email_subject,
-        render_market_review_region_projection,
-        run_market_review,
-    )
+    # Import pipeline modules outside the broad try/except so import failures
+    # propagate. B1 forces LiteLLM's installed local cost map before Pipeline's
+    # analyzer module is imported; no remote model metadata is permitted.
+    if b1_no_send:
+        os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "true"
+    else:
+        from src.core.market_review import (
+            _build_market_review_email_subject,
+            render_market_review_region_projection,
+            run_market_review,
+        )
     from src.core.pipeline import StockAnalysisPipeline, _supports_explicit_keyword
 
     try:
@@ -1499,9 +1503,12 @@ def _run_analysis_with_runtime_scheduler_lock(
     # research state is explicitly enabled, reuse the existing scheduled wrapper
     # so analysis failures propagate to the process exit code and a later
     # success-only publish step cannot advance durable lineage after a failed run.
+    b1_no_send = bool(
+        str(getattr(config, "b1_rights_evidence_path", "") or "").strip()
+    )
     task_runner = (
         run_scheduled_analysis
-        if durability_enabled(os.environ)
+        if durability_enabled(os.environ) or b1_no_send
         else run_full_analysis
     )
 

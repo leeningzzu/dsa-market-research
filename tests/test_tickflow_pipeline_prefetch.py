@@ -4,6 +4,7 @@
 import os
 import sys
 import unittest
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -156,6 +157,9 @@ class TestTickFlowPipelinePrefetch(unittest.TestCase):
         pipeline.process_single_stock = MagicMock(
             side_effect=lambda code, **kwargs: _make_b1_admitted_result(code)
         )
+        pipeline._preacquire_b1_sources = MagicMock(
+            return_value=datetime(2026, 10, 23, 10, 5, tzinfo=timezone.utc)
+        )
         results = pipeline.run(
             stock_codes=codes,
             send_notification=False,
@@ -164,6 +168,7 @@ class TestTickFlowPipelinePrefetch(unittest.TestCase):
         self.assertEqual(events, [])
         self.assertEqual(pipeline.process_single_stock.call_count, 5)
         pipeline._send_notifications.assert_not_called()
+        pipeline._preacquire_b1_sources.assert_called_once()
 
 
 if __name__ == "__main__":
