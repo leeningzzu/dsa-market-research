@@ -21,15 +21,15 @@
     "storage_admitted": false
   },
   "acceptance": {
-    "state": "G0_CI78_B5_DYNAMIC_WINDOW_PASS_SCOPED_PR31_DRAFT_B1_REAL_INPUTS_OPEN",
+    "state": "G0_CI80_B1_PRODUCTION_WIRING_PASS_SCOPED_PR31_DRAFT_REAL_GRANT_RUN_OPEN",
     "production_branch": "main",
     "candidate_branch": "feat/stock-dsa-m2-source-gates-v1",
-    "candidate_head": "a10327cb0c39514011b4dd862788edf8d8471859",
-    "candidate_parent": "bfca958baefe9bf1e97d322ab414c1186646c7c9",
+    "candidate_head": "26ecd5d0d6141af810504e2092db260ab3898fb6",
+    "candidate_parent": "c6cce86c8e71a677659510b6e916fd2c41c18d85",
     "candidate_head_scope": "LAST_ACCEPTED_ENGINEERING_CHECKPOINT_NOT_MOVING_REMOTE_REF",
     "pull_request": 31,
     "pull_request_state": "DRAFT_OPEN_NOT_MERGED",
-    "latest_required_ci": {"run_number": 78, "run_id": 39935111422, "conclusion": "success"},
+    "latest_required_ci": {"run_number": 80, "run_id": 40055753549, "conclusion": "success"},
     "prior_failed_ci": {"run_number": 77, "run_id": 39901137680, "head": "bfca958baefe9bf1e97d322ab414c1186646c7c9", "conclusion": "failure"},
     "required_checks": [
       "ai-governance",
@@ -153,7 +153,7 @@
     "program": "合法known-at数据到白盒证据、唯一canonical、完整交付、合法Outcome/PIT、独立校准和显式Promotion",
     "product": "Global到A股市场和行业、ETF与股票、七周期全材料、风险和执行veto、FULL Report/Email",
     "current_lane": "B1/B8 operation-specific上游权利与同一as-of普通股票+ETF合法真实输入",
-    "current_milestone": "CI78在a10327闭合CI77四项Pipeline调用兼容故障和动态月线窗口的Linux工程验收（仅PASS_SCOPED）；后继为精确上游条款及同一as-of Stock+ETF合法数据包",
+    "current_milestone": "CI80在26ecd5d0闭合B1 operation-specific权利到Provider/Identity/Registry/Factor/canonical/原NO_SEND报告的生产接线工程验收（仅PASS_SCOPED）；后继为真实上游授权包及同一as-of Stock+ETF实际运行",
     "atomic_rule": "只复用现有Owner、消费者、测试和拒绝条件，不新建并行Shell或权威"
   },
   "stage_ladder": [
@@ -167,7 +167,7 @@
       "id": "B1_SOURCE_RIGHTS",
       "scope": "Product使用、存储、训练、再分发权利分别绑定当前operation、运行时source identity和精确上游条款",
       "exit": "同一as-of Stock+ETF取得可核上游条款证据与当前数据回执；未知权利保持SOURCE_IDENTITY_ONLY",
-      "proof_ceiling": "CI75只证明门禁；不授予任何真实Provider数据许可、存储、训练、再分发或策略权限",
+      "proof_ceiling": "CI80证明生产接线和fail-closed消费者；不授予任何真实Provider数据许可，也不证明真实Stock+ETF运行、存储、训练、再分发、交付或策略权限",
       "next_primary": true
     },
     {
@@ -209,7 +209,7 @@
   ],
   "route_decision": {
     "next_primary": "B1_SOURCE_RIGHTS",
-    "reason": "CI75 operation/source/terms的UNKNOWN fail-closed和CI78 a10327动态窗口Linux工程验收均CLOSED_SCOPED，CI77旧4FAIL保持历史RED；承重阻塞仍为精确上游条款证据、同一as-of Stock+ETF合法实源和运行时机器回执；M2/模型须等各自前置门禁",
+    "reason": "CI75的operation/source/terms UNKNOWN门禁、CI78动态窗口及CI80 B1生产接线均CLOSED_SCOPED，CI77旧4FAIL保持历史RED；当前承重阻塞已收敛为真实上游授权包、同一as-of Stock+ETF合法实源和实际运行回执，不能由工程绿色CI、SDK可用性或合成测试替代；M2/模型须等各自前置门禁",
     "bounded_indicator_sub_lanes": [
       "MONTHLY_RSI_HISTORY_IF_LEGAL",
       "15M_CONFIRMATION",

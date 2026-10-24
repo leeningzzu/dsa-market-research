@@ -102,13 +102,13 @@ def test_stage_ladder_keeps_parent_product_and_blocking_order_explicit() -> None
     ]
     acceptance = baseline["acceptance"]
     # Exact independently accepted code+CI snapshot, not a moving Git ref or Product Promotion.
-    assert acceptance["state"] == "G0_CI78_B5_DYNAMIC_WINDOW_PASS_SCOPED_PR31_DRAFT_B1_REAL_INPUTS_OPEN"
-    assert acceptance["candidate_head"] == "a10327cb0c39514011b4dd862788edf8d8471859"
-    assert acceptance["candidate_parent"] == "bfca958baefe9bf1e97d322ab414c1186646c7c9"
+    assert acceptance["state"] == "G0_CI80_B1_PRODUCTION_WIRING_PASS_SCOPED_PR31_DRAFT_REAL_GRANT_RUN_OPEN"
+    assert acceptance["candidate_head"] == "26ecd5d0d6141af810504e2092db260ab3898fb6"
+    assert acceptance["candidate_parent"] == "c6cce86c8e71a677659510b6e916fd2c41c18d85"
     assert acceptance["candidate_head_scope"] == "LAST_ACCEPTED_ENGINEERING_CHECKPOINT_NOT_MOVING_REMOTE_REF"
     assert acceptance["latest_required_ci"] == {
-        "run_number": 78,
-        "run_id": 39935111422,
+        "run_number": 80,
+        "run_id": 40055753549,
         "conclusion": "success",
     }
     assert acceptance["prior_failed_ci"] == {
