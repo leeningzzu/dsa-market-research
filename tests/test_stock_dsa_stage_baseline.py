@@ -97,20 +97,22 @@ def test_stage_ladder_keeps_parent_product_and_blocking_order_explicit() -> None
     assert stages[6]["blocked_by"] == "L1_LEGAL_LEDGER_OUTCOME_PIT"
     assert stages[7]["blocked_by"] == "M3_CALIBRATION_SHADOW"
     assert baseline["acceptance"]["direct_main_push"] is False
+    # Independently observed CI82 is the accepted *engineering* snapshot,
+    # not the moving Git ref, upstream data rights or Product Promotion.
     assert baseline["acceptance"]["required_checks"] == [
         "ai-governance", "backend-gate", "docker-build",
     ]
     acceptance = baseline["acceptance"]
-    # Exact independently accepted code+CI snapshot, not a moving Git ref or Product Promotion.
-    assert acceptance["state"] == "G0_CI80_B1_PRODUCTION_WIRING_PASS_SCOPED_PR31_DRAFT_REAL_GRANT_RUN_OPEN"
-    assert acceptance["candidate_head"] == "26ecd5d0d6141af810504e2092db260ab3898fb6"
-    assert acceptance["candidate_parent"] == "c6cce86c8e71a677659510b6e916fd2c41c18d85"
+    assert acceptance["state"] == "G0_CI82_B1_REAL_RUN_BOUNDARY_PASS_SCOPED_PR31_DRAFT_REAL_GRANT_RUN_OPEN"
+    assert acceptance["candidate_head"] == "99106c6715ae70ccc6708d95166fd6c5104f06cc"
+    assert acceptance["candidate_parent"] == "df82f93e8de3c84700b096e76b15b38d41595b46"
     assert acceptance["candidate_head_scope"] == "LAST_ACCEPTED_ENGINEERING_CHECKPOINT_NOT_MOVING_REMOTE_REF"
     assert acceptance["latest_required_ci"] == {
-        "run_number": 80,
-        "run_id": 40055753549,
+        "run_number": 82,
+        "run_id": 40068248419,
         "conclusion": "success",
     }
+    # Do not rewrite the failed CI77; CI80 and CI81 remain historical PASS.
     assert acceptance["prior_failed_ci"] == {
         "run_number": 77,
         "run_id": 39901137680,
@@ -118,6 +120,7 @@ def test_stage_ladder_keeps_parent_product_and_blocking_order_explicit() -> None
         "conclusion": "failure",
     }
     assert acceptance["pull_request_state"] == "DRAFT_OPEN_NOT_MERGED"
+    assert baseline["route_decision"]["next_primary"] == "B1_SOURCE_RIGHTS"
 
 
 def test_stage_baseline_preserves_formal_email_contract_and_no_auto_trade() -> None:

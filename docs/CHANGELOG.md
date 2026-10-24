@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [文档] GitHub PR31在`99106c67`上自然CI #82（Run40068248419）完整Linux Offline、AI治理、Docker与变更检测全部SUCCESS，保持Draft/Open未merge；原B1入口`26ecd5d0`CI80和状态投影`df82f93e`CI81分别保留历史通过。精确七文件修复覆盖真实请求前后单一known-at、B1构造禁业务DB/LLM/Search、CN 5m市场参数、非B1日/韩MA原行为和原行情响应指纹（不是历史PIT修订）。当前源码接受仅PASS_SCOPED，实际数据来源权利、同一as-of股票ETF完整NO_SEND Product与训练/交付仍OPEN；原V2.5/775图及所有已关闭门禁不重做。
 - [文档] B1生产接线提交`26ecd5d0`经CI #80（Run40055753549）在Linux Offline、AI治理、Docker、变更检测和桌面打包全部通过；Roadmap/Stage同步工程接受上限并保持PR #31 Draft未合并。该PASS只证明现有DSA内operation-specific权利→Provider/Identity→Registry/Factor/canonical→原NO_SEND报告的fail-closed工程链，不把合成授权夹具、SDK可调用或绿色CI冒充真实上游许可、实际Stock+ETF Product、存储/训练/发送或Promotion。
 - [改进] 闭合B1真实生产接线的fail-closed工程链：新增唯一操作级来源权利JSON入口，Stock/ETF的1d与5m在任何Provider/缓存/DB前分别校验operation、dataset、consumer、Provider、条款hash/时点和四类rights；Provider fallback不能切到未授权来源。原Daily/Intraday Identity与76对象Registry绑定实际source/content/units/basis及供应商明确给出的revision/vintage，观测时点不得冒充版本事实；外部回执必须与运行时Provider route、时钟、单位、币种、复权、revision、vintage逐项一致，未知或错配均不准入。NO_SEND只在内存生成原完整Report，不读写History/Ledger、不调未准入实时/基本面/新闻/模型、不发Email/Telegram；Product许可不解锁storage/training/redistribution/策略，原V2.5字节和既有canonical保持不变。
 - [文档] PR31的观察时钟兼容修复a10327经CI #78（Run39935111422）在Linux backend Offline、AI治理、Docker与变更检测全部通过；原CI77四失败保留历史RED。原roadmap与stage合同同步精确工程SHA、PR Draft与B1真实数据权利OPEN；工程绿灯不等于全部方法READY、真实Product、交付或学习，原V2.5及775边图不变。
