@@ -125,6 +125,70 @@ def _is_etf_code(stock_code: str) -> bool:
     return code.startswith(etf_prefixes) and len(code) == 6
 
 
+_ETF_REALTIME_REQUIRED_COLUMNS = (
+    "代码", "名称", "最新价", "涨跌幅", "成交额",
+)
+
+
+def _normalize_etf_realtime_snapshot_frame(
+    frame: pd.DataFrame,
+    *,
+    snapshot_source: str,
+    provider_route: str,
+    source_errors: List[str],
+    provider_fallback_used: bool,
+) -> pd.DataFrame:
+    """Normalize the two admitted AkShare ETF quote schemas once."""
+    if not isinstance(frame, pd.DataFrame) or frame.empty:
+        raise DataFetchError(provider_route + " returned empty ETF snapshot")
+    result = frame.copy()
+    for target, source in {
+        "开盘价": "今开", "最高价": "最高", "最低价": "最低",
+    }.items():
+        if target not in result.columns and source in result.columns:
+            result[target] = result[source]
+    missing = [
+        column for column in _ETF_REALTIME_REQUIRED_COLUMNS
+        if column not in result.columns or result[column].dropna().empty
+    ]
+    if missing:
+        raise DataFetchError(
+            provider_route + " missing ETF snapshot columns: " + ",".join(missing)
+        )
+    codes = result["代码"].astype(str).str.strip().str.lower()
+    codes = codes.str.replace(r"^(?:sh|sz)[.-]?", "", regex=True)
+    codes = codes.str.replace(r"[.-]?(?:sh|sz)$", "", regex=True)
+    result["代码"] = codes.str.replace(r"\.0$", "", regex=True).str.zfill(6)
+    result = result[
+        result["代码"].str.match(r"^(51|52|56|58|15|16|18)\d{4}$", na=False)
+    ].copy()
+    for column in set(result.columns) & {
+        "最新价", "涨跌额", "涨跌幅", "买入", "卖出", "昨收", "今开",
+        "开盘价", "最高", "最高价", "最低", "最低价", "成交量", "成交额",
+        "总市值", "流通市值", "量比", "换手率", "振幅",
+    }:
+        result[column] = pd.to_numeric(result[column], errors="coerce")
+    if result.empty or any(
+        result[column].dropna().empty for column in ("最新价", "涨跌幅", "成交额")
+    ):
+        raise DataFetchError(provider_route + " returned no usable A-share ETF rows")
+    result = result.reset_index(drop=True)
+    result.attrs.update({
+        "snapshot_source": snapshot_source,
+        "provider_route": provider_route,
+        "source_errors": list(source_errors),
+        # ``fallback_used`` is reserved for the stale last-good cache contract.
+        "fallback_used": False,
+        "provider_fallback_used": bool(provider_fallback_used),
+        "stale": False,
+        "stale_age_hours": None,
+        "currency": "CNY",
+        "volume_unit": "share",
+        "amount_unit": "CNY",
+    })
+    return result
+
+
 def _is_hk_code(stock_code: str) -> bool:
     """
     判断代码是否为港股
@@ -1371,65 +1435,95 @@ class AkshareFetcher(BaseFetcher):
             return None
     
     def get_etf_realtime_snapshot(self) -> pd.DataFrame:
-        """Return the cached full A-share ETF realtime snapshot.
-
-        This is the single owner of ak.fund_etf_spot_em() access so screening
-        can reuse the same rate-limit, retry, circuit-breaker and cache
-        semantics instead of introducing a second provider path.
-        """
+        """Return one cached ETF snapshot through the existing provider owner."""
         import akshare as ak
 
-        circuit_breaker = get_realtime_circuit_breaker()
-        source_key = "akshare_etf"
         current_time = time.time()
+        cached = _etf_realtime_cache['data']
         if (
-            _etf_realtime_cache['data'] is not None
-            and current_time - _etf_realtime_cache['timestamp'] < _etf_realtime_cache['ttl']
+            isinstance(cached, pd.DataFrame)
+            and current_time - _etf_realtime_cache['timestamp']
+            < _etf_realtime_cache['ttl']
         ):
-            cached = _etf_realtime_cache['data']
-            return cached.copy() if isinstance(cached, pd.DataFrame) else pd.DataFrame()
+            return cached.copy()
 
-        last_error: Optional[Exception] = None
-        df: Optional[pd.DataFrame] = None
-        for attempt in range(1, 3):
-            try:
-                self._set_random_user_agent()
-                self._enforce_rate_limit()
-                logger.info(
-                    "[API调用] ak.fund_etf_spot_em() 获取ETF实时行情... (attempt %s/2)",
-                    attempt,
-                )
-                api_start = time.time()
-                df = ak.fund_etf_spot_em()
-                logger.info(
-                    "[API返回] ak.fund_etf_spot_em 成功: 返回 %s 只ETF, 耗时 %.2fs",
-                    len(df),
-                    time.time() - api_start,
-                )
-                circuit_breaker.record_success(source_key)
-                break
-            except Exception as exc:
-                last_error = exc
-                logger.info(
-                    "[API错误] ak.fund_etf_spot_em 获取失败 (attempt %s/2): %s",
-                    attempt,
-                    exc,
-                )
-                time.sleep(min(2 ** attempt, 5))
+        circuit_breaker = get_realtime_circuit_breaker()
+        source_errors: List[str] = []
+        routes = (
+            (
+                "akshare.fund_etf_spot_em",
+                "dsa:akshare_etf_eastmoney",
+                2,
+                False,
+                lambda: ak.fund_etf_spot_em(),
+            ),
+            (
+                "akshare.fund_etf_category_sina",
+                "dsa:akshare_etf_sina",
+                1,
+                True,
+                lambda: ak.fund_etf_category_sina(symbol="ETF基金"),
+            ),
+        )
+        for provider_route, snapshot_source, attempts, is_fallback, fetch in routes:
+            for attempt in range(1, attempts + 1):
+                try:
+                    self._set_random_user_agent()
+                    self._enforce_rate_limit()
+                    started = time.time()
+                    normalized = _normalize_etf_realtime_snapshot_frame(
+                        fetch(),
+                        snapshot_source=snapshot_source,
+                        provider_route=provider_route,
+                        source_errors=source_errors,
+                        provider_fallback_used=is_fallback,
+                    )
+                    normalized.attrs["source_errors"] = list(source_errors)
+                    logger.info(
+                        "[API返回] %s: %s ETF, %.2fs",
+                        provider_route,
+                        len(normalized),
+                        time.time() - started,
+                    )
+                    circuit_breaker.record_success("akshare_etf")
+                    _etf_realtime_cache.update({
+                        "data": normalized.copy(),
+                        "timestamp": current_time,
+                    })
+                    return normalized.copy()
+                except Exception as exc:
+                    source_errors.append(
+                        f"{provider_route}: {type(exc).__name__}: {exc}"
+                    )
+                    logger.info(
+                        "[API错误] %s attempt %s/%s: %s",
+                        provider_route,
+                        attempt,
+                        attempts,
+                        exc,
+                    )
+                    if attempt < attempts:
+                        time.sleep(min(2 ** attempt, 5))
 
-        if df is None:
-            logger.info("[API错误] ak.fund_etf_spot_em 最终失败: %s", last_error)
-            circuit_breaker.record_failure(source_key, str(last_error))
-            df = pd.DataFrame()
-        _etf_realtime_cache['data'] = df
-        _etf_realtime_cache['timestamp'] = current_time
-        return df.copy()
+        circuit_breaker.record_failure("akshare_etf", "; ".join(source_errors))
+        _etf_realtime_cache.update({"data": None, "timestamp": 0})
+        empty = pd.DataFrame()
+        empty.attrs.update({
+            "snapshot_source": "dsa:akshare_etf_unavailable",
+            "provider_route": None,
+            "source_errors": source_errors,
+            "fallback_used": False,
+            "provider_fallback_used": False,
+            "stale": False,
+            "stale_age_hours": None,
+        })
+        return empty
 
     def _get_etf_realtime_quote(self, stock_code: str) -> Optional[UnifiedRealtimeQuote]:
         """
         获取 ETF 基金实时行情数据
         
-        数据来源：ak.fund_etf_spot_em()
+        数据来源：ak.fund_etf_spot_em()，失败时复用 Sina ETF 全量行情
         包含：最新价、涨跌幅、成交量、成交额、换手率等
         
         Args:
@@ -1455,13 +1549,26 @@ class AkshareFetcher(BaseFetcher):
                 return None
             
             row = row.iloc[0]
+            snapshot_source = str(df.attrs.get("snapshot_source") or "")
+            quote_source = (
+                RealtimeSource.AKSHARE_SINA
+                if snapshot_source == "dsa:akshare_etf_sina"
+                else RealtimeSource.AKSHARE_EM
+            )
+            fallback_from = (
+                RealtimeSource.AKSHARE_EM.value
+                if quote_source is RealtimeSource.AKSHARE_SINA
+                else None
+            )
             
             # 使用 realtime_types.py 中的统一转换函数
             # ETF 行情数据构建
             quote = UnifiedRealtimeQuote(
                 code=stock_code,
                 name=str(row.get('名称', '')),
-                source=RealtimeSource.AKSHARE_EM,
+                source=quote_source,
+                fallback_from=fallback_from,
+                currency="CNY",
                 price=safe_float(row.get('最新价')),
                 change_pct=safe_float(row.get('涨跌幅')),
                 change_amount=safe_float(row.get('涨跌额')),

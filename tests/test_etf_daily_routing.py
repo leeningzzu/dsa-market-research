@@ -10,6 +10,8 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from data_provider.akshare_fetcher import AkshareFetcher
+import data_provider.akshare_fetcher as akshare_fetcher_module
+from src.services.screening.snapshot import fetch_cn_etf_snapshot
 from data_provider.base import BaseFetcher, DataFetchError, DataFetcherManager
 from data_provider.efinance_fetcher import EfinanceFetcher
 
@@ -17,8 +19,16 @@ from data_provider.efinance_fetcher import EfinanceFetcher
 @pytest.fixture(autouse=True)
 def _reset_daily_source_health():
     DataFetcherManager.reset_daily_source_health()
+    akshare_fetcher_module._etf_realtime_cache.update({
+        "data": None,
+        "timestamp": 0,
+    })
     yield
     DataFetcherManager.reset_daily_source_health()
+    akshare_fetcher_module._etf_realtime_cache.update({
+        "data": None,
+        "timestamp": 0,
+    })
 
 
 def _make_efinance_fetcher() -> EfinanceFetcher:
@@ -120,6 +130,123 @@ def test_akshare_etf_uses_fund_etf_hist_em() -> None:
         end_date="20260105",
         adjust="qfq",
     )
+
+
+def test_akshare_etf_snapshot_falls_back_to_live_sina_and_normalizes_codes() -> None:
+    fetcher = _make_akshare_fetcher()
+    sina_frame = pd.DataFrame(
+        {
+            "代码": ["sh510300", "sz159915"],
+            "名称": ["沪深300ETF", "创业板ETF"],
+            "最新价": [4.12, 2.34],
+            "涨跌额": [0.02, -0.01],
+            "涨跌幅": [0.49, -0.43],
+            "买入": [4.11, 2.33],
+            "卖出": [4.12, 2.34],
+            "昨收": [4.10, 2.35],
+            "今开": [4.10, 2.35],
+            "最高": [4.13, 2.36],
+            "最低": [4.09, 2.32],
+            "成交量": [1000000, 2000000],
+            "成交额": [4120000, 4680000],
+        }
+    )
+    fake_akshare = types.SimpleNamespace(
+        fund_etf_spot_em=MagicMock(side_effect=ConnectionError("em down")),
+        fund_etf_category_sina=MagicMock(return_value=sina_frame),
+    )
+    circuit = MagicMock()
+
+    with patch.dict(sys.modules, {"akshare": fake_akshare}), patch(
+        "data_provider.akshare_fetcher.get_realtime_circuit_breaker",
+        return_value=circuit,
+    ), patch("data_provider.akshare_fetcher.time.sleep"), patch.object(
+        fetcher, "_set_random_user_agent"
+    ), patch.object(fetcher, "_enforce_rate_limit"):
+        actual = fetcher.get_etf_realtime_snapshot()
+        quote = fetcher._get_etf_realtime_quote("510300")
+
+    assert list(actual["代码"]) == ["510300", "159915"]
+    assert actual[["最新价", "涨跌幅", "成交额"]].notna().all().all()
+    assert actual["开盘价"].tolist() == [4.10, 2.35]
+    assert actual["最高价"].tolist() == [4.13, 2.36]
+    assert actual["最低价"].tolist() == [4.09, 2.32]
+    assert actual.attrs["snapshot_source"] == "dsa:akshare_etf_sina"
+    assert actual.attrs["provider_route"] == "akshare.fund_etf_category_sina"
+    assert actual.attrs["fallback_used"] is False
+    assert actual.attrs["provider_fallback_used"] is True
+    assert quote is not None
+    assert quote.source.value == "akshare_sina"
+    assert quote.fallback_from == "akshare_em"
+    assert quote.currency == "CNY"
+    assert len(actual.attrs["source_errors"]) == 2
+    assert fake_akshare.fund_etf_spot_em.call_count == 2
+    fake_akshare.fund_etf_category_sina.assert_called_once_with(symbol="ETF基金")
+    circuit.record_success.assert_called_once_with("akshare_etf")
+    assert isinstance(akshare_fetcher_module._etf_realtime_cache["data"], pd.DataFrame)
+
+
+def test_akshare_etf_snapshot_does_not_cache_empty_when_all_sources_fail() -> None:
+    fetcher = _make_akshare_fetcher()
+    fake_akshare = types.SimpleNamespace(
+        fund_etf_spot_em=MagicMock(side_effect=ConnectionError("em down")),
+        fund_etf_category_sina=MagicMock(side_effect=ConnectionError("sina down")),
+    )
+    circuit = MagicMock()
+
+    with patch.dict(sys.modules, {"akshare": fake_akshare}), patch(
+        "data_provider.akshare_fetcher.get_realtime_circuit_breaker",
+        return_value=circuit,
+    ), patch("data_provider.akshare_fetcher.time.sleep"), patch.object(
+        fetcher, "_set_random_user_agent"
+    ), patch.object(fetcher, "_enforce_rate_limit"):
+        actual = fetcher.get_etf_realtime_snapshot()
+
+    assert actual.empty
+    assert actual.attrs["snapshot_source"] == "dsa:akshare_etf_unavailable"
+    assert actual.attrs["fallback_used"] is False
+    assert actual.attrs["provider_fallback_used"] is False
+    assert len(actual.attrs["source_errors"]) == 3
+    assert akshare_fetcher_module._etf_realtime_cache["data"] is None
+    circuit.record_failure.assert_called_once()
+
+
+def test_screening_etf_snapshot_reuses_provider_identity_and_live_fallback_metadata() -> None:
+    raw = pd.DataFrame(
+        {
+            "代码": ["sh510300"],
+            "名称": ["沪深300ETF"],
+            "最新价": [4.12],
+            "涨跌幅": [0.49],
+            "成交额": [4120000],
+        }
+    )
+    raw.attrs.update(
+        {
+            "snapshot_source": "dsa:akshare_etf_sina",
+            "provider_route": "akshare.fund_etf_category_sina",
+            "source_errors": ["akshare.fund_etf_spot_em: em down"],
+            "fallback_used": False,
+            "provider_fallback_used": True,
+            "stale": False,
+            "stale_age_hours": None,
+        }
+    )
+    with patch(
+        "data_provider.akshare_fetcher.AkshareFetcher.get_etf_realtime_snapshot",
+        return_value=raw,
+    ):
+        actual = fetch_cn_etf_snapshot()
+
+    assert actual["code"].tolist() == ["510300"]
+    assert actual[["price", "change_pct", "amount"]].notna().all().all()
+    assert actual.attrs["snapshot_source"] == "dsa:akshare_etf_sina"
+    assert actual.attrs["provider_route"] == "akshare.fund_etf_category_sina"
+    assert actual.attrs["source_errors"] == [
+        "akshare.fund_etf_spot_em: em down"
+    ]
+    assert actual.attrs["fallback_used"] is False
+    assert actual.attrs["provider_fallback_used"] is True
 
 
 def test_manager_normalizes_prefixed_etf_before_efinance_secid_route() -> None:
