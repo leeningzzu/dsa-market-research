@@ -1493,7 +1493,29 @@ def test_native_zero_model_record_writes_only_the_admitted_temp_db_surfaces(
         factor = result.dashboard["factor_decision"]
         assert factor["method_execution_receipt_policy"] == "REQUIRED"
         assert factor["canonical_decision"]["evidence_state"] == "PROVEN"
-        assert factor["canonical_decision"]["action"] == "WAIT"
+        canonical = factor["canonical_decision"]
+        gate4 = factor["gate4_decision_package"]
+        assert canonical["action"] == "PASS"
+        assert canonical["public_action"] == "avoid"
+        assert canonical["hard_veto"] is True
+        assert "GATE4_DATA_VETO" in canonical["reason_codes"]
+        assert gate4["state"] == "VETOED"
+        assert gate4["canonical_action_authority"] is True
+        assert gate4["correlation_dedup"]["status"] == "VERIFIED"
+        assert gate4["correlation_dedup"]["group_count"] == 15
+        assert set(gate4["vetoes"]) == {
+            "DATA", "RISK", "LIQUIDITY", "EXECUTION",
+        }
+        assert gate4["all_veto_lanes_evaluated"] is True
+        assert gate4["vetoes"]["DATA"]["state"] == "VETO"
+        assert all(
+            lane["state"] in {"PASS", "VETO"}
+            for lane in gate4["vetoes"].values()
+        )
+        assert gate4["storage_admitted"] is False
+        assert gate4["learning_admitted"] is False
+        assert gate4["score_or_probability_authority"] is False
+        assert factor["investor_brief"]["gate4_decision_package"] == gate4
         assert factor["composite_score"] is not None
         assert factor["multi_timeframe_structure_context"]["price_identity_reasons"] == []
         try:
