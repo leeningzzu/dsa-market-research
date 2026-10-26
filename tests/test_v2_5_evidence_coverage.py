@@ -1,7 +1,9 @@
 """Exact-reference and normalized-frame tests; no live provider or renderer."""
 from copy import deepcopy
 from pathlib import Path
+import re
 import subprocess
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -9,8 +11,10 @@ import pytest
 
 from src.services import evidence_traceability_registry as reg
 from src.services.v2_5_evidence_coverage import (
+    _v25_assign,
     compile_input_coverage, compile_product_coverage,
-    compile_whole_product_scope_gate, verify_original_mapping,
+    compile_whole_product_scope_gate, render_v2_5_dynamic_no_send,
+    verify_original_mapping,
 )
 from tests.test_evidence_traceability_registry import (  # noqa: F401
     explicit_native_config,
@@ -309,3 +313,185 @@ def test_product_coverage_rejects_unknown_intraday_volume_without_erasing_price_
         assert rows["detail.timeframe.pattern_trigger"]["timeframe_states"][timeframe] == "DATA_INSUFFICIENT"
 
     assert all(row["projection_state"] == "NOT_RENDERED" for row in rows.values())
+
+
+def _v25_result(*, factor=None, code="600519", name="测试股票", delivery=None):
+    delivery = dict(delivery or {})
+    delivery.setdefault("selection_source", "SPECIFIED_CODES")
+    delivery.setdefault("delivery_envelope", "ASSET_RESEARCH_BRIEF_WATCHLIST")
+    delivery.setdefault("asset_type", "stock")
+    delivery.setdefault("asset_identity_text", "A股｜主板")
+    delivery.setdefault("product_group", "WATCHLIST_STOCK")
+    return SimpleNamespace(
+        code=code,
+        name=name,
+        dashboard={
+            "factor_decision": factor or native_summary(),
+            "research_delivery": delivery,
+        },
+    )
+
+
+def test_dynamic_v25_projects_complete_original_frame_and_truthful_missingness():
+    original_path = ROOT / "templates/v2_5/STOCK_DSA_V2_5_PRODUCTION_MAIL_BASELINE_R001.html"
+    before = original_path.read_bytes()
+    projected = render_v2_5_dynamic_no_send(
+        [_v25_result()], report_date="2026-10-23",
+    )
+    html = projected["html"]
+    receipt = projected["receipt"]
+
+    assert original_path.read_bytes() == before
+    assert len(before) == 125919
+    assert receipt["baseline_sha256"] == reg.BASELINE_SHA256
+    assert receipt["frame_contract"]["mail_count"] == 3
+    assert len(receipt["frame_contract"]["card_ids"]) == 10
+    assert len(receipt["frame_contract"]["cycle_ids"]) == 84
+    assert receipt["slot_projection_count"] == 270
+    assert receipt["all_accepted_slot_roles_projected"] is True
+    assert receipt["all_whole_scope_obligations_projected"] is True
+    assert receipt["whole_scope_projection"]["requirement_count"] == 26
+    assert receipt["whole_scope_projection"]["product_slot_count"] == 27
+    assert len(receipt["whole_scope_projection"]["atomic_subfields"]) == 7
+    scope = receipt["whole_scope_projection"]
+    assert len(scope["requirement_projections"]) == 26
+    assert len(scope["data_object_projections"]) == 76
+    assert len(scope["valuation_route_projections"]) == 9
+    assert len(scope["atomic_subfield_projections"]) == 7
+    assert scope["data_object_catalog_binding_sha256"] == (
+        reg.ACCEPTED_DATA_OBJECT_SUBSET_SHA256
+    )
+    assert tuple(row["id"] for row in scope["requirement_projections"]) == tuple(
+        sorted(identifier for identifier, _role in reg.ACCEPTED_REQUIREMENT_ROLES)
+    )
+    scope_rows = (
+        list(scope["requirement_projections"])
+        + list(scope["data_object_projections"])
+        + list(scope["valuation_route_projections"])
+        + list(scope["atomic_subfield_projections"])
+    )
+    assert len(scope_rows) == 118
+    assert len({row["location_ids"][0] for row in scope_rows}) == 118
+    assert all(len(row["projection_sha256"]) == 64 for row in scope_rows)
+    assert all(row["id"] in html for row in scope_rows)
+    assert receipt["results"][0]["fact_mode"] == "MISSINGNESS_ONLY"
+    assert receipt["all_input_facts_product_ready"] is False
+    assert receipt["no_send"] is True
+    assert receipt["network_calls"] == receipt["database_writes"] == 0
+    assert "600519" in html
+    assert "Product准入未完成" in html
+    for field in reg.ACCEPTED_WHOLE_PRODUCT_ATOMIC_SUBFIELDS:
+        assert field in html
+    assert not any(fragment in html for fragment in (
+        "示例成长科技ETF", "1.264元", "自选股X（6008X9）",
+    ))
+    original_markup = re.findall(r"<[^>]+>", before.decode("utf-8"))
+    projected_markup = re.findall(r"<[^>]+>", html)
+    assert projected_markup == original_markup
+
+
+def test_dynamic_v25_empty_and_partial_candidate_routes_are_legal_nontriggers():
+    projected = render_v2_5_dynamic_no_send([], report_date="2026-10-23")
+    receipt = projected["receipt"]
+    assert receipt["envelopes"]["AUTO"] == {
+        "mail_index": 1,
+        "focus_etf_count": 0,
+        "remaining_etf_count": 0,
+        "focus_stock_count": 0,
+        "remaining_stock_count": 0,
+    }
+    assert receipt["envelopes"]["WATCHLIST"]["result_count"] == 0
+    assert receipt["slot_projection_count"] == 270
+    assert {row["projection_state"] for row in receipt["slot_projections"]} == {
+        "RENDERED_MISSINGNESS"
+    }
+    assert "本次无已准入候选" in projected["html"]
+    assert "示例成长科技ETF" not in projected["html"]
+    one_result = render_v2_5_dynamic_no_send(
+        [_v25_result()], report_date="2026-10-23",
+    )
+    assert (
+        receipt["frame_contract"]["fixed_region_sha256"]
+        == one_result["receipt"]["frame_contract"]["fixed_region_sha256"]
+    )
+    assert receipt["whole_scope_projection"]["requirement_count"] == 26
+    assert len(receipt["whole_scope_projection"]["data_object_projections"]) == 76
+    assert {
+        row["state"]
+        for row in receipt["whole_scope_projection"]["data_object_projections"]
+    } == {"UNKNOWN"}
+
+
+def test_dynamic_v25_rejects_original_canonical_and_asset_identity_tamper():
+    original = (
+        ROOT / "templates/v2_5/STOCK_DSA_V2_5_PRODUCTION_MAIL_BASELINE_R001.html"
+    ).read_bytes()
+    with pytest.raises(reg.TraceabilityError, match="ORIGINAL_BYTES_MISMATCH"):
+        render_v2_5_dynamic_no_send(
+            [_v25_result()], original=original.replace(b".mail{", b".mail-x{")
+        )
+
+    factor = native_summary()
+    factor["canonical_decision"]["action"] = "TAKE"
+    with pytest.raises(reg.TraceabilityError, match="CANONICAL_BINDING_INVALID"):
+        render_v2_5_dynamic_no_send([_v25_result(factor=factor)])
+
+    with pytest.raises(reg.TraceabilityError, match="ASSET_IDENTITY_MISMATCH"):
+        render_v2_5_dynamic_no_send([_v25_result(code="000001")])
+
+
+def test_dynamic_v25_candidate_capacity_is_fail_closed_without_forced_fill():
+    focus = [
+        {
+            "code": f"51{i:04d}",
+            "asset_type": "etf",
+            "delivery": {
+                "selection_source": "AUTO_SCREEN",
+                "product_group": "AUTO_ETF_FOCUS",
+                "group_rank": i + 1,
+            },
+        }
+        for i in range(4)
+    ]
+    with pytest.raises(reg.TraceabilityError, match="FOCUS_CAPACITY"):
+        _v25_assign(focus)
+
+    watch = [
+        {
+            "code": f"60{i:04d}",
+            "asset_type": "stock",
+            "delivery": {"selection_source": "SPECIFIED_CODES"},
+        }
+        for i in range(5)
+    ]
+    with pytest.raises(reg.TraceabilityError, match="WATCHLIST_CAPACITY"):
+        _v25_assign(watch)
+
+
+def test_notification_v25_builder_is_no_send_and_uses_same_full_text_consumer(monkeypatch):
+    from src.notification import NotificationService
+
+    result = _v25_result()
+    service = object.__new__(NotificationService)
+    monkeypatch.setattr(
+        service,
+        "generate_dashboard_report",
+        lambda results, report_date=None: "FULL-CANONICAL-TEXT",
+    )
+    monkeypatch.setattr(
+        service,
+        "build_research_email_subject",
+        lambda results, report_date=None: "V2.5 SUBJECT",
+    )
+    sent = []
+    monkeypatch.setattr(service, "send_to_email", lambda *args, **kwargs: sent.append((args, kwargs)))
+
+    bundle = service.build_v2_5_dynamic_no_send(
+        [result], report_date="2026-10-23",
+    )
+    assert bundle["subject"] == "V2.5 SUBJECT"
+    assert bundle["text_content"] == "FULL-CANONICAL-TEXT"
+    assert bundle["receipt"]["rendered"] is True
+    assert bundle["receipt"]["no_send"] is True
+    assert bundle["no_send"] is True
+    assert sent == []

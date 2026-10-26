@@ -5,13 +5,13 @@
 <!-- CURRENT_MASTER_CONTROL_START -->
 ## 当前控制页：总目标、依赖图与退出条件（2026-10-26）
 
-CONTROL_ID = STOCK_DSA_MASTER_ROUTE_20261026_GATE5_WHOLE_SCOPE_FULL_DOMAIN_ACCOUNTING_R001
-CURRENT_CANDIDATE_HEAD = 1de3a8a6f0847fd6a6676ccf51eece6437196663
-CURRENT_CANDIDATE_PARENT = a899586bb5822ddf589cc2f6928e2852acf12b39
+CONTROL_ID = STOCK_DSA_MASTER_ROUTE_20261026_GATE5_DYNAMIC_NO_SEND_LOCAL_PASS_GATE6_HOLD_R001
+CURRENT_CANDIDATE_HEAD = 00a5e30e54443615e499e3c89a0e28b122a7f217
+CURRENT_CANDIDATE_PARENT = 1de3a8a6f0847fd6a6676ccf51eece6437196663
 LAST_VERIFIED_MAIN_BASELINE = b32570b1562deaefa99f500a9c68eb7d1caf6f56
 CURRENT_PR = #31 / Draft / Open / not merged
-LATEST_REQUIRED_CI = #87 / Run40262589339 / success on 1de3a8a6 (Gate4 accepted scoped; current local Gate5 candidate uncommitted)
-SOURCE_CHECKPOINT = Fresh Project inventory on 2026-10-26: exactly eight unique Owners with paired 01/05 v3.517; old v3.516 absent
+LATEST_REQUIRED_CI = #88 / Run40294193680 / success on 00a5e30e (Gate12 root scope/data gates accepted; current Gate5/Gate6 candidate local and uncommitted)
+SOURCE_CHECKPOINT = Current logical Project authority is paired 01/05 v3.519 plus the six stable Owners
 AUTHORITY = exact Git/运行证据 > current 01 > 02/03 > 04/05 > Factor > 06 > 旧Chat
 
 **这是一份现有路线的维护者状态投影，不是新架构、第二个Source、第二数据库或调度器。原775边图和V2.5原件保持不变；旧dated checkpoint继续作为历史。**
@@ -26,11 +26,12 @@ AUTHORITY = exact Git/运行证据 > current 01 > 02/03 > 04/05 > Factor > 06 > 
 
 ### 0.2 当前事实与本次纠偏
 
-- Gate0–3保持CLOSED_SCOPED_NO_REPLAY；Gate4在精确feature HEAD `1de3a8a6`与CI #87上远程接受，证明2026-10-23双资产快照可以通过相关去重和四类独立veto形成唯一`avoid` canonical，不证明缺失数据READY或正向策略资格。
-- 当前Gate5本地候选在原Registry/Coverage内新增独立expected-set门禁：26项研究要求、27个V2.5语义槽及其完整绑定哈希、76对象六域、九条估值路线和已知Golden原子子字段不能由候选删减、换序或换绑定后自证完整；删除、重复、错域、伪状态、缺槽及合法UNKNOWN/N-A均有独立拒绝/非触发语义。
-- 全域数据结论分成两个互不替代的状态：`FULL_DOMAIN_ACCOUNTED_PASS`表示每个对象都有明确状态；`FULL_DOMAIN_PRODUCT_READY`仅在每个适用对象具有operation-specific、source/time/unit/basis/revision/vintage/rights准入回执时成立。R005当前双资产均记账PASS但Product-ready为false，不得由目录数、技术READY或用户文字授权升级。
-- 七周期carrier、7×8矩阵、43方法和Gate4既有闭合不重跑；当前唯一主路线是把同一canonical或诚实missingness无损投影到原V2.5三envelope动态NO_SEND。真实数据回执到达时只重入对应数据Owner；M2.3与Learning/Promotion继续HOLD。
-- Source连续性：fresh Project inventory为八个唯一Owner，01/05均为v3.517；历史COLD段和旧仓库控制页不再覆盖顶部current。
+- Gate0–3、Gate4及whole-scope/full-domain根门禁保持CLOSED_SCOPED_NO_REPLAY；精确feature HEAD `00a5e30e`与CI #88已接受范围/准入机制，不证明缺失数据READY或正向策略资格。
+- 当前Gate5本地候选只复用原Registry/Coverage/Notification/EmailSender：在125919字节原V2.5框架中进行文本节点投影，不增加第二模板或renderer；3 envelope、10 card、84 cycle、855动态block及固定区哈希独立验证，270个槽实例与26要求、76对象、9估值路线、7 Golden细字段均绑定唯一位置和内容哈希。
+- Gate5合法空/部分候选可输出完整诚实missingness；样例名称和样例价格不得泄漏，原CSS/DOM/顺序/固定区不变。当前空对象NO_SEND输出96412字节/SHA256 `63077e02a4b03f88b515f22886cb8f6625aa3318631773e05dbb94db92b185be`，不是实际全数据研究报告。
+- Gate6本地候选是十阶段准入编译器，不是训练器：Gate5→完整Ledger分母→成熟Outcome→PIT→白盒OOT→Logistic→有增量才LightGBM→独立校准→冻结Shadow→显式Promotion；删项、重排、语义调包、布尔伪造和越级晋升均拒绝。当前真实状态HOLD，原因是全域Product数据、记录和PIT缺失，所有模型/网络/数据库/Promotion effect authority为false。
+- R005仍为Stock64适用对象中2PARTIAL/62UNKNOWN/Product0，ETF59适用对象中2PARTIAL/57UNKNOWN/Product0；七周期carrier、7×8矩阵、43方法和Gate4既有闭合不重跑，真实数据到达只重入对应Owner。
+- Source连续性以current 01/05 v3.519为逻辑状态；历史COLD段和旧仓库控制页不得覆盖顶部current。
 
 ### 0.3 详细依赖图：实线是数据/决策依赖，虚线是诊断或显式后继反馈
 

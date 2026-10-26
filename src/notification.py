@@ -2637,6 +2637,48 @@ class NotificationService(
 
         return "", list(results)
 
+    def build_v2_5_dynamic_no_send(
+        self,
+        results: List[AnalysisResult],
+        report_date: Optional[str] = None,
+    ) -> dict:
+        """Build the original V2.5 rich HTML in memory without delivering it.
+
+        The deterministic canonical remains the sole fact authority. The
+        accepted Golden frame is read and verified by the coverage owner;
+        Notification only adds the existing full text fallback and subject.
+        """
+        from src.services.v2_5_evidence_coverage import (
+            render_v2_5_dynamic_no_send,
+        )
+
+        projected = render_v2_5_dynamic_no_send(
+            results,
+            report_date=report_date,
+        )
+        if results:
+            text_content = self.generate_dashboard_report(
+                results,
+                report_date=report_date,
+            )
+        else:
+            date_text = report_date or datetime.now().strftime("%Y-%m-%d")
+            text_content = (
+                f"# {date_text} DSA完整研究\n\n"
+                "当前没有已绑定研究对象；请以HTML中的全域缺失状态为准。"
+            )
+        subject = self.build_research_email_subject(results, report_date)
+        if not subject:
+            date_text = report_date or datetime.now().strftime("%Y-%m-%d")
+            subject = f"【DSA完整研究｜{date_text}】市场、AUTO与自选"
+        return {
+            "subject": subject,
+            "text_content": text_content,
+            "html_content": projected["html"],
+            "receipt": projected["receipt"],
+            "no_send": True,
+        }
+
     def generate_dashboard_report(
         self,
         results: List[AnalysisResult],

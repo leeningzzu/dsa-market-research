@@ -30,6 +30,7 @@ from src.services.evidence_flywheel_runtime import (
     _require_fresh_sqlite_file,
     _write_receipt_file,
     build_pit_manifest_receipt,
+    compile_gate6_learning_admission,
     evaluate_prediction_outcome,
     record_canonical_run,
     replay_specified_codes_daily_sessions,
@@ -1215,6 +1216,82 @@ def test_product_report_receipt_reuses_existing_delivery_fact_identity(
     assert receipt["v25_semantic_coverage"]["actual_render_consumer_proven"] is False
 
 
+def test_current_whole_product_report_receipt_proves_dynamic_v25_no_send(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from src.services import evidence_flywheel_runtime as runtime
+    from tests.test_evidence_traceability_registry import native_summary
+
+    factor = native_summary()
+    persisted_factor = json.loads(json.dumps(factor, ensure_ascii=False))
+    brief = factor["investor_brief"]
+    report = tmp_path / "report_20261023.md"
+    report.write_text(
+        "# actual current report\n"
+        + str(brief["one_line_conclusion"]) + "\n"
+        + str(brief["fused_paragraph"]) + "\n"
+        + str(brief["coverage_text"]) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(runtime, "_PRODUCT_REPORTS_DIR", tmp_path)
+    monkeypatch.setattr(
+        runtime,
+        "_persisted_factor_snapshot",
+        lambda db_manager, pipeline, prediction_hash: (persisted_factor, 11),
+    )
+    trace = factor["evidence_traceability"]
+    monkeypatch.setattr(
+        runtime,
+        "_ledger_identity_snapshot",
+        lambda db_manager, prediction_hash: {
+            "evidence_traceability_identity": {
+                "method_window_policy_hash": trace["method_window_policy_hash"],
+                "timeframe_family_matrix_hash": trace["timeframe_family_matrix_hash"],
+                "complete_research_universe_hash": trace[
+                    "complete_research_universe_hash"
+                ],
+            }
+        },
+    )
+
+    class FakePipeline:
+        @staticmethod
+        def _delivery_fact_hash(value):
+            return digest(value)
+
+    result = SimpleNamespace(
+        code="600519",
+        name="测试股票",
+        dashboard={
+            "factor_decision": factor,
+            "research_delivery": {
+                "selection_source": "SPECIFIED_CODES",
+                "delivery_envelope": "ASSET_RESEARCH_BRIEF_WATCHLIST",
+                "asset_type": "stock",
+                "asset_identity_text": "A股｜主板",
+                "product_group": "WATCHLIST_STOCK",
+            },
+        },
+    )
+    receipt = runtime._build_product_report_receipt(
+        db_manager=object(),
+        pipeline=FakePipeline(),
+        result=result,
+        prediction_hash="f" * 64,
+    )
+
+    v25 = receipt["v25_semantic_coverage"]
+    assert v25["rendered"] is True
+    assert v25["actual_render_consumer_proven"] is True
+    assert v25["no_send"] is True
+    assert v25["slot_projection_count"] == 270
+    assert v25["all_input_facts_product_ready"] is False
+    assert len(v25["output_sha256"]) == 64
+    assert len(v25["frame_contract_hash"]) == 64
+    assert len(v25["whole_scope_projection_hash"]) == 64
+
+
 def test_record_phase_fails_closed_when_model_request_count_is_nonzero() -> None:
     class BadPipeline:
         def __init__(self, **kwargs):
@@ -1727,3 +1804,342 @@ def test_manifest_phase_is_idempotent_and_cannot_admit_training(isolated_db) -> 
     assert first["training_requested"] is False
     assert first["external_durability"] == "NOT_REQUESTED"
     assert "NO_WHITE_BOX_OPPORTUNITIES" in first["training_admission_reasons"]
+
+
+def _gate6_gate5_receipt(*, product_ready: bool = False) -> dict:
+    from src.services.v2_5_evidence_coverage import render_v2_5_dynamic_no_send
+    from tests.test_evidence_traceability_registry import native_summary
+
+    result = SimpleNamespace(
+        code="600519",
+        name="合成测试股票",
+        dashboard={
+            "factor_decision": native_summary(),
+            "research_delivery": {
+                "selection_source": "SPECIFIED_CODES",
+                "delivery_envelope": "ASSET_RESEARCH_BRIEF_WATCHLIST",
+                "asset_type": "stock",
+                "asset_identity_text": "A股｜主板",
+                "product_group": "WATCHLIST_STOCK",
+            },
+        },
+    )
+    receipt = render_v2_5_dynamic_no_send(
+        [result], report_date="2026-10-23",
+    )["receipt"]
+    if product_ready:
+        # Contract-reachability fixture only: this converts every dependent
+        # projection consistently. A single rehashed boolean must still fail.
+        receipt = json.loads(json.dumps(receipt))
+        scope = receipt["whole_scope_projection"]
+        scope["atomic_subfields_unresolved"] = []
+        for row in scope["data_object_projections"]:
+            if row["state"] != "NOT_APPLICABLE":
+                row["state"] = "READY"
+        for row in scope["atomic_subfield_projections"]:
+            row["state"] = "BOUND"
+        scope.pop("projection_hash", None)
+        scope["projection_hash"] = digest(scope)
+        for row in receipt["slot_projections"]:
+            row["projection_state"] = "RENDERED_EVIDENCE"
+        for row in receipt["results"]:
+            row["fact_mode"] = "ADMITTED"
+            row["full_domain_product_ready"] = True
+        receipt["all_input_facts_product_ready"] = True
+        receipt.pop("receipt_hash", None)
+        receipt["receipt_hash"] = digest(receipt)
+    return receipt
+
+
+def test_gate6_current_missingness_product_compiles_complete_hold_vector() -> None:
+    receipt = compile_gate6_learning_admission(
+        gate5_receipt=_gate6_gate5_receipt(),
+    )
+
+    assert receipt["state"] == "HOLD"
+    assert len(receipt["stage_order"]) == 10
+    assert receipt["stages"]["GATE5_DYNAMIC_PRODUCT"]["state"] == (
+        "PASS_MISSINGNESS_COMPLETE"
+    )
+    assert "FULL_DOMAIN_PRODUCT_DATA_NOT_READY" in receipt["reason_codes"]
+    assert "RECORDING_RECEIPT_MISSING" in receipt["reason_codes"]
+    assert "PIT_MANIFEST_MISSING" in receipt["reason_codes"]
+    assert receipt["current_probability_authority"] is False
+    assert receipt["training_effect_authority"] is False
+    assert receipt["promotion_effect_authority"] is False
+    assert receipt["broker_or_automatic_trading_authority"] is False
+    assert receipt["network_calls"] == 0
+    assert receipt["database_writes"] == 0
+    assert receipt["model_training_runs"] == 0
+    assert len(receipt["admission_hash"]) == 64
+
+
+def test_gate6_rejects_forged_gate5_and_out_of_order_promotion() -> None:
+    gate5 = _gate6_gate5_receipt()
+    gate5["learning_authority"] = True
+    with pytest.raises(
+        EvidenceFlywheelBoundaryError,
+        match="Gate5 receipt hash mismatch|Gate5 receipt invariant mismatch",
+    ):
+        compile_gate6_learning_admission(gate5_receipt=gate5)
+
+    flag_only = _gate6_gate5_receipt()
+    flag_only["all_input_facts_product_ready"] = True
+    flag_only.pop("receipt_hash", None)
+    flag_only["receipt_hash"] = digest(flag_only)
+    with pytest.raises(
+        EvidenceFlywheelBoundaryError,
+        match="Product-ready claim is not supported",
+    ):
+        compile_gate6_learning_admission(gate5_receipt=flag_only)
+
+    reordered = json.loads(json.dumps(_gate6_gate5_receipt()))
+    reordered_scope = reordered["whole_scope_projection"]
+    reordered_scope["requirement_projections"].reverse()
+    reordered_scope.pop("projection_hash", None)
+    reordered_scope["projection_hash"] = digest(reordered_scope)
+    reordered.pop("receipt_hash", None)
+    reordered["receipt_hash"] = digest(reordered)
+    with pytest.raises(
+        EvidenceFlywheelBoundaryError,
+        match="requirement projection order mismatch",
+    ):
+        compile_gate6_learning_admission(gate5_receipt=reordered)
+
+    rebound = json.loads(json.dumps(_gate6_gate5_receipt()))
+    rebound_scope = rebound["whole_scope_projection"]
+    data_rows = rebound_scope["data_object_projections"]
+    data_rows[0]["fact"], data_rows[1]["fact"] = (
+        data_rows[1]["fact"], data_rows[0]["fact"],
+    )
+    rebound_scope.pop("projection_hash", None)
+    rebound_scope["projection_hash"] = digest(rebound_scope)
+    rebound.pop("receipt_hash", None)
+    rebound["receipt_hash"] = digest(rebound)
+    with pytest.raises(
+        EvidenceFlywheelBoundaryError,
+        match="data-object semantic binding mismatch",
+    ):
+        compile_gate6_learning_admission(gate5_receipt=rebound)
+
+    slot_deleted = json.loads(json.dumps(_gate6_gate5_receipt()))
+    slot_deleted["slot_projections"].pop()
+    slot_deleted.pop("receipt_hash", None)
+    slot_deleted["receipt_hash"] = digest(slot_deleted)
+    with pytest.raises(
+        EvidenceFlywheelBoundaryError,
+        match="slot projection count mismatch",
+    ):
+        compile_gate6_learning_admission(gate5_receipt=slot_deleted)
+
+    with pytest.raises(
+        EvidenceFlywheelBoundaryError,
+        match="Promotion cannot precede frozen Shadow",
+    ):
+        compile_gate6_learning_admission(
+            gate5_receipt=_gate6_gate5_receipt(product_ready=True),
+            promotion_receipt={
+                "schema_version": "explicit-promotion-receipt-v1",
+                "status": "APPROVED",
+            },
+        )
+
+
+def test_gate6_complete_synthetic_chain_is_reachable_but_effects_remain_separate() -> None:
+    prediction_hash = "1" * 64
+    dataset_hash = "2" * 64
+    logistic_model_hash = "3" * 64
+    calibrator_hash = "4" * 64
+    shadow_id = "5" * 64
+    recording = {
+        "schema_version": "evidence-flywheel-runtime-receipt-v1",
+        "phase": "record",
+        "status": "RECORDED",
+        "notification_suppressed": True,
+        "training_requested": False,
+        "model_request_count": 0,
+        "record_count": 1,
+        "intended_cohort_id": "6" * 64,
+        "ledger_receipts": [{
+            "status": "RECORDED",
+            "prediction_hash": prediction_hash,
+            "pit_eligible": True,
+        }],
+    }
+    outcomes = [{
+        "schema_version": "evidence-flywheel-runtime-receipt-v1",
+        "phase": "evaluate-outcome",
+        "status": "TAKE_SUCCESS",
+        "prediction_hash": prediction_hash,
+        "training_requested": False,
+    }]
+    pit = {
+        "schema_version": "evidence-flywheel-runtime-receipt-v1",
+        "phase": "build-manifest",
+        "status": "MANIFEST_FROZEN",
+        "dataset_hash": dataset_hash,
+        "final_test_state": "SEALED",
+        "training_admission": "ADMITTED",
+        "training_admission_reasons": [],
+        "training_requested": False,
+        "counts": {
+            "included_by_fold": {
+                "TRAIN": 80,
+                "VALIDATION": 20,
+                "FINAL_TEST": 20,
+            }
+        },
+    }
+    whitebox = {
+        "schema_version": "whitebox-oot-receipt-v1",
+        "status": "PASS",
+        "dataset_hash": dataset_hash,
+        "model_family": "WHITE_BOX_RULE_BASELINE",
+        "walk_forward": True,
+        "leakage_checks_passed": True,
+        "final_test_untouched": True,
+        "receipt_hash": "7" * 64,
+    }
+    logistic = {
+        "schema_version": "logistic-meta-receipt-v1",
+        "status": "PASS",
+        "dataset_hash": dataset_hash,
+        "model_family": "LOGISTIC_REGRESSION",
+        "model_hash": logistic_model_hash,
+        "receipt_hash": "8" * 64,
+    }
+    calibration = {
+        "schema_version": "independent-calibration-receipt-v1",
+        "status": "PASS",
+        "dataset_hash": dataset_hash,
+        "model_hash": logistic_model_hash,
+        "independent_calibration_set": True,
+        "calibrator_hash": calibrator_hash,
+        "receipt_hash": "9" * 64,
+    }
+    shadow = {
+        "schema_version": "frozen-shadow-receipt-v1",
+        "status": "PASS",
+        "dataset_hash": dataset_hash,
+        "model_hash": logistic_model_hash,
+        "calibrator_hash": calibrator_hash,
+        "frozen": True,
+        "automatic_trading": False,
+        "automatic_parameter_updates": False,
+        "shadow_id": shadow_id,
+        "receipt_hash": "a" * 64,
+    }
+    promotion = {
+        "schema_version": "explicit-promotion-receipt-v1",
+        "status": "APPROVED",
+        "explicit_promotion": True,
+        "automatic": False,
+        "dataset_hash": dataset_hash,
+        "model_hash": logistic_model_hash,
+        "calibrator_hash": calibrator_hash,
+        "shadow_id": shadow_id,
+        "promotion_id": "b" * 64,
+    }
+
+    receipt = compile_gate6_learning_admission(
+        gate5_receipt=_gate6_gate5_receipt(product_ready=True),
+        recording_receipt=recording,
+        outcome_receipts=outcomes,
+        pit_manifest_receipt=pit,
+        whitebox_oot_receipt=whitebox,
+        logistic_receipt=logistic,
+        calibration_receipt=calibration,
+        shadow_receipt=shadow,
+        promotion_receipt=promotion,
+    )
+
+    assert receipt["state"] == (
+        "READY_FOR_SEPARATELY_AUTHORIZED_PROMOTION_EFFECT"
+    )
+    assert receipt["reason_codes"] == []
+    assert receipt["stages"]["LIGHTGBM_INCREMENTAL"]["state"] == (
+        "NOT_REQUESTED"
+    )
+    assert receipt["current_probability_authority"] is False
+    assert receipt["training_effect_authority"] is False
+    assert receipt["promotion_effect_authority"] is False
+    assert receipt["broker_or_automatic_trading_authority"] is False
+    assert receipt["model_training_runs"] == 0
+
+
+def test_gate6_lightgbm_requires_independent_incremental_gain() -> None:
+    gate5 = _gate6_gate5_receipt(product_ready=True)
+    prediction_hash = "c" * 64
+    recording = {
+        "schema_version": "evidence-flywheel-runtime-receipt-v1",
+        "phase": "record",
+        "status": "RECORDED",
+        "notification_suppressed": True,
+        "training_requested": False,
+        "model_request_count": 0,
+        "record_count": 1,
+        "intended_cohort_id": "d" * 64,
+        "ledger_receipts": [{
+            "status": "RECORDED",
+            "prediction_hash": prediction_hash,
+            "pit_eligible": True,
+        }],
+    }
+    outcomes = [{
+        "schema_version": "evidence-flywheel-runtime-receipt-v1",
+        "phase": "evaluate-outcome",
+        "status": "TAKE_FAIL",
+        "prediction_hash": prediction_hash,
+        "training_requested": False,
+    }]
+    pit = {
+        "schema_version": "evidence-flywheel-runtime-receipt-v1",
+        "phase": "build-manifest",
+        "status": "MANIFEST_FROZEN",
+        "dataset_hash": "e" * 64,
+        "final_test_state": "SEALED",
+        "training_admission": "ADMITTED",
+        "training_admission_reasons": [],
+        "training_requested": False,
+        "counts": {},
+    }
+    whitebox = {
+        "schema_version": "whitebox-oot-receipt-v1",
+        "status": "PASS",
+        "dataset_hash": "e" * 64,
+        "model_family": "WHITE_BOX_RULE_BASELINE",
+        "walk_forward": True,
+        "leakage_checks_passed": True,
+        "final_test_untouched": True,
+        "receipt_hash": "f" * 64,
+    }
+    logistic = {
+        "schema_version": "logistic-meta-receipt-v1",
+        "status": "PASS",
+        "dataset_hash": "e" * 64,
+        "model_family": "LOGISTIC_REGRESSION",
+        "model_hash": "1" * 64,
+        "receipt_hash": "2" * 64,
+    }
+    with pytest.raises(
+        EvidenceFlywheelBoundaryError,
+        match="LightGBM incremental proof is incomplete",
+    ):
+        compile_gate6_learning_admission(
+            gate5_receipt=gate5,
+            recording_receipt=recording,
+            outcome_receipts=outcomes,
+            pit_manifest_receipt=pit,
+            whitebox_oot_receipt=whitebox,
+            logistic_receipt=logistic,
+            lightgbm_meta_receipt={
+                "schema_version": "lightgbm-meta-receipt-v1",
+                "status": "PASS",
+                "dataset_hash": "e" * 64,
+                "model_family": "LIGHTGBM_META",
+                "model_hash": "3" * 64,
+                "logistic_model_hash": "1" * 64,
+                "incremental_gain_proven": False,
+                "receipt_hash": "4" * 64,
+            },
+        )

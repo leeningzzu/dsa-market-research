@@ -9,6 +9,8 @@ from unittest import mock
 
 from src.config import Config
 from src.notification import NotificationChannel, NotificationService
+from src.services.evidence_flywheel_runtime import compile_gate6_learning_admission
+from src.services.v2_5_evidence_coverage import render_v2_5_dynamic_no_send
 from src.services.screening.dsa import (
     MTF_SCREENING_DELTA_BOUNDS,
     MTF_SCREENING_ROLE_GROUPS,
@@ -107,27 +109,30 @@ def test_stage_ladder_keeps_parent_product_and_blocking_order_explicit() -> None
     assert [stage["id"] for stage in stages if stage.get("next_primary")] == [
         "B8_FULL_DELIVERY_NO_SEND"
     ]
-    assert stages[5]["blocked_by"] == "B1_SOURCE_RIGHTS"
+    assert stages[5]["blocked_by"] == (
+        "B1_SOURCE_RIGHTS_AND_GATE5_ALL_INPUT_FACTS_PRODUCT_READY"
+    )
     assert stages[6]["blocked_by"] == "L1_LEGAL_LEDGER_OUTCOME_PIT"
     assert stages[7]["blocked_by"] == "M3_CALIBRATION_SHADOW"
     assert baseline["acceptance"]["direct_main_push"] is False
-    # CI87 closes Gate4 on the exact feature checkpoint; it does not merge main,
-    # create missing data rights or prove the current Gate5 dynamic Product.
+    # CI88 closes the root scope/data gates on the exact feature checkpoint; it
+    # does not merge main or turn the current local Gate5/Gate6 candidate into
+    # remote acceptance, actual complete data or learning authority.
     assert baseline["acceptance"]["required_checks"] == [
         "ai-governance", "backend-gate", "docker-build",
     ]
     acceptance = baseline["acceptance"]
     assert acceptance["state"] == (
-        "GATE4_CI87_REMOTE_ACCEPTED_GATE5_SCOPE_DOMAIN_LOCAL_PASS_SCOPED_PR31_DRAFT"
+        "GATE12_CI88_REMOTE_ACCEPTED_GATE5_DYNAMIC_NO_SEND_AND_GATE6_ADMISSION_LOCAL_PASS_SCOPED_PR31_DRAFT"
     )
-    assert acceptance["candidate_head"] == "1de3a8a6f0847fd6a6676ccf51eece6437196663"
-    assert acceptance["candidate_parent"] == "a899586bb5822ddf589cc2f6928e2852acf12b39"
+    assert acceptance["candidate_head"] == "00a5e30e54443615e499e3c89a0e28b122a7f217"
+    assert acceptance["candidate_parent"] == "1de3a8a6f0847fd6a6676ccf51eece6437196663"
     assert acceptance["candidate_head_scope"] == (
         "LATEST_ACCEPTED_FEATURE_CHECKPOINT_NOT_MAIN_PRODUCTION"
     )
     assert acceptance["latest_required_ci"] == {
-        "run_number": 87,
-        "run_id": 40262589339,
+        "run_number": 88,
+        "run_id": 40294193680,
         "conclusion": "success",
     }
     # CI86 remains the direct failed predecessor; older failures remain in Git/history.
@@ -139,6 +144,42 @@ def test_stage_ladder_keeps_parent_product_and_blocking_order_explicit() -> None
     }
     assert acceptance["pull_request_state"] == "DRAFT_OPEN_NOT_MERGED"
     assert baseline["route_decision"]["next_primary"] == "B8_FULL_DELIVERY_NO_SEND"
+
+
+def test_gate5_gate6_local_evidence_matches_current_fail_closed_runtime() -> None:
+    evidence = _baseline()["gate5_gate6_local_evidence"]
+    projected = render_v2_5_dynamic_no_send([], report_date="2026-10-23")
+    gate5 = projected["receipt"]
+    gate6 = compile_gate6_learning_admission(gate5_receipt=gate5)
+
+    expected_gate5 = evidence["gate5"]
+    assert expected_gate5["state"] == "PASS_MISSINGNESS_COMPLETE_LOCAL_UNCOMMITTED"
+    assert expected_gate5["mail_count"] == gate5["frame_contract"]["mail_count"] == 3
+    assert expected_gate5["card_count"] == len(gate5["frame_contract"]["card_ids"]) == 10
+    assert expected_gate5["cycle_count"] == len(gate5["frame_contract"]["cycle_ids"]) == 84
+    assert expected_gate5["dynamic_block_count"] == gate5["frame_contract"]["dynamic_block_count"] == 855
+    assert expected_gate5["fixed_region_sha256"] == gate5["frame_contract"]["fixed_region_sha256"]
+    assert expected_gate5["slot_projection_count"] == gate5["slot_projection_count"] == 270
+    scope = gate5["whole_scope_projection"]
+    assert expected_gate5["requirement_projection_count"] == len(scope["requirement_projections"]) == 26
+    assert expected_gate5["data_object_projection_count"] == len(scope["data_object_projections"]) == 76
+    assert expected_gate5["valuation_projection_count"] == len(scope["valuation_route_projections"]) == 9
+    assert expected_gate5["atomic_projection_count"] == len(scope["atomic_subfield_projections"]) == 7
+    assert expected_gate5["missingness_output_sha256"] == gate5["output_sha256"]
+    assert gate5["all_whole_scope_obligations_projected"] is True
+    assert gate5["all_accepted_slot_roles_projected"] is True
+    assert gate5["all_input_facts_product_ready"] is False
+
+    expected_gate6 = evidence["gate6"]
+    assert gate6["state"] == expected_gate6["state"] == "HOLD"
+    assert len(gate6["stage_order"]) == expected_gate6["stage_count"] == 10
+    assert gate6["reason_codes"] == expected_gate6["reason_codes"]
+    assert gate6["current_probability_authority"] is False
+    assert gate6["training_effect_authority"] is False
+    assert gate6["promotion_effect_authority"] is False
+    assert gate6["network_calls"] == 0
+    assert gate6["database_writes"] == 0
+    assert gate6["model_training_runs"] == 0
 
 
 def test_stage_baseline_preserves_formal_email_contract_and_no_auto_trade() -> None:

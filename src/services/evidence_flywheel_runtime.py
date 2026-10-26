@@ -9,6 +9,7 @@ notification, or enables external research-state durability.
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 from contextlib import contextmanager
 from datetime import date, datetime, time, timezone
 import hashlib
@@ -41,10 +42,35 @@ from src.services.research_state_projection import (
     STRATEGY_ELIGIBILITY_SCHEMA_VERSION,
     build_strategy_eligibility_identity,
 )
-from src.services.evidence_traceability_registry import digest, json_wire_equal
+from src.services.evidence_traceability_registry import (
+    ACCEPTED_DATA_OBJECT_DOMAIN_COUNTS,
+    ACCEPTED_DATA_OBJECT_SUBSET_SHA256,
+    ACCEPTED_PRODUCT_SLOT_IDS,
+    ACCEPTED_REQUIREMENT_ROLES,
+    ACCEPTED_VALUATION_ROUTE_IDS,
+    ACCEPTED_WHOLE_PRODUCT_ATOMIC_SUBFIELDS,
+    BASELINE_SHA256,
+    TIMEFRAMES,
+    at,
+    digest,
+    json_wire_equal,
+)
 
 
 RECEIPT_SCHEMA_VERSION = "evidence-flywheel-runtime-receipt-v1"
+GATE6_LEARNING_ADMISSION_SCHEMA_VERSION = "gate6-learning-admission-v1"
+_GATE6_STAGE_ORDER = (
+    "GATE5_DYNAMIC_PRODUCT",
+    "RECORDING_LEDGER",
+    "MATURE_OUTCOMES",
+    "PIT_DATASET",
+    "WHITEBOX_OOT",
+    "LOGISTIC_META",
+    "LIGHTGBM_INCREMENTAL",
+    "INDEPENDENT_CALIBRATION",
+    "FROZEN_SHADOW",
+    "EXPLICIT_PROMOTION",
+)
 MAX_IDENTITY_FILE_BYTES = 64 * 1024
 ZERO_EXTERNAL_MODEL_REQUEST_BUDGET = 0
 MAX_HISTORICAL_REPLAY_SESSIONS = 20
@@ -818,7 +844,12 @@ def _build_product_report_receipt(
         raise EvidenceFlywheelRuntimeError(
             "product receipt requires runtime factor_decision"
         )
-    json_wire_fields = {"evidence_traceability", "evidence_product_coverage"}
+    json_wire_fields = {
+        "canonical_decision",
+        "investor_brief",
+        "evidence_traceability",
+        "evidence_product_coverage",
+    }
     for field in (
         "canonical_decision",
         "investor_brief",
@@ -882,6 +913,59 @@ def _build_product_report_receipt(
         raise EvidenceFlywheelRuntimeError(
             "product receipt requires V2.5 semantic slot coverage"
         )
+    dynamic_v25_receipt = {
+        "schema_version": coverage.get("schema_version"),
+        "receipt_hash": coverage.get("receipt_hash"),
+        "baseline_sha256": coverage.get("baseline_sha256"),
+        "rendered": False,
+        "actual_render_consumer_proven": False,
+        "reason": "LEGACY_OR_INCOMPLETE_WHOLE_PRODUCT_SCOPE",
+    }
+    whole_scope_gate = coverage.get("whole_product_scope_gate")
+    if (
+        isinstance(whole_scope_gate, Mapping)
+        and whole_scope_gate.get("full_scope_accounted_pass") is True
+    ):
+        from src.services.v2_5_evidence_coverage import (
+            render_v2_5_dynamic_no_send,
+        )
+
+        projected = render_v2_5_dynamic_no_send([result])
+        dynamic_receipt = projected.get("receipt")
+        if (
+            not isinstance(dynamic_receipt, Mapping)
+            or dynamic_receipt.get("rendered") is not True
+            or dynamic_receipt.get("dynamic_fidelity_proven") is not True
+            or dynamic_receipt.get("all_accepted_slot_roles_projected") is not True
+            or dynamic_receipt.get("all_whole_scope_obligations_projected") is not True
+            or dynamic_receipt.get("no_send") is not True
+            or dynamic_receipt.get("delivery_authority") is not False
+            or dynamic_receipt.get("storage_authority") is not False
+            or dynamic_receipt.get("learning_authority") is not False
+        ):
+            raise EvidenceFlywheelRuntimeError(
+                "product receipt requires complete dynamic V2.5 NO_SEND projection"
+            )
+        dynamic_v25_receipt = {
+            "schema_version": dynamic_receipt.get("schema_version"),
+            "receipt_hash": dynamic_receipt.get("receipt_hash"),
+            "baseline_sha256": dynamic_receipt.get("baseline_sha256"),
+            "output_sha256": dynamic_receipt.get("output_sha256"),
+            "output_bytes": dynamic_receipt.get("output_bytes"),
+            "frame_contract_hash": dynamic_receipt.get("frame_contract_hash"),
+            "whole_scope_projection_hash": at(
+                dynamic_receipt, "whole_scope_projection.projection_hash"
+            ),
+            "slot_projection_count": dynamic_receipt.get(
+                "slot_projection_count"
+            ),
+            "rendered": True,
+            "actual_render_consumer_proven": True,
+            "all_input_facts_product_ready": dynamic_receipt.get(
+                "all_input_facts_product_ready"
+            ),
+            "no_send": True,
+        }
     trace = persisted_factor.get("evidence_traceability")
     if not isinstance(trace, Mapping):
         raise EvidenceFlywheelRuntimeError(
@@ -972,11 +1056,7 @@ def _build_product_report_receipt(
             "strategy_binding_count": universe_counts.get("strategy_bindings"),
         },
         "v25_semantic_coverage": {
-            "schema_version": coverage.get("schema_version"),
-            "receipt_hash": coverage.get("receipt_hash"),
-            "baseline_sha256": coverage.get("baseline_sha256"),
-            "rendered": False,
-            "actual_render_consumer_proven": False,
+            **dynamic_v25_receipt,
             "slot_state_counts": slot_state_counts,
         },
     }
@@ -1515,6 +1595,726 @@ def build_pit_manifest_receipt(
         "external_durability": "NOT_REQUESTED",
         "training_requested": False,
     }
+
+
+def _gate6_exact_hash(value: Any, *, field: str, length: int = 64) -> str:
+    return _require_sha(value, length=length, field=field)
+
+
+def _gate6_projection_rows(
+    value: Any,
+    *,
+    kind: str,
+    expected_count: int,
+) -> tuple[dict[str, Any], ...]:
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        raise EvidenceFlywheelBoundaryError(f"Gate5 {kind} projections invalid")
+    rows = tuple(dict(row) for row in value if isinstance(row, Mapping))
+    if len(rows) != expected_count or len(rows) != len(value):
+        raise EvidenceFlywheelBoundaryError(f"Gate5 {kind} projection count mismatch")
+    identifiers = [str(row.get("id") or "") for row in rows]
+    if any(not identifier for identifier in identifiers) or len(set(identifiers)) != len(identifiers):
+        raise EvidenceFlywheelBoundaryError(f"Gate5 {kind} projection identity invalid")
+    for row in rows:
+        locations = tuple(row.get("location_ids") or ())
+        if len(locations) != 1 or not str(locations[0]).startswith("block-"):
+            raise EvidenceFlywheelBoundaryError(
+                f"Gate5 {kind} projection location invalid"
+            )
+        _gate6_exact_hash(
+            row.get("projection_sha256"),
+            field=f"Gate5 {kind} projection_sha256",
+        )
+    if len({str(row["location_ids"][0]) for row in rows}) != len(rows):
+        raise EvidenceFlywheelBoundaryError(
+            f"Gate5 {kind} projection location duplicate"
+        )
+    return rows
+
+
+def _gate6_validate_gate5_receipt(receipt: Mapping[str, Any]) -> dict:
+    if not isinstance(receipt, Mapping):
+        raise EvidenceFlywheelBoundaryError("Gate6 requires a Gate5 receipt object")
+    body = dict(receipt)
+    receipt_hash = body.pop("receipt_hash", None)
+    if receipt_hash is not None:
+        bound_hash = _gate6_exact_hash(
+            receipt_hash,
+            field="Gate5 receipt_hash",
+        )
+        if digest(body) != bound_hash:
+            raise EvidenceFlywheelBoundaryError("Gate5 receipt hash mismatch")
+    required = {
+        "schema_version": "v25-dynamic-no-send-v1",
+        "authority": "ORIGINAL_GOLDEN_TEXT_NODE_PROJECTION_NO_SEND",
+        "baseline_sha256": BASELINE_SHA256,
+        "rendered": True,
+        "dynamic_product_projection_admitted": True,
+        "dynamic_fidelity_proven": True,
+        "all_accepted_slot_roles_projected": True,
+        "all_whole_scope_obligations_projected": True,
+        "no_send": True,
+        "delivery_authority": False,
+        "storage_authority": False,
+        "learning_authority": False,
+        "model_calls": 0,
+        "network_calls": 0,
+        "database_writes": 0,
+    }
+    for key, expected in required.items():
+        if receipt.get(key) != expected:
+            raise EvidenceFlywheelBoundaryError(
+                f"Gate5 receipt invariant mismatch: {key}"
+            )
+    _gate6_exact_hash(receipt.get("output_sha256"), field="Gate5 output_sha256")
+    frame_hash = _gate6_exact_hash(
+        receipt.get("frame_contract_hash"),
+        field="Gate5 frame_contract_hash",
+    )
+    frame = receipt.get("frame_contract")
+    if not isinstance(frame, Mapping) or digest(frame) != frame_hash:
+        raise EvidenceFlywheelBoundaryError("Gate5 frame contract hash mismatch")
+    card_ids = tuple(str(item) for item in frame.get("card_ids") or ())
+    cycle_ids = tuple(str(item) for item in frame.get("cycle_ids") or ())
+    if (
+        frame.get("mail_count") != 3
+        or len(card_ids) != 10
+        or len(set(card_ids)) != 10
+        or cycle_ids != tuple(f"cycle-{index:02d}" for index in range(84))
+    ):
+        raise EvidenceFlywheelBoundaryError("Gate5 frame contract incomplete")
+    _gate6_exact_hash(
+        frame.get("fixed_region_sha256"),
+        field="Gate5 fixed_region_sha256",
+    )
+
+    scope = receipt.get("whole_scope_projection")
+    if not isinstance(scope, Mapping):
+        raise EvidenceFlywheelBoundaryError("Gate5 whole-scope projection missing")
+    projection_hash = _gate6_exact_hash(
+        scope.get("projection_hash"),
+        field="Gate5 whole-scope projection_hash",
+    )
+    scope_body = dict(scope)
+    scope_body.pop("projection_hash", None)
+    if digest(scope_body) != projection_hash:
+        raise EvidenceFlywheelBoundaryError(
+            "Gate5 whole-scope projection hash mismatch"
+        )
+    if tuple(scope.get("timeframes") or ()) != TIMEFRAMES:
+        raise EvidenceFlywheelBoundaryError("Gate5 timeframe scope mismatch")
+
+    requirement_rows = _gate6_projection_rows(
+        scope.get("requirement_projections"),
+        kind="requirement",
+        expected_count=len(ACCEPTED_REQUIREMENT_ROLES),
+    )
+    if frozenset(
+        (row["id"], str(row.get("role") or ""))
+        for row in requirement_rows
+    ) != ACCEPTED_REQUIREMENT_ROLES:
+        raise EvidenceFlywheelBoundaryError("Gate5 requirement projection mismatch")
+    if tuple(row["id"] for row in requirement_rows) != tuple(
+        sorted(identifier for identifier, _role in ACCEPTED_REQUIREMENT_ROLES)
+    ):
+        raise EvidenceFlywheelBoundaryError(
+            "Gate5 requirement projection order mismatch"
+        )
+
+    data_rows = _gate6_projection_rows(
+        scope.get("data_object_projections"),
+        kind="data-object",
+        expected_count=76,
+    )
+    if Counter(str(row.get("domain") or "") for row in data_rows) != Counter(
+        ACCEPTED_DATA_OBJECT_DOMAIN_COUNTS
+    ):
+        raise EvidenceFlywheelBoundaryError("Gate5 data-domain projection mismatch")
+    if scope.get("data_object_catalog_binding_sha256") != (
+        ACCEPTED_DATA_OBJECT_SUBSET_SHA256
+    ):
+        raise EvidenceFlywheelBoundaryError(
+            "Gate5 data-object catalog binding mismatch"
+        )
+    observed_catalog_hash = hashlib.sha256(
+        json.dumps(
+            [
+                (
+                    row["id"], row.get("domain"), row.get("fact"),
+                    row.get("native_frequency"), row.get("consumer"),
+                )
+                for row in data_rows
+            ],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    if observed_catalog_hash != ACCEPTED_DATA_OBJECT_SUBSET_SHA256:
+        raise EvidenceFlywheelBoundaryError(
+            "Gate5 data-object semantic binding mismatch"
+        )
+
+    valuation_rows = _gate6_projection_rows(
+        scope.get("valuation_route_projections"),
+        kind="valuation-route",
+        expected_count=len(ACCEPTED_VALUATION_ROUTE_IDS),
+    )
+    if frozenset(row["id"] for row in valuation_rows) != ACCEPTED_VALUATION_ROUTE_IDS:
+        raise EvidenceFlywheelBoundaryError("Gate5 valuation projection mismatch")
+
+    atomic_rows = _gate6_projection_rows(
+        scope.get("atomic_subfield_projections"),
+        kind="atomic-subfield",
+        expected_count=len(ACCEPTED_WHOLE_PRODUCT_ATOMIC_SUBFIELDS),
+    )
+    if frozenset(row["id"] for row in atomic_rows) != ACCEPTED_WHOLE_PRODUCT_ATOMIC_SUBFIELDS:
+        raise EvidenceFlywheelBoundaryError("Gate5 atomic projection mismatch")
+
+    scope_locations = [
+        str(row["location_ids"][0])
+        for rows in (requirement_rows, data_rows, valuation_rows, atomic_rows)
+        for row in rows
+    ]
+    if len(scope_locations) != len(set(scope_locations)):
+        raise EvidenceFlywheelBoundaryError("Gate5 whole-scope locations overlap")
+
+    slots = receipt.get("slot_projections")
+    if isinstance(slots, (str, bytes)) or not isinstance(slots, Sequence):
+        raise EvidenceFlywheelBoundaryError("Gate5 slot projections invalid")
+    slot_rows = tuple(dict(row) for row in slots if isinstance(row, Mapping))
+    if len(slot_rows) != 270 or len(slot_rows) != len(slots):
+        raise EvidenceFlywheelBoundaryError("Gate5 slot projection count mismatch")
+    for card_id in card_ids:
+        card_slots = {
+            str(row.get("slot_id") or "")
+            for row in slot_rows
+            if str(row.get("card_id") or "") == card_id
+        }
+        if card_slots != ACCEPTED_PRODUCT_SLOT_IDS:
+            raise EvidenceFlywheelBoundaryError("Gate5 slot projection set mismatch")
+    if any(
+        not tuple(row.get("location_ids") or ())
+        or str(row.get("projection_state") or "")
+        not in {"RENDERED_EVIDENCE", "RENDERED_MISSINGNESS"}
+        for row in slot_rows
+    ):
+        raise EvidenceFlywheelBoundaryError("Gate5 slot projection material invalid")
+
+    results = receipt.get("results")
+    if not isinstance(results, list):
+        raise EvidenceFlywheelBoundaryError("Gate5 result projection invalid")
+    product_ready = receipt.get("all_input_facts_product_ready") is True
+    if product_ready:
+        if (
+            not results
+            or any(
+                not isinstance(row, Mapping)
+                or row.get("fact_mode") != "ADMITTED"
+                or row.get("full_domain_product_ready") is not True
+                for row in results
+            )
+            or tuple(scope.get("atomic_subfields_unresolved") or ())
+            or any(row.get("state") != "BOUND" for row in atomic_rows)
+            or any(
+                str(row.get("state") or "") not in {"READY", "NOT_APPLICABLE"}
+                for row in data_rows
+            )
+            or any(
+                row.get("projection_state") != "RENDERED_EVIDENCE"
+                for row in slot_rows
+            )
+        ):
+            raise EvidenceFlywheelBoundaryError(
+                "Gate5 Product-ready claim is not supported by projections"
+            )
+    return dict(receipt)
+
+
+def _gate6_validate_recording(receipt: Mapping[str, Any]) -> dict:
+    if not isinstance(receipt, Mapping):
+        raise EvidenceFlywheelBoundaryError("recording receipt must be an object")
+    if (
+        receipt.get("schema_version") != RECEIPT_SCHEMA_VERSION
+        or receipt.get("phase") != "record"
+        or receipt.get("status") != "RECORDED"
+        or receipt.get("notification_suppressed") is not True
+        or receipt.get("training_requested") is not False
+        or receipt.get("model_request_count") != 0
+    ):
+        raise EvidenceFlywheelBoundaryError("recording receipt boundary mismatch")
+    rows = receipt.get("ledger_receipts")
+    count = receipt.get("record_count")
+    if (
+        isinstance(count, bool)
+        or not isinstance(count, int)
+        or count <= 0
+        or not isinstance(rows, list)
+        or len(rows) != count
+    ):
+        raise EvidenceFlywheelBoundaryError("recording receipt count mismatch")
+    prediction_hashes = []
+    pit_eligible = 0
+    for row in rows:
+        if not isinstance(row, Mapping) or row.get("status") != "RECORDED":
+            raise EvidenceFlywheelBoundaryError("recording Ledger receipt invalid")
+        prediction_hashes.append(
+            _gate6_exact_hash(
+                row.get("prediction_hash"),
+                field="recording prediction_hash",
+            )
+        )
+        if row.get("pit_eligible") is True:
+            pit_eligible += 1
+        elif row.get("pit_eligible") is not False:
+            raise EvidenceFlywheelBoundaryError(
+                "recording pit_eligible must be boolean"
+            )
+    if len(set(prediction_hashes)) != len(prediction_hashes):
+        raise EvidenceFlywheelBoundaryError("recording prediction hash duplicate")
+    return {
+        "record_count": count,
+        "prediction_hashes": tuple(prediction_hashes),
+        "pit_eligible_count": pit_eligible,
+        "intended_cohort_id": receipt.get("intended_cohort_id"),
+    }
+
+
+def _gate6_validate_outcomes(
+    receipts: Sequence[Mapping[str, Any]],
+    prediction_hashes: Sequence[str],
+) -> dict:
+    if isinstance(receipts, (str, bytes)) or not isinstance(receipts, Sequence):
+        raise EvidenceFlywheelBoundaryError("outcome receipts must be a sequence")
+    by_hash: dict[str, Mapping[str, Any]] = {}
+    for receipt in receipts:
+        if (
+            not isinstance(receipt, Mapping)
+            or receipt.get("schema_version") != RECEIPT_SCHEMA_VERSION
+            or receipt.get("phase") != "evaluate-outcome"
+            or receipt.get("training_requested") is not False
+        ):
+            raise EvidenceFlywheelBoundaryError("outcome receipt boundary mismatch")
+        prediction_hash = _gate6_exact_hash(
+            receipt.get("prediction_hash"),
+            field="outcome prediction_hash",
+        )
+        if prediction_hash in by_hash:
+            raise EvidenceFlywheelBoundaryError("duplicate outcome receipt")
+        by_hash[prediction_hash] = receipt
+    expected = set(prediction_hashes)
+    if set(by_hash) != expected:
+        raise EvidenceFlywheelBoundaryError("outcome receipt set mismatch")
+    labelable = 0
+    unmatured = 0
+    unlabelable = 0
+    for receipt in by_hash.values():
+        status = str(receipt.get("status") or "UNKNOWN")
+        if status in {"TAKE_SUCCESS", "TAKE_FAIL"}:
+            labelable += 1
+        elif status == "UNMATURED":
+            unmatured += 1
+        else:
+            unlabelable += 1
+    return {
+        "outcome_count": len(by_hash),
+        "labelable_count": labelable,
+        "unmatured_count": unmatured,
+        "unlabelable_count": unlabelable,
+    }
+
+
+def _gate6_validate_pit(receipt: Mapping[str, Any]) -> dict:
+    if (
+        not isinstance(receipt, Mapping)
+        or receipt.get("schema_version") != RECEIPT_SCHEMA_VERSION
+        or receipt.get("phase") != "build-manifest"
+        or receipt.get("status") != "MANIFEST_FROZEN"
+        or receipt.get("training_requested") is not False
+    ):
+        raise EvidenceFlywheelBoundaryError("PIT manifest receipt boundary mismatch")
+    dataset_hash = _gate6_exact_hash(
+        receipt.get("dataset_hash"),
+        field="PIT dataset_hash",
+    )
+    if receipt.get("final_test_state") != "SEALED":
+        raise EvidenceFlywheelBoundaryError("PIT final test must be sealed")
+    admission = str(receipt.get("training_admission") or "BLOCKED")
+    reasons = tuple(str(item) for item in receipt.get("training_admission_reasons") or ())
+    if admission not in {"BLOCKED", "ADMITTED"}:
+        raise EvidenceFlywheelBoundaryError("PIT training admission invalid")
+    if admission == "ADMITTED" and reasons:
+        raise EvidenceFlywheelBoundaryError(
+            "PIT admitted manifest cannot retain blocking reasons"
+        )
+    return {
+        "dataset_hash": dataset_hash,
+        "training_admission": admission,
+        "training_admission_reasons": reasons,
+        "counts": dict(receipt.get("counts") or {}),
+    }
+
+
+def _gate6_model_receipt(
+    receipt: Mapping[str, Any],
+    *,
+    schema_version: str,
+    dataset_hash: str,
+    stage: str,
+) -> dict:
+    if (
+        not isinstance(receipt, Mapping)
+        or receipt.get("schema_version") != schema_version
+        or receipt.get("status") != "PASS"
+        or receipt.get("dataset_hash") != dataset_hash
+    ):
+        raise EvidenceFlywheelBoundaryError(f"{stage} receipt boundary mismatch")
+    return dict(receipt)
+
+
+def compile_gate6_learning_admission(
+    *,
+    gate5_receipt: Mapping[str, Any],
+    recording_receipt: Optional[Mapping[str, Any]] = None,
+    outcome_receipts: Optional[Sequence[Mapping[str, Any]]] = None,
+    pit_manifest_receipt: Optional[Mapping[str, Any]] = None,
+    whitebox_oot_receipt: Optional[Mapping[str, Any]] = None,
+    logistic_receipt: Optional[Mapping[str, Any]] = None,
+    lightgbm_meta_receipt: Optional[Mapping[str, Any]] = None,
+    calibration_receipt: Optional[Mapping[str, Any]] = None,
+    shadow_receipt: Optional[Mapping[str, Any]] = None,
+    promotion_receipt: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Compile the whole Gate6 chain without training, promotion, or I/O.
+
+    This is a point-of-use admission receipt.  It never treats an absent future
+    stage as complete and never grants the external effect it validates.
+    """
+    gate5 = _gate6_validate_gate5_receipt(gate5_receipt)
+    stages: dict[str, dict[str, Any]] = {
+        name: {"state": "NOT_OBSERVED", "reason_codes": []}
+        for name in _GATE6_STAGE_ORDER
+    }
+    reasons: list[str] = []
+    product_ready = gate5.get("all_input_facts_product_ready") is True
+    stages["GATE5_DYNAMIC_PRODUCT"] = {
+        "state": "PASS_FACT_READY" if product_ready else "PASS_MISSINGNESS_COMPLETE",
+        "reason_codes": [] if product_ready else ["FULL_DOMAIN_PRODUCT_DATA_NOT_READY"],
+        "output_sha256": gate5.get("output_sha256"),
+    }
+    if not product_ready:
+        reasons.append("FULL_DOMAIN_PRODUCT_DATA_NOT_READY")
+
+    recording = None
+    if recording_receipt is None:
+        reasons.append("RECORDING_RECEIPT_MISSING")
+        stages["RECORDING_LEDGER"]["reason_codes"] = [
+            "RECORDING_RECEIPT_MISSING"
+        ]
+    else:
+        recording = _gate6_validate_recording(recording_receipt)
+        all_pit_eligible = (
+            recording["pit_eligible_count"] == recording["record_count"]
+        )
+        stages["RECORDING_LEDGER"] = {
+            "state": "PASS" if all_pit_eligible else "PARTIAL",
+            "reason_codes": [] if all_pit_eligible else [
+                "PIT_ELIGIBILITY_INCOMPLETE"
+            ],
+            **recording,
+        }
+        if not all_pit_eligible:
+            reasons.append("PIT_ELIGIBILITY_INCOMPLETE")
+
+    outcomes = None
+    if recording is not None and outcome_receipts is not None:
+        outcomes = _gate6_validate_outcomes(
+            outcome_receipts,
+            recording["prediction_hashes"],
+        )
+        complete = (
+            outcomes["labelable_count"] == recording["record_count"]
+            and outcomes["unmatured_count"] == 0
+            and outcomes["unlabelable_count"] == 0
+        )
+        outcome_reasons = []
+        if outcomes["unmatured_count"]:
+            outcome_reasons.append("OUTCOMES_UNMATURED")
+        if outcomes["unlabelable_count"]:
+            outcome_reasons.append("OUTCOMES_UNLABELABLE")
+        stages["MATURE_OUTCOMES"] = {
+            "state": "PASS" if complete else "PARTIAL",
+            "reason_codes": outcome_reasons,
+            **outcomes,
+        }
+        reasons.extend(outcome_reasons)
+    elif recording is not None:
+        stages["MATURE_OUTCOMES"]["reason_codes"] = [
+            "OUTCOME_RECEIPTS_MISSING"
+        ]
+        reasons.append("OUTCOME_RECEIPTS_MISSING")
+
+    pit = None
+    if pit_manifest_receipt is not None:
+        pit = _gate6_validate_pit(pit_manifest_receipt)
+        admitted = pit["training_admission"] == "ADMITTED"
+        stages["PIT_DATASET"] = {
+            "state": "PASS" if admitted else "BLOCKED",
+            "reason_codes": list(pit["training_admission_reasons"]),
+            **pit,
+        }
+        if not admitted:
+            reasons.extend(pit["training_admission_reasons"] or (
+                "PIT_TRAINING_ADMISSION_BLOCKED",
+            ))
+    else:
+        stages["PIT_DATASET"]["reason_codes"] = ["PIT_MANIFEST_MISSING"]
+        reasons.append("PIT_MANIFEST_MISSING")
+
+    dataset_hash = pit["dataset_hash"] if pit is not None else None
+    whitebox = None
+    if whitebox_oot_receipt is not None:
+        if not dataset_hash:
+            raise EvidenceFlywheelBoundaryError(
+                "whitebox OOT cannot precede PIT dataset"
+            )
+        whitebox = _gate6_model_receipt(
+            whitebox_oot_receipt,
+            schema_version="whitebox-oot-receipt-v1",
+            dataset_hash=dataset_hash,
+            stage="whitebox OOT",
+        )
+        if (
+            whitebox.get("model_family") != "WHITE_BOX_RULE_BASELINE"
+            or whitebox.get("walk_forward") is not True
+            or whitebox.get("leakage_checks_passed") is not True
+            or whitebox.get("final_test_untouched") is not True
+        ):
+            raise EvidenceFlywheelBoundaryError(
+                "whitebox OOT proof is incomplete"
+            )
+        stages["WHITEBOX_OOT"] = {
+            "state": "PASS",
+            "reason_codes": [],
+            "receipt_hash": _gate6_exact_hash(
+                whitebox.get("receipt_hash"),
+                field="whitebox receipt_hash",
+            ),
+        }
+    elif pit is not None and pit["training_admission"] == "ADMITTED":
+        stages["WHITEBOX_OOT"]["reason_codes"] = [
+            "WHITEBOX_OOT_RECEIPT_MISSING"
+        ]
+        reasons.append("WHITEBOX_OOT_RECEIPT_MISSING")
+
+    logistic = None
+    if logistic_receipt is not None:
+        if whitebox is None or not dataset_hash:
+            raise EvidenceFlywheelBoundaryError(
+                "Logistic cannot precede whitebox OOT"
+            )
+        logistic = _gate6_model_receipt(
+            logistic_receipt,
+            schema_version="logistic-meta-receipt-v1",
+            dataset_hash=dataset_hash,
+            stage="Logistic",
+        )
+        if logistic.get("model_family") != "LOGISTIC_REGRESSION":
+            raise EvidenceFlywheelBoundaryError("Logistic model family mismatch")
+        stages["LOGISTIC_META"] = {
+            "state": "PASS",
+            "reason_codes": [],
+            "model_hash": _gate6_exact_hash(
+                logistic.get("model_hash"), field="Logistic model_hash"
+            ),
+            "receipt_hash": _gate6_exact_hash(
+                logistic.get("receipt_hash"), field="Logistic receipt_hash"
+            ),
+        }
+    elif whitebox is not None:
+        stages["LOGISTIC_META"]["reason_codes"] = [
+            "LOGISTIC_RECEIPT_MISSING"
+        ]
+        reasons.append("LOGISTIC_RECEIPT_MISSING")
+
+    selected_model_hash = None
+    if logistic is not None:
+        selected_model_hash = logistic["model_hash"]
+        stages["LIGHTGBM_INCREMENTAL"] = {
+            "state": "NOT_REQUESTED",
+            "reason_codes": [],
+            "policy": "ONLY_IF_OOT_INCREMENTAL_GAIN_PROVEN",
+        }
+    if lightgbm_meta_receipt is not None:
+        if logistic is None or not dataset_hash:
+            raise EvidenceFlywheelBoundaryError(
+                "LightGBM cannot precede Logistic"
+            )
+        lightgbm = _gate6_model_receipt(
+            lightgbm_meta_receipt,
+            schema_version="lightgbm-meta-receipt-v1",
+            dataset_hash=dataset_hash,
+            stage="LightGBM",
+        )
+        if (
+            lightgbm.get("model_family") != "LIGHTGBM_META"
+            or lightgbm.get("incremental_gain_proven") is not True
+            or lightgbm.get("logistic_model_hash") != logistic["model_hash"]
+        ):
+            raise EvidenceFlywheelBoundaryError(
+                "LightGBM incremental proof is incomplete"
+            )
+        selected_model_hash = _gate6_exact_hash(
+            lightgbm.get("model_hash"), field="LightGBM model_hash"
+        )
+        stages["LIGHTGBM_INCREMENTAL"] = {
+            "state": "PASS",
+            "reason_codes": [],
+            "model_hash": selected_model_hash,
+            "receipt_hash": _gate6_exact_hash(
+                lightgbm.get("receipt_hash"), field="LightGBM receipt_hash"
+            ),
+        }
+
+    calibration = None
+    if calibration_receipt is not None:
+        if not selected_model_hash or not dataset_hash:
+            raise EvidenceFlywheelBoundaryError(
+                "calibration cannot precede an admitted model"
+            )
+        calibration = _gate6_model_receipt(
+            calibration_receipt,
+            schema_version="independent-calibration-receipt-v1",
+            dataset_hash=dataset_hash,
+            stage="calibration",
+        )
+        if (
+            calibration.get("model_hash") != selected_model_hash
+            or calibration.get("independent_calibration_set") is not True
+        ):
+            raise EvidenceFlywheelBoundaryError(
+                "independent calibration proof is incomplete"
+            )
+        stages["INDEPENDENT_CALIBRATION"] = {
+            "state": "PASS",
+            "reason_codes": [],
+            "calibrator_hash": _gate6_exact_hash(
+                calibration.get("calibrator_hash"),
+                field="calibrator_hash",
+            ),
+            "receipt_hash": _gate6_exact_hash(
+                calibration.get("receipt_hash"),
+                field="calibration receipt_hash",
+            ),
+        }
+    elif selected_model_hash:
+        stages["INDEPENDENT_CALIBRATION"]["reason_codes"] = [
+            "CALIBRATION_RECEIPT_MISSING"
+        ]
+        reasons.append("CALIBRATION_RECEIPT_MISSING")
+
+    shadow = None
+    if shadow_receipt is not None:
+        if calibration is None or not dataset_hash:
+            raise EvidenceFlywheelBoundaryError(
+                "Shadow cannot precede calibration"
+            )
+        shadow = _gate6_model_receipt(
+            shadow_receipt,
+            schema_version="frozen-shadow-receipt-v1",
+            dataset_hash=dataset_hash,
+            stage="Shadow",
+        )
+        if (
+            shadow.get("status") != "PASS"
+            or shadow.get("model_hash") != selected_model_hash
+            or shadow.get("calibrator_hash") != calibration["calibrator_hash"]
+            or shadow.get("frozen") is not True
+            or shadow.get("automatic_trading") is not False
+            or shadow.get("automatic_parameter_updates") is not False
+        ):
+            raise EvidenceFlywheelBoundaryError("Shadow proof is incomplete")
+        stages["FROZEN_SHADOW"] = {
+            "state": "PASS",
+            "reason_codes": [],
+            "shadow_id": _gate6_exact_hash(
+                shadow.get("shadow_id"), field="shadow_id"
+            ),
+            "receipt_hash": _gate6_exact_hash(
+                shadow.get("receipt_hash"), field="Shadow receipt_hash"
+            ),
+        }
+    elif calibration is not None:
+        stages["FROZEN_SHADOW"]["reason_codes"] = [
+            "FROZEN_SHADOW_RECEIPT_MISSING"
+        ]
+        reasons.append("FROZEN_SHADOW_RECEIPT_MISSING")
+
+    promotion_valid = False
+    if promotion_receipt is not None:
+        if shadow is None or not dataset_hash:
+            raise EvidenceFlywheelBoundaryError(
+                "Promotion cannot precede frozen Shadow"
+            )
+        if (
+            not isinstance(promotion_receipt, Mapping)
+            or promotion_receipt.get("schema_version")
+            != "explicit-promotion-receipt-v1"
+            or promotion_receipt.get("status") != "APPROVED"
+            or promotion_receipt.get("explicit_promotion") is not True
+            or promotion_receipt.get("automatic") is not False
+            or promotion_receipt.get("dataset_hash") != dataset_hash
+            or promotion_receipt.get("model_hash") != selected_model_hash
+            or promotion_receipt.get("calibrator_hash")
+            != calibration["calibrator_hash"]
+            or promotion_receipt.get("shadow_id") != shadow["shadow_id"]
+        ):
+            raise EvidenceFlywheelBoundaryError(
+                "explicit Promotion receipt boundary mismatch"
+            )
+        promotion_valid = True
+        stages["EXPLICIT_PROMOTION"] = {
+            "state": "PASS_RECEIPT_ONLY",
+            "reason_codes": [],
+            "promotion_id": _gate6_exact_hash(
+                promotion_receipt.get("promotion_id"),
+                field="promotion_id",
+            ),
+        }
+    elif shadow is not None:
+        stages["EXPLICIT_PROMOTION"]["reason_codes"] = [
+            "EXPLICIT_PROMOTION_RECEIPT_MISSING"
+        ]
+        reasons.append("EXPLICIT_PROMOTION_RECEIPT_MISSING")
+
+    reasons = sorted(set(reasons))
+    all_stage_receipts_valid = all(
+        stages[name]["state"] in {
+            "PASS_FACT_READY", "PASS", "NOT_REQUESTED", "PASS_RECEIPT_ONLY"
+        }
+        for name in _GATE6_STAGE_ORDER
+    )
+    ready_for_separate_effect = (
+        product_ready and not reasons and all_stage_receipts_valid and promotion_valid
+    )
+    document = {
+        "schema_version": GATE6_LEARNING_ADMISSION_SCHEMA_VERSION,
+        "state": (
+            "READY_FOR_SEPARATELY_AUTHORIZED_PROMOTION_EFFECT"
+            if ready_for_separate_effect else "HOLD"
+        ),
+        "stage_order": _GATE6_STAGE_ORDER,
+        "stages": stages,
+        "reason_codes": reasons,
+        "current_probability_authority": False,
+        "training_effect_authority": False,
+        "promotion_effect_authority": False,
+        "broker_or_automatic_trading_authority": False,
+        "network_calls": 0,
+        "database_writes": 0,
+        "model_training_runs": 0,
+    }
+    document["admission_hash"] = digest(document)
+    return document
 
 
 def _read_json_object(path_value: str, *, label: str) -> Dict[str, Any]:

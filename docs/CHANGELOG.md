@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [改进] 在现有V2.5 Coverage/Notification与Evidence Flywheel Owner内闭合本地Gate5/Gate6边界：原125919字节Golden只作文本节点投影，三envelope、10卡位、84周期、270槽实例以及26要求/76对象/9估值/7细字段逐项绑定唯一位置和内容哈希，固定区、DOM/CSS/顺序保持不变，空/部分候选诚实显示missingness且清除样例事实；Gate6按Ledger→Outcome→PIT→白盒OOT→Logistic→条件LightGBM→独立校准→冻结Shadow→显式Promotion十阶段 fail-closed，拒绝删项、重排、语义调包、布尔伪造和越级晋升。当前真实全域数据仍未Product-ready，故学习状态保持HOLD；不发送、不落业务库、不训练、不晋升。
 - [改进] 在现有Registry与V2.5 Coverage内新增whole-product/full-domain双门禁：独立锁定26项研究要求、27个语义槽及其完整绑定哈希、76对象六域、九条估值路线及已知Golden原子子字段，候选删槽/换序/换绑定/删需求/删对象/重复/错域/伪状态均拒绝；完整记账与Product-ready分开，合法UNKNOWN/MISSING/N-A保留且不被技术分或目录计数升级，并以股票/ETF全适用对象合成合法回执证明门禁可达而非永久阻塞。同步Gate5维护入口到CI87和v3.517，不改原V2.5、策略权重、Provider、数据库或发送行为。
 - [文档] GitHub PR31在`99106c67`上自然CI #82（Run40068248419）完整Linux Offline、AI治理、Docker与变更检测全部SUCCESS，保持Draft/Open未merge；原B1入口`26ecd5d0`CI80和状态投影`df82f93e`CI81分别保留历史通过。精确七文件修复覆盖真实请求前后单一known-at、B1构造禁业务DB/LLM/Search、CN 5m市场参数、非B1日/韩MA原行为和原行情响应指纹（不是历史PIT修订）。当前源码接受仅PASS_SCOPED，实际数据来源权利、同一as-of股票ETF完整NO_SEND Product与训练/交付仍OPEN；原V2.5/775图及所有已关闭门禁不重做。
 - [文档] B1生产接线提交`26ecd5d0`经CI #80（Run40055753549）在Linux Offline、AI治理、Docker、变更检测和桌面打包全部通过；Roadmap/Stage同步工程接受上限并保持PR #31 Draft未合并。该PASS只证明现有DSA内operation-specific权利→Provider/Identity→Registry/Factor/canonical→原NO_SEND报告的fail-closed工程链，不把合成授权夹具、SDK可调用或绿色CI冒充真实上游许可、实际Stock+ETF Product、存储/训练/发送或Promotion。
