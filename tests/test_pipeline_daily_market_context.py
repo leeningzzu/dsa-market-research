@@ -138,6 +138,111 @@ def _market_context() -> DailyMarketContext:
     )
 
 
+def test_gate4_runtime_context_projects_quote_and_completed_5m_without_new_authority() -> None:
+    quote = SimpleNamespace(
+        source=SimpleNamespace(value="fixture_quote"),
+        price=10.5,
+        volume=100000.0,
+        amount=1050000.0,
+        turnover_rate=1.2,
+        stale=False,
+    )
+    mtf = {
+        "timeframes": {
+            "5m": {
+                "status": "READY",
+                "completed_bar_only": True,
+                "observations": 48,
+                "completed_through": "2026-10-23",
+                "source_alignment": {"status": "SINGLE_SOURCE"},
+            },
+        },
+    }
+
+    context = StockAnalysisPipeline._build_gate4_runtime_context(
+        realtime_quote=quote,
+        multi_timeframe_structure_context=mtf,
+        asset_type="stock",
+    )
+
+    assert context == {
+        "schema_version": "gate4-runtime-context-v1",
+        "liquidity": {
+            "source": "fixture_quote",
+            "price": 10.5,
+            "volume": 100000.0,
+            "amount": 1050000.0,
+            "turnover_rate": 1.2,
+            "stale": False,
+        },
+        "execution": {
+            "status": "READY",
+            "completed_bar_only": True,
+            "source_alignment_state": "SINGLE_SOURCE",
+            "observations": 48,
+            "completed_through": "2026-10-23",
+        },
+        "etf_specific": {"status": "NOT_APPLICABLE"},
+        "independent_action_authority": False,
+    }
+
+
+def test_final_factor_consumer_forwards_gate4_runtime_context() -> None:
+    pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+    pipeline.p0_bounded_trial = False
+    pipeline.config = SimpleNamespace(report_language="zh")
+    result = SimpleNamespace(name="贵州茅台", report_language="zh", dashboard={})
+    quote = SimpleNamespace(
+        source=SimpleNamespace(value="fixture_quote"),
+        price=10.5,
+        volume=100000.0,
+        amount=1050000.0,
+        turnover_rate=1.2,
+        stale=False,
+    )
+    mtf = {
+        "timeframes": {
+            "5m": {
+                "status": "READY",
+                "completed_bar_only": True,
+                "observations": 48,
+                "completed_through": "2026-10-23",
+                "source_alignment": {"status": "SINGLE_SOURCE"},
+            },
+        },
+    }
+    summary = {"canonical_decision": {"public_action": "avoid"}}
+
+    with patch(
+        "src.core.pipeline.SearchService.is_index_or_etf",
+        return_value=False,
+    ), patch(
+        "src.core.pipeline.build_stock_factor_decision_summary",
+        return_value=summary,
+    ) as builder, patch(
+        "src.core.pipeline.apply_canonical_decision_to_result",
+    ), patch(
+        "src.core.pipeline.assert_canonical_consumer_consistency",
+    ):
+        pipeline._attach_factor_decision_summary(
+            result,
+            code="600519",
+            trend_result=SimpleNamespace(),
+            fundamental_context=None,
+            chip_data=None,
+            multi_timeframe_structure_context=mtf,
+            method_execution_receipts={},
+            realtime_quote=quote,
+        )
+
+    assert result.dashboard["factor_decision"] is summary
+    gate4 = builder.call_args.kwargs["gate4_context"]
+    assert gate4["liquidity"]["source"] == "fixture_quote"
+    assert gate4["execution"]["status"] == "READY"
+    assert gate4["execution"]["source_alignment_state"] == "SINGLE_SOURCE"
+    assert gate4["independent_action_authority"] is False
+
+
 def test_pipeline_constructor_defaults_daily_context_flag_from_config() -> None:
     pipeline = _build_initialized_pipeline(
         _pipeline_config(daily_market_context_enabled=True)

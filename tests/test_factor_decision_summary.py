@@ -1,4 +1,5 @@
 import json
+from copy import deepcopy
 from types import SimpleNamespace
 
 import pandas as pd
@@ -250,6 +251,127 @@ def test_b8_current_canonical_binds_both_risk_material_layers_and_rejects_stale_
     )
     assert expanded["risk_notes"] != expanded["investor_brief"]["risk_notes"]
     assert validate_investor_brief_binding(expanded)["risk_notes"][-1] == "INDEPENDENT_BRIEF_RISK_D"
+
+
+def _gate4_context(*, liquidity=True, execution=True, etf_specific=False):
+    return {
+        "schema_version": "gate4-runtime-context-v1",
+        "liquidity": (
+            {
+                "source": "fixture_quote",
+                "price": 10.5,
+                "volume": 100000.0,
+                "amount": 1050000.0,
+                "turnover_rate": 1.2,
+                "stale": False,
+            }
+            if liquidity
+            else {}
+        ),
+        "execution": (
+            {
+                "status": "READY",
+                "completed_bar_only": True,
+                "source_alignment_state": "SINGLE_SOURCE",
+                "observations": 48,
+                "completed_through": "2026-10-23",
+            }
+            if execution
+            else {}
+        ),
+        "etf_specific": {
+            "status": "READY" if etf_specific else "MISSING",
+        },
+        "independent_action_authority": False,
+    }
+
+
+def test_gate4_fail_closed_package_evaluates_four_veto_lanes_and_one_canonical():
+    summary = build_stock_factor_decision_summary(
+        _trend(),
+        method_execution_receipts={},
+        gate4_context=_gate4_context(),
+        include_canonical=True,
+    )
+    package = summary["gate4_decision_package"]
+
+    assert package["schema_version"] == "gate4-decision-package-v1"
+    assert package["state"] == "VETOED"
+    assert package["canonical_action_authority"] is True
+    assert package["independent_action_authority"] is False
+    assert package["score_or_probability_authority"] is False
+    assert package["correlation_dedup"]["status"] == "VERIFIED"
+    assert package["correlation_dedup"]["group_count"] == 15
+    assert set(package["vetoes"]) == {
+        "DATA", "RISK", "LIQUIDITY", "EXECUTION",
+    }
+    assert package["vetoes"]["DATA"]["state"] == "VETO"
+    assert package["vetoes"]["LIQUIDITY"]["state"] == "PASS"
+    assert package["vetoes"]["EXECUTION"]["state"] == "PASS"
+    assert summary["canonical_decision"]["action"] == "PASS"
+    assert summary["canonical_decision"]["public_action"] == "avoid"
+    assert summary["canonical_decision"]["hard_veto"] is True
+    assert "GATE4_DATA_VETO" in summary["canonical_decision"]["reason_codes"]
+    assert summary["investor_brief"]["gate4_decision_package"] == package
+    assert validate_canonical_factor_binding(summary) == (
+        summary["canonical_decision_identity"]
+    )
+
+
+def test_gate4_liquidity_and_execution_missing_are_independent_vetoes():
+    summary = build_stock_factor_decision_summary(
+        _trend(),
+        method_execution_receipts={},
+        gate4_context=_gate4_context(liquidity=False, execution=False),
+        include_canonical=True,
+    )
+    package = summary["gate4_decision_package"]
+
+    assert package["vetoes"]["LIQUIDITY"]["state"] == "VETO"
+    assert package["vetoes"]["EXECUTION"]["state"] == "VETO"
+    assert "GATE4_LIQUIDITY_VETO" in summary["canonical_decision"]["reason_codes"]
+    assert "GATE4_EXECUTION_VETO" in summary["canonical_decision"]["reason_codes"]
+
+
+def test_gate4_package_is_bound_into_factor_and_brief_and_tamper_rejects():
+    summary = build_stock_factor_decision_summary(
+        _trend(),
+        method_execution_receipts={},
+        gate4_context=_gate4_context(),
+        include_canonical=True,
+    )
+    for target in ("factor", "brief"):
+        tampered = deepcopy(summary)
+        if target == "factor":
+            tampered["gate4_decision_package"]["vetoes"]["DATA"][
+                "state"
+            ] = "PASS"
+        else:
+            tampered["investor_brief"]["gate4_decision_package"][
+                "vetoes"
+            ]["DATA"]["state"] = "PASS"
+        with pytest.raises(ValueError, match="stale|risk|Gate4"):
+            validate_canonical_factor_binding(tampered)
+        with pytest.raises(ValueError, match="stale|risk|Gate4"):
+            validate_investor_brief_binding(tampered)
+
+
+def test_gate4_etf_missing_peer_valuation_and_specific_facts_veto():
+    summary = build_stock_factor_decision_summary(
+        _trend(),
+        method_execution_receipts={},
+        gate4_context=_gate4_context(),
+        include_canonical=True,
+        asset_type="etf",
+    )
+    data = summary["gate4_decision_package"]["vetoes"]["DATA"]
+
+    assert data["state"] == "VETO"
+    assert "ETF_PEER_RS_NOT_ADMITTED" in data["reason_codes"]
+    assert "ETF_VALUATION_NOT_ADMITTED" in data["reason_codes"]
+    assert "ETF_SPECIFIC_FACTS_NOT_ADMITTED" in data["reason_codes"]
+    assert summary["canonical_decision"]["action"] == "PASS"
+    assert summary["canonical_decision"]["public_action"] == "avoid"
 
 
 def test_static_pe_pb_without_percentile_or_peers_does_not_claim_relative_valuation():

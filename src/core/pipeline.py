@@ -3180,6 +3180,7 @@ class StockAnalysisPipeline:
                     pattern_trigger_context=pattern_trigger_context,
                     multi_timeframe_structure_context=multi_timeframe_structure_context,
                     method_execution_receipts=method_execution_receipts,
+                    realtime_quote=realtime_quote,
                 )
                 if b1_no_send:
                     # Direct analyze_stock/process_single_stock callers cannot
@@ -4031,6 +4032,7 @@ class StockAnalysisPipeline:
                     pattern_trigger_context=pattern_trigger_context,
                     multi_timeframe_structure_context=multi_timeframe_structure_context,
                     method_execution_receipts=method_execution_receipts,
+                    realtime_quote=realtime_quote,
                 )
 
             resolved_stock_name = result.name if result and result.name else stock_name
@@ -4760,6 +4762,56 @@ class StockAnalysisPipeline:
             )
         return receipts
 
+    @staticmethod
+    def _build_gate4_runtime_context(
+        *,
+        realtime_quote: Any,
+        multi_timeframe_structure_context: Optional[Dict[str, Any]],
+        asset_type: str,
+    ) -> Dict[str, Any]:
+        """Project existing quote and completed 5m facts into Gate4 veto inputs."""
+        source = getattr(realtime_quote, "source", None)
+        source_value = getattr(source, "value", source)
+        liquidity = {
+            "source": str(source_value or "").strip() or None,
+            "price": getattr(realtime_quote, "price", None),
+            "volume": getattr(realtime_quote, "volume", None),
+            "amount": getattr(realtime_quote, "amount", None),
+            "turnover_rate": getattr(realtime_quote, "turnover_rate", None),
+            "stale": getattr(realtime_quote, "stale", None),
+        }
+        mtf = (
+            multi_timeframe_structure_context
+            if isinstance(multi_timeframe_structure_context, dict)
+            else {}
+        )
+        frames = mtf.get("timeframes")
+        five = frames.get("5m") if isinstance(frames, dict) else None
+        five = five if isinstance(five, dict) else {}
+        alignment = five.get("source_alignment")
+        alignment = alignment if isinstance(alignment, dict) else {}
+        execution = {
+            "status": five.get("status"),
+            "completed_bar_only": five.get("completed_bar_only"),
+            "source_alignment_state": alignment.get("status"),
+            "observations": five.get("observations"),
+            "completed_through": five.get("completed_through"),
+        }
+        return {
+            "schema_version": "gate4-runtime-context-v1",
+            "liquidity": liquidity,
+            "execution": execution,
+            "etf_specific": (
+                {
+                    "status": "MISSING",
+                    "reason": "ETF_SPECIFIC_CONTEXT_NOT_BOUND",
+                }
+                if asset_type == "etf"
+                else {"status": "NOT_APPLICABLE"}
+            ),
+            "independent_action_authority": False,
+        }
+
     def _attach_factor_decision_summary(
         self,
         result: AnalysisResult,
@@ -4778,6 +4830,7 @@ class StockAnalysisPipeline:
         pattern_trigger_context: Optional[Dict[str, Any]] = None,
         multi_timeframe_structure_context: Optional[Dict[str, Any]] = None,
         method_execution_receipts: Optional[Dict[str, Any]] = None,
+        realtime_quote: Any = None,
     ) -> None:
         """Attach one asset-aware factor summary and finalize canonical public actions."""
         is_index_or_etf = SearchService.is_index_or_etf(
@@ -4801,6 +4854,17 @@ class StockAnalysisPipeline:
         )
         if asset_type not in {"stock", "etf"}:
             return
+        gate4_context = (
+            self._build_gate4_runtime_context(
+                realtime_quote=realtime_quote,
+                multi_timeframe_structure_context=(
+                    multi_timeframe_structure_context
+                ),
+                asset_type=asset_type,
+            )
+            if method_execution_receipts is not None
+            else None
+        )
         # Missing deterministic trend evidence must still finalize an explicit
         # UNKNOWN/watch canonical state; never preserve a stale legacy BUY/SELL.
         report_language = normalize_report_language(
@@ -4828,6 +4892,7 @@ class StockAnalysisPipeline:
                 pattern_trigger_context=pattern_trigger_context,
                 multi_timeframe_structure_context=multi_timeframe_structure_context,
                 method_execution_receipts=method_execution_receipts,
+                gate4_context=gate4_context,
                 include_canonical=True,
                 asset_type=asset_type,
                 **({"b1_rights_context": getattr(self, "b1_rights_context", None)}
