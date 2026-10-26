@@ -9,7 +9,8 @@ import pytest
 
 from src.services import evidence_traceability_registry as reg
 from src.services.v2_5_evidence_coverage import (
-    compile_input_coverage, compile_product_coverage, verify_original_mapping,
+    compile_input_coverage, compile_product_coverage,
+    compile_whole_product_scope_gate, verify_original_mapping,
 )
 from tests.test_evidence_traceability_registry import (  # noqa: F401
     explicit_native_config,
@@ -67,6 +68,83 @@ def test_semantic_slots_preserve_the_independent_accepted_contract():
     changed["rendering_authorized"] = True
     with pytest.raises(reg.TraceabilityError, match="SLOT_AUTHORITY"):
         reg.load_slot_map(changed)
+    changed = deepcopy(document)
+    changed["slots"] = changed["slots"][:-1]
+    with pytest.raises(reg.TraceabilityError, match="PRODUCT_SLOT_SET_MISMATCH"):
+        reg.load_slot_map(changed)
+    changed = deepcopy(document)
+    changed["slots"] = changed["slots"][:1]
+    with pytest.raises(reg.TraceabilityError, match="PRODUCT_SLOT_SET_MISMATCH"):
+        reg.load_slot_map(changed)
+    changed = deepcopy(document)
+    changed["slots"] = list(reversed(changed["slots"]))
+    with pytest.raises(reg.TraceabilityError, match="PRODUCT_SLOT_MAP_IDENTITY_MISMATCH"):
+        reg.load_slot_map(changed)
+    changed = deepcopy(document)
+    next(
+        slot for slot in changed["slots"]
+        if slot["id"] == "first_screen.supply_distribution_risk"
+    )["requirements"] = ["SUPPLY"]
+    with pytest.raises(reg.TraceabilityError, match="PRODUCT_SLOT_REQUIREMENT_SET_MISMATCH"):
+        reg.load_slot_map(changed)
+
+
+def test_whole_product_scope_gate_rejects_universe_or_slot_deletion():
+    factor = native_summary()
+    trace = deepcopy(factor["evidence_traceability"])
+    trace["complete_research_universe"]["requirements"].pop()
+    with pytest.raises(reg.TraceabilityError, match="WHOLE_PRODUCT_REQUIREMENT_SET_MISMATCH"):
+        compile_whole_product_scope_gate(trace)
+    factor = native_summary()
+    trace = deepcopy(factor["evidence_traceability"])
+    trace["complete_research_universe"]["requirements"][0][
+        "contract_role"
+    ] = "DEFERRED"
+    with pytest.raises(
+        reg.TraceabilityError,
+        match="WHOLE_PRODUCT_REQUIREMENT_BINDING_MISMATCH",
+    ):
+        compile_whole_product_scope_gate(trace)
+
+    factor = native_summary()
+    trace = deepcopy(factor["evidence_traceability"])
+    trace["complete_research_universe"]["planes"].pop()
+    with pytest.raises(
+        reg.TraceabilityError,
+        match="WHOLE_PRODUCT_PLANE_BINDING_MISMATCH",
+    ):
+        compile_whole_product_scope_gate(trace)
+
+    factor = native_summary()
+    trace = deepcopy(factor["evidence_traceability"])
+    trace["complete_research_universe"]["valuation_route_ids"] = ("ETF",)
+    with pytest.raises(reg.TraceabilityError, match="VALUATION_ROUTE_SET_MISMATCH"):
+        compile_whole_product_scope_gate(trace)
+
+    factor = native_summary()
+    trace = deepcopy(factor["evidence_traceability"])
+    trace["complete_research_universe"]["known_atomic_subfield_obligations"] = ()
+    with pytest.raises(reg.TraceabilityError, match="ATOMIC_SUBFIELD_SET_MISMATCH"):
+        compile_whole_product_scope_gate(trace)
+    factor = native_summary()
+    trace = deepcopy(factor["evidence_traceability"])
+    trace["complete_research_universe"]["full_domain_data_gate"][
+        "full_domain_product_ready"
+    ] = True
+    with pytest.raises(
+        reg.TraceabilityError,
+        match="WHOLE_PRODUCT_FULL_DOMAIN_GATE_MISMATCH",
+    ):
+        compile_whole_product_scope_gate(trace)
+
+    factor = native_summary()
+    slot_map = deepcopy(reg.load_slot_map())
+    slot_map["slots"].pop()
+    with pytest.raises(reg.TraceabilityError, match="PRODUCT_SLOT_SET_MISMATCH"):
+        compile_whole_product_scope_gate(
+            factor["evidence_traceability"],
+            slot_map=slot_map,
+        )
 
 
 def test_synthetic_trial_is_never_misreported_as_real_data():
@@ -153,6 +231,31 @@ def test_product_coverage_consumes_the_trace_matrix_for_actual_weekly_structure_
         "strategy_bindings": 13,
         "technical_matrix_cells": 56,
     }
+    scope_gate = coverage["whole_product_scope_gate"]
+    assert scope_gate["full_scope_accounted_pass"] is True
+    assert scope_gate["required_requirement_count"] == 26
+    assert scope_gate["required_slot_count"] == 27
+    assert scope_gate["required_data_domain_counts"] == {
+        "GLOBAL": 18, "CN_MARKET": 18, "SECTOR": 7,
+        "ETF": 12, "STOCK": 17, "RECORD": 4,
+    }
+    assert scope_gate["dynamic_product_admitted"] is False
+    assert set(scope_gate["required_valuation_route_ids"]) == {
+        "MATURE_INDUSTRIAL_CONSUMER", "HIGH_GROWTH_TECH", "BANK", "INSURANCE",
+        "CYCLICAL_RESOURCE", "UTILITY_INFRASTRUCTURE", "REIT",
+        "LOSS_MAKING_EARLY_GROWTH", "ETF",
+    }
+    assert set(scope_gate["unresolved_atomic_subfields"]) == {
+        "GLOBAL_US_ACTUAL_INFLATION", "GLOBAL_US_CORE_INFLATION",
+        "GLOBAL_US_SERVICE_INFLATION", "GLOBAL_US_5Y_INFLATION_EXPECTATION",
+        "GLOBAL_SOX_INDEX", "GLOBAL_TECH_ETF_FLOW",
+        "GLOBAL_SEMICONDUCTOR_SOFTWARE_RELATIVE",
+    }
+    assert scope_gate["atomic_subfield_binding_complete"] is False
+    data_gate = coverage["full_domain_data_gate"]
+    assert data_gate["full_domain_accounted_pass"] is True
+    assert data_gate["full_domain_product_ready"] is False
+    assert data_gate["accounted_object_count"] == 76
     assert rows["detail.timeframe.price_structure"]["timeframe_states"]["weekly"] == "EVIDENCE_AVAILABLE"
     # Complete weekly structures and volume remain material; unverified
     # recursive oscillator output must not create weekly MOMENTUM coverage.

@@ -20,6 +20,7 @@ from typing import Any
 from src.services.data_object_admission import (
     DataObjectAdmissionError,
     compile_data_object_admission_view,
+    validate_compiled_data_object_admission,
 )
 
 MANIFEST_VERSION = "evidence-product-traceability-v1"
@@ -193,6 +194,54 @@ COMPLETE_RESEARCH_UNIVERSE_PLANES = (
     ("MODEL_LAYER", ("PROBABILITY",)),
     ("DECISION", ("DECISION",)),
 )
+
+# Independent accepted Product scope. Candidate slot maps and data rows cannot
+# redefine their own completeness by deleting one valid-looking member.
+ACCEPTED_PRODUCT_SLOT_IDS = frozenset({
+    "first_screen.conclusion", "first_screen.price_or_valuation",
+    "first_screen.higher_timeframe_thesis", "first_screen.short_term_conflict_or_trigger",
+    "first_screen.supply_distribution_risk", "first_screen.trigger",
+    "first_screen.invalidation", "first_screen.material_risks",
+    "detail.timeframe.price_position", "detail.timeframe.trend_ma",
+    "detail.timeframe.volume_price", "detail.timeframe.cost_structure",
+    "detail.timeframe.price_structure", "detail.timeframe.momentum_divergence",
+    "detail.timeframe.pattern_trigger", "detail.timeframe.support_resistance",
+    "detail.timeframe.confirmation_invalidation", "asset.stock.quality_growth",
+    "asset.stock.valuation", "asset.etf.underlying_valuation",
+    "asset.etf.premium_discount", "asset.etf.liquidity_spread",
+    "asset.etf.tracking_concentration", "audit.coverage",
+    "audit.data_time_quality", "audit.historical_reference", "audit.current_probability",
+})
+ACCEPTED_PRODUCT_SLOT_REQUIREMENTS = frozenset({
+    "CANDLESTICK", "COST", "DECISION", "DISTRIBUTION", "ETF_SPECIFIC",
+    "INTRADAY_30m", "MOMENTUM", "MTF", "PATTERN", "PROBABILITY",
+    "QUALITY", "STRUCTURE", "SUPPLY", "VALUATION",
+})
+ACCEPTED_PRODUCT_SLOT_MAP_SHA256 = (
+    "ea0a935bf2b99056fa169ed8662a2a92b6c605a407dc12a1d7de134799d21f6d"
+)
+ACCEPTED_DATA_OBJECT_DOMAIN_COUNTS = {
+    "GLOBAL": 18,
+    "CN_MARKET": 18,
+    "SECTOR": 7,
+    "ETF": 12,
+    "STOCK": 17,
+    "RECORD": 4,
+}
+ACCEPTED_VALUATION_ROUTE_IDS = frozenset({
+    "MATURE_INDUSTRIAL_CONSUMER", "HIGH_GROWTH_TECH", "BANK", "INSURANCE",
+    "CYCLICAL_RESOURCE", "UTILITY_INFRASTRUCTURE", "REIT",
+    "LOSS_MAKING_EARLY_GROWTH", "ETF",
+})
+# Accepted Golden atoms that are more specific than the 76-object catalog.
+# They remain explicit UNKNOWN obligations until a dated producer is admitted.
+ACCEPTED_WHOLE_PRODUCT_ATOMIC_SUBFIELDS = frozenset({
+    "GLOBAL_US_ACTUAL_INFLATION", "GLOBAL_US_CORE_INFLATION",
+    "GLOBAL_US_SERVICE_INFLATION", "GLOBAL_US_5Y_INFLATION_EXPECTATION",
+    "GLOBAL_SOX_INDEX", "GLOBAL_TECH_ETF_FLOW",
+    "GLOBAL_SEMICONDUCTOR_SOFTWARE_RELATIVE",
+})
+FULL_DOMAIN_DATA_GATE_SCHEMA_VERSION = "full-domain-data-gate-v1"
 
 
 class TraceabilityError(ValueError):
@@ -1594,6 +1643,17 @@ def load_slot_map(document=None) -> dict:
             raise TraceabilityError("ORPHAN_PRODUCT_PATH")
     if len(set(ids)) != len(ids):
         raise TraceabilityError("DUPLICATE_PRODUCT_SLOT")
+    if frozenset(ids) != ACCEPTED_PRODUCT_SLOT_IDS or len(ids) != len(ACCEPTED_PRODUCT_SLOT_IDS):
+        raise TraceabilityError("PRODUCT_SLOT_SET_MISMATCH")
+    slot_requirements = frozenset(
+        requirement_id
+        for slot in slots
+        for requirement_id in slot["requirements"]
+    )
+    if slot_requirements != ACCEPTED_PRODUCT_SLOT_REQUIREMENTS:
+        raise TraceabilityError("PRODUCT_SLOT_REQUIREMENT_SET_MISMATCH")
+    if digest(document) != ACCEPTED_PRODUCT_SLOT_MAP_SHA256:
+        raise TraceabilityError("PRODUCT_SLOT_MAP_IDENTITY_MISMATCH")
     return document
 
 
@@ -3669,6 +3729,173 @@ def _compile_accepted_data_object_scope(factor: Mapping) -> list[dict]:
     return objects
 
 
+def compile_full_domain_data_gate(
+    data_objects: Any,
+    admission_view: Mapping | None = None,
+) -> dict:
+    """Prove complete accounting separately from Product data readiness.
+
+    UNKNOWN/MISSING-like states are lawful accounting outcomes.  They keep the
+    object visible but never become Product-ready without a validated,
+    operation-specific admission row.
+    """
+    if not isinstance(data_objects, (list, tuple)):
+        raise TraceabilityError("FULL_DOMAIN_DATA_OBJECTS_INVALID")
+    rows = []
+    for item in data_objects:
+        if not isinstance(item, Mapping):
+            raise TraceabilityError("FULL_DOMAIN_DATA_OBJECT_INVALID")
+        row = dict(item)
+        dataset_id = str(row.get("dataset_id") or "").strip()
+        domain = str(row.get("domain") or "").strip()
+        state = str(row.get("state") or "UNKNOWN").strip()
+        if not dataset_id or not domain:
+            raise TraceabilityError("FULL_DOMAIN_DATA_OBJECT_IDENTITY_MISSING")
+        if state not in TIMEFRAME_FAMILY_MATRIX_STATES:
+            raise TraceabilityError("FULL_DOMAIN_DATA_OBJECT_STATE_INVALID:" + dataset_id)
+        rows.append(row)
+
+    expected_catalog = {
+        dataset_id: {
+            "domain": domain,
+            "fact_or_fields": fact,
+            "native_frequency": frequency,
+            "product_consumer": consumer,
+        }
+        for domain, consumer, entries in _DATA_OBJECT_CATALOG
+        for dataset_id, fact, frequency in entries
+    }
+    expected_ids = frozenset(expected_catalog)
+    ids = [str(row["dataset_id"]) for row in rows]
+    if len(ids) != 76 or len(set(ids)) != 76 or frozenset(ids) != expected_ids:
+        raise TraceabilityError("FULL_DOMAIN_DATA_OBJECT_SET_MISMATCH")
+    for row in rows:
+        dataset_id = str(row["dataset_id"])
+        expected_binding = expected_catalog[dataset_id]
+        actual_binding = {
+            key: str(row.get(key) or "") for key in expected_binding
+        }
+        if actual_binding != expected_binding:
+            raise TraceabilityError(
+                "FULL_DOMAIN_DATA_OBJECT_CATALOG_BINDING_MISMATCH:"
+                + dataset_id
+            )
+
+    domain_counts = {
+        domain: sum(str(row.get("domain") or "") == domain for row in rows)
+        for domain in ACCEPTED_DATA_OBJECT_DOMAIN_COUNTS
+    }
+    if domain_counts != ACCEPTED_DATA_OBJECT_DOMAIN_COUNTS:
+        raise TraceabilityError("FULL_DOMAIN_DATA_OBJECT_DOMAIN_COUNTS_MISMATCH")
+    if any(str(row.get("domain") or "") not in ACCEPTED_DATA_OBJECT_DOMAIN_COUNTS for row in rows):
+        raise TraceabilityError("FULL_DOMAIN_DATA_OBJECT_DOMAIN_INVALID")
+
+    applicable_ids = tuple(sorted(
+        str(row["dataset_id"])
+        for row in rows
+        if str(row.get("state") or "") != "NOT_APPLICABLE"
+    ))
+    state_counts = {
+        state: sum(str(row.get("state") or "") == state for row in rows)
+        for state in sorted(TIMEFRAME_FAMILY_MATRIX_STATES)
+    }
+    product_admitted_ids: tuple[str, ...] = ()
+    admission_state_counts = {}
+    if admission_view is not None:
+        if not isinstance(admission_view, Mapping):
+            raise TraceabilityError("FULL_DOMAIN_DATA_ADMISSION_VIEW_INVALID")
+        admission_rows = admission_view.get("objects")
+        if not isinstance(admission_rows, list):
+            raise TraceabilityError("FULL_DOMAIN_DATA_ADMISSION_ROWS_INVALID")
+        validated_rows = []
+        try:
+            for item in admission_rows:
+                validated_rows.append(validate_compiled_data_object_admission(item))
+        except DataObjectAdmissionError as exc:
+            raise TraceabilityError(str(exc)) from exc
+        admission_ids = [str(row.get("dataset_id") or "") for row in validated_rows]
+        if (
+            len(admission_ids) != 76
+            or len(set(admission_ids)) != 76
+            or frozenset(admission_ids) != expected_ids
+        ):
+            raise TraceabilityError("FULL_DOMAIN_DATA_ADMISSION_SET_MISMATCH")
+        object_applicability = {
+            str(row["dataset_id"]): str(row.get("state") or "") != "NOT_APPLICABLE"
+            for row in rows
+        }
+        if any(
+            bool(row.get("applicable")) != object_applicability[str(row["dataset_id"])]
+            for row in validated_rows
+        ):
+            raise TraceabilityError("FULL_DOMAIN_DATA_ADMISSION_APPLICABILITY_MISMATCH")
+        object_by_id = {
+            str(row["dataset_id"]): row for row in rows
+        }
+        for admission_row in validated_rows:
+            if admission_row.get("product_admitted") is not True:
+                continue
+            object_row = object_by_id[str(admission_row["dataset_id"])]
+            expected_runtime_binding = {
+                "runtime_provider_identity": object_row.get("provider_identity"),
+                "runtime_provider_route": object_row.get("provider_route"),
+                "runtime_source_identity_hash": object_row.get("source_identity_hash"),
+                "runtime_source_content_sha256": object_row.get("source_content_sha256"),
+                "runtime_source_observed_at": object_row.get("source_observed_at"),
+                "runtime_source_available_at": object_row.get("source_available_at"),
+                "runtime_completed_through": object_row.get("completed_through"),
+                "runtime_units": object_row.get("units"),
+                "runtime_currency": object_row.get("currency"),
+                "runtime_adjustment_basis": object_row.get("adjustment_basis"),
+                "runtime_revision": object_row.get("revision"),
+                "runtime_vintage": object_row.get("vintage"),
+            }
+            actual_runtime_binding = {
+                key: admission_row.get(key) for key in expected_runtime_binding
+            }
+            if not json_wire_equal(actual_runtime_binding, expected_runtime_binding):
+                raise TraceabilityError(
+                    "FULL_DOMAIN_DATA_ADMISSION_RUNTIME_BINDING_MISMATCH:"
+                    + str(admission_row["dataset_id"])
+                )
+        product_admitted_ids = tuple(sorted(
+            str(row["dataset_id"])
+            for row in validated_rows
+            if row.get("product_admitted") is True
+        ))
+        admission_state_counts = {
+            state: sum(row.get("admission_state") == state for row in validated_rows)
+            for state in sorted({row.get("admission_state") for row in validated_rows})
+        }
+        if admission_view.get("product_admitted_count") != len(product_admitted_ids):
+            raise TraceabilityError("FULL_DOMAIN_DATA_ADMISSION_COUNT_MISMATCH")
+
+    unresolved_ids = tuple(sorted(set(applicable_ids) - set(product_admitted_ids)))
+    document = {
+        "schema_version": FULL_DOMAIN_DATA_GATE_SCHEMA_VERSION,
+        "expected_object_count": 76,
+        "accounted_object_count": len(rows),
+        "domain_counts": domain_counts,
+        "state_counts": state_counts,
+        "applicable_object_count": len(applicable_ids),
+        "product_admitted_count": len(product_admitted_ids),
+        "admission_state_counts": admission_state_counts,
+        "unresolved_product_dataset_ids": unresolved_ids,
+        "full_domain_accounted_pass": True,
+        "full_domain_product_ready": bool(applicable_ids) and not unresolved_ids,
+        "strategy_upgrade_authority": False,
+        "independent_action_authority": False,
+        "policy": {
+            "unknown_missing_and_not_admitted_remain_visible": True,
+            "not_applicable_is_not_failure": True,
+            "catalog_count_never_implies_product_readiness": True,
+            "every_product_ready_object_requires_validated_operation_admission": True,
+        },
+    }
+    document["gate_hash"] = digest(document)
+    return document
+
+
 
 def compile_complete_research_universe_view(
     factor: Mapping,
@@ -3829,6 +4056,22 @@ def compile_complete_research_universe_view(
         except DataObjectAdmissionError as exc:
             raise TraceabilityError(str(exc)) from exc
 
+    valuation_route_ids = tuple(
+        _owner_literals("src/services/business_valuation_service.py").get(
+            "VALUATION_ROUTE_IDS", ()
+        )
+    )
+    if (
+        len(valuation_route_ids) != len(ACCEPTED_VALUATION_ROUTE_IDS)
+        or frozenset(valuation_route_ids) != ACCEPTED_VALUATION_ROUTE_IDS
+    ):
+        raise TraceabilityError("VALUATION_ROUTE_SET_MISMATCH")
+
+    full_domain_data_gate = compile_full_domain_data_gate(
+        data_objects,
+        admission_view,
+    )
+
     document = {
         "schema_version": COMPLETE_RESEARCH_UNIVERSE_SCHEMA_VERSION,
         "manifest_hash": MANIFEST_HASH,
@@ -3851,6 +4094,12 @@ def compile_complete_research_universe_view(
         "requirements": requirements,
         "data_objects": data_objects,
         "data_objects_count": 76,
+        "valuation_route_ids": valuation_route_ids,
+        "known_atomic_subfield_obligations": tuple(sorted(
+            ACCEPTED_WHOLE_PRODUCT_ATOMIC_SUBFIELDS
+        )),
+        "full_domain_data_gate": full_domain_data_gate,
+        "full_domain_data_gate_hash": full_domain_data_gate["gate_hash"],
         **(
             {
                 "data_object_admission": admission_view,

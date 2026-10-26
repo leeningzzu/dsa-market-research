@@ -17,6 +17,7 @@ from src.config import Config
 from src.services import evidence_traceability_registry as reg
 from src.services.cost_structure_service import build_cost_structure_context
 from src.services.data_object_admission import (
+    compile_data_object_admission_view,
     seal_data_object_admission_receipt,
     seal_source_rights_evidence,
 )
@@ -548,7 +549,231 @@ def test_complete_research_universe_view_prevents_scope_collapse_beyond_7x8():
     body.pop("universe_hash")
     assert reg.digest(body) == universe["universe_hash"]
     assert trace["complete_research_universe_hash"] == universe["universe_hash"]
+    data_gate = universe["full_domain_data_gate"]
+    assert data_gate["full_domain_accounted_pass"] is True
+    assert data_gate["full_domain_product_ready"] is False
+    assert data_gate["accounted_object_count"] == 76
+    assert data_gate["domain_counts"] == {
+        "GLOBAL": 18, "CN_MARKET": 18, "SECTOR": 7,
+        "ETF": 12, "STOCK": 17, "RECORD": 4,
+    }
+    assert data_gate["unresolved_product_dataset_ids"]
+    assert set(universe["valuation_route_ids"]) == {
+        "MATURE_INDUSTRIAL_CONSUMER", "HIGH_GROWTH_TECH", "BANK", "INSURANCE",
+        "CYCLICAL_RESOURCE", "UTILITY_INFRASTRUCTURE", "REIT",
+        "LOSS_MAKING_EARLY_GROWTH", "ETF",
+    }
+    assert set(universe["known_atomic_subfield_obligations"]) == {
+        "GLOBAL_US_ACTUAL_INFLATION", "GLOBAL_US_CORE_INFLATION",
+        "GLOBAL_US_SERVICE_INFLATION", "GLOBAL_US_5Y_INFLATION_EXPECTATION",
+        "GLOBAL_SOX_INDEX", "GLOBAL_TECH_ETF_FLOW",
+        "GLOBAL_SEMICONDUCTOR_SOFTWARE_RELATIVE",
+    }
 
+
+
+def test_full_domain_data_gate_rejects_deletion_duplicate_domain_and_state_tamper():
+    factor = native_summary()
+    objects = factor["evidence_traceability"]["complete_research_universe"]["data_objects"]
+    gate = reg.compile_full_domain_data_gate(objects)
+    assert gate["full_domain_accounted_pass"] is True
+    assert gate["full_domain_product_ready"] is False
+
+    with pytest.raises(reg.TraceabilityError, match="FULL_DOMAIN_DATA_OBJECT_SET_MISMATCH"):
+        reg.compile_full_domain_data_gate(objects[:-1])
+    duplicate = deepcopy(objects)
+    duplicate[-1] = deepcopy(duplicate[0])
+    with pytest.raises(reg.TraceabilityError, match="FULL_DOMAIN_DATA_OBJECT_SET_MISMATCH"):
+        reg.compile_full_domain_data_gate(duplicate)
+    wrong_domain = deepcopy(objects)
+    wrong_domain[0]["domain"] = "STOCK"
+    with pytest.raises(
+        reg.TraceabilityError,
+        match="CATALOG_BINDING_MISMATCH",
+    ):
+        reg.compile_full_domain_data_gate(wrong_domain)
+    swapped_domains = deepcopy(objects)
+    global_row = next(row for row in swapped_domains if row["domain"] == "GLOBAL")
+    market_row = next(row for row in swapped_domains if row["domain"] == "CN_MARKET")
+    global_row["domain"], market_row["domain"] = (
+        market_row["domain"], global_row["domain"]
+    )
+    with pytest.raises(
+        reg.TraceabilityError,
+        match="CATALOG_BINDING_MISMATCH",
+    ):
+        reg.compile_full_domain_data_gate(swapped_domains)
+    wrong_state = deepcopy(objects)
+    wrong_state[0]["state"] = "READY_BY_ASSERTION"
+    with pytest.raises(reg.TraceabilityError, match="STATE_INVALID"):
+        reg.compile_full_domain_data_gate(wrong_state)
+
+
+def test_full_domain_empty_admission_is_lawful_accounting_nontrigger():
+    universe = reg.compile_complete_research_universe_view({
+        "asset_type": "stock",
+        "data_object_admission_receipts": {},
+    })
+    admission = universe["data_object_admission"]
+    gate = universe["full_domain_data_gate"]
+
+    assert len(admission["objects"]) == 76
+    assert admission["product_admitted_count"] == 0
+    assert admission["counts"] == {
+        "LEARNING_ADMITTED": 0,
+        "NOT_APPLICABLE": 12,
+        "NOT_OBSERVED": 64,
+        "PRODUCT_ADMITTED": 0,
+        "SOURCE_IDENTITY_ONLY": 0,
+    }
+    assert gate["full_domain_accounted_pass"] is True
+    assert gate["full_domain_product_ready"] is False
+    assert len(gate["unresolved_product_dataset_ids"]) == 64
+
+    forged = deepcopy(admission)
+    forged["objects"].pop()
+    with pytest.raises(reg.TraceabilityError, match="FULL_DOMAIN_DATA_ADMISSION_SET_MISMATCH"):
+        reg.compile_full_domain_data_gate(universe["data_objects"], forged)
+
+
+def _fully_product_admitted_full_domain(asset_type):
+    operation_id = "op-full-domain-positive-20261026-r001"
+    intended_use = "NO_SEND_RESEARCH"
+    universe = reg.compile_complete_research_universe_view({
+        "asset_type": asset_type,
+    })
+    obligations = deepcopy(universe["data_objects"])
+    receipts = {}
+    rights = {
+        "product_use": "ALLOWED",
+        "storage": "FORBIDDEN",
+        "training": "FORBIDDEN",
+        "redistribution": "FORBIDDEN",
+    }
+    for obligation in obligations:
+        if obligation["state"] == "NOT_APPLICABLE":
+            continue
+        dataset_id = obligation["dataset_id"]
+        provider = "synthetic-lawful-full-domain-provider"
+        provider_route = "synthetic.full_domain." + dataset_id.lower()
+        source_identity_hash = reg.digest({
+            "dataset_id": dataset_id,
+            "kind": "source_identity",
+        })
+        content_sha256 = reg.digest({
+            "dataset_id": dataset_id,
+            "kind": "source_content",
+        })
+        observed_at = "2026-10-21T10:00:00+00:00"
+        available_at = "2026-10-21T09:00:00+00:00"
+        completed_through = "2026-10-20"
+        units = {"value": "EXPLICIT_TEST_NATIVE_UNIT"}
+        currency = "CNY"
+        adjustment_basis = "NOT_APPLICABLE"
+        revision = "SYNTHETIC_TEST_REVISION_1"
+        vintage = "2026-10-21T09:00:00+00:00"
+        obligation.update({
+            "provider_identity": provider,
+            "provider_route": provider_route,
+            "source_identity_hash": source_identity_hash,
+            "source_content_sha256": content_sha256,
+            "source_observed_at": observed_at,
+            "source_available_at": available_at,
+            "completed_through": completed_through,
+            "units": units,
+            "currency": currency,
+            "adjustment_basis": adjustment_basis,
+            "revision": revision,
+            "vintage": vintage,
+        })
+        rights_evidence = seal_source_rights_evidence({
+            "schema_version": "source-rights-evidence-v1",
+            "operation_id": operation_id,
+            "intended_use": intended_use,
+            "provider_identity": provider,
+            "upstream_source_owner": "synthetic-licensed-upstream",
+            "upstream_rights_state": "VERIFIED",
+            "dataset_id": dataset_id,
+            "consumer_scope": obligation["product_consumer"],
+            "terms_uri": "https://example.invalid/terms/full-domain-test",
+            "terms_sha256": "c" * 64,
+            "terms_observed_at": "2026-10-21T08:00:00+00:00",
+            "rights": rights,
+        })
+        receipts[dataset_id] = seal_data_object_admission_receipt({
+            "schema_version": "data-object-admission-receipt-v1",
+            "dataset_id": dataset_id,
+            "provider_identity": provider,
+            "provider_route": provider_route,
+            "native_frequency": obligation["native_frequency"],
+            "source_identity_hash": source_identity_hash,
+            "content_sha256": content_sha256,
+            "observed_at": observed_at,
+            "available_at": available_at,
+            "completed_through": completed_through,
+            "units": units,
+            "currency": currency,
+            "adjustment_basis": adjustment_basis,
+            "revision": revision,
+            "vintage": vintage,
+            "rights": rights,
+            "rights_evidence": rights_evidence,
+            "historical_pit_eligible": False,
+            "consumer_scope": obligation["product_consumer"],
+        })
+    admission = compile_data_object_admission_view(
+        obligations,
+        receipts,
+        as_of="2026-10-21T10:30:00+00:00",
+        operation_id=operation_id,
+        intended_use=intended_use,
+    )
+    return obligations, admission
+
+
+@pytest.mark.parametrize(
+    ("asset_type", "expected_applicable"),
+    (("stock", 64), ("etf", 59)),
+)
+def test_full_domain_data_gate_has_reachable_product_ready_positive(
+    asset_type, expected_applicable,
+):
+    obligations, admission = _fully_product_admitted_full_domain(asset_type)
+    gate = reg.compile_full_domain_data_gate(obligations, admission)
+
+    assert gate["full_domain_accounted_pass"] is True
+    assert gate["full_domain_product_ready"] is True
+    assert gate["applicable_object_count"] == expected_applicable
+    assert gate["product_admitted_count"] == expected_applicable
+    assert gate["unresolved_product_dataset_ids"] == ()
+    assert admission["learning_admitted_count"] == 0
+
+
+def test_full_domain_data_gate_rejects_cross_asset_admission_scope():
+    stock_obligations, _stock_admission = _fully_product_admitted_full_domain(
+        "stock"
+    )
+    _etf_obligations, etf_admission = _fully_product_admitted_full_domain("etf")
+
+    with pytest.raises(
+        reg.TraceabilityError,
+        match="FULL_DOMAIN_DATA_ADMISSION_APPLICABILITY_MISMATCH",
+    ):
+        reg.compile_full_domain_data_gate(stock_obligations, etf_admission)
+
+
+def test_full_domain_data_gate_rejects_admission_from_other_runtime_bytes():
+    obligations, admission = _fully_product_admitted_full_domain("stock")
+    changed = deepcopy(obligations)
+    next(
+        row for row in changed if row["state"] != "NOT_APPLICABLE"
+    )["source_content_sha256"] = "f" * 64
+
+    with pytest.raises(
+        reg.TraceabilityError,
+        match="FULL_DOMAIN_DATA_ADMISSION_RUNTIME_BINDING_MISMATCH",
+    ):
+        reg.compile_full_domain_data_gate(changed, admission)
 
 
 def _closed_typed_stock_source_factor(*, source_version_known: bool = False):

@@ -15,8 +15,13 @@ from src.services.screening.dsa import (
     compile_screening_funnel_contract,
 )
 from src.services.evidence_traceability_registry import (
+    ACCEPTED_DATA_OBJECT_DOMAIN_COUNTS,
     ACCEPTED_DATA_OBJECT_GRAPH_SHA256,
+    ACCEPTED_PRODUCT_SLOT_IDS,
+    ACCEPTED_PRODUCT_SLOT_MAP_SHA256,
     ACCEPTED_REQUIREMENT_ROLES,
+    ACCEPTED_VALUATION_ROUTE_IDS,
+    ACCEPTED_WHOLE_PRODUCT_ATOMIC_SUBFIELDS,
     STRATEGY_BINDINGS,
     TECHNICAL_EVIDENCE_FAMILIES,
     TIMEFRAMES,
@@ -64,6 +69,13 @@ def test_stage_baseline_is_derived_from_the_existing_machine_graph() -> None:
     assert locked["strategy_bindings"] == len(STRATEGY_BINDINGS) == 13
     assert locked["technical_matrix_cells"] == len(trace["timeframe_family_matrix"]["cells"]) == 56
     assert locked["data_obligations"] == len(trace["complete_research_universe"]["data_objects"]) == 76
+    assert locked["product_slots"] == len(ACCEPTED_PRODUCT_SLOT_IDS) == 27
+    assert locked["product_slot_map_sha256"] == ACCEPTED_PRODUCT_SLOT_MAP_SHA256
+    assert locked["valuation_routes"] == len(ACCEPTED_VALUATION_ROUTE_IDS) == 9
+    assert locked["known_atomic_subfield_obligations"] == len(
+        ACCEPTED_WHOLE_PRODUCT_ATOMIC_SUBFIELDS
+    ) == 7
+    assert locked["data_domain_counts"] == ACCEPTED_DATA_OBJECT_DOMAIN_COUNTS
     assert locked["timeframes"] == list(TIMEFRAMES)
     assert locked["evidence_families"] == list(TECHNICAL_EVIDENCE_FAMILIES)
 
@@ -91,36 +103,42 @@ def test_stage_ladder_keeps_parent_product_and_blocking_order_explicit() -> None
         "M3_CALIBRATION_SHADOW",
         "P1_PROMOTION_RELEASE",
     ]
-    assert baseline["route_decision"]["next_primary"] == "B1_SOURCE_RIGHTS"
-    assert [stage["id"] for stage in stages if stage.get("next_primary")] == ["B1_SOURCE_RIGHTS"]
+    assert baseline["route_decision"]["next_primary"] == "B8_FULL_DELIVERY_NO_SEND"
+    assert [stage["id"] for stage in stages if stage.get("next_primary")] == [
+        "B8_FULL_DELIVERY_NO_SEND"
+    ]
     assert stages[5]["blocked_by"] == "B1_SOURCE_RIGHTS"
     assert stages[6]["blocked_by"] == "L1_LEGAL_LEDGER_OUTCOME_PIT"
     assert stages[7]["blocked_by"] == "M3_CALIBRATION_SHADOW"
     assert baseline["acceptance"]["direct_main_push"] is False
-    # Independently observed CI82 is the accepted *engineering* snapshot,
-    # not the moving Git ref, upstream data rights or Product Promotion.
+    # CI87 closes Gate4 on the exact feature checkpoint; it does not merge main,
+    # create missing data rights or prove the current Gate5 dynamic Product.
     assert baseline["acceptance"]["required_checks"] == [
         "ai-governance", "backend-gate", "docker-build",
     ]
     acceptance = baseline["acceptance"]
-    assert acceptance["state"] == "G0_CI82_B1_REAL_RUN_BOUNDARY_PASS_SCOPED_PR31_DRAFT_REAL_GRANT_RUN_OPEN"
-    assert acceptance["candidate_head"] == "99106c6715ae70ccc6708d95166fd6c5104f06cc"
-    assert acceptance["candidate_parent"] == "df82f93e8de3c84700b096e76b15b38d41595b46"
-    assert acceptance["candidate_head_scope"] == "LAST_ACCEPTED_ENGINEERING_CHECKPOINT_NOT_MOVING_REMOTE_REF"
+    assert acceptance["state"] == (
+        "GATE4_CI87_REMOTE_ACCEPTED_GATE5_SCOPE_DOMAIN_LOCAL_PASS_SCOPED_PR31_DRAFT"
+    )
+    assert acceptance["candidate_head"] == "1de3a8a6f0847fd6a6676ccf51eece6437196663"
+    assert acceptance["candidate_parent"] == "a899586bb5822ddf589cc2f6928e2852acf12b39"
+    assert acceptance["candidate_head_scope"] == (
+        "LATEST_ACCEPTED_FEATURE_CHECKPOINT_NOT_MAIN_PRODUCTION"
+    )
     assert acceptance["latest_required_ci"] == {
-        "run_number": 82,
-        "run_id": 40068248419,
+        "run_number": 87,
+        "run_id": 40262589339,
         "conclusion": "success",
     }
-    # Do not rewrite the failed CI77; CI80 and CI81 remain historical PASS.
+    # CI86 remains the direct failed predecessor; older failures remain in Git/history.
     assert acceptance["prior_failed_ci"] == {
-        "run_number": 77,
-        "run_id": 39901137680,
-        "head": "bfca958baefe9bf1e97d322ab414c1186646c7c9",
+        "run_number": 86,
+        "run_id": 40257545700,
+        "head": "a899586bb5822ddf589cc2f6928e2852acf12b39",
         "conclusion": "failure",
     }
     assert acceptance["pull_request_state"] == "DRAFT_OPEN_NOT_MERGED"
-    assert baseline["route_decision"]["next_primary"] == "B1_SOURCE_RIGHTS"
+    assert baseline["route_decision"]["next_primary"] == "B8_FULL_DELIVERY_NO_SEND"
 
 
 def test_stage_baseline_preserves_formal_email_contract_and_no_auto_trade() -> None:
@@ -170,11 +188,15 @@ def test_stage_baseline_locks_bounded_hierarchical_mtf_screening() -> None:
     assert _baseline()["regression_policy"][
         "mtf_screening_requires_strict_receipt_and_canonical_binding"
     ] is True
+    regression = _baseline()["regression_policy"]
+    assert regression["whole_product_expected_sets_reject_candidate_subset"] is True
+    assert regression["full_domain_accounting_is_distinct_from_product_readiness"] is True
+    assert regression["known_atomic_subfields_remain_visible_until_bound"] is True
 
 
-def test_indicator_backlog_is_subordinate_to_the_lawful_input_parent_route() -> None:
+def test_indicator_backlog_is_subordinate_to_the_current_product_route() -> None:
     decision = _baseline()["route_decision"]
-    assert decision["next_primary"] == "B1_SOURCE_RIGHTS"
+    assert decision["next_primary"] == "B8_FULL_DELIVERY_NO_SEND"
     assert decision["bounded_indicator_sub_lanes"] == [
         "MONTHLY_RSI_HISTORY_IF_LEGAL",
         "15M_CONFIRMATION",

@@ -14,9 +14,14 @@ import math
 from typing import Any
 
 from src.services.evidence_traceability_registry import (
-    BASELINE_BYTES, BASELINE_SHA256, DEFERRED_BINDINGS, EVIDENCE_BINDINGS,
+    ACCEPTED_DATA_OBJECT_DOMAIN_COUNTS, ACCEPTED_PRODUCT_SLOT_IDS,
+    ACCEPTED_PRODUCT_SLOT_REQUIREMENTS, ACCEPTED_REQUIREMENT_ROLES,
+    ACCEPTED_VALUATION_ROUTE_IDS, ACCEPTED_WHOLE_PRODUCT_ATOMIC_SUBFIELDS,
+    BASELINE_BYTES, BASELINE_SHA256, COMPLETE_RESEARCH_UNIVERSE_PLANES,
+    DEFERRED_BINDINGS, EVIDENCE_BINDINGS,
     MANIFEST_HASH, MANIFEST_VERSION, TraceabilityError, at,
-    digest, load_slot_map, timeframe_ready, validate_runtime_trace,
+    compile_full_domain_data_gate, digest, json_wire_equal, load_slot_map,
+    timeframe_ready, validate_runtime_trace,
 )
 
 _TIMEFRAME_SLOT_FAMILY = {
@@ -82,6 +87,131 @@ def verify_original_mapping(original: bytes) -> dict:
             "dynamic_fidelity_proven": False, "rendered": False}
 
 
+def compile_whole_product_scope_gate(
+    trace: Mapping,
+    *,
+    slot_map: Mapping | None = None,
+) -> dict:
+    """Reject scope compression without pretending to render the Product."""
+    if not isinstance(trace, Mapping):
+        raise TraceabilityError("WHOLE_PRODUCT_TRACE_INVALID")
+    universe = trace.get("complete_research_universe")
+    if not isinstance(universe, Mapping):
+        raise TraceabilityError("WHOLE_PRODUCT_UNIVERSE_MISSING")
+    requirement_rows = universe.get("requirements")
+    if not isinstance(requirement_rows, list):
+        raise TraceabilityError("WHOLE_PRODUCT_REQUIREMENTS_INVALID")
+    requirement_ids = [str(row.get("requirement_id") or "") for row in requirement_rows]
+    expected_requirement_ids = frozenset(
+        requirement_id for requirement_id, _role in ACCEPTED_REQUIREMENT_ROLES
+    )
+    if (
+        len(requirement_ids) != len(expected_requirement_ids)
+        or len(set(requirement_ids)) != len(requirement_ids)
+        or frozenset(requirement_ids) != expected_requirement_ids
+    ):
+        raise TraceabilityError("WHOLE_PRODUCT_REQUIREMENT_SET_MISMATCH")
+    expected_roles = dict(ACCEPTED_REQUIREMENT_ROLES)
+    expected_plane_by_requirement = {
+        requirement_id: plane_name
+        for plane_name, plane_requirements in COMPLETE_RESEARCH_UNIVERSE_PLANES
+        for requirement_id in plane_requirements
+    }
+    if any(
+        str(row.get("contract_role") or "")
+        != expected_roles[str(row.get("requirement_id") or "")]
+        or str(row.get("plane") or "")
+        != expected_plane_by_requirement[str(row.get("requirement_id") or "")]
+        for row in requirement_rows
+    ):
+        raise TraceabilityError("WHOLE_PRODUCT_REQUIREMENT_BINDING_MISMATCH")
+    plane_rows = universe.get("planes")
+    if not isinstance(plane_rows, list) or len(plane_rows) != len(
+        COMPLETE_RESEARCH_UNIVERSE_PLANES
+    ):
+        raise TraceabilityError("WHOLE_PRODUCT_PLANE_BINDING_MISMATCH")
+    expected_planes = tuple(
+        (plane_name, tuple(requirement_ids))
+        for plane_name, requirement_ids in COMPLETE_RESEARCH_UNIVERSE_PLANES
+    )
+    actual_planes = tuple(
+        (
+            str(row.get("plane") or ""),
+            tuple(row.get("requirement_ids") or ()),
+        )
+        for row in plane_rows
+        if isinstance(row, Mapping)
+    )
+    if actual_planes != expected_planes:
+        raise TraceabilityError("WHOLE_PRODUCT_PLANE_BINDING_MISMATCH")
+
+    slots = load_slot_map(slot_map) if slot_map is not None else load_slot_map()
+    slot_ids = tuple(str(slot["id"]) for slot in slots["slots"])
+    if frozenset(slot_ids) != ACCEPTED_PRODUCT_SLOT_IDS:
+        raise TraceabilityError("WHOLE_PRODUCT_SLOT_SET_MISMATCH")
+    slot_requirements = frozenset(
+        requirement_id
+        for slot in slots["slots"]
+        for requirement_id in slot["requirements"]
+    )
+    if slot_requirements != ACCEPTED_PRODUCT_SLOT_REQUIREMENTS:
+        raise TraceabilityError("WHOLE_PRODUCT_SLOT_REQUIREMENT_SET_MISMATCH")
+
+    embedded_full_domain_gate = universe.get("full_domain_data_gate")
+    full_domain_gate = compile_full_domain_data_gate(
+        universe.get("data_objects"),
+        universe.get("data_object_admission"),
+    )
+    if (
+        embedded_full_domain_gate is not None
+        and not json_wire_equal(embedded_full_domain_gate, full_domain_gate)
+    ):
+        raise TraceabilityError("WHOLE_PRODUCT_FULL_DOMAIN_GATE_MISMATCH")
+    if full_domain_gate.get("full_domain_accounted_pass") is not True:
+        raise TraceabilityError("WHOLE_PRODUCT_FULL_DOMAIN_ACCOUNTING_FAILED")
+    if dict(full_domain_gate.get("domain_counts") or {}) != ACCEPTED_DATA_OBJECT_DOMAIN_COUNTS:
+        raise TraceabilityError("WHOLE_PRODUCT_DOMAIN_COUNTS_MISMATCH")
+    valuation_route_ids = tuple(universe.get("valuation_route_ids") or ())
+    if (
+        len(valuation_route_ids) != len(ACCEPTED_VALUATION_ROUTE_IDS)
+        or frozenset(valuation_route_ids) != ACCEPTED_VALUATION_ROUTE_IDS
+    ):
+        raise TraceabilityError("WHOLE_PRODUCT_VALUATION_ROUTE_SET_MISMATCH")
+    atomic_subfields = tuple(universe.get("known_atomic_subfield_obligations") or ())
+    if frozenset(atomic_subfields) != ACCEPTED_WHOLE_PRODUCT_ATOMIC_SUBFIELDS:
+        raise TraceabilityError("WHOLE_PRODUCT_ATOMIC_SUBFIELD_SET_MISMATCH")
+
+    document = {
+        "schema_version": "whole-product-scope-gate-v1",
+        "required_requirement_count": len(expected_requirement_ids),
+        "accounted_requirement_count": len(requirement_ids),
+        "required_slot_count": len(ACCEPTED_PRODUCT_SLOT_IDS),
+        "accounted_slot_count": len(slot_ids),
+        "required_data_domain_counts": dict(ACCEPTED_DATA_OBJECT_DOMAIN_COUNTS),
+        "accounted_data_domain_counts": dict(full_domain_gate["domain_counts"]),
+        "required_valuation_route_ids": tuple(sorted(ACCEPTED_VALUATION_ROUTE_IDS)),
+        "accounted_valuation_route_ids": tuple(sorted(valuation_route_ids)),
+        "required_atomic_subfields": tuple(sorted(
+            ACCEPTED_WHOLE_PRODUCT_ATOMIC_SUBFIELDS
+        )),
+        "unresolved_atomic_subfields": tuple(sorted(
+            ACCEPTED_WHOLE_PRODUCT_ATOMIC_SUBFIELDS
+        )),
+        "full_scope_accounted_pass": True,
+        "full_domain_product_ready": bool(full_domain_gate.get("full_domain_product_ready")),
+        "atomic_subfield_binding_complete": False,
+        "dynamic_product_admitted": False,
+        "rendering_authority": False,
+        "policy": {
+            "global_market_sector_stock_etf_record_are_independent_scopes": True,
+            "valuation_classics_risk_trigger_and_missingness_are_not_optional": True,
+            "scope_accounting_does_not_imply_data_or_rendering_readiness": True,
+        },
+    }
+    document["gate_hash"] = digest(document)
+    return document
+
+
 def compile_product_coverage(factor: Mapping) -> dict:
     """Semantic reachability only. A runtime payload cannot authorize rendering."""
     trace = validate_runtime_trace(factor)
@@ -123,6 +253,13 @@ def compile_product_coverage(factor: Mapping) -> dict:
 
     rows = []
     slot_map = load_slot_map()
+    whole_product_scope_gate = compile_whole_product_scope_gate(
+        trace,
+        slot_map=slot_map,
+    )
+    full_domain_data_gate = universe.get("full_domain_data_gate")
+    if not isinstance(full_domain_data_gate, Mapping):
+        raise TraceabilityError("FULL_DOMAIN_DATA_GATE_MISSING")
     for slot in slot_map["slots"]:
         states = [observed[rid]["state"] for rid in slot["requirements"]]
         available = all(s == "READY" for s in states) and all(at(factor, p) is not None for p in slot["paths"])
@@ -156,6 +293,8 @@ def compile_product_coverage(factor: Mapping) -> dict:
                 "complete_research_universe_hash": universe_hash,
                 "complete_research_universe_schema_version": universe.get("schema_version"),
                 "complete_research_universe_counts": dict(universe_counts),
+                "whole_product_scope_gate": whole_product_scope_gate,
+                "full_domain_data_gate": dict(full_domain_data_gate),
                 "baseline_sha256": BASELINE_SHA256,
                 "slots": rows, "rendered": False}
     document["receipt_hash"] = digest(document)

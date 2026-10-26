@@ -5,7 +5,7 @@
   "production_shell": "DSA/daily_stock_analysis",
   "continuity_entrypoints": {
     "agent_rules": "AGENTS.md#0-stock_dsa-连续实施入口",
-    "current_master_route": "docs/stock-dsa-roadmap.md#当前控制页总目标依赖图与退出条件2026-10-23",
+    "current_master_route": "docs/stock-dsa-roadmap.md#当前控制页总目标依赖图与退出条件2026-10-26",
     "machine_guardrail": "docs/stock-dsa-stage-baseline-v1.json",
     "exact_git_and_ci_recheck_required": true,
     "feature_branch_plan_is_not_main_production": true
@@ -21,16 +21,16 @@
     "storage_admitted": false
   },
   "acceptance": {
-    "state": "G0_CI82_B1_REAL_RUN_BOUNDARY_PASS_SCOPED_PR31_DRAFT_REAL_GRANT_RUN_OPEN",
+    "state": "GATE4_CI87_REMOTE_ACCEPTED_GATE5_SCOPE_DOMAIN_LOCAL_PASS_SCOPED_PR31_DRAFT",
     "production_branch": "main",
     "candidate_branch": "feat/stock-dsa-m2-source-gates-v1",
-    "candidate_head": "99106c6715ae70ccc6708d95166fd6c5104f06cc",
-    "candidate_parent": "df82f93e8de3c84700b096e76b15b38d41595b46",
-    "candidate_head_scope": "LAST_ACCEPTED_ENGINEERING_CHECKPOINT_NOT_MOVING_REMOTE_REF",
+    "candidate_head": "1de3a8a6f0847fd6a6676ccf51eece6437196663",
+    "candidate_parent": "a899586bb5822ddf589cc2f6928e2852acf12b39",
+    "candidate_head_scope": "LATEST_ACCEPTED_FEATURE_CHECKPOINT_NOT_MAIN_PRODUCTION",
     "pull_request": 31,
     "pull_request_state": "DRAFT_OPEN_NOT_MERGED",
-    "latest_required_ci": {"run_number": 82, "run_id": 40068248419, "conclusion": "success"},
-    "prior_failed_ci": {"run_number": 77, "run_id": 39901137680, "head": "bfca958baefe9bf1e97d322ab414c1186646c7c9", "conclusion": "failure"},
+    "latest_required_ci": {"run_number": 87, "run_id": 40262589339, "conclusion": "success"},
+    "prior_failed_ci": {"run_number": 86, "run_id": 40257545700, "head": "a899586bb5822ddf589cc2f6928e2852acf12b39", "conclusion": "failure"},
     "required_checks": [
       "ai-governance",
       "backend-gate",
@@ -51,6 +51,11 @@
     "strategy_bindings": 13,
     "technical_matrix_cells": 56,
     "data_obligations": 76,
+    "product_slots": 27,
+    "product_slot_map_sha256": "ea0a935bf2b99056fa169ed8662a2a92b6c605a407dc12a1d7de134799d21f6d",
+    "valuation_routes": 9,
+    "known_atomic_subfield_obligations": 7,
+    "data_domain_counts": {"GLOBAL": 18, "CN_MARKET": 18, "SECTOR": 7, "ETF": 12, "STOCK": 17, "RECORD": 4},
     "timeframes": ["monthly", "weekly", "daily", "60m", "30m", "15m", "5m"],
     "evidence_families": ["REGIME", "TREND_RS", "SUPPLY", "COST", "STRUCTURE", "MOMENTUM", "PATTERN", "MTF"]
   },
@@ -152,9 +157,9 @@
   "vertical_alignment": {
     "program": "合法known-at数据到白盒证据、唯一canonical、完整交付、合法Outcome/PIT、独立校准和显式Promotion",
     "product": "Global到A股市场和行业、ETF与股票、七周期全材料、风险和执行veto、FULL Report/Email",
-    "current_lane": "B1/B8 operation-specific上游权利与同一as-of普通股票+ETF合法真实输入",
-    "current_milestone": "CI80基础接线、CI81状态投影、CI82在99106c67真实B1 preacquire-asof/无副作用构造/5m市场传参/响应来源指纹的Linux修复均PASS_SCOPED；后继仍为真实权利证据与同一as-of Stock+ETF完整NO_SEND Product回执",
-    "atomic_rule": "只复用现有Owner、消费者、测试和拒绝条件，不新建并行Shell或权威"
+    "current_lane": "GATE5_WHOLE_PRODUCT_SCOPE_AND_FULL_DOMAIN_ACCOUNTING_TO_ORIGINAL_V25_NO_SEND",
+    "current_milestone": "Gate4 CI87已远程接受且NO_REPLAY；当前本地Gate5候选把26要求、27槽、76对象六域、九估值路线和已知Golden原子子字段绑定为独立expected。完整记账可PASS，但真实Product数据与动态V2.5仍分别按准入和渲染证据决定",
+    "atomic_rule": "只复用现有Registry/Coverage/Factor/Report消费者；候选子集不能自证完整，UNKNOWN与N-A保留且不得升级Product"
   },
   "stage_ladder": [
     {
@@ -167,8 +172,7 @@
       "id": "B1_SOURCE_RIGHTS",
       "scope": "Product使用、存储、训练、再分发权利分别绑定当前operation、运行时source identity和精确上游条款",
       "exit": "同一as-of Stock+ETF取得可核上游条款证据与当前数据回执；未知权利保持SOURCE_IDENTITY_ONLY",
-      "proof_ceiling": "CI80证明接线、CI82证明真实运行缺口的工程修复与Linux Offline；不授予供应商真实Product/storage/training/redistribution权利，不证明两资产合法完整Product、历史PIT、策略、邮件交付或模型晋升",
-      "next_primary": true
+      "proof_ceiling": "CI80/82及后续Gate1-4回执证明接线与fail-closed消费；当前全域记账PASS不授予供应商真实Product/storage/training/redistribution权利，不证明两资产合法完整Product、历史PIT、策略、邮件交付或模型晋升"
     },
     {
       "id": "B5_7TF_METHOD_PRODUCT",
@@ -178,9 +182,10 @@
     },
     {
       "id": "B8_FULL_DELIVERY_NO_SEND",
-      "scope": "76项义务、风险和反证进入FULL Report/Email/HTML，发送前正文身份不变",
-      "exit": "本地无发送消费者和负例通过",
-      "proof_ceiling": "不等于SMTP或收件客户端验收"
+      "scope": "独立26要求、27语义槽、76对象六域、九估值路线、已知Golden原子子字段、风险反证与诚实missingness进入原V2.5 FULL Report/Email/HTML",
+      "exit": "whole-scope expected-set、完整动态槽投影、固定区零差异和三envelope NO_SEND负例/合法nontrigger全部通过",
+      "proof_ceiling": "本地Gate5 Product；不等于SMTP、收件客户端、真实全部数据READY或模型晋升",
+      "next_primary": true
     },
     {
       "id": "M2_MULTI_ASSET_KNOWN_AT",
@@ -208,8 +213,8 @@
     }
   ],
   "route_decision": {
-    "next_primary": "B1_SOURCE_RIGHTS",
-    "reason": "CI75权利UNKNOWN门禁、CI78动态窗口、CI80 B1接线、CI81路线投影、CI82真实运行边界修复均CLOSED_SCOPED；CI77历史RED不重跑；当前唯一承重前置仍是供应商原始条款/四权利、同一as-of Stock+ETF实际来源与完整NO_SEND消费者回执，绝不由工程绿灯/合成测试/客户端版本替代历史PIT或真实Product；M2与模型仍按独立门禁",
+    "next_primary": "B8_FULL_DELIVERY_NO_SEND",
+    "reason": "Gate0-3与Gate4 CI87均CLOSED_SCOPED_NO_REPLAY。当前whole-scope/full-domain本地门禁把范围遗漏和数据就绪拆开：当前R005可完整记账但Product-ready为false，UNKNOWN/缺权利继续形成Data veto。唯一下一步是原V2.5三envelope动态NO_SEND对真实canonical或诚实missingness的无损投影；新合法数据回执到达时只重入对应数据Owner，Learning继续HOLD",
     "bounded_indicator_sub_lanes": [
       "MONTHLY_RSI_HISTORY_IF_LEGAL",
       "15M_CONFIRMATION",
@@ -241,6 +246,9 @@
     "mtf_screening_requires_strict_receipt_and_canonical_binding": true,
     "negative_tests_must_cover_missing_units_wrong_clock_stale_identity_future_backfill_and_channel_substitution": true,
     "accepted_goldens_may_not_be_changed_to_match_candidate_output": true,
-    "baseline_changes_require_machine_graph_or_product_contract_delta": true
+    "baseline_changes_require_machine_graph_or_product_contract_delta": true,
+    "whole_product_expected_sets_reject_candidate_subset": true,
+    "full_domain_accounting_is_distinct_from_product_readiness": true,
+    "known_atomic_subfields_remain_visible_until_bound": true
   }
 }
