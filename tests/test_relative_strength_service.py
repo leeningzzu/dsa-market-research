@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-from datetime import date
 from unittest.mock import MagicMock
 
 import pandas as pd
@@ -47,6 +46,32 @@ def _with_identity(frame: pd.DataFrame, *, provider: str = "Fetcher") -> pd.Data
     return attach_daily_data_identity(frame, identity)
 
 
+def _with_identity_only(
+    frame: pd.DataFrame,
+    *,
+    provider: str = "Fetcher",
+) -> pd.DataFrame:
+    frame = frame.copy()
+    start = pd.to_datetime(frame.iloc[0]["date"]).date().isoformat()
+    end = pd.to_datetime(frame.iloc[-1]["date"]).date().isoformat()
+    identity = build_daily_data_identity(
+        frame,
+        provider_identity=provider,
+        provider_route="synthetic-typed-no-row-source",
+        actual_response_branch="synthetic_qfq",
+        requested_adjustment_basis="qfq",
+        observed_adjustment_basis="qfq",
+        basis_evidence="SYNTHETIC_TEST_EXPLICIT",
+        requested_start=start,
+        requested_end=end,
+        currency="CNY",
+        volume_unit="shares",
+        amount_unit="CNY",
+        identity_state="OBSERVED",
+    )
+    return attach_daily_data_identity(frame, identity)
+
+
 def test_exact_shared_endpoint_relative_strength_is_ready_and_formula_is_auditable():
     benchmark = _history(periods=70, start_price=100.0, end_price=110.0)
     target = benchmark.iloc[-1]["date"].date()
@@ -72,6 +97,27 @@ def test_exact_shared_endpoint_relative_strength_is_ready_and_formula_is_auditab
     assert context["relative"]["state"] == "OUTPERFORMING"
     assert context["relative"]["relative_ratio_change_pct"] > 0
     assert context["relative"]["excess_return_pct_points"] > 0
+
+
+def test_typed_identity_provider_binds_source_without_row_label():
+    benchmark = _with_identity_only(_history(periods=70))
+    stock = _with_identity_only(_history(periods=70, end_price=125.0))
+    target = benchmark.iloc[-1]["date"].date()
+
+    context = compute_relative_strength_context(
+        stock_code="600519",
+        market="cn",
+        stock_history=stock,
+        benchmark_history=benchmark,
+        benchmark={**CN_BENCHMARK_PROXY, "source": "Fetcher"},
+        target_date=target,
+        require_source_alignment=True,
+    )
+
+    assert context["status"] == "READY"
+    assert context["reason"] == "EXACT_SHARED_ENDPOINTS_SOURCE_ALIGNED"
+    assert context["data_quality"]["source_alignment"] == "MATCHED"
+    assert context["data_quality"]["stock_endpoint_sources"] == ["Fetcher"]
 
 
 def test_benchmark_warmup_and_exact_target_are_fail_closed():

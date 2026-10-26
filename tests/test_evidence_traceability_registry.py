@@ -1845,6 +1845,166 @@ def test_invalid_mtf_parent_receipt_blocks_dependent_product_and_learning():
         }
 
 
+def test_typed_daily_identity_survives_all_price_owner_views_without_row_label():
+    from datetime import datetime, timezone
+    from data_provider.daily_data_identity import (
+        attach_daily_data_identity,
+        build_daily_data_identity,
+    )
+
+    frame = bars(320).drop(columns=["data_source"]).copy()
+    frame["amount"] = frame["close"] * frame["volume"]
+    target = frame["date"].iloc[-1]
+    observed = datetime(2026, 10, 25, tzinfo=timezone.utc)
+    identity = build_daily_data_identity(
+        frame,
+        provider_identity="BaostockFetcher",
+        provider_route="baostock.query_history_k_data_plus",
+        actual_response_branch="fixture:typed-no-row-source;adjustflag=2",
+        requested_adjustment_basis="qfq",
+        observed_adjustment_basis="qfq",
+        basis_evidence="independent_typed_fixture",
+        requested_start=str(frame["date"].iloc[0]),
+        requested_end=str(target),
+        currency="CNY",
+        volume_unit="share",
+        amount_unit="CNY",
+        identity_state="OBSERVED",
+        observed_at=observed,
+        instrument="600519",
+        revision="typed-fixture-r1",
+        vintage=observed.isoformat(),
+    )
+    attach_daily_data_identity(frame, identity)
+
+    factor = native_summary(frame=frame, target=target)
+    supply = factor["supply_demand_volume_price"]["completed_bar_context"]
+    cost = factor["cost_structure_evidence"]["context"]
+    structure = factor["price_structure_evidence"]["context"]
+    momentum = factor["volatility_momentum_evidence"]["context"]
+    pattern = factor["pattern_trigger_evidence"]["context"]
+
+    assert supply["status"] == "READY"
+    assert supply["data_quality"]["source_alignment"] == "SINGLE_SOURCE"
+    assert cost["status"] == "READY"
+    assert cost["bar_reference_cost"]["window_60"][
+        "source_alignment"
+    ] == "SINGLE_SOURCE"
+    assert structure["status"] == "READY"
+    assert structure["source_alignment"]["status"] == "SINGLE_SOURCE"
+    assert momentum["status"] == "READY"
+    assert momentum["source_alignment"]["status"] == "SINGLE_SOURCE"
+    assert pattern["status"] == "READY"
+    assert pattern["history_source_alignment"]["status"] == "SINGLE_SOURCE"
+    assert pattern["candlestick"]["status"] == "READY"
+    assert pattern["candlestick"]["reason"] in {
+        "NO_MATERIAL_CANDLE_EVENT",
+        "MATERIAL_CANDLE_EVENT_OBSERVED",
+    }
+
+    tampered = frame.copy()
+    tampered.loc[tampered.index[-1], "volume"] += 1.0
+    tampered_factor = native_summary(frame=tampered, target=target)
+    assert tampered_factor["price_structure_evidence"]["context"][
+        "source_alignment"
+    ]["status"] == "UNPROVEN"
+
+
+def test_ready_partial_technical_methods_prefer_bound_timeframe_carrier():
+    factor = native_summary_with_mtf()
+    trace = reg.build_runtime_trace(factor)
+    admitted = [
+        row
+        for cell in trace["timeframe_family_matrix"]["cells"]
+        if cell["runtime_binding"]["runtime_source_bound"] is True
+        for row in cell["method_coverage"]
+        if row["state"] in {"READY", "PARTIAL"}
+    ]
+
+    assert admitted
+    assert all(
+        row["runtime_source_binding"]["runtime_source_bound"] is True
+        for row in admitted
+    )
+    assert all(
+        row["runtime_source_binding"]["binding_scope"]
+        == "TIMEFRAME_CARRIER"
+        for row in admitted
+    )
+
+
+def test_etf_daily_ma_is_independent_from_missing_peer_rs_only():
+    factor = native_summary_with_mtf()
+    factor["asset_type"] = "etf"
+    factor["trend_relative_strength"]["relative_strength"] = {
+        "status": "MISSING",
+        "reason": "ETF_PEER_RS_INPUT_MISSING",
+    }
+    mtf = factor["multi_timeframe_structure_context"]
+    factor["method_execution_receipt_policy"] = "REQUIRED"
+    factor["method_execution_receipts"] = {
+        "TREND_RS": reg.build_method_execution_receipt(
+            "TREND_RS",
+            output=factor["trend_relative_strength"],
+            asset_route="ETF",
+            stock_code=mtf["stock_code"],
+            market="cn",
+            target_date=mtf["target_date"],
+            timeframe="daily",
+            input_identity=None,
+        ),
+    }
+
+    trace = reg.build_runtime_trace(factor)
+    cell = next(
+        row for row in trace["timeframe_family_matrix"]["cells"]
+        if row["timeframe"] == "daily" and row["family"] == "TREND_RS"
+    )
+    methods = {row["method_id"]: row for row in cell["method_coverage"]}
+    assert methods["RELATIVE_STRENGTH"]["state"] == "UNKNOWN"
+    assert methods["MA_LEVEL_ALIGNMENT_DAILY"]["state"] == "READY"
+    assert methods["MA_LEVEL_ALIGNMENT_DAILY"]["reason"] == (
+        "DAILY_MA_SOURCE_BOUND_RS_BENCHMARK_INDEPENDENT"
+    )
+    assert methods["MA_LEVEL_ALIGNMENT_DAILY"]["runtime_source_binding"][
+        "runtime_source_bound"
+    ] is True
+
+    forged = deepcopy(factor)
+    receipt = deepcopy(forged["method_execution_receipts"]["TREND_RS"])
+    receipt["output_hash"] = "0" * 64
+    forged["method_execution_receipts"]["TREND_RS"] = _rehash_receipt(
+        receipt
+    )
+    forged_trace = reg.build_runtime_trace(forged)
+    forged_cell = next(
+        row for row in forged_trace["timeframe_family_matrix"]["cells"]
+        if row["timeframe"] == "daily" and row["family"] == "TREND_RS"
+    )
+    forged_methods = {
+        row["method_id"]: row for row in forged_cell["method_coverage"]
+    }
+    assert forged_methods["MA_LEVEL_ALIGNMENT_DAILY"]["state"] not in {
+        "READY", "PARTIAL",
+    }
+
+    unbound = deepcopy(factor)
+    unbound["multi_timeframe_structure_context"]["timeframes"]["daily"][
+        "source_alignment"
+    ] = {"status": "UNKNOWN", "sources": []}
+    unbound_trace = reg.build_runtime_trace(unbound)
+    unbound_cell = next(
+        row for row in unbound_trace["timeframe_family_matrix"]["cells"]
+        if row["timeframe"] == "daily" and row["family"] == "TREND_RS"
+    )
+    unbound_methods = {
+        row["method_id"]: row for row in unbound_cell["method_coverage"]
+    }
+    assert unbound_methods["MA_LEVEL_ALIGNMENT_DAILY"]["state"] not in {
+        "READY", "PARTIAL",
+    }
+
+
 def test_noncanonical_legacy_call_does_not_trigger_new_product_or_learning():
     result = TrendAnalysisResult(code="600519")
     factor = build_stock_factor_decision_summary(result)

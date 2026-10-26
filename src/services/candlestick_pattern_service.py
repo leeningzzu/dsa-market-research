@@ -16,6 +16,8 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
+from data_provider.daily_data_identity import bind_verified_daily_source_view
+
 
 CANDLESTICK_SCHEMA_VERSION = "candlestick-pattern-v1"
 ALGORITHM_VERSION = "candlestick-geometry-location-lifecycle-v1"
@@ -85,7 +87,8 @@ def _normalize_history(history: Any, *, target_date: date) -> pd.DataFrame:
     frame = frame[frame["date"] <= target_date]
     frame = frame.sort_values("date").drop_duplicates(subset=["date"], keep="last")
     optional = [column for column in ("volume", "data_source") if column in frame.columns]
-    return frame[required + optional].reset_index(drop=True)
+    result = frame[required + optional].reset_index(drop=True)
+    return bind_verified_daily_source_view(history, result)
 
 
 def _invalid_ohlc(frame: pd.DataFrame) -> bool:

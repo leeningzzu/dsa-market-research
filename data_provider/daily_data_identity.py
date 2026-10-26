@@ -303,6 +303,27 @@ def verified_observed_daily_frame_provider(frame: Any) -> Optional[str]:
     return provider
 
 
+def bind_verified_daily_source_view(
+    source_frame: Any,
+    projected_frame: pd.DataFrame,
+) -> pd.DataFrame:
+    """Carry a verified typed provider into a derived read-only bar view.
+
+    Existing row-level labels are never overwritten.  A frame without a valid
+    OBSERVED content identity stays unbound.  This conveys no storage, PIT,
+    training, redistribution, strategy, or action authority.
+    """
+    if not isinstance(projected_frame, pd.DataFrame):
+        return projected_frame
+    result = projected_frame.copy()
+    if any(str(column).lower() == "data_source" for column in result.columns):
+        return result
+    provider = verified_observed_daily_frame_provider(source_frame)
+    if provider:
+        result["data_source"] = provider
+    return result
+
+
 def verify_observed_daily_frame_request(
     frame: Any,
     *,

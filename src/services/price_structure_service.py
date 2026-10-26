@@ -16,6 +16,8 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
+from data_provider.daily_data_identity import bind_verified_daily_source_view
+
 
 PRICE_STRUCTURE_SCHEMA_VERSION = "price-structure-v1"
 PIVOT_ALGORITHM_VERSION = "confirmed-pivot-v2"
@@ -51,7 +53,8 @@ def _normalize_history(history: Any, *, target_date: date) -> pd.DataFrame:
     frame = frame[frame["date"] <= target_date]
     frame = frame.sort_values("date").drop_duplicates(subset=["date"], keep="last")
     columns = required + (["data_source"] if "data_source" in frame.columns else [])
-    return frame[columns].reset_index(drop=True)
+    result = frame[columns].reset_index(drop=True)
+    return bind_verified_daily_source_view(history, result)
 
 
 def _source_alignment(frame: pd.DataFrame) -> Dict[str, Any]:

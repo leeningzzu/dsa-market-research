@@ -16,6 +16,8 @@ from typing import Any, Dict, Mapping, Optional, Tuple
 
 import pandas as pd
 
+from data_provider.daily_data_identity import bind_verified_daily_source_view
+
 from src.services.pit_identity import build_completed_history_identity
 
 logger = logging.getLogger(__name__)
@@ -73,7 +75,8 @@ def _normalize_history(history: Any, *, target_date: date) -> pd.DataFrame:
     columns = ["date", "close"]
     if "data_source" in frame.columns:
         columns.append("data_source")
-    return frame[columns].reset_index(drop=True)
+    result = frame[columns].reset_index(drop=True)
+    return bind_verified_daily_source_view(history, result)
 
 
 def compute_relative_strength_context(

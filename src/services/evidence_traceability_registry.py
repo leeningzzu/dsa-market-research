@@ -2504,7 +2504,26 @@ def _method_runtime_source_binding(
         "learning_admitted": False,
         "independent_action_authority": False,
     }
-    if timeframe != "daily" or state not in {"READY", "PARTIAL"}:
+    if state not in {"READY", "PARTIAL"}:
+        return result
+    carrier = _timeframe_runtime_binding(factor, timeframe)
+    if carrier.get("runtime_source_bound") is True:
+        return {
+            **result,
+            "binding_scope": "TIMEFRAME_CARRIER",
+            "runtime_source_bound": True,
+            "completed_bar_only": carrier.get("completed_bar_only") is True,
+            "observations": carrier.get("observations"),
+            "completed_through": carrier.get("completed_through"),
+            "source_alignment_state": carrier.get("source_alignment_state"),
+            "sources": tuple(carrier.get("sources") or ()),
+            "provider_identity": carrier.get("provider_identity"),
+            "adjustment_basis": carrier.get("adjustment_basis"),
+            "available_at_max": carrier.get("available_at_max"),
+            "source_receipt_hash": digest(carrier),
+            "identity_kind": "MTF_TIMEFRAME_SOURCE_CARRIER",
+        }
+    if timeframe != "daily":
         return result
     payload = at(factor, binding.path)
     if not isinstance(payload, Mapping):
@@ -2689,6 +2708,51 @@ def _cell_runtime_binding(frame_binding: Mapping, method_coverage: list[dict]) -
     return result
 
 
+_RS_ONLY_RECEIPT_FAILURES = frozenset({
+    "RS_INPUT_IDENTITY_MISSING",
+    "RS_PROVIDER_IDENTITY_UNPROVEN",
+    "RS_PRICE_BASIS_UNPROVEN",
+    "RS_PRICE_IDENTITY_UNPROVEN",
+    "RS_WRAPPER_IDENTITY_MISMATCH",
+    "RS_SCHEMA_MISMATCH",
+    "RS_STOCK_IDENTITY_MISMATCH",
+    "RS_STOCK_INPUT_IDENTITY_MISMATCH",
+    "RS_MARKET_IDENTITY_MISMATCH",
+    "RS_TARGET_IDENTITY_MISMATCH",
+    "RS_BENCHMARK_IDENTITY_MISSING",
+    "RS_BENCHMARK_IDENTITY_MISMATCH",
+    "RS_SOURCE_ALIGNMENT_UNPROVEN",
+    "RS_BENCHMARK_SOURCE_MISMATCH",
+    "RS_STOCK_SOURCE_MISMATCH",
+})
+
+
+def _daily_ma_state_from_source_bound_absolute_trend(
+    factor: Mapping,
+    *,
+    state: str,
+    reason: str,
+) -> tuple[str, str]:
+    """Keep absolute daily MA independent from a missing peer-RS input.
+
+    This override is intentionally narrow: the shared TREND_RS output must
+    contain an actual absolute alignment, the failure must be RS-specific, and
+    the existing daily MTF carrier must be source-bound.  It never creates peer
+    RS, a strategy vote, or action authority.
+    """
+    if state in {"READY", "PARTIAL"} or reason not in _RS_ONLY_RECEIPT_FAILURES:
+        return state, reason
+    absolute = at(factor, "trend_relative_strength.absolute_trend")
+    if not isinstance(absolute, Mapping) or not str(
+        absolute.get("alignment") or ""
+    ).strip():
+        return state, reason
+    carrier = _timeframe_runtime_binding(factor, "daily")
+    if carrier.get("runtime_source_bound") is not True:
+        return state, reason
+    return "READY", "DAILY_MA_SOURCE_BOUND_RS_BENCHMARK_INDEPENDENT"
+
+
 def _matrix_method_observation(
     profile: MethodWindowProfile,
     factor: Mapping,
@@ -2730,6 +2794,12 @@ def _matrix_method_observation(
         state = str(observation.get("state") or "UNKNOWN")
         state = state if state in TIMEFRAME_FAMILY_MATRIX_STATES else "UNKNOWN"
         reason = str(observation.get("reason") or "RUNTIME_OBSERVATION_UNKNOWN")
+    if timeframe == "daily" and profile.method_id == "MA_LEVEL_ALIGNMENT_DAILY":
+        state, reason = _daily_ma_state_from_source_bound_absolute_trend(
+            factor,
+            state=state,
+            reason=reason,
+        )
     if state == "READY" and family == "TREND_RS" and profile.method_id in {
         "MTF_MA_LEVEL_ALIGNMENT", "MA_SLOPE_CROSS",
     } and timeframe != "daily":
