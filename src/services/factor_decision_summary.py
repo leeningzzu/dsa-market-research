@@ -2237,7 +2237,7 @@ def _build_asset_research_brief_v1(trend_result, summary, *, asset_type: str = "
                 if valuation_document
                 else "PARTIAL_CURRENT" if valuation_displayable else "MISSING"
             ),
-            "label": "交易价/NAV与底层估值" if asset_type == "etf" else "估值",
+            "label": "底层估值" if asset_type == "etf" else "估值",
             "summary": valuation if (valuation_displayable or valuation_document) else "",
             "uncertainty": str(valuation_document.get("uncertainty_zh") or "").strip()
             or (

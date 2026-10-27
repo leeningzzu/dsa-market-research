@@ -144,7 +144,7 @@ def test_factor_and_investor_brief_keep_stock_etf_and_index_valuation_layers_sep
         asset_type="etf",
     )
     brief = factor["investor_brief"]
-    assert brief["valuation"]["label"] == "交易价/NAV与底层估值"
+    assert brief["valuation"]["label"] == "底层估值"
     assert brief["asset_specific"]["underlying_valuation"]["status"] == "READY"
     assert brief["asset_specific"]["premium_discount"]["status"] == "READY"
     assert "NAV_PREMIUM_DISCOUNT_BAND" in (
