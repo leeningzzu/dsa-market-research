@@ -10,6 +10,7 @@ import pandas as pd
 import pytest
 
 from src.services import evidence_traceability_registry as reg
+from src.services import v2_5_evidence_coverage as v25
 from src.services.v2_5_evidence_coverage import (
     _v25_assign,
     compile_input_coverage, compile_product_coverage,
@@ -371,23 +372,122 @@ def test_dynamic_v25_projects_complete_original_frame_and_truthful_missingness()
         + list(scope["atomic_subfield_projections"])
     )
     assert len(scope_rows) == 118
-    assert len({row["location_ids"][0] for row in scope_rows}) == 118
+    assert all(row["location_ids"] for row in scope_rows)
     assert all(len(row["projection_sha256"]) == 64 for row in scope_rows)
-    assert all(row["id"] in html for row in scope_rows)
+    assert {
+        row["consumer_projection"] for row in scope_rows
+    } == {"MACHINE_RECEIPT_WITH_ROLE_SUMMARIZED_EMAIL"}
+    quality = receipt["email_consumer_quality"]
+    assert quality == {
+        "projection_mode": "ROLE_SUMMARIZED_EMAIL_PLUS_MACHINE_RECEIPT",
+        "raw_scope_row_count": 0,
+        "blank_inline_tag_count": 0,
+        "blank_unclassified_span_count": 0,
+        "indicator_family_labels": tuple(
+            label for label, _requirement in v25._V25_FAMILY_REQUIREMENTS
+        ),
+        "missing_indicator_family_labels": (),
+        "repeated_policy_filler_count": 0,
+        "generic_placeholder_count": 0,
+        "ordinary_language_roles_preserved": True,
+    }
+    assert not any(prefix in html for prefix in (
+        "研究要求 ", "数据对象 ", "估值路线 ", "Golden原子字段 ",
+    ))
     assert receipt["results"][0]["fact_mode"] == "MISSINGNESS_ONLY"
     assert receipt["all_input_facts_product_ready"] is False
     assert receipt["no_send"] is True
     assert receipt["network_calls"] == receipt["database_writes"] == 0
     assert "600519" in html
-    assert "Product准入未完成" in html
-    for field in reg.ACCEPTED_WHOLE_PRODUCT_ATOMIC_SUBFIELDS:
-        assert field in html
+    assert "全域Product尚未准入" in html
+    assert {
+        row["id"] for row in scope["atomic_subfield_projections"]
+    } == set(reg.ACCEPTED_WHOLE_PRODUCT_ATOMIC_SUBFIELDS)
+    assert "另有7项全球细字段待独立绑定" in html
     assert not any(fragment in html for fragment in (
         "示例成长科技ETF", "1.264元", "自选股X（6008X9）",
     ))
     original_markup = re.findall(r"<[^>]+>", before.decode("utf-8"))
     projected_markup = re.findall(r"<[^>]+>", html)
     assert projected_markup == original_markup
+
+
+def test_dynamic_v25_email_is_reader_facing_while_full_scope_stays_in_receipt():
+    projected = render_v2_5_dynamic_no_send(
+        [_v25_result()], report_date="2026-10-23",
+    )
+    html = projected["html"]
+    receipt = projected["receipt"]
+    mails = html.split('<div class="mail">')
+    assert len(mails) == 4
+    market, auto, watch = mails[1], mails[2], mails[3]
+
+    assert "测试股票（600519）" not in market
+    assert "测试股票（600519）" in watch
+    assert "代表指数综合｜市场价格、宽度与七周期事实未准入" in market
+    assert "市场宽度、分母、新高新低和均线上方比例未准入" in market
+    assert "全球证据只能确认、降级或失效，不能独立升级BUY" in market
+    assert "ETF重点空位1｜本轮无已准入研究对象" in auto
+    assert "股票重点空位1｜本轮无已准入研究对象" in auto
+    assert "全域Product尚未准入" in watch
+    assert all(
+        label in html for label, _requirement in v25._V25_FAMILY_REQUIREMENTS
+    )
+    assert not re.search(r"<(?:b|strong)>\s*</(?:b|strong)>", html)
+    assert not re.search(r"<span>\s*</span>", html)
+    assert "结论：大盘、红利和工业方向优先" not in html
+    assert "这是箱体内向上修复，不是已经确认的箱体突破" not in html
+    assert "沪深300" in market
+    assert "上证50" in market
+    assert "证据、反证、风险、触发和失效必须同时保留；缺失不被技术分抵消。" not in html
+    assert not any(prefix in html for prefix in (
+        "研究要求 ", "数据对象 ", "估值路线 ", "Golden原子字段 ",
+    ))
+
+    scope = receipt["whole_scope_projection"]
+    rows = (
+        list(scope["requirement_projections"])
+        + list(scope["data_object_projections"])
+        + list(scope["valuation_route_projections"])
+        + list(scope["atomic_subfield_projections"])
+    )
+    assert len(rows) == 118
+    assert all(row["location_ids"] and row["projection_sha256"] for row in rows)
+    assert receipt["all_whole_scope_obligations_projected"] is True
+
+
+@pytest.mark.parametrize(
+    ("mutation", "error"),
+    [
+        (lambda html: html + "数据对象 G_EQ_US", "V25_DYNAMIC_RAW_SCOPE_ROW_LEAK"),
+        (lambda html: html + "<strong></strong>", "V25_DYNAMIC_BLANK_INLINE_TAG"),
+        (lambda html: html + "<span></span>", "V25_DYNAMIC_BLANK_INLINE_TAG"),
+        (
+            lambda html: html + "证据、反证、风险、触发和失效必须同时保留；缺失不被技术分抵消。",
+            "V25_DYNAMIC_REPEATED_POLICY_FILLER",
+        ),
+        (
+            lambda html: html + "本次无已准入候选",
+            "V25_DYNAMIC_GENERIC_PLACEHOLDER_REPETITION",
+        ),
+        (
+            lambda html: html.replace("市场/行业环境", "环境"),
+            "V25_DYNAMIC_INDICATOR_FAMILY_SUMMARY_MISSING",
+        ),
+        (
+            lambda html: html.replace("五、全球背景怎样影响A股方向", "全球", 1),
+            "V25_DYNAMIC_ORDINARY_LANGUAGE_ROLE_LOST",
+        ),
+    ],
+)
+def test_dynamic_v25_email_quality_gate_rejects_reader_contract_regressions(
+    mutation, error,
+):
+    html = render_v2_5_dynamic_no_send(
+        [_v25_result()], report_date="2026-10-23",
+    )["html"]
+    with pytest.raises(reg.TraceabilityError, match=error):
+        v25._v25_email_consumer_quality(mutation(html))
 
 
 def test_dynamic_v25_empty_and_partial_candidate_routes_are_legal_nontriggers():
@@ -405,7 +505,8 @@ def test_dynamic_v25_empty_and_partial_candidate_routes_are_legal_nontriggers():
     assert {row["projection_state"] for row in receipt["slot_projections"]} == {
         "RENDERED_MISSINGNESS"
     }
-    assert "本次无已准入候选" in projected["html"]
+    assert "本次无第4名ETF候选" in projected["html"]
+    assert "本次无第4名股票候选" in projected["html"]
     assert "示例成长科技ETF" not in projected["html"]
     one_result = render_v2_5_dynamic_no_send(
         [_v25_result()], report_date="2026-10-23",

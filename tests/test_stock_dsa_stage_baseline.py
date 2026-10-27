@@ -115,24 +115,24 @@ def test_stage_ladder_keeps_parent_product_and_blocking_order_explicit() -> None
     assert stages[6]["blocked_by"] == "L1_LEGAL_LEDGER_OUTCOME_PIT"
     assert stages[7]["blocked_by"] == "M3_CALIBRATION_SHADOW"
     assert baseline["acceptance"]["direct_main_push"] is False
-    # CI88 closes the root scope/data gates on the exact feature checkpoint; it
-    # does not merge main or turn the current local Gate5/Gate6 candidate into
-    # remote acceptance, actual complete data or learning authority.
+    # CI89 closes the Gate5/Gate6 engineering mechanisms on the exact feature
+    # checkpoint.  The current email-reader contract remains local/uncommitted,
+    # and neither state implies actual complete data or learning authority.
     assert baseline["acceptance"]["required_checks"] == [
         "ai-governance", "backend-gate", "docker-build",
     ]
     acceptance = baseline["acceptance"]
     assert acceptance["state"] == (
-        "GATE12_CI88_REMOTE_ACCEPTED_GATE5_DYNAMIC_NO_SEND_AND_GATE6_ADMISSION_LOCAL_PASS_SCOPED_PR31_DRAFT"
+        "GATE56_CI89_REMOTE_ACCEPTED_EMAIL_CONSUMER_ROLE_LOCAL_PASS_SCOPED_PR31_DRAFT"
     )
-    assert acceptance["candidate_head"] == "00a5e30e54443615e499e3c89a0e28b122a7f217"
-    assert acceptance["candidate_parent"] == "1de3a8a6f0847fd6a6676ccf51eece6437196663"
+    assert acceptance["candidate_head"] == "630ecbdc5a9ac1cfd0ee6f45ba76f8b3992c7b0c"
+    assert acceptance["candidate_parent"] == "00a5e30e54443615e499e3c89a0e28b122a7f217"
     assert acceptance["candidate_head_scope"] == (
         "LATEST_ACCEPTED_FEATURE_CHECKPOINT_NOT_MAIN_PRODUCTION"
     )
     assert acceptance["latest_required_ci"] == {
-        "run_number": 88,
-        "run_id": 40294193680,
+        "run_number": 89,
+        "run_id": 40318080292,
         "conclusion": "success",
     }
     # CI86 remains the direct failed predecessor; older failures remain in Git/history.
@@ -153,7 +153,7 @@ def test_gate5_gate6_local_evidence_matches_current_fail_closed_runtime() -> Non
     gate6 = compile_gate6_learning_admission(gate5_receipt=gate5)
 
     expected_gate5 = evidence["gate5"]
-    assert expected_gate5["state"] == "PASS_MISSINGNESS_COMPLETE_LOCAL_UNCOMMITTED"
+    assert expected_gate5["state"] == "PASS_EMAIL_READER_CONTRACT_LOCAL_UNCOMMITTED"
     assert expected_gate5["mail_count"] == gate5["frame_contract"]["mail_count"] == 3
     assert expected_gate5["card_count"] == len(gate5["frame_contract"]["card_ids"]) == 10
     assert expected_gate5["cycle_count"] == len(gate5["frame_contract"]["cycle_ids"]) == 84
@@ -166,6 +166,16 @@ def test_gate5_gate6_local_evidence_matches_current_fail_closed_runtime() -> Non
     assert expected_gate5["valuation_projection_count"] == len(scope["valuation_route_projections"]) == 9
     assert expected_gate5["atomic_projection_count"] == len(scope["atomic_subfield_projections"]) == 7
     assert expected_gate5["missingness_output_sha256"] == gate5["output_sha256"]
+    expected_quality = expected_gate5["email_consumer_quality"]
+    actual_quality = gate5["email_consumer_quality"]
+    assert actual_quality["projection_mode"] == expected_quality["projection_mode"]
+    assert actual_quality["raw_scope_row_count"] == expected_quality["raw_scope_row_count"] == 0
+    assert actual_quality["blank_inline_tag_count"] == expected_quality["blank_inline_tag_count"] == 0
+    assert actual_quality["blank_unclassified_span_count"] == expected_quality["blank_unclassified_span_count"] == 0
+    assert len(actual_quality["indicator_family_labels"]) == expected_quality["indicator_family_count"] == 8
+    assert actual_quality["repeated_policy_filler_count"] == expected_quality["repeated_policy_filler_count"] == 0
+    assert actual_quality["generic_placeholder_count"] == expected_quality["generic_placeholder_count"] == 0
+    assert actual_quality["ordinary_language_roles_preserved"] is expected_quality["ordinary_language_roles_preserved"] is True
     assert gate5["all_whole_scope_obligations_projected"] is True
     assert gate5["all_accepted_slot_roles_projected"] is True
     assert gate5["all_input_facts_product_ready"] is False

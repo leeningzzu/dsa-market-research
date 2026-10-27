@@ -341,6 +341,51 @@ _V25_SAMPLE_FRAGMENTS = (
     "自选ETF Z（5108X9）", "自选股W（3008X7）",
     "1.264元", "15.72元", "31.40元", "26.30元",
 )
+_V25_FAMILY_REQUIREMENTS = (
+    ("市场/行业环境", "REGIME"),
+    ("趋势/相对强弱", "TREND_RS"),
+    ("供需/量价", "SUPPLY"),
+    ("成本", "COST"),
+    ("价格结构", "STRUCTURE"),
+    ("波动/动量", "MOMENTUM"),
+    ("形态/触发", "PATTERN"),
+    ("多周期", "MTF"),
+)
+_V25_DOMAIN_LABELS = {
+    "GLOBAL": "全球背景",
+    "CN_MARKET": "A股市场",
+    "SECTOR": "行业",
+    "ETF": "ETF专项",
+    "STOCK": "股票专项",
+    "RECORD": "记录与学习",
+}
+_V25_ETF_CARD_IDS = frozenset({
+    "growth-etf", "dividend-etf", "small-etf", "watch-etf-z",
+})
+_V25_STOCK_CARD_IDS = frozenset({
+    "industrial-stock", "semiconductor-stock", "grid-stock",
+    "watch-x", "watch-y", "watch-w",
+})
+_V25_INLINE_ROLE_LABELS = frozenset({
+    "现在怎么做？", "多数股票跟上了吗？", "资金是否支持？",
+    "今天为什么只做精选：", "今天的结论：", "优先顺序：",
+    "数据截至：", "上证综指结论：", "宽度结论：", "全球合成：",
+    "第一优先：", "筛选依据：", "龙头候选依据：",
+    "底层资产估值：", "技术关注区：", "跨周期合成：",
+    "关注/触发", "转弱/失效", "主要风险：", "交易合理参考价",
+})
+_V25_CARD_ROLES = {
+    "growth-etf": "ETF重点空位1",
+    "dividend-etf": "ETF重点空位2",
+    "small-etf": "ETF重点空位3",
+    "industrial-stock": "股票重点空位1",
+    "semiconductor-stock": "股票重点空位2",
+    "grid-stock": "股票重点空位3",
+    "watch-x": "自选股票位1",
+    "watch-y": "自选股票位2",
+    "watch-etf-z": "自选ETF位",
+    "watch-w": "自选股票位3",
+}
 _V25_VOID_TAGS = frozenset({
     "area", "base", "br", "col", "embed", "hr", "img", "input", "link",
     "meta", "param", "source", "track", "wbr",
@@ -776,71 +821,203 @@ def _v25_scope_obligations(universe: Mapping) -> list[dict[str, Any]]:
     return rows
 
 
+def _v25_node_text(parser: _V25TextFrameParser, node_index: int) -> str:
+    return " ".join(
+        "".join(
+            item["raw"]
+            for item in parser.text_nodes
+            if item.get("node") == node_index
+        ).split()
+    ).strip()
+
+
+def _v25_section_heading(parser: _V25TextFrameParser, block_index: int) -> str:
+    section = _v25_nearest(parser, block_index, class_name="section")
+    if section is None:
+        return ""
+    heading = next(
+        (
+            node for node in parser.nodes
+            if node.get("parent") == section["index"] and node.get("tag") == "h2"
+        ),
+        None,
+    )
+    return _v25_node_text(parser, heading["index"]) if heading else ""
+
+
+def _v25_audit_pool_key(obligation: Mapping) -> str:
+    kind = str(obligation.get("kind") or "")
+    if kind == "data_object":
+        return str(obligation.get("domain") or "").lower()
+    if kind == "valuation_route":
+        return "valuation"
+    if kind == "atomic_subfield":
+        return "global"
+    identifier = str(obligation.get("id") or "")
+    if identifier == "GLOBAL":
+        return "global"
+    if identifier in {"BREADTH", "REGIME"}:
+        return "cn_market"
+    if identifier == "ETF_SPECIFIC":
+        return "etf"
+    if identifier == "QUALITY":
+        return "stock"
+    if identifier == "VALUATION":
+        return "valuation"
+    if identifier in {"DECISION", "RISK_REWARD"}:
+        return "decision"
+    return "technical"
+
+
 def _v25_bind_scope_obligations(
     parser: _V25TextFrameParser,
     grouped: Mapping[int, list[dict]],
     obligations: list[dict[str, Any]],
+    assignment: Mapping,
 ) -> tuple[dict[int, str], list[dict[str, Any]]]:
-    """Bind each whole-product obligation to one exact existing Golden block."""
-    reserved = {
-        "subject", "meta", "lead", "mainline", "card-title", "identity",
-        "one-line", "cycle-title", "synthesis", "footer",
-    }
-    eligible = [
-        block_index
-        for block_index in sorted(grouped, key=lambda value: parser.nodes[value]["start"])
-        if parser.nodes[block_index]["mail"] == 0
-        and parser.nodes[block_index]["tag"] not in {
-            "h1", "h2", "h3", "h4", "th", "caption",
-        }
-        and _v25_semantic_for_block(parser, block_index) not in reserved
-    ]
-    if len(eligible) < len(obligations):
+    """Bind scope to semantically related blocks without dumping registry rows.
+
+    The email remains an investor-facing Product.  Exact IDs, facts, frequencies,
+    consumers and hashes stay in the machine receipt; the body shows concise,
+    role-correct summaries.  Multiple obligations may therefore share one
+    semantically correct section location.
+    """
+    pools: dict[str, list[int]] = defaultdict(list)
+    fallback: list[int] = []
+    for block_index in sorted(grouped, key=lambda value: parser.nodes[value]["start"]):
+        block = parser.nodes[block_index]
+        if _v25_fixed_block(block):
+            continue
+        fallback.append(block_index)
+        semantic = _v25_semantic_for_block(parser, block_index)
+        heading = _v25_section_heading(parser, block_index)
+        card = _v25_nearest(parser, block_index, class_name="card")
+        card_id = card.get("id") if card else None
+        material = assignment.get("cards", {}).get(card_id) if card_id else None
+        asset_type = str(material.get("asset_type") or "") if isinstance(material, Mapping) else ""
+        if not asset_type and card_id in _V25_ETF_CARD_IDS:
+            asset_type = "etf"
+        elif not asset_type and card_id in _V25_STOCK_CARD_IDS:
+            asset_type = "stock"
+
+        if block["mail"] == 0:
+            pools["cn_market"].append(block_index)
+            if "全球背景" in heading:
+                pools["global"].append(block_index)
+            if "优先看哪些行业" in heading:
+                pools["sector"].append(block_index)
+            if "数据时点与质量" in heading:
+                pools["record"].append(block_index)
+        if asset_type:
+            pools[asset_type].append(block_index)
+            pools["asset"].append(block_index)
+        if semantic == "valuation" or any(
+            "valuation" in node["classes"]
+            for node in _v25_chain(parser, block_index)
+        ):
+            pools["valuation"].append(block_index)
+        if semantic in {"indicator-box", "cycle-title", "p", "flow-box"}:
+            pools["technical"].append(block_index)
+        if semantic in {"event-alert", "one-line", "synthesis", "attn", "fail"}:
+            pools["decision"].append(block_index)
+
+    if not fallback:
         raise TraceabilityError("V25_DYNAMIC_SCOPE_LOCATION_CAPACITY_INSUFFICIENT")
-    text_by_block: dict[int, str] = {}
+    counters: Counter = Counter()
     bound_rows: list[dict[str, Any]] = []
-    for obligation, block_index in zip(obligations, eligible):
-        text_by_block[block_index] = str(obligation["text"])
+    for obligation in obligations:
+        key = _v25_audit_pool_key(obligation)
+        options = pools.get(key) or pools.get("asset") or fallback
+        block_index = options[counters[key] % len(options)]
+        counters[key] += 1
         bound_rows.append({
-            **{key: value for key, value in obligation.items() if key != "text"},
+            **{name: value for name, value in obligation.items() if name != "text"},
             "location_ids": (f"block-{block_index}",),
+            "consumer_projection": "MACHINE_RECEIPT_WITH_ROLE_SUMMARIZED_EMAIL",
         })
-    return text_by_block, bound_rows
+    return {}, bound_rows
 
 
-def _v25_domain_line(material: Mapping | None, index: int) -> str:
-    if material is None:
-        return "全域对象未绑定；GLOBAL/CN_MARKET/SECTOR/ETF/STOCK/RECORD均按缺失呈现。"
+def _v25_universe(value: Mapping | None) -> Mapping | None:
+    if not isinstance(value, Mapping):
+        return None
+    if isinstance(value.get("data_objects"), list):
+        return value
+    universe = value.get("universe")
+    return universe if isinstance(universe, Mapping) else None
+
+
+def _v25_domain_line(value: Mapping | None, index: int) -> str:
+    universe = _v25_universe(value)
+    if universe is None:
+        return "全域材料未绑定；全球、A股市场、行业、股票、ETF和记录均按缺失呈现。"
     domains = ("GLOBAL", "CN_MARKET", "SECTOR", "ETF", "STOCK", "RECORD")
     domain = domains[index % len(domains)]
     counts = Counter(
         str(row.get("state") or "UNKNOWN")
-        for row in material["universe"].get("data_objects", ())
+        for row in universe.get("data_objects", ())
         if isinstance(row, Mapping) and str(row.get("domain") or "") == domain
     )
-    body = " / ".join(
+    body = "、".join(
         f"{state} {counts[state]}"
         for state in ("READY", "PARTIAL", "MISSING", "UNKNOWN", "NOT_ADMITTED", "NOT_APPLICABLE")
         if counts[state]
     ) or "无对象状态"
     unresolved = tuple(sorted(
-        material["coverage"]["whole_product_scope_gate"].get(
-            "unresolved_atomic_subfields"
-        ) or ()
+        universe.get("known_atomic_subfield_obligations") or ()
     ))
     atomic = (
-        "；Golden细字段未绑定：" + "、".join(unresolved)
+        f"；另有{len(unresolved)}项全球细字段待独立绑定"
         if domain == "GLOBAL" and unresolved else ""
     )
-    return f"{domain}：{body}{atomic}"
+    return f"{_V25_DOMAIN_LABELS[domain]}：{body}{atomic}"
+
+
+def _v25_requirement_row(universe: Mapping | None, requirement_id: str) -> Mapping:
+    if not isinstance(universe, Mapping):
+        return {}
+    return next(
+        (
+            row for row in universe.get("requirements", ())
+            if isinstance(row, Mapping)
+            and str(row.get("requirement_id") or "") == requirement_id
+        ),
+        {},
+    )
+
+
+def _v25_state_explanation(state: str, *, object_missing: bool = False) -> str:
+    if object_missing:
+        return "对象尚未绑定，不能沿用示例事实。"
+    return {
+        "READY": "当前证据已准入，可进入合成但不单独决定动作。",
+        "PARTIAL": "只有部分材料，保留冲突和缺失，不独立行动。",
+        "MISSING": "当前输出未形成，不能用其他周期或指标补齐。",
+        "UNKNOWN": "当前事实或来源未准入，维持等待。",
+        "NOT_ADMITTED": "方法或来源尚未准入，不进入投票和结论。",
+        "NOT_APPLICABLE": "对本资产不适用，不作为失败或负面票。",
+    }.get(state, "当前证据不足，维持等待。")
+
+
+def _v25_indicator_family_line(
+    material: Mapping | None,
+    scope_universe: Mapping,
+    ordinal: int,
+) -> str:
+    label, requirement_id = _V25_FAMILY_REQUIREMENTS[ordinal % len(_V25_FAMILY_REQUIREMENTS)]
+    object_missing = material is None
+    universe = _v25_universe(material) or scope_universe
+    row = _v25_requirement_row(universe, requirement_id)
+    state = str(row.get("state") or ("MISSING" if object_missing else "UNKNOWN"))
+    return f"{label}｜{state}｜{_v25_state_explanation(state, object_missing=object_missing)}"
 
 
 def _v25_missing(material: Mapping | None) -> str:
     if material is None:
-        return "本位置无已准入对象；保留原框架，不使用示例值强制填充。"
+        return "本位置没有已准入对象；保留框架，不沿用示例证券、价格或结论。"
     if material["fact_mode"] == "MISSINGNESS_ONLY":
         unresolved = len(tuple(material["gate"].get("unresolved_product_dataset_ids") or ()))
-        return f"全域Product准入未完成（未解决适用对象 {unresolved}）；只呈现状态和缺失。"
+        return f"全域Product尚未准入（{unresolved}项适用材料待核）；当前只呈现状态、缺失和WAIT。"
     if material["fact_mode"] == "SYNTHETIC_TEST":
         return "当前为显式合成测试材料，只验证动态投影，不构成真实研究事实。"
     return "已准入事实可呈现；未准入项继续明确缺失。"
@@ -848,7 +1025,7 @@ def _v25_missing(material: Mapping | None) -> str:
 
 def _v25_decision(material: Mapping | None) -> str:
     if material is None:
-        return "无对象｜无独立行动权限"
+        return "当前无已准入对象｜无独立行动权限"
     canonical = material["brief"].get("canonical") or {}
     return (
         f"公开动作 {_v25_plain(canonical.get('public_action') or canonical.get('action'), 'watch')}｜"
@@ -860,14 +1037,16 @@ def _v25_decision(material: Mapping | None) -> str:
 def _v25_timeframe(material: Mapping | None, timeframe: str, detail_index: int) -> str:
     label = _V25_TF_LABELS[timeframe]
     if material is None:
-        return f"{label}：对象缺失；不得沿用Golden示例事实。"
+        if detail_index == 0:
+            return f"{label}｜对象未绑定｜不沿用Golden示例数值。"
+        return f"{label}｜来源与完成时点未绑定｜无独立行动权限。"
     current = at(material["mtf"], f"timeframes.{timeframe}")
     current = current if isinstance(current, Mapping) else {}
     status = str(current.get("status") or at(material["brief"], f"coverage.{timeframe}") or "UNKNOWN")
     role = str(current.get("role") or at(material["brief"], f"timeframe_thesis.{timeframe}.role") or "ROLE_UNAVAILABLE")
     if detail_index == 0:
         if material["fact_mode"] == "MISSINGNESS_ONLY":
-            return f"{label}｜运行状态 {status}｜职责 {role}｜Product数值未准入。"
+            return f"{label}｜{status}｜职责 {role}｜当前Product数值未准入。"
         summary = current.get("summary") or at(material["brief"], f"timeframe_thesis.{timeframe}.summary")
         return f"{label}｜状态 {status}｜职责 {role}｜{_v25_plain(summary, '无可核材料事件')}"
     return (
@@ -875,6 +1054,288 @@ def _v25_timeframe(material: Mapping | None, timeframe: str, detail_index: int) 
         f"完成至 {_v25_plain(current.get('completed_through') or current.get('latest_bar_date') or current.get('latest_bar_end'), '时间未知')}｜"
         f"原因 {_v25_plain(current.get('reason'), '无额外原因')}｜独立行动权限：否"
     )
+
+
+def _v25_safe_role_text(original_text: str, fallback: str) -> str:
+    cleaned = " ".join(original_text.split()).strip()
+    if (
+        not cleaned
+        or any(fragment in cleaned for fragment in _V25_SAMPLE_FRAGMENTS)
+        or any(char.isdigit() for char in cleaned)
+        or len(cleaned) > 80
+    ):
+        return fallback
+    return cleaned
+
+
+def _v25_static_role_label(original_text: str, fallback: str) -> str:
+    cleaned = " ".join(original_text.split()).strip(" ：:|｜")
+    if (
+        not cleaned
+        or any(fragment in cleaned for fragment in _V25_SAMPLE_FRAGMENTS)
+        or len(cleaned) > 40
+    ):
+        return fallback
+    return cleaned
+
+
+def _v25_inline_role_label(
+    parser: _V25TextFrameParser,
+    block: Mapping,
+    original_text: str,
+    ordinal: int,
+) -> str:
+    cleaned = " ".join(original_text.split()).strip()
+    if cleaned in _V25_INLINE_ROLE_LABELS:
+        return cleaned.strip(" ：:|｜")
+    semantic = _v25_semantic_for_block(parser, block["index"])
+    cycle = _v25_nearest(parser, block["index"], class_name="cycle")
+    labels = {
+        "lead": ("结论", "证据边界"),
+        "mainline": ("支持", "反证", "结论"),
+        "one-line": ("结论", "边界"),
+        "synthesis": ("合成", "边界"),
+        "valuation": ("估值边界",),
+        "flow-box": ("证据边界",),
+        "attn": ("触发",),
+        "fail": ("失效",),
+    }.get(semantic)
+    if cycle is not None:
+        labels = ("证据边界", "确认条件")
+    if not labels:
+        labels = ("状态说明", "证据边界")
+    return labels[ordinal % len(labels)]
+
+
+def _v25_kpi_text(index: int) -> tuple[str, str]:
+    rows = (
+        ("现在怎么做？｜维持WAIT", "完整市场许可未形成前，不增加方向性风险。"),
+        ("多数股票跟上了吗？｜尚不能判断", "宽度、中期参与和历史分母均未准入。"),
+        ("资金是否支持？｜尚不能判断", "成交、两融和ETF份额未准入，不推断资金方向。"),
+    )
+    return rows[index % len(rows)]
+
+
+def _v25_card_role(card_id: str | None) -> str:
+    return _V25_CARD_ROLES.get(str(card_id or ""), "研究卡位")
+
+
+def _v25_card_asset_type(material: Mapping | None, card_id: str | None) -> str:
+    if isinstance(material, Mapping):
+        value = str(material.get("asset_type") or "").lower()
+        if value in {"stock", "etf"}:
+            return value
+    return "etf" if card_id in _V25_ETF_CARD_IDS else "stock"
+
+
+def _v25_card_missing_line(
+    material: Mapping | None,
+    card_id: str | None,
+    ordinal: int,
+) -> str:
+    role = _v25_card_role(card_id)
+    if material is None:
+        rows = (
+            f"{role}：本轮没有已准入对象，不强制填充。",
+            f"{role}：对象身份、价格、单位与时点未绑定。",
+            f"{role}：七周期、资产专项与执行条件均保持缺失。",
+            f"{role}：没有触发、失效、历史参考或概率输出。",
+        )
+        return rows[ordinal % len(rows)]
+    unresolved = len(tuple(material["gate"].get("unresolved_product_dataset_ids") or ()))
+    return (
+        f"{material['name']}（{material['code']}）：全域Product尚未准入"
+        f"（{unresolved}项适用材料待核）；当前只呈现状态、缺失和WAIT。"
+    )
+
+
+def _v25_valuation_line(
+    material: Mapping | None,
+    card_id: str | None,
+    ordinal: int,
+) -> str:
+    asset_type = _v25_card_asset_type(material, card_id)
+    role = _v25_card_role(card_id)
+    if asset_type == "etf":
+        rows = (
+            f"{role}：交易价格与同一时点NAV/IOPV未绑定，不判断折溢价。",
+            f"{role}：底层成分、盈利与估值vintage未准入，不判断贵或便宜。",
+            f"{role}：技术关注区、底层估值和交易合理价必须分开，当前均缺失。",
+        )
+    else:
+        rows = (
+            f"{role}：业务分类、财报版本和适用估值路线未完整准入。",
+            f"{role}：盈利、现金流、资产负债与同行参数缺失，不输出合理价。",
+            f"{role}：主方法、交叉核验与情景敏感性均待当前数据支持。",
+        )
+    return rows[ordinal % len(rows)]
+
+
+def _v25_flow_line(
+    material: Mapping | None,
+    card_id: str | None,
+    ordinal: int,
+    *,
+    market_card: bool = False,
+) -> str:
+    if market_card:
+        rows = (
+            "市场成交与换手未准入，不判断增量资金。",
+            "两融、ETF份额与行业资金未准入，不判断杠杆或风格流向。",
+            "宽度、量价和执行条件未形成，不解释为吸筹、洗盘或派发。",
+        )
+        return rows[ordinal % len(rows)]
+    asset_type = _v25_card_asset_type(material, card_id)
+    role = _v25_card_role(card_id)
+    if asset_type == "etf":
+        rows = (
+            f"{role}：份额、成交与价格方向未同时准入，不判断资金流入。",
+            f"{role}：折溢价、点差与跟踪数据缺失，不判断拥挤或撤退。",
+            f"{role}：没有同类RS与篮子变化，不把单段量价解释为机构意图。",
+        )
+    else:
+        rows = (
+            f"{role}：成交量价与成本材料未完整准入，不判断承接强弱。",
+            f"{role}：资金流代理没有独立来源，不解释为主力吸筹。",
+            f"{role}：失败突破、放量滞涨和宽度证据缺失，不判断派发。",
+        )
+    return rows[ordinal % len(rows)]
+
+
+def _v25_history_line(material: Mapping | None, card_id: str | None) -> str:
+    if material is None:
+        return f"{_v25_card_role(card_id)}：无对象，不展示历史参考或当前概率。"
+    return (
+        f"{material['name']}（{material['code']}）｜"
+        f"历史参考：{_v25_plain(at(material, 'brief.historical_reference.reason'), '不可用')}｜"
+        f"当前概率：{_v25_plain(at(material, 'brief.current_probability.reason'), '未独立校准')}"
+    )
+
+
+def _v25_empty_candidate_cell(row: int, column: int, *, asset_type: str) -> str:
+    rank = row + 4
+    label = "ETF" if asset_type == "etf" else "股票"
+    values = {
+        0: str(rank),
+        1: f"本次无第{rank}名{label}候选",
+        2: "无可比较排序分",
+        3: "身份、覆盖和基础筛选未形成",
+        4: "无当前价格与适用估值",
+        5: "无已形成触发",
+        6: "无可核失效条件",
+        7: "保持空位，不用示例补齐",
+    }
+    return values.get(column, "无材料")
+
+
+def _v25_list_line(mail: int, ordinal: int, assignment: Mapping) -> str:
+    if mail == 0:
+        rows = (
+            "先核全球、A股市场和行业是否处于同一研究时点；缺失时不判断风险偏好。",
+            "先核月周日趋势与市场宽度是否一致；短线改善不能替代中期参与。",
+            "先核60/30/15/5分钟是否按上级周期职责确认；低周期不抢跑。",
+            "先核成交、两融、ETF份额和执行条件；没有来源就不推断资金意图。",
+            "本轮没有新准入事实，不沿用昨晚示例证券或价格。",
+            "股票只保留当前canonical、支持/反证、触发/失效和缺失。",
+            "ETF另核NAV、份额、折溢价、点差、跟踪和篮子，不套股票语义。",
+            "当前为NO_SEND；未形成Product时不创建Recording或概率。",
+        )
+    else:
+        rows = (
+            "本轮对象只按当前材料变化展示；没有新事实就维持原WAIT。",
+            "七周期、八证据族和资产专项分别核对，缺失不相互补齐。",
+            "估值、量价、风险、触发和失效必须同时保留，不能只报一个分数。",
+            "当前报告不发送、不落业务库，也不生成概率或训练标签。",
+        )
+    return rows[ordinal % len(rows)]
+
+
+def _v25_card_detail_line(material: Mapping | None, card_id: str | None, ordinal: int) -> str:
+    asset_type = str(material.get("asset_type") or "") if isinstance(material, Mapping) else ""
+    if not asset_type:
+        asset_type = "etf" if card_id in _V25_ETF_CARD_IDS else "stock"
+    if asset_type == "etf":
+        rows = (
+            "ETF身份、价格与NAV/IOPV时点未完整绑定。",
+            "份额、折溢价、点差、跟踪、费率和持仓篮子按各自状态核对。",
+            "七周期与同类相对强弱未形成时，不输出追涨或抄底结论。",
+        )
+    else:
+        rows = (
+            "股票身份、行业归属、价格与财报版本未完整绑定。",
+            "质量成长、业务适用估值、量价结构和执行风险分别核对。",
+            "七周期未形成触发与失效闭环时，维持WAIT而不制造买点。",
+        )
+    if material is None:
+        return rows[ordinal % len(rows)]
+    if material.get("fact_mode") == "MISSINGNESS_ONLY":
+        return rows[ordinal % len(rows)]
+    return _v25_missing(material)
+
+
+def _v25_market_table_text(
+    parser: _V25TextFrameParser,
+    block: Mapping,
+    original_text: str,
+    assignment: Mapping,
+    coordinates: Mapping,
+) -> str:
+    heading = _v25_section_heading(parser, block["index"])
+    row = int(coordinates["row"])
+    column = int(coordinates["column"])
+    if column == 0:
+        return _v25_static_role_label(original_text, _v25_structural_label(original_text))
+    scope = assignment["scope_universe"]
+    if "当前市场结论" in heading:
+        domains = ("GLOBAL", "CN_MARKET", "CN_MARKET", "SECTOR", "RECORD")
+        if column == 1:
+            return _v25_domain_line(scope, ("GLOBAL", "CN_MARKET", "SECTOR", "ETF", "STOCK", "RECORD").index(domains[row % 5]))
+        return "证据未准入时维持WAIT；不把缺失当支持、反证或行动许可。"
+    if "代表指数职责" in heading:
+        if column == 1:
+            return _v25_safe_role_text(original_text, "回答该指数对应的市场层级和风格职责。")
+        if column == 2:
+            return "指数价格、宽度和七周期状态未完整准入。"
+        return "等待同一asof的结构、量价、宽度与估值冲突核对。"
+    if "市场宽度" in heading:
+        return "宽度分母和当前值未准入。" if column == 1 else "暂不判断上涨扩散深度或中期参与。"
+    if "成交、资金、杠杆" in heading:
+        if column == 1:
+            return "相应成交、杠杆、资金或估值数据未准入。"
+        if column == 2:
+            return "未准入时不作正向资金或估值解释。"
+        return "待原生公布频率、时点和反证同时核对。"
+    if "全球背景" in heading:
+        if column == 1:
+            return _v25_domain_line(scope, 0)
+        if column == 2:
+            return "全球证据只能确认、降级或失效，不能独立升级BUY。"
+        return "来源、公布时点或本地量价缺失时继续等待。"
+    if "优先看哪些行业" in heading:
+        if column == 1:
+            return "行业与资产支持证据未完整准入。"
+        if column == 2:
+            return "反证、估值和执行风险未完整准入。"
+        return "维持观察；不按Golden示例方向强制排序。"
+    if "数据时点与质量" in heading:
+        return "尚无准入时点。" if column == 1 else "按原生频率、available_at与vintage使用，不后见回填。"
+    return _v25_domain_line(scope, row + column)
+
+
+def _v25_market_paragraph(parser: _V25TextFrameParser, block: Mapping, assignment: Mapping) -> str:
+    heading = _v25_section_heading(parser, block["index"])
+    scope = assignment["scope_universe"]
+    if "市场宽度" in heading:
+        return "市场宽度、分母、新高新低和均线上方比例未准入；当前不判断扩散深度。"
+    if "成交、资金、杠杆" in heading:
+        return "成交、两融、ETF份额、信用、估值和波动材料未准入；不推断资金方向。"
+    if "全球背景" in heading:
+        return "全球价格、利率、通胀、汇率、商品和科技资金未准入；只保留影响路径，不输出方向。"
+    if "优先看哪些行业" in heading:
+        return "行业分类、价格相对强弱、宽度、成交、资金和估值未准入；不强制给出优先方向。"
+    if "数据时点与质量" in heading:
+        return "所有材料按各自原生频率和known-at时点核对；当前缺失不得用旧值或示例值补齐。"
+    return _v25_domain_line(scope, block["index"])
 
 
 def _v25_table_coordinates(parser: _V25TextFrameParser, block: Mapping) -> dict | None:
@@ -919,17 +1380,24 @@ def _v25_project_block(
 ) -> str:
     chain = tuple(_v25_chain(parser, block["index"]))
     semantic = next((name for node in chain for name in node["classes"] if name in _V25_DYNAMIC_CLASSES), None)
-    scope_text = assignment.get("scope_text_by_block", {}).get(block["index"])
-    if scope_text is not None:
-        return str(scope_text)
     card = next((node for node in chain if "card" in node["classes"]), None)
     cycle = next((node for node in chain if "cycle" in node["classes"]), None)
     pool = next((node for node in chain if "candidate-pool" in node["classes"]), None)
     card_id = card.get("id") if card else None
     material = assignment["cards"].get(card_id) if card_id else None
     mail = int(block["mail"])
-    if material is None and mail == 0 and assignment["materials"]:
-        material = assignment["materials"][0]
+    market_card = mail == 0 and card is not None
+    scope_universe = assignment["scope_universe"]
+    kpi = next((node for node in chain if "kpi" in node["classes"]), None)
+    if kpi is not None:
+        kpis = [
+            node for node in parser.nodes
+            if node["mail"] == mail and "kpi" in node["classes"]
+        ]
+        kpi_index = next(
+            index for index, node in enumerate(kpis) if node["index"] == kpi["index"]
+        )
+        return _v25_kpi_text(kpi_index)[1 if block["tag"] == "span" else 0]
     if semantic == "subject":
         if mail == 0:
             return f"【开盘前市场】全域状态与七周期职责｜{report_date}｜事实和缺失分开"
@@ -943,56 +1411,98 @@ def _v25_project_block(
         return f"DSA完整研究｜{report_date}｜NO_SEND｜原V2.5固定框架"
     if semantic in {"lead", "mainline"}:
         if mail == 0:
-            return _v25_domain_line(assignment["materials"][0] if assignment["materials"] else None, ordinal)
+            return (
+                "当前全球、A股市场和行业事实尚未完成Product准入；"
+                "市场结论维持WAIT，只呈现可核状态、缺失和下一确认条件。"
+            )
         if mail == 1:
             return "AUTO允许零或部分候选；筛选排名不是买入权限，最终动作服从canonical和四类独立否决。"
         return "自选/指定代码只投影当前材料变化；无变化或缺失不制造新结论。"
     if semantic == "card-title":
+        if market_card:
+            return "代表指数综合｜市场价格、宽度与七周期事实未准入，当前不判断方向"
         if material is None:
-            return "本位置无已准入研究对象｜不强制填充"
+            return f"{_v25_card_role(card_id)}｜本轮无已准入研究对象"
         prefix = "【合成测试】" if material["fact_mode"] == "SYNTHETIC_TEST" else ""
         return f"{prefix}{material['name']}（{material['code']}）｜{_v25_plain(material['brief'].get('one_line_conclusion'), '结论待补齐')}"
     if semantic == "identity":
+        if market_card:
+            return "代表指数、市场宽度、成交与估值需绑定同一asof、来源、单位和完成bar。"
         if material is None:
-            return "对象身份、价格、单位与时点均未绑定"
+            return f"{_v25_card_role(card_id)}｜对象身份、价格、单位与时点均未绑定"
         return f"{material['name']}（{material['code']}）｜{_v25_plain(material['delivery'].get('asset_identity_text'), '市场/板块待确认')}｜{_v25_missing(material)}"
     if semantic == "event-alert":
+        if market_card:
+            return "市场Product事实未准入｜无独立行动权限"
+        if material is None:
+            return f"{_v25_card_role(card_id)}｜无已准入对象｜无独立行动权限"
         return _v25_decision(material)
     if semantic in {"one-line", "synthesis"}:
+        if market_card:
+            return "当前只确认完整义务均可追溯；市场数值未准入，维持WAIT并等待同一asof证据。"
         if material is None or material["fact_mode"] == "MISSINGNESS_ONLY":
-            return _v25_missing(material)
+            return _v25_card_missing_line(
+                material,
+                card_id,
+                0 if semantic == "one-line" else 1,
+            )
         return _v25_plain(material["brief"].get("fused_paragraph"), _v25_missing(material))
     if semantic == "why":
-        return _v25_plain(at(material, "delivery.candidate_reason") if material else None, _v25_missing(material))
+        return _v25_plain(
+            at(material, "delivery.candidate_reason") if material else None,
+            _v25_card_missing_line(material, card_id, 2),
+        )
     if cycle is not None:
         timeframe = TIMEFRAMES[int(str(cycle["id"]).split("-")[1]) % len(TIMEFRAMES)]
+        if market_card:
+            if semantic == "cycle-title":
+                return f"{_V25_TF_LABELS[timeframe]}｜市场环境数据未准入｜不具有独立行动权限"
+            if ordinal % 2 == 0:
+                return (
+                    f"{_V25_TF_LABELS[timeframe]}｜代表指数、宽度与量价未完整准入；"
+                    "不使用Golden示例数值。"
+                )
+            return (
+                f"{_V25_TF_LABELS[timeframe]}｜来源、完成bar与时点未绑定；"
+                "等待同一asof确认，独立行动权限为否。"
+            )
         if semantic == "cycle-title":
             status = _v25_plain(at(material, f"mtf.timeframes.{timeframe}.status") if material else None, "DATA_INSUFFICIENT")
             return f"{_V25_TF_LABELS[timeframe]}｜{status}｜不具有独立行动权限"
         return _v25_timeframe(material, timeframe, ordinal)
     if semantic == "valuation" or any("valuation" in node["classes"] for node in chain):
+        if market_card:
+            return "市场估值、ERP与利率参照未完整准入；不能输出便宜或昂贵结论。"
         if material is None or material["fact_mode"] == "MISSINGNESS_ONLY":
-            return "估值输入、路线、日期或财报版本未完整准入；不能输出合理价。"
+            return _v25_valuation_line(material, card_id, ordinal)
         valuation = material["brief"].get("valuation") or {}
         return _v25_plain(valuation.get("summary"), f"估值状态 {_v25_plain(valuation.get('status'), 'UNKNOWN')}")
     if semantic == "indicator-box" or any("indicator-box" in node["classes"] for node in chain):
-        timeframe = TIMEFRAMES[ordinal % len(TIMEFRAMES)]
-        return _v25_timeframe(material, timeframe, 0)
+        return _v25_indicator_family_line(
+            None if market_card else material,
+            scope_universe,
+            ordinal,
+        )
     if semantic == "flow-box" or any("flow-box" in node["classes"] for node in chain):
+        if market_card:
+            return _v25_flow_line(None, card_id, ordinal, market_card=True)
         if material is None or material["fact_mode"] == "MISSINGNESS_ONLY":
-            return "供需/资金代理未完整准入；不把量价片段解释为机构意图。"
+            return _v25_flow_line(material, card_id, ordinal)
         return _v25_plain(at(material, "factor.supply_demand_volume_price.summary"), "供需材料无独立事件")
     if semantic == "attn":
-        return _v25_plain(at(material, "brief.trigger") if material else None, "触发条件未形成")
-    if semantic == "fail":
-        return _v25_plain(at(material, "brief.invalidation") if material else None, "失效条件材料不足")
-    if semantic == "small":
-        if material is None:
-            return "历史参考与当前概率均不可用。"
-        return (
-            f"历史参考：{_v25_plain(at(material, 'brief.historical_reference.reason'), '不可用')}｜"
-            f"当前概率：{_v25_plain(at(material, 'brief.current_probability.reason'), '未独立校准')}"
+        fallback = (
+            f"{_v25_card_role(card_id)}：没有已形成触发"
+            if material is None else "触发条件未形成"
         )
+        return _v25_plain(at(material, "brief.trigger") if material else None, fallback)
+    if semantic == "fail":
+        fallback = (
+            f"{_v25_card_role(card_id)}：没有可核失效条件"
+            if material is None else "失效条件材料不足"
+        )
+        return _v25_plain(at(material, "brief.invalidation") if material else None, fallback)
+    if semantic == "small":
+        return _v25_history_line(material, card_id)
     if semantic == "candidate-note":
         return "候选允许为零或部分；未进入重点不等于永久否决。"
     if semantic == "footer":
@@ -1006,7 +1516,11 @@ def _v25_project_block(
             candidate = candidates[coordinates["row"]] if coordinates["row"] < len(candidates) else None
             column = coordinates["column"]
             if candidate is None:
-                return str(coordinates["row"] + 4) if column == 0 else "本次无已准入候选"
+                return _v25_empty_candidate_cell(
+                    coordinates["row"],
+                    column,
+                    asset_type="etf" if pool_index == 0 else "stock",
+                )
             values = {
                 0: str(candidate["delivery"].get("group_rank") or coordinates["row"] + 4),
                 1: f"{candidate['name']}（{candidate['code']}）",
@@ -1018,25 +1532,21 @@ def _v25_project_block(
                 7: _v25_missing(candidate),
             }
             return values.get(column, _v25_missing(candidate))
+        if mail == 0:
+            return _v25_market_table_text(parser, block, original_text, assignment, coordinates)
         if coordinates["column"] == 0:
             return _v25_structural_label(original_text)
         if card_id:
-            return _v25_timeframe(material, TIMEFRAMES[coordinates["row"] % len(TIMEFRAMES)], 0)
-        return _v25_domain_line(assignment["materials"][0] if assignment["materials"] else None, coordinates["table"] + coordinates["row"])
+            return _v25_indicator_family_line(material, scope_universe, coordinates["row"] * 3 + coordinates["column"])
+        return _v25_domain_line(scope_universe, coordinates["table"] + coordinates["row"])
     if block["tag"] == "li":
-        return "证据、反证、风险、触发和失效必须同时保留；缺失不被技术分抵消。"
+        return _v25_list_line(mail, ordinal, assignment)
     if block["tag"] == "p" and card_id:
-        if ordinal % 3 == 0:
-            if material is None:
-                return _v25_missing(None)
-            if material["asset_type"] == "etf":
-                return "ETF专属NAV/IOPV、份额、折溢价、点差、跟踪与篮子材料按各自准入状态呈现。"
-            return "股票质量成长、行业归属和业务适用估值按财报版本与来源状态呈现。"
-        if ordinal % 3 == 1:
-            return _v25_plain(at(material, "brief.risk_notes") if material else None, "主要风险材料不足")
-        return _v25_missing(material)
-    if block["tag"] == "p" or mail == 0:
-        return _v25_domain_line(assignment["materials"][0] if assignment["materials"] else None, ordinal)
+        return _v25_card_missing_line(material, card_id, ordinal + 2)
+    if block["tag"] == "p" and mail == 0:
+        return _v25_market_paragraph(parser, block, assignment)
+    if block["tag"] == "p":
+        return _v25_domain_line(scope_universe, ordinal)
     return _v25_decision(material) if material else "DATA_INSUFFICIENT｜不保留示例事实"
 
 
@@ -1159,6 +1669,69 @@ def _v25_slot_block_ids(
     return block_ids
 
 
+def _v25_email_consumer_quality(output: str) -> dict:
+    raw_scope_prefixes = ("研究要求 ", "数据对象 ", "估值路线 ", "Golden原子字段 ")
+    raw_scope_row_count = sum(output.count(prefix) for prefix in raw_scope_prefixes)
+    blank_inline_tag_count = len(
+        re.findall(r"<(?:b|strong)>\s*</(?:b|strong)>", output)
+    )
+    blank_unclassified_span_count = len(
+        re.findall(r"<span>\s*</span>", output)
+    )
+    indicator_family_labels = tuple(
+        label for label, _requirement in _V25_FAMILY_REQUIREMENTS
+    )
+    missing_indicator_family_labels = tuple(
+        label for label in indicator_family_labels if label not in output
+    )
+    repeated_policy_filler_count = output.count(
+        "证据、反证、风险、触发和失效必须同时保留；缺失不被技术分抵消。"
+    )
+    generic_placeholder_count = sum(
+        output.count(text)
+        for text in (
+            "供需/资金代理未完整准入；不把量价片段解释为机构意图。",
+            "估值输入、路线、日期或财报版本未完整准入；不能输出合理价。",
+            "本次无已准入候选",
+            "本位置没有已准入对象；保留框架，不沿用示例证券、价格或结论。",
+        )
+    )
+    required_section_headings = (
+        "当前市场结论与五条依据",
+        "一、代表指数职责与上证综指完整分析",
+        "二、市场宽度：短线扩散，中期参与仍不足",
+        "四、成交、资金、杠杆、信用、估值与波动",
+        "五、全球背景怎样影响A股方向",
+        "六、今天优先看哪些行业和资产",
+        "八、数据时点与质量",
+    )
+    if raw_scope_row_count:
+        raise TraceabilityError("V25_DYNAMIC_RAW_SCOPE_ROW_LEAK")
+    if blank_inline_tag_count:
+        raise TraceabilityError("V25_DYNAMIC_BLANK_INLINE_TAG")
+    if blank_unclassified_span_count:
+        raise TraceabilityError("V25_DYNAMIC_BLANK_INLINE_TAG")
+    if missing_indicator_family_labels:
+        raise TraceabilityError("V25_DYNAMIC_INDICATOR_FAMILY_SUMMARY_MISSING")
+    if repeated_policy_filler_count:
+        raise TraceabilityError("V25_DYNAMIC_REPEATED_POLICY_FILLER")
+    if generic_placeholder_count:
+        raise TraceabilityError("V25_DYNAMIC_GENERIC_PLACEHOLDER_REPETITION")
+    if any(heading not in output for heading in required_section_headings):
+        raise TraceabilityError("V25_DYNAMIC_ORDINARY_LANGUAGE_ROLE_LOST")
+    return {
+        "projection_mode": "ROLE_SUMMARIZED_EMAIL_PLUS_MACHINE_RECEIPT",
+        "raw_scope_row_count": raw_scope_row_count,
+        "blank_inline_tag_count": blank_inline_tag_count,
+        "blank_unclassified_span_count": blank_unclassified_span_count,
+        "indicator_family_labels": indicator_family_labels,
+        "missing_indicator_family_labels": missing_indicator_family_labels,
+        "repeated_policy_filler_count": repeated_policy_filler_count,
+        "generic_placeholder_count": generic_placeholder_count,
+        "ordinary_language_roles_preserved": True,
+    }
+
+
 def render_v2_5_dynamic_no_send(
     results: list[Any] | tuple[Any, ...],
     *,
@@ -1191,6 +1764,7 @@ def render_v2_5_dynamic_no_send(
     materials = [_v25_material(result) for result in results]
     assignment = _v25_assign(materials)
     scope_universe = _v25_scope_universe(materials)
+    assignment["scope_universe"] = scope_universe
     scope_obligations = _v25_scope_obligations(scope_universe)
     report_date = report_date or datetime.now().date().isoformat()
     try:
@@ -1221,6 +1795,7 @@ def render_v2_5_dynamic_no_send(
         parser,
         grouped,
         scope_obligations,
+        assignment,
     )
     assignment["scope_text_by_block"] = scope_text_by_block
 
@@ -1228,14 +1803,54 @@ def render_v2_5_dynamic_no_send(
     rendered_blocks = []
     for block_index, text_nodes in grouped.items():
         block = parser.nodes[block_index]
-        primary = next((item for item in text_nodes if item["node"] == block_index), text_nodes[0])
+        inline = [
+            item for item in text_nodes
+            if parser.nodes[item["node"]]["tag"] in {"b", "strong"}
+            and item["raw"].strip()
+        ]
+        primary = inline[0] if inline else next(
+            (item for item in text_nodes if item["node"] == block_index),
+            text_nodes[0],
+        )
         original_text = "".join(item["raw"] for item in text_nodes).strip()
         projected = _v25_project_block(
             parser, block, original_text, assignment, block_ordinals[block_index], report_date
         ).strip() or "DATA_INSUFFICIENT"
         escaped = html_escape(projected, quote=False)
+        inline_rank = 0
         for item in text_nodes:
-            replacements.append((item["start"], item["end"], escaped if item is primary else ""))
+            replacement = ""
+            node_tag = parser.nodes[item["node"]]["tag"]
+            if item is primary:
+                replacement = escaped
+            elif node_tag in {"b", "strong"}:
+                replacement = html_escape(
+                    _v25_inline_role_label(
+                        parser, block, item["raw"], inline_rank,
+                    ),
+                    quote=False,
+                )
+                inline_rank += 1
+            elif node_tag == "span" and any(
+                "kpi" in node["classes"]
+                for node in _v25_chain(parser, block["index"])
+            ):
+                kpis = [
+                    node for node in parser.nodes
+                    if node["mail"] == block["mail"] and "kpi" in node["classes"]
+                ]
+                kpi_node = next(
+                    node for node in _v25_chain(parser, block["index"])
+                    if "kpi" in node["classes"]
+                )
+                kpi_index = next(
+                    index for index, node in enumerate(kpis)
+                    if node["index"] == kpi_node["index"]
+                )
+                replacement = html_escape(
+                    _v25_kpi_text(kpi_index)[1], quote=False,
+                )
+            replacements.append((item["start"], item["end"], replacement))
         card = _v25_nearest(parser, block_index, class_name="card")
         cycle = _v25_nearest(parser, block_index, class_name="cycle")
         rendered_blocks.append({
@@ -1261,6 +1876,7 @@ def render_v2_5_dynamic_no_send(
     parts.append(source[cursor:])
     fixed_parts.append(source[cursor:])
     output = "".join(parts)
+    email_consumer_quality = _v25_email_consumer_quality(output)
     if any(fragment in output for fragment in _V25_SAMPLE_FRAGMENTS):
         raise TraceabilityError("V25_DYNAMIC_GOLDEN_EXAMPLE_LEAK")
     output_parser = _V25TextFrameParser(output)
@@ -1386,6 +2002,7 @@ def render_v2_5_dynamic_no_send(
         "frame_contract": frame,
         "frame_contract_hash": digest(frame),
         "whole_scope_projection": whole_scope_projection,
+        "email_consumer_quality": email_consumer_quality,
         "envelopes": {
             "MARKET": {"mail_index": 0, "cycle_ids": tuple(f"cycle-{i:02d}" for i in range(14))},
             "AUTO": {
