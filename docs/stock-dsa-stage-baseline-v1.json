@@ -21,15 +21,15 @@
     "storage_admitted": false
   },
   "acceptance": {
-    "state": "EMAIL_READER_CI90_REMOTE_ACCEPTED_A0_CURRENT_PRODUCT_RECORD_SPLIT_LOCAL_PASS_SCOPED_PR31_DRAFT",
+    "state": "A0_CI91_REMOTE_ACCEPTED_A1A2_FOUNDATION_LOCAL_PASS_SCOPED_PR31_DRAFT",
     "production_branch": "main",
     "candidate_branch": "feat/stock-dsa-m2-source-gates-v1",
-    "candidate_head": "d303562c1955b4a532897722125e9c1f64a69f9b",
-    "candidate_parent": "630ecbdc5a9ac1cfd0ee6f45ba76f8b3992c7b0c",
+    "candidate_head": "9602700b0be8ae967f966c88d807f550ab831d5b",
+    "candidate_parent": "d303562c1955b4a532897722125e9c1f64a69f9b",
     "candidate_head_scope": "LATEST_ACCEPTED_FEATURE_CHECKPOINT_NOT_MAIN_PRODUCTION",
     "pull_request": 31,
     "pull_request_state": "DRAFT_OPEN_NOT_MERGED",
-    "latest_required_ci": {"run_number": 90, "run_id": 40435525781, "conclusion": "success"},
+    "latest_required_ci": {"run_number": 91, "run_id": 40458152958, "conclusion": "success"},
     "prior_failed_ci": {"run_number": 86, "run_id": 40257545700, "head": "a899586bb5822ddf589cc2f6928e2852acf12b39", "conclusion": "failure"},
     "required_checks": [
       "ai-governance",
@@ -157,8 +157,8 @@
   "vertical_alignment": {
     "program": "合法known-at数据到白盒证据、唯一canonical、完整交付、合法Outcome/PIT、独立校准和显式Promotion",
     "product": "Global到A股市场和行业、ETF与股票、七周期全材料、风险和执行veto、FULL Report/Email",
-    "current_lane": "GATE56_AND_EMAIL_READER_REMOTE_ACCEPTED_A0_CURRENT_PRODUCT_RECORD_SPLIT_LOCAL_PASS_RIGHTS_STOP_GATE6_HOLD",
-    "current_milestone": "CI90已远程接受V2.5邮件读者合同；A0本地候选在现有Registry/Coverage/Flywheel内把72个当前Product对象与4个未来RECORD对象分离，保持76项完整记账，使合法部分叶事实可在其他事实缺失时进入原V2.5，同时首次Recording、Outcome和PIT继续使用独立后继时钟。真实上游数据和远程A0接受仍OPEN，Gate6保持HOLD",
+    "current_lane": "A0_REMOTE_ACCEPTED_A1A2_FOUNDATION_LOCAL_PASS_RIGHTS_STOP_GATE6_HOLD",
+    "current_milestone": "CI91已远程接受A0；A1在现有Registry/Factor/V2.5中绑定43方法、172目标组合、34原始/52最终effective声明、56运行矩阵格、当前Product准入、canonical与27槽消费者；A2在既有九路和76对象内分开股票主方法、指数/行业聚合估值与ETF交易价/NAV及底层指数估值。本地候选PASS，远程接受和真实同一as-of数据仍OPEN，Gate6保持HOLD",
     "atomic_rule": "保持76对象/六域/原V2.5/唯一canonical不变；当前Product、完整义务、Recording、Outcome和PIT分别验收；部分准入只展示对应叶事实；合法WAIT/veto/未触发canonical可在独立存储许可下Recording，但不授予PIT、训练、概率或Promotion权限"
   },
   "stage_ladder": [
@@ -178,14 +178,15 @@
       "id": "B5_7TF_METHOD_PRODUCT",
       "scope": "七周期完成bar、动态窗口、来源身份、原生指标、方法回执、逐项展示和有界L3筛选偏好",
       "exit": "现有准入方法对合法输入无损进入同一筛选、canonical和报告",
-      "proof_ceiling": "不等于43方法全部READY或独立交易资格"
+      "proof_ceiling": "A1本地回执只证明最终effective配置、实际56格与消费者绑定；不等于43方法全部READY或独立交易资格",
+      "local_state": "PASS_SCOPED_A1_EFFECTIVE_FOUNDATION_UNCOMMITTED_REMOTE_OPEN"
     },
     {
       "id": "B8_FULL_DELIVERY_NO_SEND",
       "scope": "独立26要求、27语义槽、76对象六域、九估值路线、已知Golden原子子字段、风险反证与诚实missingness进入原V2.5 FULL Report/Email/HTML",
       "exit": "whole-scope逐项位置与内容哈希、完整动态槽投影、固定区零差异、样例清除和三envelope NO_SEND负例/合法nontrigger全部通过",
-      "proof_ceiling": "CI90已接受邮件读者合同；A0当前Product/未来记录分时与逐叶投影本地PASS，仍不等于A0远程接受、SMTP、真实全部数据READY或模型晋升",
-      "local_state": "PASS_SCOPED_A0_CURRENT_PRODUCT_RECORD_SPLIT_UNCOMMITTED_REMOTE_ACCEPTANCE_OPEN",
+      "proof_ceiling": "CI91已接受A0；A1/A2本地消费者绑定不等于远程接受、SMTP、真实全部数据READY或模型晋升",
+      "local_state": "PASS_SCOPED_A1A2_FOUNDATION_UNCOMMITTED_REMOTE_ACCEPTANCE_OPEN",
       "next_primary": true
     },
     {
@@ -265,9 +266,41 @@
     },
     "proof_ceiling": "LOCAL_A0_CURRENT_PRODUCT_RECORD_SPLIT_AND_PARTIAL_LEAF_CONSUMER_ONLY_NOT_REMOTE_ACCEPTANCE_REAL_DATA_DELIVERY_OR_LEARNING"
   },
+  "a1_a2_local_evidence": {
+    "schema_version": "a1-a2-foundation-local-evidence-v1",
+    "state": "PASS_SCOPED_LOCAL_UNCOMMITTED_REMOTE_ACCEPTANCE_OPEN",
+    "a1": {
+      "method_profiles": 43,
+      "existing_methods": 28,
+      "deferred_methods": 15,
+      "technical_existing_methods": 25,
+      "target_method_timeframe_pairs": 172,
+      "raw_declared_execution_pairs": 34,
+      "effective_execution_pairs": 52,
+      "effective_override_methods": 5,
+      "matrix_cells": 56,
+      "consumer_slots": 27,
+      "declaration_is_runtime_ready": false,
+      "historical_receipt_backfills_current": false,
+      "independent_action_authority": false
+    },
+    "a2": {
+      "accepted_business_routes": 9,
+      "data_catalog_objects": 76,
+      "stock_primary_method_required": true,
+      "stock_cross_check_optional_and_admitted": true,
+      "index_dataset": "M_ERP_VAL",
+      "sector_dataset": "S_VALUATION",
+      "etf_underlying_dataset": "E_UNDERLYING_VAL",
+      "etf_premium_discount_dataset": "E_PREMIUM",
+      "index_fair_value_or_action_authority": false,
+      "stock_index_etf_layers_separate": true
+    },
+    "proof_ceiling": "LOCAL_ENGINEERING_CONTRACT_AND_CONSUMER_ONLY_NOT_REMOTE_ACCEPTANCE_REAL_VALUATION_CURRENT_DATA_OR_ACTION"
+  },
   "route_decision": {
-    "next_primary": "B8_FULL_DELIVERY_NO_SEND",
-    "reason": "Gate0-6及邮件读者合同已在CI90 CLOSED_SCOPED_NO_REPLAY。A0本地候选修复当前Product被未来Ledger/Outcome/PIT反向阻塞及整卡missingness隐藏合法叶事实的问题：76项继续完整记账，72个当前Product对象决定当前事实就绪，4个RECORD对象保留独立后继时钟；部分事实只在对应数据对象已通过operation admission时显示。真实Product-ready仍为false且B1上游权利STOP；下一步只远程接受A0，不能用本地或合成正例替代真实数据、Recording或学习证据",
+    "next_primary": "A1_A2_FOUNDATION_REMOTE_ACCEPTANCE",
+    "reason": "A0已在CI91 CLOSED_SCOPED_NO_REPLAY。A1/A2本地候选把最终effective方法范围、56运行格、Product准入、canonical和V2.5消费统一，并将股票、指数/行业、ETF交易价/NAV与底层指数估值分层；真实Product-ready、实际估值和B1数据仍未证明。下一步仅远程接受A1/A2，再运行同一as-of基础样本，不用合成或目录替代真实产品",
     "bounded_indicator_sub_lanes": [
       "MONTHLY_RSI_HISTORY_IF_LEGAL",
       "15M_CONFIRMATION",
@@ -310,5 +343,11 @@
     "record_outcome_and_pit_clocks_are_later_than_current_product": true,
     "lawful_missingness_wait_veto_and_nontrigger_can_be_recorded_before_full_fact_readiness": true,
     "recording_does_not_grant_pit_training_probability_or_promotion": true
+    ,"final_effective_method_profiles_override_raw_constructor_scope": true
+    ,"foundation_receipt_binds_runtime_matrix_product_admission_canonical_and_v25": true
+    ,"historical_method_execution_never_backfills_current_product": true
+    ,"stock_index_sector_and_etf_valuation_layers_are_separate": true
+    ,"etf_premium_discount_does_not_use_underlying_valuation_dataset": true
+    ,"index_sector_valuation_has_no_fair_value_action_or_veto_authority": true
   }
 }

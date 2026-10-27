@@ -105,7 +105,9 @@ def test_stage_ladder_keeps_parent_product_and_blocking_order_explicit() -> None
         "M3_CALIBRATION_SHADOW",
         "P1_PROMOTION_RELEASE",
     ]
-    assert baseline["route_decision"]["next_primary"] == "B8_FULL_DELIVERY_NO_SEND"
+    assert baseline["route_decision"]["next_primary"] == (
+        "A1_A2_FOUNDATION_REMOTE_ACCEPTANCE"
+    )
     assert [stage["id"] for stage in stages if stage.get("next_primary")] == [
         "B8_FULL_DELIVERY_NO_SEND"
     ]
@@ -115,24 +117,24 @@ def test_stage_ladder_keeps_parent_product_and_blocking_order_explicit() -> None
     assert stages[6]["blocked_by"] == "L1_LEGAL_LEDGER_OUTCOME_PIT"
     assert stages[7]["blocked_by"] == "M3_CALIBRATION_SHADOW"
     assert baseline["acceptance"]["direct_main_push"] is False
-    # CI90 closes the reader-facing email contract on the exact feature
-    # checkpoint.  A0 remains local/uncommitted and neither state implies
-    # actual complete data, Recording, learning, or Promotion authority.
+    # CI91 closes A0 on the exact feature checkpoint. A1/A2 remain local and
+    # neither state implies actual complete data, valuation, delivery, learning,
+    # or Promotion authority.
     assert baseline["acceptance"]["required_checks"] == [
         "ai-governance", "backend-gate", "docker-build",
     ]
     acceptance = baseline["acceptance"]
     assert acceptance["state"] == (
-        "EMAIL_READER_CI90_REMOTE_ACCEPTED_A0_CURRENT_PRODUCT_RECORD_SPLIT_LOCAL_PASS_SCOPED_PR31_DRAFT"
+        "A0_CI91_REMOTE_ACCEPTED_A1A2_FOUNDATION_LOCAL_PASS_SCOPED_PR31_DRAFT"
     )
-    assert acceptance["candidate_head"] == "d303562c1955b4a532897722125e9c1f64a69f9b"
-    assert acceptance["candidate_parent"] == "630ecbdc5a9ac1cfd0ee6f45ba76f8b3992c7b0c"
+    assert acceptance["candidate_head"] == "9602700b0be8ae967f966c88d807f550ab831d5b"
+    assert acceptance["candidate_parent"] == "d303562c1955b4a532897722125e9c1f64a69f9b"
     assert acceptance["candidate_head_scope"] == (
         "LATEST_ACCEPTED_FEATURE_CHECKPOINT_NOT_MAIN_PRODUCTION"
     )
     assert acceptance["latest_required_ci"] == {
-        "run_number": 90,
-        "run_id": 40435525781,
+        "run_number": 91,
+        "run_id": 40458152958,
         "conclusion": "success",
     }
     # CI86 remains the direct failed predecessor; older failures remain in Git/history.
@@ -143,7 +145,9 @@ def test_stage_ladder_keeps_parent_product_and_blocking_order_explicit() -> None
         "conclusion": "failure",
     }
     assert acceptance["pull_request_state"] == "DRAFT_OPEN_NOT_MERGED"
-    assert baseline["route_decision"]["next_primary"] == "B8_FULL_DELIVERY_NO_SEND"
+    assert baseline["route_decision"]["next_primary"] == (
+        "A1_A2_FOUNDATION_REMOTE_ACCEPTANCE"
+    )
 
 
 def test_gate5_gate6_local_evidence_matches_current_fail_closed_runtime() -> None:
@@ -194,6 +198,38 @@ def test_gate5_gate6_local_evidence_matches_current_fail_closed_runtime() -> Non
     assert gate6["network_calls"] == 0
     assert gate6["database_writes"] == 0
     assert gate6["model_training_runs"] == 0
+
+
+def test_a1_a2_local_foundation_evidence_is_scoped_and_non_authoritative() -> None:
+    evidence = _baseline()["a1_a2_local_evidence"]
+    assert evidence["state"] == (
+        "PASS_SCOPED_LOCAL_UNCOMMITTED_REMOTE_ACCEPTANCE_OPEN"
+    )
+    a1 = evidence["a1"]
+    assert a1 == {
+        "method_profiles": 43,
+        "existing_methods": 28,
+        "deferred_methods": 15,
+        "technical_existing_methods": 25,
+        "target_method_timeframe_pairs": 172,
+        "raw_declared_execution_pairs": 34,
+        "effective_execution_pairs": 52,
+        "effective_override_methods": 5,
+        "matrix_cells": 56,
+        "consumer_slots": 27,
+        "declaration_is_runtime_ready": False,
+        "historical_receipt_backfills_current": False,
+        "independent_action_authority": False,
+    }
+    a2 = evidence["a2"]
+    assert a2["accepted_business_routes"] == 9
+    assert a2["data_catalog_objects"] == 76
+    assert a2["index_dataset"] == "M_ERP_VAL"
+    assert a2["sector_dataset"] == "S_VALUATION"
+    assert a2["etf_underlying_dataset"] == "E_UNDERLYING_VAL"
+    assert a2["etf_premium_discount_dataset"] == "E_PREMIUM"
+    assert a2["index_fair_value_or_action_authority"] is False
+    assert a2["stock_index_etf_layers_separate"] is True
 
 
 def test_stage_baseline_preserves_formal_email_contract_and_no_auto_trade() -> None:
@@ -251,11 +287,17 @@ def test_stage_baseline_locks_bounded_hierarchical_mtf_screening() -> None:
     assert regression["partial_admitted_leaf_remains_visible"] is True
     assert regression["unadmitted_leaf_values_remain_hidden"] is True
     assert regression["record_outcome_and_pit_clocks_are_later_than_current_product"] is True
+    assert regression["final_effective_method_profiles_override_raw_constructor_scope"] is True
+    assert regression["foundation_receipt_binds_runtime_matrix_product_admission_canonical_and_v25"] is True
+    assert regression["historical_method_execution_never_backfills_current_product"] is True
+    assert regression["stock_index_sector_and_etf_valuation_layers_are_separate"] is True
+    assert regression["etf_premium_discount_does_not_use_underlying_valuation_dataset"] is True
+    assert regression["index_sector_valuation_has_no_fair_value_action_or_veto_authority"] is True
 
 
 def test_indicator_backlog_is_subordinate_to_the_current_product_route() -> None:
     decision = _baseline()["route_decision"]
-    assert decision["next_primary"] == "B8_FULL_DELIVERY_NO_SEND"
+    assert decision["next_primary"] == "A1_A2_FOUNDATION_REMOTE_ACCEPTANCE"
     assert decision["bounded_indicator_sub_lanes"] == [
         "MONTHLY_RSI_HISTORY_IF_LEGAL",
         "15M_CONFIRMATION",

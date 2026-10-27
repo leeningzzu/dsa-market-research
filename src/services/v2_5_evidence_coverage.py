@@ -27,7 +27,8 @@ from src.services.evidence_traceability_registry import (
     BASELINE_BYTES, BASELINE_SHA256, COMPLETE_RESEARCH_UNIVERSE_PLANES,
     DEFERRED_BINDINGS, EVIDENCE_BINDINGS,
     MANIFEST_HASH, MANIFEST_VERSION, TIMEFRAMES, TraceabilityError, at,
-    compile_complete_research_universe_view, compile_full_domain_data_gate,
+    compile_complete_research_universe_view, compile_foundation_evidence_receipt,
+    compile_full_domain_data_gate,
     digest, json_wire_equal, load_slot_map, timeframe_ready,
     validate_runtime_trace,
 )
@@ -305,6 +306,10 @@ def compile_product_coverage(factor: Mapping) -> dict:
                 "full_domain_data_gate": dict(full_domain_data_gate),
                 "baseline_sha256": BASELINE_SHA256,
                 "slots": rows, "rendered": False}
+    document["foundation_evidence_receipt"] = compile_foundation_evidence_receipt(
+        factor,
+        product_coverage=document,
+    )
     document["receipt_hash"] = digest(document)
     return document
 
@@ -1244,6 +1249,26 @@ def _v25_valuation_line(
 ) -> str:
     asset_type = _v25_card_asset_type(material, card_id)
     role = _v25_card_role(card_id)
+    if material is not None:
+        business = at(material, "factor.business_valuation")
+        shared = at(material, "factor.index_sector_valuations") or ()
+        business_ready = (
+            isinstance(business, Mapping)
+            and business.get("status") == "READY"
+            and business.get("product_admitted") is True
+        )
+        shared_ready = any(
+            isinstance(row, Mapping)
+            and row.get("status") == "READY"
+            and row.get("product_admitted") is True
+            for row in shared
+        )
+        if business_ready or shared_ready:
+            valuation = material["brief"].get("valuation") or {}
+            return _v25_plain(
+                valuation.get("summary"),
+                f"估值状态 {_v25_plain(valuation.get('status'), 'UNKNOWN')}",
+            )
     if asset_type == "etf":
         rows = (
             f"{role}：交易价格与同一时点NAV/IOPV未绑定，不判断折溢价。",
@@ -1568,10 +1593,7 @@ def _v25_project_block(
     if semantic == "valuation" or any("valuation" in node["classes"] for node in chain):
         if market_card:
             return "市场估值、ERP与利率参照未完整准入；不能输出便宜或昂贵结论。"
-        if _v25_missing_or_partial(material):
-            return _v25_valuation_line(material, card_id, ordinal)
-        valuation = material["brief"].get("valuation") or {}
-        return _v25_plain(valuation.get("summary"), f"估值状态 {_v25_plain(valuation.get('status'), 'UNKNOWN')}")
+        return _v25_valuation_line(material, card_id, ordinal)
     if semantic == "indicator-box" or any("indicator-box" in node["classes"] for node in chain):
         return _v25_indicator_family_line(
             None if market_card else material,

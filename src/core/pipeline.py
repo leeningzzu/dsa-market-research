@@ -120,7 +120,10 @@ from src.services.volatility_momentum_service import (
     atr_startup_comparison_required_bars,
 )
 from src.services.pattern_trigger_service import build_pattern_trigger_context
-from src.services.business_valuation_service import compile_business_valuation
+from src.services.business_valuation_service import (
+    compile_business_valuation,
+    compile_index_sector_valuation,
+)
 from src.services.data_object_admission import (
     DataObjectAdmissionError,
     bind_b1_rights_context_as_of,
@@ -4552,17 +4555,41 @@ class StockAnalysisPipeline:
                 quality_request,
                 as_of=target_date,
             )
+        index_requests = result.get("index_sector_valuation_inputs")
+        if (
+            isinstance(index_requests, list)
+            and not isinstance(result.get("index_sector_valuations"), list)
+        ):
+            result["index_sector_valuations"] = [
+                compile_index_sector_valuation(request, as_of=target_date)
+                for request in index_requests
+                if isinstance(request, dict)
+            ]
         request = result.get("business_valuation_input")
         if (
             isinstance(request, dict)
             and not isinstance(result.get("business_valuation"), dict)
         ):
             # The Pipeline's frozen research date is the authoritative known-at
-            # ceiling.  A provider/request payload may carry a later wall-clock
+            # ceiling. A provider/request payload may carry a later wall-clock
             # as_of for provenance, but it must never move valuation beyond the
             # completed research snapshot and silently admit future disclosures.
+            bound_request = dict(request)
+            if (
+                str(bound_request.get("route_id") or "").upper() == "ETF"
+                and not isinstance(bound_request.get("underlying_valuation"), dict)
+            ):
+                asset_id = str(bound_request.get("asset_id") or "").strip()
+                underlying = next((
+                    row for row in result.get("index_sector_valuations") or ()
+                    if isinstance(row, dict)
+                    and row.get("scope") == "etf_underlying"
+                    and row.get("linked_asset_id") == asset_id
+                ), None)
+                if underlying is not None:
+                    bound_request["underlying_valuation"] = underlying
             result["business_valuation"] = compile_business_valuation(
-                request,
+                bound_request,
                 as_of=target_date,
             )
         return result

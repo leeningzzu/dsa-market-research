@@ -339,6 +339,59 @@ def _v25_result(*, factor=None, code="600519", name="测试股票", delivery=Non
     )
 
 
+def test_product_coverage_binds_effective_7tf_eight_family_foundation_receipt():
+    factor = native_summary()
+    coverage = compile_product_coverage(factor)
+    foundation = coverage["foundation_evidence_receipt"]
+
+    assert foundation["target_method_timeframe_pairs"] == 172
+    assert foundation["declared_execution_pairs"] == 34
+    assert foundation["effective_execution_pairs"] == 52
+    assert foundation["matrix_cell_count"] == 56
+    assert foundation["product_coverage_binding"]["slot_count"] == 27
+    assert sum(
+        foundation["product_coverage_binding"]["slot_state_counts"].values()
+    ) == 27
+    assert foundation["proof_scope"] == (
+        "CURRENT_FACTOR_RUNTIME_NOT_HISTORICAL_RECEIPT_REUSE"
+    )
+    assert foundation["policy"]["seven_by_eight_is_coverage_not_votes"] is True
+    assert len(foundation["receipt_hash"]) == 64
+
+
+def test_partial_current_product_preserves_only_admitted_valuation_layers():
+    ready = {
+        "asset_type": "etf",
+        "fact_mode": "PARTIALLY_ADMITTED",
+        "factor": {
+            "business_valuation": {
+                "status": "READY",
+                "product_admitted": True,
+            },
+            "index_sector_valuations": [{
+                "status": "READY",
+                "product_admitted": True,
+                "scope": "etf_underlying",
+            }],
+        },
+        "brief": {
+            "valuation": {
+                "status": "READY",
+                "summary": "ETF交易价/NAV与底层沪深300估值分别已准入。",
+            },
+        },
+    }
+    assert v25._v25_valuation_line(ready, "watch-etf-z", 0) == (
+        "ETF交易价/NAV与底层沪深300估值分别已准入。"
+    )
+
+    hidden = deepcopy(ready)
+    hidden["factor"]["business_valuation"]["product_admitted"] = False
+    hidden["factor"]["index_sector_valuations"][0]["product_admitted"] = False
+    assert "未绑定" in v25._v25_valuation_line(hidden, "watch-etf-z", 0)
+    assert "分别已准入" not in v25._v25_valuation_line(hidden, "watch-etf-z", 0)
+
+
 def test_partial_current_product_shows_only_the_admitted_timeframe_leaf():
     material = {
         "asset_type": "stock",

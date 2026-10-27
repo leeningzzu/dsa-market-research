@@ -9,12 +9,15 @@ from src.analyzer import AnalysisResult
 from src.services.factor_decision_summary import (
     apply_canonical_decision_to_result,
     assert_canonical_consumer_consistency,
+    _valuation_summary,
     build_stock_factor_decision_summary,
     canonical_explanation_degradation_eligible,
     validate_canonical_factor_binding,
     validate_investor_brief_binding,
 )
 from src.stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult, VolumeStatus
+from src.services.business_valuation_service import compile_business_valuation
+from tests.test_business_valuation_service import _base, _index_valuation
 
 
 def _enum(value: str):
@@ -107,6 +110,56 @@ def test_explicit_native_partial_momentum_never_falls_back_to_raw_gold_cross() -
     )
     assert "没有可独立准入的当前指标" in blank_text
     assert "零轴上金叉" not in blank_text
+
+
+def test_factor_and_investor_brief_keep_stock_etf_and_index_valuation_layers_separate():
+    index = _index_valuation("index", asset_id="000300")
+    stock = compile_business_valuation(_base(
+        "MATURE_INDUSTRIAL_CONSUMER",
+        inputs={"normalized_eps": 2.0},
+        assumptions={"pe_low": 8.0, "pe_high": 12.0},
+    ))
+    stock_text = _valuation_summary(
+        {"index_sector_valuations": [index]},
+        asset_type="stock",
+        business_valuation=stock,
+        index_sector_valuations=[index],
+    )
+    assert "稳定工业/制造/成熟消费" in stock_text
+    assert "指数/行业估值" in stock_text
+
+    etf_payload = _base(
+        "ETF",
+        asset_type="etf",
+        inputs={"nav_per_share": 4.0},
+        assumptions={"price_to_nav_low": 0.99, "price_to_nav_high": 1.01},
+    )
+    etf = compile_business_valuation(etf_payload)
+    factor = build_stock_factor_decision_summary(
+        _trend(),
+        fundamental_context={
+            "business_valuation": etf,
+            "index_sector_valuations": [etf_payload["underlying_valuation"]],
+        },
+        asset_type="etf",
+    )
+    brief = factor["investor_brief"]
+    assert brief["valuation"]["label"] == "交易价/NAV与底层估值"
+    assert brief["asset_specific"]["underlying_valuation"]["status"] == "READY"
+    assert brief["asset_specific"]["premium_discount"]["status"] == "READY"
+    assert "NAV_PREMIUM_DISCOUNT_BAND" in (
+        brief["asset_specific"]["premium_discount"]["summary"]
+    )
+    assert "指数/行业估值" not in (
+        brief["asset_specific"]["premium_discount"]["summary"]
+    )
+    assert "指数/行业估值" in (
+        brief["asset_specific"]["underlying_valuation"]["summary"]
+    )
+    assert brief["asset_specific"]["underlying_valuation"]["receipt_hash"] == (
+        etf_payload["underlying_valuation"]["receipt_hash"]
+    )
+    assert factor["index_sector_valuations"][0]["scope"] == "etf_underlying"
 
 
 def test_summary_reuses_existing_score_without_inventing_probability_or_win_rate():

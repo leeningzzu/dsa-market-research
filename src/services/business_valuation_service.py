@@ -21,6 +21,18 @@ from src.services.data_object_admission import (
 
 
 SCHEMA_VERSION = "business-valuation-evidence-v1"
+INDEX_SECTOR_VALUATION_SCHEMA_VERSION = "index-sector-valuation-evidence-v1"
+INDEX_SECTOR_VALUATION_DATASETS = {
+    "index": "M_ERP_VAL",
+    "sector": "S_VALUATION",
+    "etf_underlying": "E_UNDERLYING_VAL",
+}
+_INDEX_WEIGHTING_METHODS = frozenset({
+    "FREE_FLOAT_MARKET_CAP_WEIGHTED",
+    "MARKET_CAP_WEIGHTED",
+    "EQUAL_WEIGHTED",
+})
+
 VALUATION_ROUTE_IDS = (
     "MATURE_INDUSTRIAL_CONSUMER",
     "HIGH_GROWTH_TECH",
@@ -160,8 +172,8 @@ VALUATION_ROUTE_FIELD_SOURCES = {
     "ETF": {
         "inputs": {"nav_per_share": "E_NAV_IOPV"},
         "assumptions": {
-            "price_to_nav_low": "E_UNDERLYING_VAL",
-            "price_to_nav_high": "E_UNDERLYING_VAL",
+            "price_to_nav_low": "E_PREMIUM",
+            "price_to_nav_high": "E_PREMIUM",
         },
     },
 }
@@ -169,6 +181,242 @@ VALUATION_ROUTE_FIELD_SOURCES = {
 
 class BusinessValuationError(ValueError):
     """Raised when a purported READY valuation is malformed or stale."""
+
+
+def compile_index_sector_valuation(
+    payload: Mapping[str, Any] | None,
+    *,
+    as_of: date | datetime | str | None = None,
+) -> dict[str, Any]:
+    """Compile weighted index/sector valuation without fair-value authority."""
+    base = {
+        "schema_version": INDEX_SECTOR_VALUATION_SCHEMA_VERSION,
+        "status": "MISSING",
+        "reason_codes": (),
+        "scope": None,
+        "dataset_id": None,
+        "asset_id": None,
+        "linked_asset_id": None,
+        "currency": None,
+        "weighting_method": None,
+        "metrics": None,
+        "summary_zh": "指数/行业估值：数据不足，暂不判断高低。",
+        "uncertainty_zh": "成员、权重、财务口径、历史分位或Product准入尚未完整。",
+        "product_admitted": False,
+        "learning_admitted": False,
+        "strategy_upgrade_authority": False,
+        "veto_override_authority": False,
+        "independent_action_authority": False,
+        "fair_value": None,
+        "receipt_hash": None,
+    }
+    if not isinstance(payload, Mapping):
+        return {**base, "reason_codes": ("INDEX_VALUATION_INPUT_MISSING",)}
+    scope = _text(payload.get("scope")).lower()
+    dataset_id = INDEX_SECTOR_VALUATION_DATASETS.get(scope)
+    asset_id = _text(payload.get("asset_id"))
+    linked_asset_id = _text(payload.get("linked_asset_id")) or None
+    currency = _text(payload.get("currency")).upper()
+    weighting_method = _text(payload.get("weighting_method")).upper()
+    published_at = _aware_datetime(payload.get("published_at"))
+    research_as_of = _as_of_ceiling(as_of or payload.get("as_of"))
+    members_as_of = _date_text(payload.get("members_as_of"))
+    weights_as_of = _date_text(payload.get("weights_as_of"))
+    reasons: list[str] = []
+    if dataset_id is None:
+        reasons.append("INDEX_VALUATION_SCOPE_INVALID")
+    if not asset_id:
+        reasons.append("INDEX_VALUATION_ASSET_ID_MISSING")
+    if scope == "etf_underlying" and not linked_asset_id:
+        reasons.append("ETF_UNDERLYING_LINK_MISSING")
+    if not currency or currency == "UNKNOWN":
+        reasons.append("INDEX_VALUATION_CURRENCY_UNKNOWN")
+    if weighting_method not in _INDEX_WEIGHTING_METHODS:
+        reasons.append("INDEX_VALUATION_WEIGHTING_METHOD_INVALID")
+    if published_at is None or research_as_of is None:
+        reasons.append("INDEX_VALUATION_TIME_MISSING_OR_NAIVE")
+    elif published_at > research_as_of:
+        reasons.append("INDEX_VALUATION_NOT_KNOWN_AT_ASOF")
+    if not members_as_of or not weights_as_of:
+        reasons.append("INDEX_VALUATION_MEMBER_WEIGHT_ASOF_MISSING")
+    elif research_as_of is not None and (
+        date.fromisoformat(members_as_of) > research_as_of.date()
+        or date.fromisoformat(weights_as_of) > research_as_of.date()
+    ):
+        reasons.append("INDEX_VALUATION_MEMBER_WEIGHT_FUTURE")
+
+    admission = payload.get("data_admission")
+    validated_admission = None
+    if not isinstance(admission, Mapping):
+        reasons.append("INDEX_VALUATION_DATA_ADMISSION_MISSING")
+    else:
+        try:
+            validated_admission = validate_compiled_data_object_admission(
+                admission,
+                as_of=research_as_of,
+            )
+        except DataObjectAdmissionError as exc:
+            reasons.append(
+                "INDEX_VALUATION_DATA_NOT_KNOWN_AT_ASOF"
+                if "OUTSIDE_RESEARCH_ASOF" in str(exc)
+                else "INDEX_VALUATION_DATA_ADMISSION_INVALID"
+            )
+    if isinstance(validated_admission, Mapping):
+        if validated_admission.get("dataset_id") != dataset_id:
+            reasons.append("INDEX_VALUATION_DATASET_ROUTE_MISMATCH")
+        if validated_admission.get("product_admitted") is not True:
+            reasons.append("INDEX_VALUATION_DATA_NOT_PRODUCT_ADMITTED")
+        item_currency = _text(validated_admission.get("currency")).upper()
+        if item_currency not in {currency, "NOT_APPLICABLE"}:
+            reasons.append("INDEX_VALUATION_DATA_CURRENCY_MISMATCH")
+
+    metrics = payload.get("metrics")
+    normalized_metrics: dict[str, Any] = {}
+    if not isinstance(metrics, Mapping):
+        reasons.append("INDEX_VALUATION_METRICS_MISSING")
+    else:
+        numeric_keys = (
+            "weighted_pe_ttm", "weighted_pb", "earnings_yield_pct",
+            "dividend_yield_pct", "history_percentile",
+            "positive_earnings_weight_pct", "covered_weight_pct", "weight_sum_pct",
+        )
+        normalized_metrics = {key: _finite(metrics.get(key)) for key in numeric_keys}
+        member_count = metrics.get("member_count")
+        normalized_metrics["member_count"] = member_count
+        if normalized_metrics["weighted_pe_ttm"] is None or normalized_metrics["weighted_pe_ttm"] <= 0:
+            reasons.append("INDEX_VALUATION_PE_TTM_NOT_MEANINGFUL")
+        if normalized_metrics["weighted_pb"] is None or normalized_metrics["weighted_pb"] <= 0:
+            reasons.append("INDEX_VALUATION_PB_NOT_MEANINGFUL")
+        if normalized_metrics["earnings_yield_pct"] is None:
+            reasons.append("INDEX_VALUATION_EARNINGS_YIELD_MISSING")
+        if normalized_metrics["dividend_yield_pct"] is None or normalized_metrics["dividend_yield_pct"] < 0:
+            reasons.append("INDEX_VALUATION_DIVIDEND_YIELD_INVALID")
+        for key in (
+            "history_percentile", "positive_earnings_weight_pct", "covered_weight_pct",
+        ):
+            value = normalized_metrics[key]
+            if value is None or not 0 <= value <= 100:
+                reasons.append("INDEX_VALUATION_PERCENT_RANGE_INVALID:" + key)
+        weight_sum = normalized_metrics["weight_sum_pct"]
+        if weight_sum is None or not 99.5 <= weight_sum <= 100.5:
+            reasons.append("INDEX_VALUATION_WEIGHT_SUM_INVALID")
+        if isinstance(member_count, bool) or not isinstance(member_count, int) or member_count <= 0:
+            reasons.append("INDEX_VALUATION_MEMBER_COUNT_INVALID")
+
+    common = {
+        **base,
+        "scope": scope or None,
+        "dataset_id": dataset_id,
+        "asset_id": asset_id or None,
+        "linked_asset_id": linked_asset_id,
+        "currency": currency or None,
+        "weighting_method": weighting_method or None,
+        "published_at": published_at.isoformat() if published_at else None,
+        "as_of": research_as_of.isoformat() if research_as_of else None,
+        "members_as_of": members_as_of or None,
+        "weights_as_of": weights_as_of or None,
+        "data_admission_hash": (
+            validated_admission.get("admission_hash")
+            if isinstance(validated_admission, Mapping) else None
+        ),
+        "data_source_receipt_hash": (
+            validated_admission.get("receipt_hash")
+            if isinstance(validated_admission, Mapping) else None
+        ),
+        "metrics": normalized_metrics or None,
+    }
+    if reasons:
+        status = "NOT_ADMITTED" if any(
+            reason in reasons for reason in (
+                "INDEX_VALUATION_NOT_KNOWN_AT_ASOF",
+                "INDEX_VALUATION_MEMBER_WEIGHT_FUTURE",
+                "INDEX_VALUATION_DATA_NOT_KNOWN_AT_ASOF",
+                "INDEX_VALUATION_DATA_ADMISSION_INVALID",
+                "INDEX_VALUATION_DATASET_ROUTE_MISMATCH",
+                "INDEX_VALUATION_DATA_NOT_PRODUCT_ADMITTED",
+                "INDEX_VALUATION_DATA_CURRENCY_MISMATCH",
+            )
+        ) else "MISSING"
+        return {**common, "status": status, "reason_codes": tuple(dict.fromkeys(reasons))}
+
+    summary = (
+        f"指数/行业估值：{asset_id}采用{weighting_method}口径，"
+        f"PE(TTM) {normalized_metrics['weighted_pe_ttm']:.2f}、"
+        f"PB {normalized_metrics['weighted_pb']:.2f}、"
+        f"盈利收益率 {normalized_metrics['earnings_yield_pct']:.2f}%、"
+        f"股息率 {normalized_metrics['dividend_yield_pct']:.2f}%、"
+        f"历史分位 {normalized_metrics['history_percentile']:.1f}%；"
+        f"覆盖权重 {normalized_metrics['covered_weight_pct']:.1f}%。"
+        "该材料不生成合理点位，也不覆盖数据、风险、流动性或执行否决。"
+    )
+    document = {
+        **common,
+        "status": "READY",
+        "reason_codes": (),
+        "summary_zh": summary,
+        "uncertainty_zh": (
+            "聚合估值受成员、权重、亏损成分、财务发布和历史窗口影响；"
+            "不等于ETF交易价格/NAV关系或个股内在价值。"
+        ),
+        "product_admitted": True,
+    }
+    document["receipt_hash"] = sha256_payload({
+        key: value for key, value in document.items() if key != "receipt_hash"
+    })
+    return document
+
+
+def validate_index_sector_valuation(value: Mapping[str, Any]) -> dict[str, Any]:
+    if (
+        not isinstance(value, Mapping)
+        or value.get("schema_version") != INDEX_SECTOR_VALUATION_SCHEMA_VERSION
+    ):
+        raise BusinessValuationError("INDEX_VALUATION_SCHEMA_INVALID")
+    result = dict(value)
+    if result.get("status") != "READY":
+        return result
+    expected = sha256_payload({
+        key: result[key] for key in result if key != "receipt_hash"
+    })
+    if result.get("receipt_hash") != expected:
+        raise BusinessValuationError("INDEX_VALUATION_RECEIPT_STALE")
+    if result.get("product_admitted") is not True:
+        raise BusinessValuationError("INDEX_VALUATION_PRODUCT_NOT_ADMITTED")
+    if result.get("fair_value") is not None:
+        raise BusinessValuationError("INDEX_VALUATION_FAIR_VALUE_FORBIDDEN")
+    if any(result.get(key) is not False for key in (
+        "learning_admitted", "strategy_upgrade_authority",
+        "veto_override_authority", "independent_action_authority",
+    )):
+        raise BusinessValuationError("INDEX_VALUATION_AUTHORITY_ESCALATION")
+    return result
+
+
+def _compile_optional_cross_check(
+    value: Any,
+    admission_index: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise BusinessValuationError("VALUATION_CROSS_CHECK_INVALID")
+    method = _text(value.get("method")).upper()
+    low = _positive(value.get("low"))
+    high = _positive(value.get("high"))
+    datasets = tuple(_text(item) for item in value.get("dataset_ids") or ())
+    if not method or low is None or high is None or low > high or not datasets:
+        raise BusinessValuationError("VALUATION_CROSS_CHECK_INVALID")
+    if any(dataset_id not in admission_index for dataset_id in datasets):
+        raise BusinessValuationError("VALUATION_CROSS_CHECK_DATASET_NOT_ADMITTED")
+    document = {
+        "method": method,
+        "low": _round(low),
+        "high": _round(high),
+        "dataset_ids": datasets,
+        "independent_action_authority": False,
+    }
+    document["cross_check_hash"] = sha256_payload(document)
+    return document
 
 
 def compile_business_valuation(
@@ -192,12 +440,16 @@ def compile_business_valuation(
         "asset_type": None,
         "currency": None,
         "methods": (),
+        "primary_method": None,
+        "cross_check": None,
+        "underlying_valuation": None,
         "route_data_requirements": None,
         "field_lineage": None,
         "fair_value": None,
         "current_price": None,
         "price_position": "UNKNOWN",
         "summary_zh": "估值：数据不足，暂不判断高低。",
+        "primary_summary_zh": "",
         "uncertainty_zh": "估值输入、方法或权利未完整准入，不补造区间。",
         "product_admitted": False,
         "learning_admitted": False,
@@ -299,6 +551,26 @@ def compile_business_valuation(
         ),
         "route_data_requirements": VALUATION_ROUTE_DATA_REQUIREMENTS[route_id],
     }
+    underlying_valuation = None
+    if route_id == "ETF":
+        raw_underlying = payload.get("underlying_valuation")
+        if not isinstance(raw_underlying, Mapping):
+            reasons.append("ETF_UNDERLYING_VALUATION_MISSING")
+        else:
+            try:
+                underlying_valuation = validate_index_sector_valuation(raw_underlying)
+            except BusinessValuationError:
+                reasons.append("ETF_UNDERLYING_VALUATION_INVALID")
+            else:
+                if underlying_valuation.get("status") != "READY":
+                    reasons.append("ETF_UNDERLYING_VALUATION_NOT_READY")
+                if (
+                    underlying_valuation.get("scope") != "etf_underlying"
+                    or underlying_valuation.get("dataset_id") != "E_UNDERLYING_VAL"
+                    or underlying_valuation.get("linked_asset_id") != asset_id
+                ):
+                    reasons.append("ETF_UNDERLYING_VALUATION_BINDING_MISMATCH")
+    common["underlying_valuation"] = underlying_valuation
     if reasons:
         status = "NOT_ADMITTED" if any(
             reason in reasons
@@ -333,6 +605,26 @@ def compile_business_valuation(
         _text(item.get("dataset_id")): item for item in normalized_admissions
         if _text(item.get("dataset_id"))
     }
+    primary_method = _text(payload.get("primary_method")).upper() or None
+    if (
+        route_id == "MATURE_INDUSTRIAL_CONSUMER"
+        and primary_method != "NORMALIZED_EARNINGS_PE"
+    ):
+        return {
+            **common,
+            "reason_codes": ("VALUATION_PRIMARY_METHOD_MISSING_OR_MISMATCH",),
+            "primary_method": primary_method,
+        }
+    try:
+        cross_check = _compile_optional_cross_check(
+            payload.get("cross_check"), admission_index,
+        )
+    except BusinessValuationError as exc:
+        return {
+            **common,
+            "reason_codes": (str(exc),),
+            "primary_method": primary_method,
+        }
     requirement = VALUATION_ROUTE_DATA_REQUIREMENTS[route_id]
     missing_required = [
         dataset_id for dataset_id in requirement["required_all"]
@@ -421,20 +713,31 @@ def compile_business_valuation(
         else "WITHIN_RANGE"
     )
     fair_value = {"low": low, "midpoint": midpoint, "high": high, "currency": currency}
-    summary = (
+    primary_summary = (
         f"估值：{_ROUTE_LABELS[route_id]}路线，"
         f"基于{','.join(methods)}的可核区间为 {low:.2f}–{high:.2f} {currency}；"
         f"当前价格 {current_price:.2f}，位置为{_POSITION_LABELS[position]}。"
         "该区间依赖所列假设，不覆盖数据、风险、流动性或执行否决。"
     )
+    summary = primary_summary
+    if route_id == "ETF" and isinstance(underlying_valuation, Mapping):
+        summary = (
+            primary_summary
+            + " ETF交易价/NAV关系与底层指数估值分层呈现；"
+            + str(underlying_valuation.get("summary_zh") or "")
+        )
     document = {
         **common,
         "status": "READY",
         "reason_codes": (),
         "methods": methods,
+        "primary_method": primary_method or (methods[0] if methods else None),
+        "cross_check": cross_check,
+        "underlying_valuation": underlying_valuation,
         "fair_value": fair_value,
         "price_position": position,
         "summary_zh": summary,
+        "primary_summary_zh": primary_summary,
         "uncertainty_zh": (
             "区间依赖本次已列数据、业务方法与显式上下界假设；"
             "敏感性仅覆盖该区间，不覆盖数据、风险、流动性或执行否决。"

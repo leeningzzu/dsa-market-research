@@ -6,6 +6,7 @@ provider entitlement. Deferred methods cannot be enabled by a payload flag.
 """
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, replace
 from functools import lru_cache
@@ -1476,6 +1477,9 @@ METHOD_WINDOW_PROFILES = (
 )
 
 
+DECLARED_METHOD_WINDOW_PROFILES = METHOD_WINDOW_PROFILES
+
+
 _METHOD_CONSUMER_CLASSIFICATION = {
     "MARKET_SECTOR_REGIME": ("ASSET_LAYER", ("REGIME",)),
     "RELATIVE_STRENGTH": ("TECHNICAL_MATRIX", ("TREND_RS",)),
@@ -1827,6 +1831,10 @@ def compile_method_window_policy_view(profiles=None) -> dict:
         binding.requirement_id: binding
         for binding in EVIDENCE_BINDINGS + DEFERRED_BINDINGS
     }
+    declared_lookup = {
+        profile.method_id: profile
+        for profile in DECLARED_METHOD_WINDOW_PROFILES
+    }
     methods = []
     for profile in profiles:
         binding = binding_lookup[profile.requirement_id]
@@ -1848,6 +1856,9 @@ def compile_method_window_policy_view(profiles=None) -> dict:
                 "asset_routes": binding.asset_routes,
                 "window_classes": profile.window_classes,
                 "target_timeframes": profile.target_timeframes,
+                "declared_execution_timeframes": declared_lookup[
+                    profile.method_id
+                ].current_execution_timeframes,
                 "current_execution_timeframes": profile.current_execution_timeframes,
                 "leaf_implementation_state": profile.implementation_state,
                 "parent_implementation_state": binding.implementation_state,
@@ -4262,6 +4273,159 @@ def validate_runtime_trace(factor: Mapping) -> dict:
     if not isinstance(actual, Mapping) or not json_wire_equal(actual, expected):
         raise TraceabilityError("RUNTIME_TRACE_MISSING_OR_STALE")
     return expected
+
+
+FOUNDATION_EVIDENCE_RECEIPT_VERSION = "foundation-7tf-eight-family-receipt-v1"
+
+
+def compile_foundation_evidence_receipt(
+    factor: Mapping,
+    *,
+    product_coverage: Mapping | None = None,
+) -> dict:
+    """Bind effective method scope, actual 7x8 evidence, Product data, and consumer.
+
+    This is an audit receipt over the existing Registry/Factor/V2.5 chain. It
+    neither clones indicator algorithms nor turns declared scope into runtime
+    readiness. Historical evidence remains descriptive unless it is the current
+    factor's exact runtime trace and operation-specific data admission.
+    """
+    trace = validate_runtime_trace(factor)
+    policy = compile_method_window_policy_view()
+    if trace.get("method_window_policy_hash") != policy.get("view_hash"):
+        raise TraceabilityError("FOUNDATION_METHOD_POLICY_IDENTITY_MISMATCH")
+    methods = tuple(dict(row) for row in policy.get("methods") or ())
+    if len(methods) != 43:
+        raise TraceabilityError("FOUNDATION_METHOD_COUNT_MISMATCH")
+    technical = tuple(
+        row for row in methods
+        if row.get("consumer_scope") == "TECHNICAL_MATRIX"
+        and row.get("leaf_implementation_state") == "EXISTING_REUSED"
+    )
+    target_pairs = sum(len(tuple(row.get("target_timeframes") or ())) for row in technical)
+    declared_pairs = sum(
+        len(tuple(row.get("declared_execution_timeframes") or ())) for row in technical
+    )
+    effective_pairs = sum(
+        len(tuple(row.get("current_execution_timeframes") or ())) for row in technical
+    )
+    override_rows = tuple(
+        {
+            "method_id": str(row.get("method_id") or ""),
+            "declared": tuple(row.get("declared_execution_timeframes") or ()),
+            "effective": tuple(row.get("current_execution_timeframes") or ()),
+        }
+        for row in technical
+        if tuple(row.get("declared_execution_timeframes") or ())
+        != tuple(row.get("current_execution_timeframes") or ())
+    )
+    if (len(technical), target_pairs, declared_pairs, effective_pairs, len(override_rows)) != (
+        25, 172, 34, 52, 5,
+    ):
+        raise TraceabilityError("FOUNDATION_EFFECTIVE_METHOD_SCOPE_MISMATCH")
+
+    matrix = trace.get("timeframe_family_matrix")
+    if not isinstance(matrix, Mapping) or matrix.get("schema_version") != "timeframe-family-matrix-v1":
+        raise TraceabilityError("FOUNDATION_MATRIX_MISSING")
+    cells = tuple(dict(row) for row in matrix.get("cells") or ())
+    if len(cells) != 56:
+        raise TraceabilityError("FOUNDATION_MATRIX_CELL_COUNT_MISMATCH")
+    cell_rows = tuple({
+        "cell_id": row.get("cell_id"),
+        "timeframe": row.get("timeframe"),
+        "family": row.get("family"),
+        "state": row.get("state"),
+        "reason": row.get("reason"),
+        "current_method_ids": tuple(row.get("current_method_ids") or ()),
+        "deferred_method_ids": tuple(row.get("deferred_method_ids") or ()),
+        "available_paths": tuple(row.get("available_paths") or ()),
+        "runtime_source_bound": bool(
+            (row.get("runtime_binding") or {}).get("runtime_source_bound")
+        ),
+        "cell_hash": row.get("cell_hash"),
+    } for row in cells)
+    if any(row["state"] not in TIMEFRAME_FAMILY_MATRIX_STATES for row in cell_rows):
+        raise TraceabilityError("FOUNDATION_MATRIX_STATE_INVALID")
+
+    universe = trace.get("complete_research_universe")
+    gate = universe.get("full_domain_data_gate") if isinstance(universe, Mapping) else None
+    if not isinstance(gate, Mapping) or gate.get("full_domain_accounted_pass") is not True:
+        raise TraceabilityError("FOUNDATION_FULL_DOMAIN_GATE_MISSING")
+    admitted_ids = tuple(gate.get("current_product_admitted_dataset_ids") or ())
+    asset_type = str(factor.get("asset_type") or "stock").lower()
+    price_ids = (
+        ("E_PRICE_1D", "E_PRICE_5M")
+        if asset_type == "etf" else ("P_DAILY", "P_5M")
+    )
+    canonical = factor.get("canonical_decision")
+    if not isinstance(canonical, Mapping):
+        raise TraceabilityError("FOUNDATION_CANONICAL_DECISION_MISSING")
+
+    coverage_binding = None
+    if product_coverage is not None:
+        if not isinstance(product_coverage, Mapping):
+            raise TraceabilityError("FOUNDATION_PRODUCT_COVERAGE_INVALID")
+        if (
+            product_coverage.get("runtime_trace_hash") != trace.get("runtime_trace_hash")
+            or product_coverage.get("method_window_policy_hash") != policy.get("view_hash")
+            or product_coverage.get("timeframe_family_matrix_hash") != matrix.get("matrix_hash")
+            or len(tuple(product_coverage.get("slots") or ())) != 27
+        ):
+            raise TraceabilityError("FOUNDATION_PRODUCT_COVERAGE_BINDING_MISMATCH")
+        coverage_binding = {
+            "slot_count": 27,
+            "slot_state_counts": dict(Counter(
+                str(row.get("state") or "UNKNOWN")
+                for row in product_coverage.get("slots") or ()
+                if isinstance(row, Mapping)
+            )),
+            "coverage_hash": digest({
+                key: value for key, value in product_coverage.items()
+                if key not in {"receipt_hash", "foundation_evidence_receipt"}
+            }),
+        }
+
+    document = {
+        "schema_version": FOUNDATION_EVIDENCE_RECEIPT_VERSION,
+        "method_profile_count": len(methods),
+        "existing_method_count": sum(
+            row.get("leaf_implementation_state") == "EXISTING_REUSED" for row in methods
+        ),
+        "deferred_method_count": sum(
+            row.get("leaf_implementation_state") != "EXISTING_REUSED" for row in methods
+        ),
+        "technical_existing_method_count": len(technical),
+        "target_method_timeframe_pairs": target_pairs,
+        "declared_execution_pairs": declared_pairs,
+        "effective_execution_pairs": effective_pairs,
+        "effective_override_rows": override_rows,
+        "matrix_cell_count": len(cell_rows),
+        "matrix_state_counts": dict(Counter(row["state"] for row in cell_rows)),
+        "matrix_cells": cell_rows,
+        "current_product_admitted_dataset_ids": admitted_ids,
+        "price_dataset_ids": price_ids,
+        "admitted_price_dataset_ids": tuple(
+            dataset_id for dataset_id in price_ids if dataset_id in admitted_ids
+        ),
+        "canonical_decision_hash": digest(canonical),
+        "canonical_action": canonical.get("action"),
+        "canonical_hard_veto": canonical.get("hard_veto"),
+        "data_snapshot_identity": trace.get("data_snapshot_identity"),
+        "data_identity": trace.get("data_identity"),
+        "product_coverage_binding": coverage_binding,
+        "proof_scope": "CURRENT_FACTOR_RUNTIME_NOT_HISTORICAL_RECEIPT_REUSE",
+        "policy": {
+            "declaration_is_not_runtime_ready": True,
+            "effective_profiles_supersede_raw_constructor_scope": True,
+            "runtime_cell_state_requires_existing_producer_receipt": True,
+            "historical_execution_never_backfills_current_product": True,
+            "missing_unknown_and_not_admitted_remain_visible": True,
+            "seven_by_eight_is_coverage_not_votes": True,
+            "independent_action_authority": False,
+        },
+    }
+    document["receipt_hash"] = digest(document)
+    return document
 
 
 def learning_projection(factor: Mapping) -> dict:

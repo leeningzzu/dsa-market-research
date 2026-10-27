@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import date
 
 import pytest
 
@@ -10,7 +11,9 @@ from src.services.business_valuation_service import (
     VALUATION_ROUTE_FIELD_SOURCES,
     VALUATION_ROUTE_IDS,
     compile_business_valuation,
+    compile_index_sector_valuation,
     validate_business_valuation,
+    validate_index_sector_valuation,
 )
 from src.services.data_object_admission import (
     compile_data_object_admission,
@@ -18,6 +21,7 @@ from src.services.data_object_admission import (
     seal_source_rights_evidence,
 )
 from src.services import evidence_traceability_registry as registry
+from src.core.pipeline import StockAnalysisPipeline
 
 
 _DATASET_META = {
@@ -32,6 +36,7 @@ _DATASET_META = {
     "P_QUOTE_LIQUID": ("intraday+daily", "ASSET_RESEARCH_BRIEF"),
     "M_CN_BOND": ("daily/released", "MARKET_REGIME_BRIEF"),
     "M_ERP_VAL": ("daily/period", "MARKET_REGIME_BRIEF"),
+    "S_VALUATION": ("daily+quarter", "SECTOR_CONTEXT"),
     "E_NAV_IOPV": ("daily+intraday_published", "ETF_ASSET_BRIEF"),
     "E_PREMIUM": ("intraday+daily", "ETF_ASSET_BRIEF"),
     "E_UNDERLYING_VAL": ("quarter+daily", "ETF_ASSET_BRIEF"),
@@ -151,6 +156,46 @@ def _admission(dataset_id="P_FIN_VINTAGE", **receipt_overrides):
     )
 
 
+def _index_valuation(
+    scope="index",
+    *,
+    asset_id="000300",
+    linked_asset_id=None,
+    dataset_id=None,
+    **overrides,
+):
+    dataset_id = dataset_id or {
+        "index": "M_ERP_VAL",
+        "sector": "S_VALUATION",
+        "etf_underlying": "E_UNDERLYING_VAL",
+    }[scope]
+    payload = {
+        "scope": scope,
+        "asset_id": asset_id,
+        "linked_asset_id": linked_asset_id,
+        "currency": "CNY",
+        "weighting_method": "FREE_FLOAT_MARKET_CAP_WEIGHTED",
+        "as_of": "2026-10-21T10:00:00+00:00",
+        "published_at": "2026-10-20T08:00:00+00:00",
+        "members_as_of": "2026-10-20",
+        "weights_as_of": "2026-10-20",
+        "data_admission": _admission(dataset_id),
+        "metrics": {
+            "weighted_pe_ttm": 12.5,
+            "weighted_pb": 1.45,
+            "earnings_yield_pct": 8.0,
+            "dividend_yield_pct": 2.4,
+            "history_percentile": 42.0,
+            "positive_earnings_weight_pct": 95.0,
+            "covered_weight_pct": 98.0,
+            "weight_sum_pct": 100.0,
+            "member_count": 300,
+        },
+    }
+    payload.update(overrides)
+    return compile_index_sector_valuation(payload)
+
+
 def _route_dataset_ids(route_id):
     requirement = VALUATION_ROUTE_DATA_REQUIREMENTS[route_id]
     return tuple(dict.fromkeys((
@@ -162,9 +207,10 @@ def _base(route_id, *, asset_type="stock", inputs=None, assumptions=None):
     inputs = dict(inputs or {})
     assumptions = dict(assumptions or {})
     expected_lineage = VALUATION_ROUTE_FIELD_SOURCES[route_id]
-    return {
+    asset_id = "600519" if asset_type == "stock" else "510300"
+    payload = {
         "route_id": route_id,
-        "asset_id": "600519" if asset_type == "stock" else "510300",
+        "asset_id": asset_id,
         "asset_type": asset_type,
         "currency": "CNY",
         "current_price": 20.0,
@@ -184,6 +230,16 @@ def _base(route_id, *, asset_type="stock", inputs=None, assumptions=None):
             key: expected_lineage["assumptions"][key] for key in assumptions
         },
     }
+    if route_id == "MATURE_INDUSTRIAL_CONSUMER":
+        payload["primary_method"] = "NORMALIZED_EARNINGS_PE"
+    if route_id == "ETF":
+        payload["underlying_valuation"] = _index_valuation(
+            "etf_underlying",
+            asset_id="000300",
+            linked_asset_id=asset_id,
+            dataset_id="E_UNDERLYING_VAL",
+        )
+    return payload
 
 @pytest.mark.parametrize(
     "route_id,asset_type,inputs,assumptions,method",
@@ -229,6 +285,139 @@ def test_all_nine_routes_are_deterministic_product_only(
         key: VALUATION_ROUTE_FIELD_SOURCES[route_id]["assumptions"][key]
         for key in assumptions
     }
+    if route_id == "MATURE_INDUSTRIAL_CONSUMER":
+        assert result["primary_method"] == "NORMALIZED_EARNINGS_PE"
+    if route_id == "ETF":
+        assert result["field_lineage"]["assumptions"] == {
+            "price_to_nav_low": "E_PREMIUM",
+            "price_to_nav_high": "E_PREMIUM",
+        }
+        assert result["underlying_valuation"]["dataset_id"] == "E_UNDERLYING_VAL"
+        assert result["underlying_valuation"]["scope"] == "etf_underlying"
+        assert "交易价/NAV关系与底层指数估值分层呈现" in result["summary_zh"]
+        assert "底层指数估值" not in result["primary_summary_zh"]
+        assert "NAV_PREMIUM_DISCOUNT_BAND" in result["primary_summary_zh"]
+
+
+
+
+@pytest.mark.parametrize(
+    "scope,dataset_id,asset_id,linked_asset_id",
+    [
+        ("index", "M_ERP_VAL", "000300", None),
+        ("sector", "S_VALUATION", "801120", None),
+        ("etf_underlying", "E_UNDERLYING_VAL", "000300", "510300"),
+    ],
+)
+def test_index_sector_and_etf_underlying_valuation_are_separate_product_layers(
+    scope, dataset_id, asset_id, linked_asset_id,
+):
+    result = _index_valuation(
+        scope,
+        dataset_id=dataset_id,
+        asset_id=asset_id,
+        linked_asset_id=linked_asset_id,
+    )
+    assert result["status"] == "READY"
+    assert result["dataset_id"] == dataset_id
+    assert result["fair_value"] is None
+    assert result["product_admitted"] is True
+    assert result["learning_admitted"] is False
+    assert result["strategy_upgrade_authority"] is False
+    assert result["veto_override_authority"] is False
+    assert result["independent_action_authority"] is False
+    assert validate_index_sector_valuation(result) == result
+
+
+def test_index_valuation_rejects_bad_weights_future_members_and_stock_routing():
+    bad_weights = _index_valuation(
+        "index",
+        metrics={
+            "weighted_pe_ttm": 12.5, "weighted_pb": 1.45,
+            "earnings_yield_pct": 8.0, "dividend_yield_pct": 2.4,
+            "history_percentile": 42.0, "positive_earnings_weight_pct": 95.0,
+            "covered_weight_pct": 98.0, "weight_sum_pct": 92.0,
+            "member_count": 300,
+        },
+    )
+    assert bad_weights["status"] == "MISSING"
+    assert "INDEX_VALUATION_WEIGHT_SUM_INVALID" in bad_weights["reason_codes"]
+
+    future = _index_valuation("index", members_as_of="2026-10-22")
+    assert future["status"] == "NOT_ADMITTED"
+    assert "INDEX_VALUATION_MEMBER_WEIGHT_FUTURE" in future["reason_codes"]
+
+    wrong_dataset = _index_valuation("index", dataset_id="P_VAL_RATIO")
+    assert wrong_dataset["status"] == "NOT_ADMITTED"
+    assert "INDEX_VALUATION_DATASET_ROUTE_MISMATCH" in wrong_dataset["reason_codes"]
+
+
+def test_mature_stock_primary_method_and_optional_cross_check_are_explicit():
+    payload = _base(
+        "MATURE_INDUSTRIAL_CONSUMER",
+        inputs={"normalized_eps": 2.0},
+        assumptions={"pe_low": 8.0, "pe_high": 12.0},
+    )
+    payload["cross_check"] = {
+        "method": "HISTORICAL_PE_PERCENTILE",
+        "low": 17.0,
+        "high": 23.0,
+        "dataset_ids": ("P_VAL_RATIO",),
+    }
+    result = compile_business_valuation(payload)
+    assert result["status"] == "READY"
+    assert result["primary_method"] == "NORMALIZED_EARNINGS_PE"
+    assert result["cross_check"]["method"] == "HISTORICAL_PE_PERCENTILE"
+    assert result["cross_check"]["independent_action_authority"] is False
+
+    missing_primary = deepcopy(payload)
+    missing_primary.pop("primary_method")
+    result = compile_business_valuation(missing_primary)
+    assert result["status"] == "MISSING"
+    assert result["reason_codes"] == (
+        "VALUATION_PRIMARY_METHOD_MISSING_OR_MISMATCH",
+    )
+
+
+def test_pipeline_compiles_and_binds_etf_underlying_index_valuation_before_etf_route():
+    raw_underlying = {
+        "scope": "etf_underlying",
+        "asset_id": "000300",
+        "linked_asset_id": "510300",
+        "currency": "CNY",
+        "weighting_method": "FREE_FLOAT_MARKET_CAP_WEIGHTED",
+        "as_of": "2026-10-21T10:00:00+00:00",
+        "published_at": "2026-10-20T08:00:00+00:00",
+        "members_as_of": "2026-10-20",
+        "weights_as_of": "2026-10-20",
+        "data_admission": _admission("E_UNDERLYING_VAL"),
+        "metrics": {
+            "weighted_pe_ttm": 12.5, "weighted_pb": 1.45,
+            "earnings_yield_pct": 8.0, "dividend_yield_pct": 2.4,
+            "history_percentile": 42.0, "positive_earnings_weight_pct": 95.0,
+            "covered_weight_pct": 98.0, "weight_sum_pct": 100.0,
+            "member_count": 300,
+        },
+    }
+    etf_request = _base(
+        "ETF",
+        asset_type="etf",
+        inputs={"nav_per_share": 4.0},
+        assumptions={"price_to_nav_low": 0.99, "price_to_nav_high": 1.01},
+    )
+    etf_request.pop("underlying_valuation")
+    result = StockAnalysisPipeline._compile_business_valuation_context(
+        {
+            "index_sector_valuation_inputs": [raw_underlying],
+            "business_valuation_input": etf_request,
+        },
+        target_date=date(2026, 10, 21),
+    )
+    assert result["index_sector_valuations"][0]["status"] == "READY"
+    assert result["business_valuation"]["status"] == "READY"
+    assert result["business_valuation"]["underlying_valuation"]["receipt_hash"] == (
+        result["index_sector_valuations"][0]["receipt_hash"]
+    )
 
 
 def test_route_set_is_exact_and_no_universal_default_route_exists():

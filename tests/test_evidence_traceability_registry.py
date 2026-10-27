@@ -572,6 +572,50 @@ def test_complete_research_universe_view_prevents_scope_collapse_beyond_7x8():
 
 
 
+def test_foundation_receipt_separates_raw_declared_effective_and_runtime_states():
+    factor = native_summary()
+    receipt = reg.compile_foundation_evidence_receipt(factor)
+
+    assert receipt["method_profile_count"] == 43
+    assert receipt["existing_method_count"] == 28
+    assert receipt["deferred_method_count"] == 15
+    assert receipt["technical_existing_method_count"] == 25
+    assert receipt["target_method_timeframe_pairs"] == 172
+    assert receipt["declared_execution_pairs"] == 34
+    assert receipt["effective_execution_pairs"] == 52
+    assert len(receipt["effective_override_rows"]) == 5
+    assert receipt["matrix_cell_count"] == 56
+    assert sum(receipt["matrix_state_counts"].values()) == 56
+    assert receipt["policy"]["declaration_is_not_runtime_ready"] is True
+    assert receipt["policy"]["effective_profiles_supersede_raw_constructor_scope"] is True
+    assert receipt["policy"]["historical_execution_never_backfills_current_product"] is True
+    assert receipt["policy"]["independent_action_authority"] is False
+    assert len(receipt["receipt_hash"]) == 64
+
+
+def test_foundation_receipt_rejects_resurrection_of_raw_pre_override_profiles(monkeypatch):
+    declared = {
+        profile.method_id: profile
+        for profile in reg.DECLARED_METHOD_WINDOW_PROFILES
+    }
+    resurrected = tuple(
+        replace(
+            profile,
+            current_execution_timeframes=(
+                declared[profile.method_id].current_execution_timeframes
+            ),
+        )
+        for profile in reg.METHOD_WINDOW_PROFILES
+    )
+    monkeypatch.setattr(reg, "METHOD_WINDOW_PROFILES", resurrected)
+
+    with pytest.raises(
+        reg.TraceabilityError,
+        match="FOUNDATION_EFFECTIVE_METHOD_SCOPE_MISMATCH",
+    ):
+        native_summary()
+
+
 def test_full_domain_data_gate_rejects_deletion_duplicate_domain_and_state_tamper():
     factor = native_summary()
     objects = factor["evidence_traceability"]["complete_research_universe"]["data_objects"]

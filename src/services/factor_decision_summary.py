@@ -31,7 +31,10 @@ from src.services.research_state_projection import (
     validate_canonical_decision_semantics,
 )
 from src.services.v2_5_evidence_coverage import compile_product_coverage
-from src.services.business_valuation_service import validate_business_valuation
+from src.services.business_valuation_service import (
+    validate_business_valuation,
+    validate_index_sector_valuation,
+)
 from src.services.data_object_admission import compile_b1_runtime_admission_receipts
 from src.services.fundamental_quality_service import validate_fundamental_quality
 
@@ -168,13 +171,27 @@ def _valuation_summary(
     *,
     asset_type: str = "stock",
     business_valuation: Optional[Dict[str, Any]] = None,
+    index_sector_valuations: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
+    business_text = ""
     if isinstance(business_valuation, dict):
-        text = str(business_valuation.get("summary_zh") or "").strip()
-        if text:
-            return text
+        business_text = str(business_valuation.get("summary_zh") or "").strip()
+    shared_texts = []
+    for row in index_sector_valuations or ():
+        if not isinstance(row, dict) or row.get("status") != "READY":
+            continue
+        if asset_type == "etf" and row.get("scope") == "etf_underlying":
+            # The ETF business receipt already binds this same document.
+            continue
+        text = str(row.get("summary_zh") or "").strip()
+        if text and text not in shared_texts:
+            shared_texts.append(text)
+    if business_text:
+        return "；".join((business_text, *shared_texts))
+    if shared_texts:
+        return "；".join(shared_texts)
     if asset_type == "etf":
-        return "底层估值：数据不足，暂不判断高低。"
+        return "交易价/NAV与底层估值：数据不足，暂不判断高低。"
     if not isinstance(fundamental_context, dict):
         return "估值：数据不足，暂不判断高低。"
 
@@ -1960,6 +1977,14 @@ def _build_asset_research_brief_v1(trend_result, summary, *, asset_type: str = "
     )
     quality_document = _mapping(summary.get("fundamental_quality"))
     valuation_document = _mapping(summary.get("business_valuation"))
+    index_sector_valuations = tuple(
+        dict(row)
+        for row in summary.get("index_sector_valuations") or ()
+        if isinstance(row, Mapping)
+    )
+    underlying_valuation_document = _mapping(
+        valuation_document.get("underlying_valuation")
+    )
     cost = _asset_brief_v1_text(
         sections.get("cost_structure"),
         ("\u6210\u672c/\u7b79\u7801\uff1a", "\u6210\u672c/\u7b79\u7801:"),
@@ -2212,7 +2237,7 @@ def _build_asset_research_brief_v1(trend_result, summary, *, asset_type: str = "
                 if valuation_document
                 else "PARTIAL_CURRENT" if valuation_displayable else "MISSING"
             ),
-            "label": "底层估值" if asset_type == "etf" else "估值",
+            "label": "交易价/NAV与底层估值" if asset_type == "etf" else "估值",
             "summary": valuation if (valuation_displayable or valuation_document) else "",
             "uncertainty": str(valuation_document.get("uncertainty_zh") or "").strip()
             or (
@@ -2232,13 +2257,47 @@ def _build_asset_research_brief_v1(trend_result, summary, *, asset_type: str = "
         },
         "asset_specific": (
             {
-                "underlying_valuation": {"status": "MISSING"},
-                "premium_discount": {"status": "MISSING"},
+                "underlying_valuation": {
+                    "status": str(
+                        underlying_valuation_document.get("status") or "MISSING"
+                    ).upper(),
+                    "summary": str(
+                        underlying_valuation_document.get("summary_zh") or ""
+                    ).strip(),
+                    "scope": underlying_valuation_document.get("scope"),
+                    "asset_id": underlying_valuation_document.get("asset_id"),
+                    "receipt_hash": underlying_valuation_document.get("receipt_hash"),
+                },
+                "premium_discount": {
+                    "status": (
+                        "READY" if structured_valuation_ready else "MISSING"
+                    ),
+                    "summary": (
+                        str(
+                            valuation_document.get("primary_summary_zh")
+                            or valuation_document.get("summary_zh")
+                            or ""
+                        ).strip()
+                        if structured_valuation_ready else ""
+                    ),
+                    "methods": valuation_document.get("methods") or (),
+                    "fair_value": valuation_document.get("fair_value"),
+                    "price_position": valuation_document.get("price_position"),
+                    "receipt_hash": valuation_document.get("receipt_hash"),
+                },
                 "liquidity_spread": {"status": "MISSING"},
                 "tracking_quality": {"status": "MISSING"},
             }
             if asset_type == "etf"
-            else {}
+            else {
+                "shared_index_sector_valuation": tuple({
+                    "scope": row.get("scope"),
+                    "asset_id": row.get("asset_id"),
+                    "status": row.get("status"),
+                    "summary": row.get("summary_zh"),
+                    "receipt_hash": row.get("receipt_hash"),
+                } for row in index_sector_valuations)
+            }
         ),
         "historical_reference": {
             "available": False,
@@ -2295,6 +2354,16 @@ def build_stock_factor_decision_summary(
         asset_type=asset_type,
         expected_asset_id=expected_asset_id or None,
     )
+    index_sector_valuations: List[Dict[str, Any]] = []
+    if isinstance(fundamental_context, dict):
+        raw_index_valuations = fundamental_context.get("index_sector_valuations")
+        if isinstance(raw_index_valuations, list):
+            for raw in raw_index_valuations:
+                if not isinstance(raw, dict):
+                    raise ValueError("index/sector valuation material has invalid type")
+                document = validate_index_sector_valuation(raw)
+                if document.get("status") == "READY":
+                    index_sector_valuations.append(document)
     quality_growth = _quality_summary(
         fundamental_quality,
         asset_type=asset_type,
@@ -2494,6 +2563,7 @@ def build_stock_factor_decision_summary(
             "pattern_trigger_evidence": pattern_trigger_evidence,
             "fundamental_quality": fundamental_quality,
             "business_valuation": business_valuation,
+            "index_sector_valuations": index_sector_valuations,
             **(
                 {
                     "method_execution_receipt_policy": "REQUIRED",
@@ -2588,6 +2658,7 @@ def build_stock_factor_decision_summary(
         fundamental_context,
         asset_type=asset_type,
         business_valuation=business_valuation,
+        index_sector_valuations=index_sector_valuations,
     )
     cost_structure = (
         "成本/筹码：ETF不适用个股筹码口径。"
@@ -2706,6 +2777,7 @@ def build_stock_factor_decision_summary(
         "quality_growth": quality_growth,
         "fundamental_quality": fundamental_quality,
         "business_valuation": business_valuation,
+        "index_sector_valuations": index_sector_valuations,
         "cost_structure": cost_structure,
         "risk_notes": _risk_notes(trend_result),
         "sections": sections,

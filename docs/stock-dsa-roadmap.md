@@ -5,12 +5,12 @@
 <!-- CURRENT_MASTER_CONTROL_START -->
 ## 当前控制页：总目标、依赖图与退出条件（2026-10-27）
 
-CONTROL_ID = STOCK_DSA_MASTER_ROUTE_20261027_A0_CURRENT_PRODUCT_RECORD_SPLIT_LOCAL_PASS_R001
-CURRENT_CANDIDATE_HEAD = d303562c1955b4a532897722125e9c1f64a69f9b
-CURRENT_CANDIDATE_PARENT = 630ecbdc5a9ac1cfd0ee6f45ba76f8b3992c7b0c
+CONTROL_ID = STOCK_DSA_MASTER_ROUTE_20261027_A1A2_FOUNDATION_LOCAL_PASS_R001
+CURRENT_CANDIDATE_HEAD = 9602700b0be8ae967f966c88d807f550ab831d5b
+CURRENT_CANDIDATE_PARENT = d303562c1955b4a532897722125e9c1f64a69f9b
 LAST_VERIFIED_MAIN_BASELINE = b32570b1562deaefa99f500a9c68eb7d1caf6f56
 CURRENT_PR = #31 / Draft / Open / not merged
-LATEST_REQUIRED_CI = #90 / Run40435525781 / success on d303562c（邮件读者合同远程接受；A0当前Product/未来记录分时本地候选未提交）
+LATEST_REQUIRED_CI = #91 / Run40458152958 / success on 9602700b（A0当前Product/未来RECORD分时远程接受；A1/A2本地候选未提交）
 SOURCE_CHECKPOINT = Current Project authority is paired 01/05 v3.526 plus the six stable Owners
 AUTHORITY = exact Git/运行证据 > current 01 > 02/03 > 04/05 > Factor > 06 > 旧Chat
 **这是一份现有路线的维护者状态投影，不是新架构、第二个Source、第二数据库或调度器。原775边图和V2.5原件保持不变；旧dated checkpoint继续作为历史。**
@@ -25,12 +25,11 @@ AUTHORITY = exact Git/运行证据 > current 01 > 02/03 > 04/05 > Factor > 06 > 
 
 ### 0.2 当前事实与本次纠偏
 
-- Gate0–6、whole-scope/full-domain门禁和邮件读者合同已在精确feature HEAD `d303562c`与CI #90保持CLOSED_SCOPED_NO_REPLAY；PR #31仍Draft/Open/未merge，main未改变。
-- A0独立反例证明：旧full-domain谓词把`L_LEDGER/L_OUTCOME/L_PIT_MANIFEST/L_IMMUTABLE_BYTES`四个未来对象纳入当前Product就绪，造成Product→Recording→Product依赖回路；整卡`MISSINGNESS_ONLY`又会隐藏已合法准入的日线或分钟叶事实。
-- 当前A0本地候选在既有Registry/Coverage/Flywheel内保持76对象六域和原V2.5不变，明确拆分72个当前Product对象与4个未来RECORD对象；当前Product、全部义务、Recording、Outcome和PIT分别出具状态，未来对象不再阻塞首轮真实报告或首次合法记录。
-- V2.5新增`PARTIALLY_ADMITTED`路径：只有与对应价格对象绑定且通过operation admission的日/周/月或分钟叶事实可显示；其他Global/Market/Sector/估值/分钟或未来记录继续诚实缺失，canonical、veto、策略和动作权限不变。
-- 空输入NO_SEND仍保持3 envelope/10 card/84 cycle/26要求/76对象/9估值/7细字段、8证据族和读者角色，当前输出89644字节/SHA256 `fa6b55c305972c18e9218e2850adeb274881a054523af9a2cba1fb7153c67541`；原125919字节Golden未改。
-- 方法审计纠正为25个已有技术方法172个目标组合中最终配置声明52个（不是漏读override所得34个）；声明、历史R005执行和当前Product READY仍分开，A0不扩展估值、Chan或经典指标。
+- Gate0–6、邮件读者合同和A0已在精确feature HEAD `9602700b`与自然CI #91保持CLOSED_SCOPED_NO_REPLAY；PR #31仍Draft/Open/未merge，main未改变。
+- A0已远程接受：76项义务继续完整记账，72个当前Product对象与4个未来RECORD对象分时；合法部分日线/分钟叶事实可见，未准入叶隐藏，合法WAIT/veto/未触发可在独立存储许可下Recording，而Outcome/PIT/训练/Promotion继续后置。
+- A1本地候选在现有Registry/Factor/V2.5内建立唯一基础回执：43方法、25个已有技术方法、172目标组合、34原始声明、52最终effective声明、5个override、56运行矩阵格、当前Product准入、canonical与27槽消费者分别核验；声明、历史执行和当前READY不得互相替代。
+- A2本地候选保持九路企业/ETF估值和76对象不变，新增M_ERP_VAL/S_VALUATION/E_UNDERLYING_VAL的指数/行业聚合估值回执；股票显式主方法与可选交叉核验，ETF的E_PREMIUM交易价/NAV区间与E_UNDERLYING_VAL底层指数估值分层进入同一Factor/InvestorBrief/V2.5消费者。
+- A1/A2不增加指标算法、策略权重、canonical、veto、Provider、数据库、模型或Golden；真实同一as-of数据、估值数值和交付仍须独立运行证据。
 
 ### 0.3 详细依赖图：实线是数据/决策依赖，虚线是诊断或显式后继反馈
 
@@ -103,9 +102,11 @@ flowchart TD
 
 | 阶段 | 目标/现有Owner | 最小实施与退出证据 | 阻断范围 |
 |---|---|---|---|
-| G0–G6工程机制 | PR #31 feature `d303562c`，CI90 SUCCESS；Gate0–6和邮件读者合同scoped关闭 | exact origin/HEAD/tree、CI90、原V2.5 hash及读者合同证据 | PR仍Draft/未merge；不证明当前全数据、邮件送达或真实学习 |
+| G0–G6/A0工程机制 | PR #31 feature `9602700b`，CI91 SUCCESS；Gate0–6、邮件读者合同与A0 scoped关闭 | exact origin/HEAD/tree、CI91、原V2.5 hash、Product/RECORD分时与部分叶守恒 | PR仍Draft/未merge；不证明当前全数据、邮件送达或真实学习 |
 | B1全域数据准入 | 原data_object_admission、Identity、Registry及full-domain gate | 76对象六域全部逐项记账；72个当前Product对象按operation/source/time/unit/basis/revision/vintage/rights准入；4个RECORD对象独立后继 | 当前真实来源仍未完整准入；UNKNOWN继续Data veto |
-| A0 Product/Recording分时 | 原Registry/Coverage/Flywheel | 当前Product不等待未来Ledger/Outcome/PIT；部分已准入叶事实可见，未准入叶隐藏；合法WAIT/veto/未触发canonical可在独立存储许可下Recording，不要求所有当前事实READY | 本地候选PASS、远程接受OPEN；Recording不授予发送、PIT、训练、概率或Promotion |
+| A0 Product/Recording分时 | 原Registry/Coverage/Flywheel | 当前Product不等待未来Ledger/Outcome/PIT；部分已准入叶事实可见；合法WAIT/veto/未触发可在独立存储许可下Recording | CI91远程PASS；Recording不授予发送、PIT、训练、概率或Promotion |
+| A1七周期×八族基础回执 | 原Registry/Factor/V2.5 | 最终effective方法配置、实际56格、当前数据准入、canonical与27槽消费者一致；声明/历史不冒充当前READY | 本地候选PASS、远程OPEN；不要求每格READY或复制算法 |
+| A2股票/ETF/指数估值基础 | 原BusinessValuation/Pipeline/Factor/InvestorBrief | 股票主方法＋可选交叉核验；指数/行业成员权重聚合；ETF交易价/NAV与底层指数估值分层 | 本地候选PASS、远程OPEN；不生成指数合理点位、动作或veto覆盖 |
 | B5窗口到方法 | 既有7TF carrier、56格、43方法及动态窗口 | 保持各方法独立required/requested/returned、warm-up、recursive、确认和完成bar | 月线MACD/RSI与延期经典方法保留真实状态，不从邮件文本补READY |
 | M2上下文到筛选 | Global/Market/Sector/Stock/ETF/Screening | 共享上下文、固定Universe漏选/成本审计和各资产适用事实 | Global/Market/Sector与ETF专项多数UNKNOWN；阻断依赖它们的正向资格 |
 | B8邮件与产品 | 原Registry/Coverage/Factor/Notification/V2.5/EmailSender | 机器回执保留26要求/76对象/9估值/7细字段；正文按三envelope、8族、7周期、资产专项和逐叶准入呈现 | 邮件读者合同CI90通过；A0本地PASS；不真实发送或冒充全数据报告 |
@@ -143,13 +144,13 @@ flowchart TD
 
 ### 0.9 Role Review、反例与唯一下一步
 
-Role Review（d303562c / CI90 / A0 local candidate）：Program继续KEEP唯一DSA、原775边图、原V2.5和既有Registry/Coverage/Factor/Notification/EmailSender/Flywheel。PRODUCT=REVISE→本地GREEN：当前事实与未来RECORD分时、部分叶事实守恒；DATA_MODEL=PASS_SCOPED：76对象不删、operation admission仍逐字节绑定；PROCESS_CONSUMER=RED→GREEN：不再以整卡missingness隐藏P_DAILY/P_5M/E_PRICE叶；LEARNING=REVISE→HOLD：合法WAIT/veto/未触发canonical可在独立存储许可下记录完整分母，但Outcome/PIT/训练/Promotion仍按后继时钟阻断；AUTHORITY=CI90 base PASS/A0 remote OPEN；ANTI_BLOAT=无新Shell/DB/renderer/canonical/dependency。
+Role Review（9602700b / CI91 / A1A2 local candidate）：Program继续KEEP唯一DSA、原775边图、原V2.5和现有Registry/Factor/Valuation/Pipeline/V2.5消费者。A0=REMOTE_PASS；PRODUCT=REVISE→A1/A2本地GREEN：七周期×八族effective配置、运行矩阵、数据准入和消费者统一，Stock/ETF/Index估值分层；DATA_MODEL=PASS_SCOPED：仍只用76对象及既有九路；PROCESS_CONSUMER=PASS_SCOPED：Factor/InvestorBrief/V2.5分别显示股票主估值、指数/行业聚合和ETF交易/NAV与底层估值；LEARNING=HOLD；AUTHORITY=A0 CI91 PASS/A1A2 remote OPEN；ANTI_BLOAT=无新文件/依赖/Shell/DB/renderer/canonical/model。
 
-FIXED_STATUS_VECTOR = PROJECT_SOURCE_8_UNIQUE_V3526; EMAIL_READER_REMOTE_ACCEPTED_CI90; A0_CURRENT_PRODUCT_72_AND_FUTURE_RECORD_4_LOCAL_PASS; EXACT76_ACCOUNTED; PARTIAL_LEAF_VISIBLE_ONLY_WHEN_OPERATION_ADMITTED; UNADMITTED_LEAF_HIDDEN; V25_ORIGINAL_UNCHANGED; VALID_MISSINGNESS_CANONICAL_RECORDING_CONTRACT_PASS; ACTUAL_RECORDING_NOT_CREATED; LEARNING_HOLD; PROVIDER_DB_SEND_TRAIN_PROMOTION_EFFECT_0.
+FIXED_STATUS_VECTOR = PROJECT_SOURCE_8_UNIQUE_V3526; A0_REMOTE_ACCEPTED_CI91; A1_EFFECTIVE_52_OF_172_DECLARATION_BOUND_TO_56_RUNTIME_CELLS_LOCAL_PASS; A2_STOCK_INDEX_SECTOR_ETF_VALUATION_LAYERS_LOCAL_PASS; EXACT76_AND_NINE_ROUTES_RETAINED; V25_ORIGINAL_UNCHANGED; ACTUAL_CURRENT_DATA_AND_RECORDING_NOT_CREATED; LEARNING_HOLD; PROVIDER_DB_SEND_TRAIN_PROMOTION_EFFECT_0.
 
-UNIQUE_NEXT_STEP = 对A0最小候选做精确Git审查并在用户明确授权后原子提交、普通非强制推送和自然CI；远程PASS后进入A1基础样本（七周期＋八族＋股票/ETF/指数估值），不在A0夹带估值、Chan、Provider抓取、发送或训练。
+UNIQUE_NEXT_STEP = 对A1/A2本地候选完成自然邻接、静态检查与精确范围Closure；只有用户另行授权才原子提交/非强制推送。远程PASS后进入同一as-of 600519＋510300＋沪深300基础样本，不夹带Chan、额外指标、发送或训练。
 
-PASS = 76对象和六域完整保留；当前Product仅由72个当前事实对象决定；RECORD4单独可见；已准入日线/分钟叶穿透，未准入叶隐藏；策略、canonical、veto和权限不变；合法WAIT/veto/未触发canonical可在独立存储许可下Recording，且不依赖预存Ledger或未来Outcome/PIT；原件固定区和强负例通过。STOP = 删除/伪装RECORD义务、放宽operation admission、未授权值泄漏、全卡事实误放行、动作/概率/存储/训练权限扩大、Golden改写或未经授权Git/外部效果。CURRENT_ROUTE_STILL_WORTH_CONTINUING=YES；INSTRUCTIONS_UPDATE_DECISION=NO_DELTA；SOURCES_UPDATE_DECISION=DEFER_PHYSICAL_PAIR_TO_A0_REMOTE_MILESTONE_TO_AVOID_CHURN。
+PASS = effective配置不被34个原始声明覆盖；56格逐项保留状态/原因/生产者，历史不回填当前；股票、指数/行业、ETF估值使用各自数据对象、时点、权重和消费者，ETF不把NAV当底层盈利估值；策略、canonical、veto、权利和Golden不变。STOP = 静态目录冒充READY、复制算法、个股估值套指数/ETF、ETF用E_UNDERLYING_VAL生成折溢价、指数生成合理点位或动作、增加第十路线/第二系统、未经授权Git或外部效果。CURRENT_ROUTE_STILL_WORTH_CONTINUING=YES；INSTRUCTIONS_UPDATE_DECISION=NO_DELTA；SOURCES_UPDATE_DECISION=DEFER_TO_A1A2_REMOTE_MILESTONE_TO_AVOID_CHURN。
 <!-- CURRENT_MASTER_CONTROL_END -->
 
 ## 1. GitHub是后续工程基线
