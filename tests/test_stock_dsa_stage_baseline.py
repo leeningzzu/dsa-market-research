@@ -110,29 +110,29 @@ def test_stage_ladder_keeps_parent_product_and_blocking_order_explicit() -> None
         "B8_FULL_DELIVERY_NO_SEND"
     ]
     assert stages[5]["blocked_by"] == (
-        "B1_SOURCE_RIGHTS_AND_GATE5_ALL_INPUT_FACTS_PRODUCT_READY"
+        "CURRENT_PRODUCT_FACTS_READY_AND_RECORDING_STORAGE_RIGHTS"
     )
     assert stages[6]["blocked_by"] == "L1_LEGAL_LEDGER_OUTCOME_PIT"
     assert stages[7]["blocked_by"] == "M3_CALIBRATION_SHADOW"
     assert baseline["acceptance"]["direct_main_push"] is False
-    # CI89 closes the Gate5/Gate6 engineering mechanisms on the exact feature
-    # checkpoint.  The current email-reader contract remains local/uncommitted,
-    # and neither state implies actual complete data or learning authority.
+    # CI90 closes the reader-facing email contract on the exact feature
+    # checkpoint.  A0 remains local/uncommitted and neither state implies
+    # actual complete data, Recording, learning, or Promotion authority.
     assert baseline["acceptance"]["required_checks"] == [
         "ai-governance", "backend-gate", "docker-build",
     ]
     acceptance = baseline["acceptance"]
     assert acceptance["state"] == (
-        "GATE56_CI89_REMOTE_ACCEPTED_EMAIL_CONSUMER_ROLE_LOCAL_PASS_SCOPED_PR31_DRAFT"
+        "EMAIL_READER_CI90_REMOTE_ACCEPTED_A0_CURRENT_PRODUCT_RECORD_SPLIT_LOCAL_PASS_SCOPED_PR31_DRAFT"
     )
-    assert acceptance["candidate_head"] == "630ecbdc5a9ac1cfd0ee6f45ba76f8b3992c7b0c"
-    assert acceptance["candidate_parent"] == "00a5e30e54443615e499e3c89a0e28b122a7f217"
+    assert acceptance["candidate_head"] == "d303562c1955b4a532897722125e9c1f64a69f9b"
+    assert acceptance["candidate_parent"] == "630ecbdc5a9ac1cfd0ee6f45ba76f8b3992c7b0c"
     assert acceptance["candidate_head_scope"] == (
         "LATEST_ACCEPTED_FEATURE_CHECKPOINT_NOT_MAIN_PRODUCTION"
     )
     assert acceptance["latest_required_ci"] == {
-        "run_number": 89,
-        "run_id": 40318080292,
+        "run_number": 90,
+        "run_id": 40435525781,
         "conclusion": "success",
     }
     # CI86 remains the direct failed predecessor; older failures remain in Git/history.
@@ -153,7 +153,11 @@ def test_gate5_gate6_local_evidence_matches_current_fail_closed_runtime() -> Non
     gate6 = compile_gate6_learning_admission(gate5_receipt=gate5)
 
     expected_gate5 = evidence["gate5"]
-    assert expected_gate5["state"] == "PASS_EMAIL_READER_CONTRACT_LOCAL_UNCOMMITTED"
+    assert expected_gate5["state"] == "PASS_A0_CURRENT_PRODUCT_RECORD_SPLIT_LOCAL_UNCOMMITTED"
+    assert expected_gate5["current_product_catalog_count"] == 72
+    assert expected_gate5["future_record_object_count"] == 4
+    assert expected_gate5["future_record_blocks_current_product"] is False
+    assert expected_gate5["partial_admitted_leaf_projection"] is True
     assert expected_gate5["mail_count"] == gate5["frame_contract"]["mail_count"] == 3
     assert expected_gate5["card_count"] == len(gate5["frame_contract"]["card_ids"]) == 10
     assert expected_gate5["cycle_count"] == len(gate5["frame_contract"]["cycle_ids"]) == 84
@@ -243,6 +247,10 @@ def test_stage_baseline_locks_bounded_hierarchical_mtf_screening() -> None:
     assert regression["whole_product_expected_sets_reject_candidate_subset"] is True
     assert regression["full_domain_accounting_is_distinct_from_product_readiness"] is True
     assert regression["known_atomic_subfields_remain_visible_until_bound"] is True
+    assert regression["future_record_artifacts_do_not_block_current_product"] is True
+    assert regression["partial_admitted_leaf_remains_visible"] is True
+    assert regression["unadmitted_leaf_values_remain_hidden"] is True
+    assert regression["record_outcome_and_pit_clocks_are_later_than_current_product"] is True
 
 
 def test_indicator_backlog_is_subordinate_to_the_current_product_route() -> None:

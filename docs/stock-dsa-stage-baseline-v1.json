@@ -21,15 +21,15 @@
     "storage_admitted": false
   },
   "acceptance": {
-    "state": "GATE56_CI89_REMOTE_ACCEPTED_EMAIL_CONSUMER_ROLE_LOCAL_PASS_SCOPED_PR31_DRAFT",
+    "state": "EMAIL_READER_CI90_REMOTE_ACCEPTED_A0_CURRENT_PRODUCT_RECORD_SPLIT_LOCAL_PASS_SCOPED_PR31_DRAFT",
     "production_branch": "main",
     "candidate_branch": "feat/stock-dsa-m2-source-gates-v1",
-    "candidate_head": "630ecbdc5a9ac1cfd0ee6f45ba76f8b3992c7b0c",
-    "candidate_parent": "00a5e30e54443615e499e3c89a0e28b122a7f217",
+    "candidate_head": "d303562c1955b4a532897722125e9c1f64a69f9b",
+    "candidate_parent": "630ecbdc5a9ac1cfd0ee6f45ba76f8b3992c7b0c",
     "candidate_head_scope": "LATEST_ACCEPTED_FEATURE_CHECKPOINT_NOT_MAIN_PRODUCTION",
     "pull_request": 31,
     "pull_request_state": "DRAFT_OPEN_NOT_MERGED",
-    "latest_required_ci": {"run_number": 89, "run_id": 40318080292, "conclusion": "success"},
+    "latest_required_ci": {"run_number": 90, "run_id": 40435525781, "conclusion": "success"},
     "prior_failed_ci": {"run_number": 86, "run_id": 40257545700, "head": "a899586bb5822ddf589cc2f6928e2852acf12b39", "conclusion": "failure"},
     "required_checks": [
       "ai-governance",
@@ -157,9 +157,9 @@
   "vertical_alignment": {
     "program": "合法known-at数据到白盒证据、唯一canonical、完整交付、合法Outcome/PIT、独立校准和显式Promotion",
     "product": "Global到A股市场和行业、ETF与股票、七周期全材料、风险和执行veto、FULL Report/Email",
-    "current_lane": "GATE56_ENGINEERING_REMOTE_ACCEPTED_EMAIL_READER_CONTRACT_LOCAL_PASS_RIGHTS_STOP_GATE6_HOLD",
-    "current_milestone": "CI89已远程接受原V2.5动态投影和Gate6准入机制；当前本地候选修复邮件消费者角色：机器118项审计保留在回执，正文按Market/AUTO/WATCHLIST、8证据族、7周期、Stock/ETF专项和支持/反证/触发/失效呈现，不再倾倒Registry ID、复用第一资产填市场段或保留Golden样例强调句。真实全域数据仍因operation-specific上游权利缺失而STOP，Gate6继续HOLD",
-    "atomic_rule": "只复用现有Registry/Coverage/Factor/Notification/EmailSender与Flywheel Owner；邮件正文面向投资者、机器回执保留精确可追溯；局部计数不能替代Product事实，UNKNOWN与N-A不得升级Product、Learning或Promotion"
+    "current_lane": "GATE56_AND_EMAIL_READER_REMOTE_ACCEPTED_A0_CURRENT_PRODUCT_RECORD_SPLIT_LOCAL_PASS_RIGHTS_STOP_GATE6_HOLD",
+    "current_milestone": "CI90已远程接受V2.5邮件读者合同；A0本地候选在现有Registry/Coverage/Flywheel内把72个当前Product对象与4个未来RECORD对象分离，保持76项完整记账，使合法部分叶事实可在其他事实缺失时进入原V2.5，同时首次Recording、Outcome和PIT继续使用独立后继时钟。真实上游数据和远程A0接受仍OPEN，Gate6保持HOLD",
+    "atomic_rule": "保持76对象/六域/原V2.5/唯一canonical不变；当前Product、完整义务、Recording、Outcome和PIT分别验收；部分准入只展示对应叶事实；合法WAIT/veto/未触发canonical可在独立存储许可下Recording，但不授予PIT、训练、概率或Promotion权限"
   },
   "stage_ladder": [
     {
@@ -184,8 +184,8 @@
       "id": "B8_FULL_DELIVERY_NO_SEND",
       "scope": "独立26要求、27语义槽、76对象六域、九估值路线、已知Golden原子子字段、风险反证与诚实missingness进入原V2.5 FULL Report/Email/HTML",
       "exit": "whole-scope逐项位置与内容哈希、完整动态槽投影、固定区零差异、样例清除和三envelope NO_SEND负例/合法nontrigger全部通过",
-      "proof_ceiling": "CI89已接受动态missingness机制；当前邮件读者合同本地PASS，仍不等于SMTP、收件客户端、真实全部数据READY或模型晋升",
-      "local_state": "PASS_SCOPED_EMAIL_READER_CONTRACT_UNCOMMITTED_REMOTE_ACCEPTANCE_OPEN",
+      "proof_ceiling": "CI90已接受邮件读者合同；A0当前Product/未来记录分时与逐叶投影本地PASS，仍不等于A0远程接受、SMTP、真实全部数据READY或模型晋升",
+      "local_state": "PASS_SCOPED_A0_CURRENT_PRODUCT_RECORD_SPLIT_UNCOMMITTED_REMOTE_ACCEPTANCE_OPEN",
       "next_primary": true
     },
     {
@@ -198,7 +198,7 @@
       "id": "L1_LEGAL_LEDGER_OUTCOME_PIT",
       "scope": "TAKE/PASS/WAIT/veto/未触发/未成交及成熟Outcome、冻结PIT manifest",
       "exit": "权利、as-of、vintage、label和不可变字节均合法",
-      "blocked_by": "B1_SOURCE_RIGHTS_AND_GATE5_ALL_INPUT_FACTS_PRODUCT_READY"
+      "blocked_by": "CURRENT_PRODUCT_FACTS_READY_AND_RECORDING_STORAGE_RIGHTS"
     },
     {
       "id": "M3_CALIBRATION_SHADOW",
@@ -214,9 +214,9 @@
     }
   ],
   "gate5_gate6_local_evidence": {
-    "schema_version": "gate5-gate6-local-evidence-v1",
+    "schema_version": "gate5-gate6-a0-local-evidence-v2",
     "gate5": {
-      "state": "PASS_EMAIL_READER_CONTRACT_LOCAL_UNCOMMITTED",
+      "state": "PASS_A0_CURRENT_PRODUCT_RECORD_SPLIT_LOCAL_UNCOMMITTED",
       "mail_count": 3,
       "card_count": 10,
       "cycle_count": 84,
@@ -227,7 +227,13 @@
       "data_object_projection_count": 76,
       "valuation_projection_count": 9,
       "atomic_projection_count": 7,
-      "missingness_output_sha256": "4e8cca2dd7679272d8eef73bb35bf6b9aed25a23d3a6039a540ffa6b48b56374",
+      "missingness_output_sha256": "fa6b55c305972c18e9218e2850adeb274881a054523af9a2cba1fb7153c67541",
+      "missingness_output_bytes": 89644,
+      "current_product_catalog_count": 72,
+      "future_record_object_count": 4,
+      "future_record_blocks_current_product": false,
+      "partial_admitted_leaf_projection": true,
+      "full_domain_all_obligations_ready": false,
       "email_consumer_quality": {
         "projection_mode": "ROLE_SUMMARIZED_EMAIL_PLUS_MACHINE_RECEIPT",
         "raw_scope_row_count": 0,
@@ -257,11 +263,11 @@
       "database_writes": 0,
       "model_training_runs": 0
     },
-    "proof_ceiling": "LOCAL_DETERMINISTIC_NO_SEND_AND_ADMISSION_CONTRACT_ONLY_NOT_REAL_DATA_DELIVERY_OR_LEARNING"
+    "proof_ceiling": "LOCAL_A0_CURRENT_PRODUCT_RECORD_SPLIT_AND_PARTIAL_LEAF_CONSUMER_ONLY_NOT_REMOTE_ACCEPTANCE_REAL_DATA_DELIVERY_OR_LEARNING"
   },
   "route_decision": {
     "next_primary": "B8_FULL_DELIVERY_NO_SEND",
-    "reason": "Gate0-4、Root Gates以及Gate5/Gate6工程机制已在CI89 CLOSED_SCOPED_NO_REPLAY。当前邮件读者合同本地候选将118项精确审计留在机器回执，把正文恢复为Market/AUTO/WATCHLIST的普通语言角色、8证据族和资产专项，拒绝raw Registry倾倒、空标签、重复占位、第一资产污染市场段和Golden样例残留。真实Product-ready仍为false且B1上游权利STOP；下一步仅远程接受当前邮件消费者候选，不能用可读缺失版替代真实数据或学习证据",
+    "reason": "Gate0-6及邮件读者合同已在CI90 CLOSED_SCOPED_NO_REPLAY。A0本地候选修复当前Product被未来Ledger/Outcome/PIT反向阻塞及整卡missingness隐藏合法叶事实的问题：76项继续完整记账，72个当前Product对象决定当前事实就绪，4个RECORD对象保留独立后继时钟；部分事实只在对应数据对象已通过operation admission时显示。真实Product-ready仍为false且B1上游权利STOP；下一步只远程接受A0，不能用本地或合成正例替代真实数据、Recording或学习证据",
     "bounded_indicator_sub_lanes": [
       "MONTHLY_RSI_HISTORY_IF_LEGAL",
       "15M_CONFIRMATION",
@@ -296,7 +302,13 @@
     "baseline_changes_require_machine_graph_or_product_contract_delta": true,
     "whole_product_expected_sets_reject_candidate_subset": true,
     "full_domain_accounting_is_distinct_from_product_readiness": true,
-    "known_atomic_subfields_remain_visible_until_bound": true
-    ,"email_body_preserves_reader_roles_while_machine_receipt_keeps_full_scope": true
+    "known_atomic_subfields_remain_visible_until_bound": true,
+    "email_body_preserves_reader_roles_while_machine_receipt_keeps_full_scope": true,
+    "future_record_artifacts_do_not_block_current_product": true,
+    "partial_admitted_leaf_remains_visible": true,
+    "unadmitted_leaf_values_remain_hidden": true,
+    "record_outcome_and_pit_clocks_are_later_than_current_product": true,
+    "lawful_missingness_wait_veto_and_nontrigger_can_be_recorded_before_full_fact_readiness": true,
+    "recording_does_not_grant_pit_training_probability_or_promotion": true
   }
 }

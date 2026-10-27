@@ -1818,10 +1818,7 @@ def _gate6_validate_gate5_receipt(receipt: Mapping[str, Any]) -> dict:
             or any(
                 str(row.get("state") or "") not in {"READY", "NOT_APPLICABLE"}
                 for row in data_rows
-            )
-            or any(
-                row.get("projection_state") != "RENDERED_EVIDENCE"
-                for row in slot_rows
+                if str(row.get("domain") or "") != "RECORD"
             )
         ):
             raise EvidenceFlywheelBoundaryError(

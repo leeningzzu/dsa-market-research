@@ -11,6 +11,10 @@ import pytest
 
 from src.services import evidence_traceability_registry as reg
 from src.services import v2_5_evidence_coverage as v25
+from src.services.factor_decision_summary import (
+    _build_asset_research_brief_v1,
+    canonical_factor_binding,
+)
 from src.services.v2_5_evidence_coverage import (
     _v25_assign,
     compile_input_coverage, compile_product_coverage,
@@ -18,6 +22,8 @@ from src.services.v2_5_evidence_coverage import (
     verify_original_mapping,
 )
 from tests.test_evidence_traceability_registry import (  # noqa: F401
+    _closed_typed_stock_source_factor,
+    _p_daily_operation_admission,
     explicit_native_config,
     native_summary,
     native_summary_with_mtf,
@@ -331,6 +337,96 @@ def _v25_result(*, factor=None, code="600519", name="测试股票", delivery=Non
             "research_delivery": delivery,
         },
     )
+
+
+def test_partial_current_product_shows_only_the_admitted_timeframe_leaf():
+    material = {
+        "asset_type": "stock",
+        "fact_mode": "PARTIALLY_ADMITTED",
+        "gate": {
+            "current_product_admitted_dataset_ids": ("P_DAILY",),
+            "unresolved_product_dataset_ids": ("G_VIX",),
+        },
+        "mtf": {
+            "timeframes": {
+                "daily": {
+                    "status": "READY",
+                    "role": "PRIMARY_SETUP",
+                    "summary": "LEGAL_DAILY_MA_VISIBLE",
+                    "source_alignment": {"status": "SINGLE_SOURCE"},
+                    "completed_through": "2026-10-23",
+                    "reason": "READY",
+                }
+            }
+        },
+        "brief": {},
+    }
+
+    visible = v25._v25_timeframe(material, "daily", 0)
+    assert "LEGAL_DAILY_MA_VISIBLE" in visible
+    assert "当前Product数值未准入" not in visible
+
+    unrelated_only = deepcopy(material)
+    unrelated_only["gate"]["current_product_admitted_dataset_ids"] = ("G_VIX",)
+    hidden = v25._v25_timeframe(unrelated_only, "daily", 0)
+    assert "LEGAL_DAILY_MA_VISIBLE" not in hidden
+    assert "当前Product数值未准入" in hidden
+
+    intraday = deepcopy(material)
+    intraday["mtf"]["timeframes"] = {
+        "5m": {
+            "status": "READY",
+            "role": "MICRO_TIMING",
+            "summary": "LEGAL_5M_VISIBLE",
+        }
+    }
+    hidden_5m = v25._v25_timeframe(intraday, "5m", 0)
+    assert "LEGAL_5M_VISIBLE" not in hidden_5m
+    intraday["gate"]["current_product_admitted_dataset_ids"] = ("P_5M",)
+    visible_5m = v25._v25_timeframe(intraday, "5m", 0)
+    assert "LEGAL_5M_VISIBLE" in visible_5m
+
+
+def test_actual_material_path_preserves_admitted_daily_leaf_before_recording():
+    factor, _minute = _closed_typed_stock_source_factor(source_version_known=True)
+    _source_row, _receipt, admitted = _p_daily_operation_admission(factor)
+    template = native_summary()
+    admitted["strategy_id"] = template["strategy_id"]
+    admitted["canonical_decision"] = deepcopy(template["canonical_decision"])
+    admitted["strategy_eligibility"] = deepcopy(template["strategy_eligibility"])
+    admitted["evidence_traceability"] = reg.build_runtime_trace(admitted)
+    admitted["investor_brief"] = _build_asset_research_brief_v1(
+        SimpleNamespace(current_price=None), admitted,
+    )
+    binding = canonical_factor_binding(admitted)
+    admitted["canonical_decision_identity"] = binding
+    admitted["investor_brief"]["canonical_binding"] = dict(binding)
+    material = v25._v25_material(_v25_result(factor=admitted))
+
+    assert material["fact_mode"] == "PARTIALLY_ADMITTED"
+    assert material["gate"]["current_product_admitted_dataset_ids"] == ("P_DAILY",)
+    assert set(material["gate"]["unresolved_record_dataset_ids"]) == {
+        "L_LEDGER", "L_OUTCOME", "L_PIT_MANIFEST", "L_IMMUTABLE_BYTES",
+    }
+    daily = v25._v25_timeframe(material, "daily", 0)
+    assert "当前Product数值未准入" not in daily
+    minute = v25._v25_timeframe(material, "5m", 0)
+    assert "当前Product数值未准入" in minute
+
+    projected = render_v2_5_dynamic_no_send(
+        [_v25_result(factor=admitted)], report_date="2026-10-23",
+    )
+    receipt = projected["receipt"]
+    assert receipt["results"][0]["fact_mode"] == "PARTIALLY_ADMITTED"
+    assert receipt["results"][0]["current_product_admitted_count"] == 1
+    projected_objects = {
+        row["id"]: row
+        for row in receipt["whole_scope_projection"]["data_object_projections"]
+    }
+    assert projected_objects["P_DAILY"]["state"] == "READY"
+    assert projected_objects["P_5M"]["state"] != "READY"
+    assert projected_objects["L_OUTCOME"]["state"] != "READY"
+    assert receipt["all_input_facts_product_ready"] is False
 
 
 def test_dynamic_v25_projects_complete_original_frame_and_truthful_missingness():

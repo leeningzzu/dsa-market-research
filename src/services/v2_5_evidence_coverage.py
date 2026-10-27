@@ -545,6 +545,19 @@ def _v25_material(result: Any) -> dict:
         for item in sources
     )
     product_ready = gate.get("full_domain_product_ready") is True
+    current_product_admitted_ids = tuple(
+        str(item)
+        for item in (gate.get("current_product_admitted_dataset_ids") or ())
+    )
+    fact_mode = (
+        "SYNTHETIC_TEST"
+        if synthetic
+        else "ADMITTED"
+        if product_ready
+        else "PARTIALLY_ADMITTED"
+        if current_product_admitted_ids
+        else "MISSINGNESS_ONLY"
+    )
     code = str(getattr(result, "code", "") or "").strip()
     bound_codes = {
         str(value).strip()
@@ -571,8 +584,9 @@ def _v25_material(result: Any) -> dict:
         "asset_type": str(factor.get("asset_type") or delivery.get("asset_type") or "stock").lower(),
         "code": code,
         "name": str(getattr(result, "name", "") or getattr(result, "code", "") or "未命名对象").strip(),
-        "fact_mode": "SYNTHETIC_TEST" if synthetic else "ADMITTED" if product_ready else "MISSINGNESS_ONLY",
+        "fact_mode": fact_mode,
         "product_ready": product_ready,
+        "current_product_admitted_dataset_ids": current_product_admitted_ids,
     }
 
 
@@ -678,6 +692,34 @@ def _v25_scope_universe(materials: list[dict]) -> dict:
         template["reason"] = reason
         requirements.append(template)
 
+    def observed_data_rows(dataset_id: str) -> list[dict]:
+        observed_rows: list[dict] = []
+        for material in materials:
+            universe = material.get("universe")
+            if not isinstance(universe, Mapping):
+                continue
+            admitted_ids = {
+                str(item)
+                for item in (
+                    at(material, "gate.current_product_admitted_dataset_ids") or ()
+                )
+            }
+            for candidate in universe.get("data_objects") or ():
+                if (
+                    not isinstance(candidate, Mapping)
+                    or str(candidate.get("dataset_id") or "") != dataset_id
+                ):
+                    continue
+                row = dict(candidate)
+                if dataset_id in admitted_ids:
+                    row.update({
+                        "state": "READY",
+                        "reason": "PRODUCT_OPERATION_ADMITTED",
+                        "independent_source_value_admitted": True,
+                    })
+                observed_rows.append(row)
+        return observed_rows
+
     stock_rows = {
         str(row.get("dataset_id") or ""): dict(row)
         for row in stock.get("data_objects") or ()
@@ -702,13 +744,7 @@ def _v25_scope_universe(materials: list[dict]) -> dict:
             if stock_template.get("state") != "NOT_APPLICABLE"
             else etf_template
         )
-        observed = [
-            row
-            for universe in material_universes
-            for row in universe.get("data_objects") or ()
-            if isinstance(row, Mapping)
-            and str(row.get("dataset_id") or "") == dataset_id
-        ]
+        observed = observed_data_rows(dataset_id)
         state, reason = aggregate(
             observed,
             missing_reason="NO_BOUND_DYNAMIC_RESULT_FOR_DATA_OBJECT",
@@ -1009,7 +1045,20 @@ def _v25_indicator_family_line(
     universe = _v25_universe(material) or scope_universe
     row = _v25_requirement_row(universe, requirement_id)
     state = str(row.get("state") or ("MISSING" if object_missing else "UNKNOWN"))
-    return f"{label}｜{state}｜{_v25_state_explanation(state, object_missing=object_missing)}"
+    if (
+        not object_missing
+        and str(material.get("fact_mode") or "") in {
+            "MISSINGNESS_ONLY", "PARTIALLY_ADMITTED",
+        }
+        and state in {"READY", "PARTIAL"}
+    ):
+        explanation = (
+            "方法输出已形成；仅获Product准入的叶事实可展示，"
+            "本族状态不单独升级动作。"
+        )
+    else:
+        explanation = _v25_state_explanation(state, object_missing=object_missing)
+    return f"{label}｜{state}｜{explanation}"
 
 
 def _v25_missing(material: Mapping | None) -> str:
@@ -1017,7 +1066,17 @@ def _v25_missing(material: Mapping | None) -> str:
         return "本位置没有已准入对象；保留框架，不沿用示例证券、价格或结论。"
     if material["fact_mode"] == "MISSINGNESS_ONLY":
         unresolved = len(tuple(material["gate"].get("unresolved_product_dataset_ids") or ()))
-        return f"全域Product尚未准入（{unresolved}项适用材料待核）；当前只呈现状态、缺失和WAIT。"
+        return (
+            f"全域Product尚未准入（{unresolved}项当前适用材料待核；未来记录另计）；"
+            "当前只呈现状态、缺失和WAIT。"
+        )
+    if material["fact_mode"] == "PARTIALLY_ADMITTED":
+        admitted = len(tuple(material["gate"].get("current_product_admitted_dataset_ids") or ()))
+        unresolved = len(tuple(material["gate"].get("unresolved_product_dataset_ids") or ()))
+        return (
+            f"当前Product部分准入（{admitted}项事实可用，{unresolved}项待核）；"
+            "仅显示已准入叶事实，其余保持缺失，结论仍受canonical与veto约束。"
+        )
     if material["fact_mode"] == "SYNTHETIC_TEST":
         return "当前为显式合成测试材料，只验证动态投影，不构成真实研究事实。"
     return "已准入事实可呈现；未准入项继续明确缺失。"
@@ -1034,6 +1093,32 @@ def _v25_decision(material: Mapping | None) -> str:
     )
 
 
+def _v25_timeframe_dataset_id(material: Mapping, timeframe: str) -> str:
+    asset_type = str(material.get("asset_type") or "stock").lower()
+    daily = timeframe in {"monthly", "weekly", "daily"}
+    if asset_type == "etf":
+        return "E_PRICE_1D" if daily else "E_PRICE_5M"
+    return "P_DAILY" if daily else "P_5M"
+
+
+def _v25_timeframe_leaf_admitted(material: Mapping, timeframe: str) -> bool:
+    if str(material.get("fact_mode") or "") in {"ADMITTED", "SYNTHETIC_TEST"}:
+        return True
+    admitted = {
+        str(item)
+        for item in (
+            at(material, "gate.current_product_admitted_dataset_ids") or ()
+        )
+    }
+    return _v25_timeframe_dataset_id(material, timeframe) in admitted
+
+
+def _v25_missing_or_partial(material: Mapping | None) -> bool:
+    return material is None or str(material.get("fact_mode") or "") in {
+        "MISSINGNESS_ONLY", "PARTIALLY_ADMITTED",
+    }
+
+
 def _v25_timeframe(material: Mapping | None, timeframe: str, detail_index: int) -> str:
     label = _V25_TF_LABELS[timeframe]
     if material is None:
@@ -1044,11 +1129,14 @@ def _v25_timeframe(material: Mapping | None, timeframe: str, detail_index: int) 
     current = current if isinstance(current, Mapping) else {}
     status = str(current.get("status") or at(material["brief"], f"coverage.{timeframe}") or "UNKNOWN")
     role = str(current.get("role") or at(material["brief"], f"timeframe_thesis.{timeframe}.role") or "ROLE_UNAVAILABLE")
+    leaf_admitted = _v25_timeframe_leaf_admitted(material, timeframe)
     if detail_index == 0:
-        if material["fact_mode"] == "MISSINGNESS_ONLY":
+        if not leaf_admitted:
             return f"{label}｜{status}｜职责 {role}｜当前Product数值未准入。"
         summary = current.get("summary") or at(material["brief"], f"timeframe_thesis.{timeframe}.summary")
         return f"{label}｜状态 {status}｜职责 {role}｜{_v25_plain(summary, '无可核材料事件')}"
+    if not leaf_admitted:
+        return f"{label}｜来源与完成时点未准入｜独立行动权限：否"
     return (
         f"来源 {_v25_plain(at(current, 'source_alignment.status'), 'SOURCE_UNKNOWN')}｜"
         f"完成至 {_v25_plain(current.get('completed_through') or current.get('latest_bar_date') or current.get('latest_bar_end'), '时间未知')}｜"
@@ -1203,8 +1291,8 @@ def _v25_flow_line(
 
 
 def _v25_history_line(material: Mapping | None, card_id: str | None) -> str:
-    if material is None:
-        return f"{_v25_card_role(card_id)}：无对象，不展示历史参考或当前概率。"
+    if _v25_missing_or_partial(material):
+        return f"{_v25_card_role(card_id)}：历史参考与当前概率未独立准入。"
     return (
         f"{material['name']}（{material['code']}）｜"
         f"历史参考：{_v25_plain(at(material, 'brief.historical_reference.reason'), '不可用')}｜"
@@ -1266,9 +1354,7 @@ def _v25_card_detail_line(material: Mapping | None, card_id: str | None, ordinal
             "质量成长、业务适用估值、量价结构和执行风险分别核对。",
             "七周期未形成触发与失效闭环时，维持WAIT而不制造买点。",
         )
-    if material is None:
-        return rows[ordinal % len(rows)]
-    if material.get("fact_mode") == "MISSINGNESS_ONLY":
+    if _v25_missing_or_partial(material):
         return rows[ordinal % len(rows)]
     return _v25_missing(material)
 
@@ -1424,6 +1510,8 @@ def _v25_project_block(
         if material is None:
             return f"{_v25_card_role(card_id)}｜本轮无已准入研究对象"
         prefix = "【合成测试】" if material["fact_mode"] == "SYNTHETIC_TEST" else ""
+        if material["fact_mode"] == "PARTIALLY_ADMITTED":
+            return f"{material['name']}（{material['code']}）｜部分事实已准入；完整结论仍按当前canonical"
         return f"{prefix}{material['name']}（{material['code']}）｜{_v25_plain(material['brief'].get('one_line_conclusion'), '结论待补齐')}"
     if semantic == "identity":
         if market_card:
@@ -1440,7 +1528,7 @@ def _v25_project_block(
     if semantic in {"one-line", "synthesis"}:
         if market_card:
             return "当前只确认完整义务均可追溯；市场数值未准入，维持WAIT并等待同一asof证据。"
-        if material is None or material["fact_mode"] == "MISSINGNESS_ONLY":
+        if _v25_missing_or_partial(material):
             return _v25_card_missing_line(
                 material,
                 card_id,
@@ -1448,8 +1536,10 @@ def _v25_project_block(
             )
         return _v25_plain(material["brief"].get("fused_paragraph"), _v25_missing(material))
     if semantic == "why":
+        if _v25_missing_or_partial(material):
+            return _v25_card_missing_line(material, card_id, 2)
         return _v25_plain(
-            at(material, "delivery.candidate_reason") if material else None,
+            at(material, "delivery.candidate_reason"),
             _v25_card_missing_line(material, card_id, 2),
         )
     if cycle is not None:
@@ -1467,13 +1557,18 @@ def _v25_project_block(
                 "等待同一asof确认，独立行动权限为否。"
             )
         if semantic == "cycle-title":
-            status = _v25_plain(at(material, f"mtf.timeframes.{timeframe}.status") if material else None, "DATA_INSUFFICIENT")
+            status = _v25_plain(
+                at(material, f"mtf.timeframes.{timeframe}.status")
+                if material and _v25_timeframe_leaf_admitted(material, timeframe)
+                else None,
+                "DATA_INSUFFICIENT",
+            )
             return f"{_V25_TF_LABELS[timeframe]}｜{status}｜不具有独立行动权限"
         return _v25_timeframe(material, timeframe, ordinal)
     if semantic == "valuation" or any("valuation" in node["classes"] for node in chain):
         if market_card:
             return "市场估值、ERP与利率参照未完整准入；不能输出便宜或昂贵结论。"
-        if material is None or material["fact_mode"] == "MISSINGNESS_ONLY":
+        if _v25_missing_or_partial(material):
             return _v25_valuation_line(material, card_id, ordinal)
         valuation = material["brief"].get("valuation") or {}
         return _v25_plain(valuation.get("summary"), f"估值状态 {_v25_plain(valuation.get('status'), 'UNKNOWN')}")
@@ -1486,7 +1581,7 @@ def _v25_project_block(
     if semantic == "flow-box" or any("flow-box" in node["classes"] for node in chain):
         if market_card:
             return _v25_flow_line(None, card_id, ordinal, market_card=True)
-        if material is None or material["fact_mode"] == "MISSINGNESS_ONLY":
+        if _v25_missing_or_partial(material):
             return _v25_flow_line(material, card_id, ordinal)
         return _v25_plain(at(material, "factor.supply_demand_volume_price.summary"), "供需材料无独立事件")
     if semantic == "attn":
@@ -1494,13 +1589,17 @@ def _v25_project_block(
             f"{_v25_card_role(card_id)}：没有已形成触发"
             if material is None else "触发条件未形成"
         )
-        return _v25_plain(at(material, "brief.trigger") if material else None, fallback)
+        if _v25_missing_or_partial(material):
+            return fallback
+        return _v25_plain(at(material, "brief.trigger"), fallback)
     if semantic == "fail":
         fallback = (
             f"{_v25_card_role(card_id)}：没有可核失效条件"
             if material is None else "失效条件材料不足"
         )
-        return _v25_plain(at(material, "brief.invalidation") if material else None, fallback)
+        if _v25_missing_or_partial(material):
+            return fallback
+        return _v25_plain(at(material, "brief.invalidation"), fallback)
     if semantic == "small":
         return _v25_history_line(material, card_id)
     if semantic == "candidate-note":
@@ -2019,6 +2118,12 @@ def render_v2_5_dynamic_no_send(
             "asset_type": item["asset_type"],
             "fact_mode": item["fact_mode"],
             "full_domain_product_ready": item["product_ready"],
+            "current_product_admitted_count": item["gate"].get(
+                "current_product_admitted_count", 0,
+            ),
+            "unresolved_record_dataset_ids": tuple(
+                item["gate"].get("unresolved_record_dataset_ids") or ()
+            ),
             "runtime_trace_hash": item["coverage"].get("runtime_trace_hash"),
             "canonical_decision_hash": at(item["brief"], "canonical_binding.canonical_decision_hash"),
         } for item in materials],
@@ -2061,6 +2166,7 @@ def render_v2_5_dynamic_no_send(
             and all(
                 row.get("state") in {"READY", "NOT_APPLICABLE"}
                 for row in data_object_projections
+                if row.get("domain") != "RECORD"
             )
             and not whole_scope_projection["atomic_subfields_unresolved"]
         ),

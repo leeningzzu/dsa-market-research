@@ -485,6 +485,8 @@ def test_record_phase_reuses_bounded_pipeline_and_restores_config(monkeypatch) -
     )
 
     assert receipt["status"] == "RECORDED"
+    assert receipt["record_count"] == 1
+    assert receipt["ledger_receipts"][0]["created"] is True
     assert receipt["notification_suppressed"] is True
     assert receipt["external_durability"] == "NOT_REQUESTED"
     assert receipt["training_requested"] is False
@@ -1834,7 +1836,7 @@ def _gate6_gate5_receipt(*, product_ready: bool = False) -> dict:
         scope = receipt["whole_scope_projection"]
         scope["atomic_subfields_unresolved"] = []
         for row in scope["data_object_projections"]:
-            if row["state"] != "NOT_APPLICABLE":
+            if row["domain"] != "RECORD" and row["state"] != "NOT_APPLICABLE":
                 row["state"] = "READY"
         for row in scope["atomic_subfield_projections"]:
             row["state"] = "BOUND"
@@ -1872,6 +1874,73 @@ def test_gate6_current_missingness_product_compiles_complete_hold_vector() -> No
     assert receipt["database_writes"] == 0
     assert receipt["model_training_runs"] == 0
     assert len(receipt["admission_hash"]) == 64
+
+
+def test_gate6_accepts_lawful_wait_recording_before_all_product_facts_are_ready():
+    recording = {
+        "schema_version": "evidence-flywheel-runtime-receipt-v1",
+        "phase": "record",
+        "status": "RECORDED",
+        "notification_suppressed": True,
+        "training_requested": False,
+        "model_request_count": 0,
+        "record_count": 1,
+        "intended_cohort_id": "6" * 64,
+        "ledger_receipts": [{
+            "status": "RECORDED",
+            "prediction_hash": "1" * 64,
+            "pit_eligible": False,
+        }],
+    }
+
+    receipt = compile_gate6_learning_admission(
+        gate5_receipt=_gate6_gate5_receipt(),
+        recording_receipt=recording,
+    )
+
+    assert receipt["state"] == "HOLD"
+    assert receipt["stages"]["GATE5_DYNAMIC_PRODUCT"]["state"] == (
+        "PASS_MISSINGNESS_COMPLETE"
+    )
+    assert receipt["stages"]["RECORDING_LEDGER"]["state"] == "PARTIAL"
+    assert "RECORDING_RECEIPT_MISSING" not in receipt["reason_codes"]
+    assert "FULL_DOMAIN_PRODUCT_DATA_NOT_READY" in receipt["reason_codes"]
+    assert "PIT_ELIGIBILITY_INCOMPLETE" in receipt["reason_codes"]
+    assert "OUTCOME_RECEIPTS_MISSING" in receipt["reason_codes"]
+    assert "PIT_MANIFEST_MISSING" in receipt["reason_codes"]
+    assert receipt["current_probability_authority"] is False
+    assert receipt["training_effect_authority"] is False
+    assert receipt["promotion_effect_authority"] is False
+    assert receipt["database_writes"] == 0
+    assert receipt["model_training_runs"] == 0
+
+    invalid = dict(recording)
+    invalid["notification_suppressed"] = False
+    with pytest.raises(
+        EvidenceFlywheelBoundaryError,
+        match="recording receipt boundary mismatch",
+    ):
+        compile_gate6_learning_admission(
+            gate5_receipt=_gate6_gate5_receipt(),
+            recording_receipt=invalid,
+        )
+
+
+def test_gate6_current_product_can_be_fact_ready_before_first_recording():
+    receipt = compile_gate6_learning_admission(
+        gate5_receipt=_gate6_gate5_receipt(product_ready=True),
+    )
+
+    assert receipt["state"] == "HOLD"
+    assert receipt["stages"]["GATE5_DYNAMIC_PRODUCT"]["state"] == "PASS_FACT_READY"
+    assert "FULL_DOMAIN_PRODUCT_DATA_NOT_READY" not in receipt["reason_codes"]
+    assert "RECORDING_RECEIPT_MISSING" in receipt["reason_codes"]
+    assert "PIT_MANIFEST_MISSING" in receipt["reason_codes"]
+    assert receipt["current_probability_authority"] is False
+    assert receipt["training_effect_authority"] is False
+    assert receipt["promotion_effect_authority"] is False
+    assert receipt["database_writes"] == 0
+    assert receipt["model_training_runs"] == 0
 
 
 def test_gate6_rejects_forged_gate5_and_out_of_order_promotion() -> None:

@@ -628,7 +628,13 @@ def test_full_domain_empty_admission_is_lawful_accounting_nontrigger():
     }
     assert gate["full_domain_accounted_pass"] is True
     assert gate["full_domain_product_ready"] is False
-    assert len(gate["unresolved_product_dataset_ids"]) == 64
+    assert gate["current_product_applicable_object_count"] == 60
+    assert gate["record_object_count"] == 4
+    assert len(gate["unresolved_product_dataset_ids"]) == 60
+    assert len(gate["unresolved_all_applicable_dataset_ids"]) == 64
+    assert set(gate["unresolved_record_dataset_ids"]) == {
+        "L_LEDGER", "L_OUTCOME", "L_PIT_MANIFEST", "L_IMMUTABLE_BYTES",
+    }
 
     forged = deepcopy(admission)
     forged["objects"].pop()
@@ -636,7 +642,7 @@ def test_full_domain_empty_admission_is_lawful_accounting_nontrigger():
         reg.compile_full_domain_data_gate(universe["data_objects"], forged)
 
 
-def _fully_product_admitted_full_domain(asset_type):
+def _fully_product_admitted_full_domain(asset_type, *, include_record=False):
     operation_id = "op-full-domain-positive-20261026-r001"
     intended_use = "NO_SEND_RESEARCH"
     universe = reg.compile_complete_research_universe_view({
@@ -652,6 +658,8 @@ def _fully_product_admitted_full_domain(asset_type):
     }
     for obligation in obligations:
         if obligation["state"] == "NOT_APPLICABLE":
+            continue
+        if obligation["domain"] == "RECORD" and not include_record:
             continue
         dataset_id = obligation["dataset_id"]
         provider = "synthetic-lawful-full-domain-provider"
@@ -732,21 +740,39 @@ def _fully_product_admitted_full_domain(asset_type):
 
 
 @pytest.mark.parametrize(
-    ("asset_type", "expected_applicable"),
-    (("stock", 64), ("etf", 59)),
+    ("asset_type", "expected_product", "expected_applicable"),
+    (("stock", 60, 64), ("etf", 55, 59)),
 )
-def test_full_domain_data_gate_has_reachable_product_ready_positive(
-    asset_type, expected_applicable,
+def test_full_domain_data_gate_current_product_ready_does_not_require_future_record_artifacts(
+    asset_type, expected_product, expected_applicable,
 ):
     obligations, admission = _fully_product_admitted_full_domain(asset_type)
     gate = reg.compile_full_domain_data_gate(obligations, admission)
 
     assert gate["full_domain_accounted_pass"] is True
     assert gate["full_domain_product_ready"] is True
+    assert gate["full_domain_all_obligations_ready"] is False
     assert gate["applicable_object_count"] == expected_applicable
-    assert gate["product_admitted_count"] == expected_applicable
+    assert gate["current_product_applicable_object_count"] == expected_product
+    assert gate["product_admitted_count"] == expected_product
+    assert gate["current_product_admitted_count"] == expected_product
     assert gate["unresolved_product_dataset_ids"] == ()
+    assert set(gate["unresolved_record_dataset_ids"]) == {
+        "L_LEDGER", "L_OUTCOME", "L_PIT_MANIFEST", "L_IMMUTABLE_BYTES",
+    }
     assert admission["learning_admitted_count"] == 0
+
+
+def test_full_domain_data_gate_all_obligations_ready_remains_a_separate_later_state():
+    obligations, admission = _fully_product_admitted_full_domain(
+        "stock", include_record=True,
+    )
+    gate = reg.compile_full_domain_data_gate(obligations, admission)
+
+    assert gate["full_domain_product_ready"] is True
+    assert gate["full_domain_all_obligations_ready"] is True
+    assert gate["unresolved_product_dataset_ids"] == ()
+    assert gate["unresolved_record_dataset_ids"] == ()
 
 
 def test_full_domain_data_gate_rejects_cross_asset_admission_scope():

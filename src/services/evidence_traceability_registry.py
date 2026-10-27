@@ -241,7 +241,13 @@ ACCEPTED_WHOLE_PRODUCT_ATOMIC_SUBFIELDS = frozenset({
     "GLOBAL_SOX_INDEX", "GLOBAL_TECH_ETF_FLOW",
     "GLOBAL_SEMICONDUCTOR_SOFTWARE_RELATIVE",
 })
-FULL_DOMAIN_DATA_GATE_SCHEMA_VERSION = "full-domain-data-gate-v1"
+CURRENT_PRODUCT_DATA_DOMAINS = frozenset({
+    "GLOBAL", "CN_MARKET", "SECTOR", "ETF", "STOCK",
+})
+FUTURE_RECORD_DATASET_IDS = frozenset({
+    "L_LEDGER", "L_OUTCOME", "L_PIT_MANIFEST", "L_IMMUTABLE_BYTES",
+})
+FULL_DOMAIN_DATA_GATE_SCHEMA_VERSION = "full-domain-data-gate-v2"
 
 
 class TraceabilityError(ValueError):
@@ -3733,11 +3739,13 @@ def compile_full_domain_data_gate(
     data_objects: Any,
     admission_view: Mapping | None = None,
 ) -> dict:
-    """Prove complete accounting separately from Product data readiness.
+    """Account for all obligations without making future records block Product.
 
-    UNKNOWN/MISSING-like states are lawful accounting outcomes.  They keep the
-    object visible but never become Product-ready without a validated,
-    operation-specific admission row.
+    The 76-object catalog remains one closed world.  Current Product facts are
+    the GLOBAL/CN_MARKET/SECTOR/STOCK/ETF objects available at the research
+    as-of.  RECORD objects stay visible and independently admitted, but Ledger,
+    Outcome and PIT artifacts are later clocks and cannot be prerequisites for
+    the first truthful Product or first lawful recording.
     """
     if not isinstance(data_objects, (list, tuple)):
         raise TraceabilityError("FULL_DOMAIN_DATA_OBJECTS_INVALID")
@@ -3766,6 +3774,24 @@ def compile_full_domain_data_gate(
         for dataset_id, fact, frequency in entries
     }
     expected_ids = frozenset(expected_catalog)
+    expected_current_product_ids = frozenset(
+        dataset_id
+        for dataset_id, binding in expected_catalog.items()
+        if binding["domain"] in CURRENT_PRODUCT_DATA_DOMAINS
+    )
+    expected_record_ids = frozenset(
+        dataset_id
+        for dataset_id, binding in expected_catalog.items()
+        if binding["domain"] == "RECORD"
+    )
+    if (
+        len(expected_current_product_ids) != 72
+        or expected_record_ids != FUTURE_RECORD_DATASET_IDS
+        or expected_current_product_ids & expected_record_ids
+        or expected_current_product_ids | expected_record_ids != expected_ids
+    ):
+        raise TraceabilityError("FULL_DOMAIN_STAGE_SCOPE_CONTRACT_MISMATCH")
+
     ids = [str(row["dataset_id"]) for row in rows]
     if len(ids) != 76 or len(set(ids)) != 76 or frozenset(ids) != expected_ids:
         raise TraceabilityError("FULL_DOMAIN_DATA_OBJECT_SET_MISMATCH")
@@ -3795,6 +3821,21 @@ def compile_full_domain_data_gate(
         for row in rows
         if str(row.get("state") or "") != "NOT_APPLICABLE"
     ))
+    current_product_applicable_ids = tuple(sorted(
+        str(row["dataset_id"])
+        for row in rows
+        if str(row.get("state") or "") != "NOT_APPLICABLE"
+        and str(row.get("domain") or "") in CURRENT_PRODUCT_DATA_DOMAINS
+    ))
+    record_applicable_ids = tuple(sorted(
+        str(row["dataset_id"])
+        for row in rows
+        if str(row.get("state") or "") != "NOT_APPLICABLE"
+        and str(row.get("domain") or "") == "RECORD"
+    ))
+    if frozenset(record_applicable_ids) != FUTURE_RECORD_DATASET_IDS:
+        raise TraceabilityError("FULL_DOMAIN_RECORD_SCOPE_MISMATCH")
+
     state_counts = {
         state: sum(str(row.get("state") or "") == state for row in rows)
         for state in sorted(TIMEFRAME_FAMILY_MATRIX_STATES)
@@ -3863,6 +3904,8 @@ def compile_full_domain_data_gate(
             for row in validated_rows
             if row.get("product_admitted") is True
         ))
+        if set(product_admitted_ids) - set(applicable_ids):
+            raise TraceabilityError("FULL_DOMAIN_DATA_ADMISSION_NONAPPLICABLE_OBJECT")
         admission_state_counts = {
             state: sum(row.get("admission_state") == state for row in validated_rows)
             for state in sorted({row.get("admission_state") for row in validated_rows})
@@ -3870,7 +3913,26 @@ def compile_full_domain_data_gate(
         if admission_view.get("product_admitted_count") != len(product_admitted_ids):
             raise TraceabilityError("FULL_DOMAIN_DATA_ADMISSION_COUNT_MISMATCH")
 
-    unresolved_ids = tuple(sorted(set(applicable_ids) - set(product_admitted_ids)))
+    admitted = set(product_admitted_ids)
+    unresolved_all_ids = tuple(sorted(set(applicable_ids) - admitted))
+    current_product_admitted_ids = tuple(sorted(
+        set(current_product_applicable_ids) & admitted
+    ))
+    record_admitted_ids = tuple(sorted(set(record_applicable_ids) & admitted))
+    unresolved_product_ids = tuple(sorted(
+        set(current_product_applicable_ids) - set(current_product_admitted_ids)
+    ))
+    unresolved_record_ids = tuple(sorted(
+        set(record_applicable_ids) - set(record_admitted_ids)
+    ))
+    current_product_domain_counts = {
+        domain: sum(
+            str(row.get("domain") or "") == domain
+            and str(row.get("state") or "") != "NOT_APPLICABLE"
+            for row in rows
+        )
+        for domain in sorted(CURRENT_PRODUCT_DATA_DOMAINS)
+    }
     document = {
         "schema_version": FULL_DOMAIN_DATA_GATE_SCHEMA_VERSION,
         "expected_object_count": 76,
@@ -3880,9 +3942,25 @@ def compile_full_domain_data_gate(
         "applicable_object_count": len(applicable_ids),
         "product_admitted_count": len(product_admitted_ids),
         "admission_state_counts": admission_state_counts,
-        "unresolved_product_dataset_ids": unresolved_ids,
+        "current_product_domains": tuple(sorted(CURRENT_PRODUCT_DATA_DOMAINS)),
+        "current_product_domain_counts": current_product_domain_counts,
+        "current_product_expected_object_count": len(expected_current_product_ids),
+        "current_product_applicable_object_count": len(current_product_applicable_ids),
+        "current_product_admitted_count": len(current_product_admitted_ids),
+        "current_product_admitted_dataset_ids": current_product_admitted_ids,
+        "record_object_count": len(record_applicable_ids),
+        "record_admitted_count": len(record_admitted_ids),
+        "record_admitted_dataset_ids": record_admitted_ids,
+        "unresolved_product_dataset_ids": unresolved_product_ids,
+        "unresolved_record_dataset_ids": unresolved_record_ids,
+        "unresolved_all_applicable_dataset_ids": unresolved_all_ids,
         "full_domain_accounted_pass": True,
-        "full_domain_product_ready": bool(applicable_ids) and not unresolved_ids,
+        "full_domain_product_ready": (
+            bool(current_product_applicable_ids) and not unresolved_product_ids
+        ),
+        "full_domain_all_obligations_ready": (
+            bool(applicable_ids) and not unresolved_all_ids
+        ),
         "strategy_upgrade_authority": False,
         "independent_action_authority": False,
         "policy": {
@@ -3890,11 +3968,13 @@ def compile_full_domain_data_gate(
             "not_applicable_is_not_failure": True,
             "catalog_count_never_implies_product_readiness": True,
             "every_product_ready_object_requires_validated_operation_admission": True,
+            "future_record_artifacts_remain_accounted_but_do_not_block_current_product": True,
+            "record_outcome_and_pit_have_independent_later_clocks": True,
+            "product_admission_does_not_grant_storage_training_or_action": True,
         },
     }
     document["gate_hash"] = digest(document)
     return document
-
 
 
 def compile_complete_research_universe_view(
