@@ -18,6 +18,7 @@ from src.services.evidence_traceability_registry import (
     build_method_execution_receipt,
     build_runtime_trace,
     _compile_accepted_data_object_scope,
+    compile_atomic_subfield_obligations,
     build_strategy_eligibility,
     describe_macd_state,
     digest,
@@ -2563,6 +2564,8 @@ def build_stock_factor_decision_summary(
             "pattern_trigger_evidence": pattern_trigger_evidence,
             "fundamental_quality": fundamental_quality,
             "business_valuation": business_valuation,
+            "quality_evidence": fundamental_quality,
+            "valuation_evidence": business_valuation,
             "index_sector_valuations": index_sector_valuations,
             **(
                 {
@@ -2777,6 +2780,8 @@ def build_stock_factor_decision_summary(
         "quality_growth": quality_growth,
         "fundamental_quality": fundamental_quality,
         "business_valuation": business_valuation,
+        "quality_evidence": fundamental_quality,
+        "valuation_evidence": business_valuation,
         "index_sector_valuations": index_sector_valuations,
         "cost_structure": cost_structure,
         "risk_notes": _risk_notes(trend_result),
@@ -2804,8 +2809,31 @@ def build_stock_factor_decision_summary(
     }
     if isinstance(multi_timeframe_structure_context, dict):
         summary["multi_timeframe_structure_context"] = dict(multi_timeframe_structure_context)
+    data_object_source_observations = _mapping(
+        fundamental_context
+    ).get("data_object_source_observations")
+    if data_object_source_observations is not None:
+        if not isinstance(data_object_source_observations, Mapping):
+            raise ValueError("data object source observations must be a mapping")
+        summary["data_object_source_observations"] = deepcopy(
+            dict(data_object_source_observations)
+        )
     if canonical_decision is not None:
         summary["canonical_decision"] = canonical_decision
+    atomic_sources: Dict[str, Any] = {}
+    for context in (market_structure_context, fundamental_context):
+        candidate = _mapping(context).get("atomic_subfield_source_observations")
+        if candidate is None:
+            continue
+        if not isinstance(candidate, Mapping):
+            raise ValueError("atomic subfield source observations must be a mapping")
+        for identifier, observation in candidate.items():
+            key = str(identifier)
+            if key in atomic_sources and atomic_sources[key] != observation:
+                raise ValueError("atomic subfield source observation conflict")
+            atomic_sources[key] = deepcopy(observation)
+    if atomic_sources:
+        summary["atomic_subfield_source_observations"] = atomic_sources
     if b1_rights_context is not None:
         # Bind the existing operation and source rights to the same canonical
         # Factor before its one Registry trace / Product coverage is sealed.
@@ -2813,9 +2841,40 @@ def build_stock_factor_decision_summary(
         summary["research_as_of"] = b1_rights_context.get("research_as_of")
         summary["research_operation_id"] = b1_rights_context.get("operation_id")
         summary["research_intended_use"] = b1_rights_context.get("intended_use")
-        summary["data_object_admission_receipts"] = compile_b1_runtime_admission_receipts(
-            _compile_accepted_data_object_scope(summary),
-            b1_context=b1_rights_context,
+        data_obligations = _compile_accepted_data_object_scope(summary)
+        atomic_obligations = compile_atomic_subfield_obligations(summary)
+        supplied_metadata = b1_rights_context.get(
+            "source_metadata_by_dataset"
+        ) or {}
+        if not isinstance(supplied_metadata, Mapping):
+            raise ValueError("B1 source metadata must be a mapping")
+
+        def scoped_b1_context(obligations: List[Mapping[str, Any]]) -> Dict[str, Any]:
+            dataset_ids = {
+                str(row.get("dataset_id") or "")
+                for row in obligations
+                if row.get("state") != "NOT_APPLICABLE"
+            }
+            return {
+                **dict(b1_rights_context),
+                "source_metadata_by_dataset": {
+                    str(key): value
+                    for key, value in supplied_metadata.items()
+                    if str(key) in dataset_ids
+                },
+            }
+
+        summary["data_object_admission_receipts"] = (
+            compile_b1_runtime_admission_receipts(
+                data_obligations,
+                b1_context=scoped_b1_context(data_obligations),
+            )
+        )
+        summary["atomic_subfield_admission_receipts"] = (
+            compile_b1_runtime_admission_receipts(
+                atomic_obligations,
+                b1_context=scoped_b1_context(atomic_obligations),
+            )
         )
     if include_canonical:
         # Actual producer: same accepted evidence and unchanged Registry.

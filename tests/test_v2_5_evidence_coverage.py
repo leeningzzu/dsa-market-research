@@ -241,6 +241,8 @@ def test_product_coverage_consumes_the_trace_matrix_for_actual_weekly_structure_
         "methods": 43,
         "strategy_bindings": 13,
         "technical_matrix_cells": 56,
+        "atomic_subfields": 7,
+        "atomic_subfields_product_admitted": 0,
     }
     scope_gate = coverage["whole_product_scope_gate"]
     assert scope_gate["full_scope_accounted_pass"] is True
@@ -392,7 +394,7 @@ def test_partial_current_product_preserves_only_admitted_valuation_layers():
     assert "分别已准入" not in v25._v25_valuation_line(hidden, "watch-etf-z", 0)
 
 
-def test_partial_current_product_shows_only_the_admitted_timeframe_leaf():
+def test_partial_current_product_requires_method_execution_before_showing_leaf():
     material = {
         "asset_type": "stock",
         "fact_mode": "PARTIALLY_ADMITTED",
@@ -415,9 +417,10 @@ def test_partial_current_product_shows_only_the_admitted_timeframe_leaf():
         "brief": {},
     }
 
-    visible = v25._v25_timeframe(material, "daily", 0)
-    assert "LEGAL_DAILY_MA_VISIBLE" in visible
-    assert "当前Product数值未准入" not in visible
+    not_executed = v25._v25_timeframe(material, "daily", 0)
+    assert "LEGAL_DAILY_MA_VISIBLE" not in not_executed
+    assert "当前Product数值未准入" not in not_executed
+    assert "方法执行 METHOD_NOT_EXECUTED" in not_executed
 
     unrelated_only = deepcopy(material)
     unrelated_only["gate"]["current_product_admitted_dataset_ids"] = ("G_VIX",)
@@ -436,8 +439,9 @@ def test_partial_current_product_shows_only_the_admitted_timeframe_leaf():
     hidden_5m = v25._v25_timeframe(intraday, "5m", 0)
     assert "LEGAL_5M_VISIBLE" not in hidden_5m
     intraday["gate"]["current_product_admitted_dataset_ids"] = ("P_5M",)
-    visible_5m = v25._v25_timeframe(intraday, "5m", 0)
-    assert "LEGAL_5M_VISIBLE" in visible_5m
+    not_executed_5m = v25._v25_timeframe(intraday, "5m", 0)
+    assert "LEGAL_5M_VISIBLE" not in not_executed_5m
+    assert "方法执行 METHOD_NOT_EXECUTED" in not_executed_5m
 
 
 def test_actual_material_path_preserves_admitted_daily_leaf_before_recording():
@@ -463,6 +467,10 @@ def test_actual_material_path_preserves_admitted_daily_leaf_before_recording():
     }
     daily = v25._v25_timeframe(material, "daily", 0)
     assert "当前Product数值未准入" not in daily
+    assert "方法执行 TREND_RS/MTF" in daily
+    assert "SMA " in daily
+    assert "MA斜率% " in daily
+    assert "source=SINGLE_SOURCE" in daily
     minute = v25._v25_timeframe(material, "5m", 0)
     assert "当前Product数值未准入" in minute
 
@@ -480,6 +488,262 @@ def test_actual_material_path_preserves_admitted_daily_leaf_before_recording():
     assert projected_objects["P_5M"]["state"] != "READY"
     assert projected_objects["L_OUTCOME"]["state"] != "READY"
     assert receipt["all_input_facts_product_ready"] is False
+
+
+def test_stage1_vertical_receipt_blocks_registered_historical_and_carrier_substitution():
+    factor = native_summary_with_mtf(intraday=True, volume_unit="share")
+    factor["investor_brief"] = _build_asset_research_brief_v1(
+        SimpleNamespace(current_price=None), factor,
+    )
+    binding = canonical_factor_binding(factor)
+    factor["canonical_decision_identity"] = binding
+    factor["investor_brief"]["canonical_binding"] = dict(binding)
+    projected = render_v2_5_dynamic_no_send(
+        [_v25_result(factor=factor)], report_date="2099-01-01",
+    )
+    stage1 = projected["receipt"]["stage1_vertical_product_receipt"]
+    material = stage1["materials"][0]
+
+    assert stage1["state"] == "HOLD"
+    assert len(material["method_rows"]) == 43
+    assert len(material["cell_rows"]) == 56
+    assert material["actual_invocation_verified_count"] == 0
+    assert "METHOD_OUTPUT_NOT_ACTUAL_INVOCATION_VERIFIED" in material["blocker_codes"]
+    assert "RESEARCH_ASOF_MISSING_OR_REPORT_DATE_MISMATCH" in material["blocker_codes"]
+    assert material["carrier_trigger_separation"]["carrier_state"] in {
+        "READY", "PARTIAL",
+    }
+    assert material["carrier_trigger_separation"]["carrier_is_not_trigger"] is True
+    assert material["carrier_trigger_separation"]["carrier_strategy_admitted"] is False
+    assert stage1["policy"]["registered_is_not_executed"] is True
+    assert stage1["policy"]["historical_execution_never_backfills_current_report"] is True
+    assert v25.validate_stage1_vertical_product_receipt(stage1) == stage1
+
+
+def test_stage1_method_invocation_uses_exact_method_receipts_not_parent_rollup():
+    rows = (
+        {
+            "state": "READY",
+            "method_receipt_hash": "a" * 64,
+            "runtime_source_bound": True,
+        },
+        {
+            "state": "MISSING",
+            "method_receipt_hash": None,
+            "runtime_source_bound": False,
+        },
+    )
+    assert v25._stage1_exact_method_invocation_verified(
+        rows, strict=True, runtime_state="READY",
+    ) is True
+
+    forged = (
+        {**rows[0], "method_receipt_hash": None},
+        rows[1],
+    )
+    assert v25._stage1_exact_method_invocation_verified(
+        forged, strict=True, runtime_state="READY",
+    ) is False
+    assert v25._stage1_exact_method_invocation_verified(
+        rows, strict=False, runtime_state="READY",
+    ) is False
+
+
+def test_stage1_vertical_receipt_separates_partial_product_from_v25_leaf_consumption():
+    factor, _minute = _closed_typed_stock_source_factor(source_version_known=True)
+    _source_row, _receipt, admitted = _p_daily_operation_admission(factor)
+    template = native_summary()
+    admitted["strategy_id"] = template["strategy_id"]
+    admitted["canonical_decision"] = deepcopy(template["canonical_decision"])
+    admitted["strategy_eligibility"] = deepcopy(template["strategy_eligibility"])
+    admitted["evidence_traceability"] = reg.build_runtime_trace(admitted)
+    admitted["investor_brief"] = _build_asset_research_brief_v1(
+        SimpleNamespace(current_price=None), admitted,
+    )
+    binding = canonical_factor_binding(admitted)
+    admitted["canonical_decision_identity"] = binding
+    admitted["investor_brief"]["canonical_binding"] = dict(binding)
+
+    projected = render_v2_5_dynamic_no_send(
+        [_v25_result(factor=admitted)], report_date="2026-10-02",
+    )
+    stage1 = projected["receipt"]["stage1_vertical_product_receipt"]
+    material = stage1["materials"][0]
+    objects = {row["dataset_id"]: row for row in material["data_object_rows"]}
+
+    assert stage1["state"] == "HOLD"
+    assert objects["P_DAILY"]["product_admitted"] is True
+    assert objects["P_5M"]["product_admitted"] is False
+    assert objects["P_DAILY"]["v25_leaf_consumed"] is True
+    assert objects["P_DAILY"]["v25_scope_audit_consumed"] is True
+    assert objects["P_DAILY"]["v25_consumer_bound"] is True
+    assert objects["P_DAILY"]["v25_consumer_state"] == (
+        "V25_PRICE_TIMEFRAME_LEAF_CONSUMED"
+    )
+    assert objects["P_5M"]["v25_leaf_consumed"] is False
+    assert objects["P_5M"]["v25_consumer_state"] == "NOT_PRODUCT_ADMITTED"
+    assert material["research_as_of_current"] is True
+    assert "FULL_DOMAIN_PRODUCT_DATA_NOT_READY" in material["blocker_codes"]
+    assert "PRODUCT_DATA_OBJECT_V25_CONSUMER_BINDING_INCOMPLETE" not in (
+        material["blocker_codes"]
+    )
+    assert "V25_AVAILABLE_SLOT_LEAF_CONSUMPTION_INCOMPLETE" not in (
+        material["blocker_codes"]
+    )
+    assert any(
+        row["coverage_state"] == "EVIDENCE_AVAILABLE"
+        and row["projection_state"] == "RENDERED_MISSINGNESS"
+        and row["leaf_consumed"] is False
+        for row in material["slot_rows"]
+    )
+    assert any(
+        row["projection_state"] == "RENDERED_PARTIAL_EVIDENCE"
+        and row["consumer_state"] == "V25_PARTIAL_LEAF_CONSUMED"
+        and row["timeframe_leaf_hashes"]
+        for row in material["slot_rows"]
+    )
+    assert any(
+        row["timeframe"] == "daily"
+        and row["price_dataset_product_admitted"] is True
+        for row in material["cell_rows"]
+    )
+    assert any(
+        row["timeframe"] == "5m"
+        and row["price_dataset_product_admitted"] is False
+        for row in material["cell_rows"]
+    )
+
+
+def test_stage1_nonprice_object_uses_exact_machine_scope_consumer_not_leaf():
+    rendered = {
+        "block-7": {"projection_sha256": "a" * 64},
+    }
+    row = v25._stage1_data_object_consumer_row(
+        {
+            "dataset_id": "G_VIX",
+            "domain": "GLOBAL",
+            "state": "READY",
+            "reason": "PRODUCT_OPERATION_ADMITTED",
+        },
+        product_admitted=True,
+        admission={
+            "dataset_id": "G_VIX",
+            "product_admitted": True,
+            "admission_hash": "b" * 64,
+        },
+        scope_projection={
+            "id": "G_VIX",
+            "domain": "GLOBAL",
+            "state": "READY",
+            "consumer_projection": (
+                "MACHINE_RECEIPT_WITH_ROLE_SUMMARIZED_EMAIL"
+            ),
+            "location_ids": ("block-7",),
+            "projection_sha256": "a" * 64,
+            "product_admission_hashes": ("b" * 64,),
+        },
+        rendered_lookup=rendered,
+        direct_leaf_dataset_ids=set(),
+    )
+
+    assert row["v25_leaf_consumed"] is False
+    assert row["v25_scope_audit_consumed"] is True
+    assert row["v25_consumer_bound"] is True
+    assert row["v25_consumer_state"] == "V25_MACHINE_SCOPE_CONSUMED"
+    assert row["scope_product_admission_hashes"] == ("b" * 64,)
+    assert len(row["v25_consumer_binding_hash"]) == 64
+
+    rejected = v25._stage1_data_object_consumer_row(
+        {
+            "dataset_id": "G_VIX", "domain": "GLOBAL",
+            "state": "READY", "reason": "PRODUCT_OPERATION_ADMITTED",
+        },
+        product_admitted=True,
+        admission={
+            "dataset_id": "G_VIX", "product_admitted": True,
+            "admission_hash": "b" * 64,
+        },
+        scope_projection={
+            "id": "G_VIX", "domain": "GLOBAL", "state": "READY",
+            "consumer_projection": "ROLE_SUMMARY_ONLY",
+            "location_ids": ("block-7",), "projection_sha256": "a" * 64,
+            "product_admission_hashes": ("b" * 64,),
+        },
+        rendered_lookup=rendered,
+        direct_leaf_dataset_ids=set(),
+    )
+    assert rejected["v25_consumer_bound"] is False
+    assert rejected["v25_consumer_state"] == "V25_CONSUMER_BINDING_MISSING"
+
+
+def test_stage1_vertical_receipt_rejects_forged_v25_leaf_consumption():
+    # Every accepted slot class must have a real Stage-1 consumer proof route;
+    # no slot may remain permanently HOLD merely because the compiler omitted it.
+    slot_ids = {
+        row["id"] for row in reg.load_slot_map()["slots"]
+    }
+    accounted = (
+        set(v25._STAGE1_DIRECT_SLOT_CONSUMERS)
+        | set(v25._STAGE1_TIMEFRAME_COMPOSITE_SLOT_CONSUMERS)
+        | {
+            slot_id for slot_id in slot_ids
+            if slot_id.startswith(v25._STAGE1_TIMEFRAME_SLOT_PREFIX)
+        }
+    )
+    assert slot_ids == accounted
+
+    projected = render_v2_5_dynamic_no_send(
+        [_v25_result()], report_date="2026-10-23",
+    )
+    forged = deepcopy(projected["receipt"]["stage1_vertical_product_receipt"])
+    slot = forged["materials"][0]["slot_rows"][0]
+    slot["consumer_state"] = "V25_LEAF_CONSUMED"
+    slot["leaf_consumed"] = True
+    slot["location_projection_hashes"] = ("",)
+    slot.pop("consumer_binding_hash", None)
+    slot["consumer_binding_hash"] = reg.digest(slot)
+    material = forged["materials"][0]
+    material.pop("material_hash", None)
+    material["material_hash"] = reg.digest(material)
+    body = dict(forged)
+    body.pop("receipt_hash", None)
+    forged["receipt_hash"] = reg.digest(body)
+
+    with pytest.raises(
+        reg.TraceabilityError,
+        match="STAGE1_VERTICAL_FALSE_V25_CONSUMPTION",
+    ):
+        v25.validate_stage1_vertical_product_receipt(forged)
+
+
+def test_stage1_vertical_rejects_direct_slot_without_rendered_input_binding():
+    projected = render_v2_5_dynamic_no_send(
+        [_v25_result()], report_date="2026-10-23",
+    )
+    forged = deepcopy(projected["receipt"]["stage1_vertical_product_receipt"])
+    slot = next(
+        row for row in forged["materials"][0]["slot_rows"]
+        if row["slot_id"] in v25._STAGE1_DIRECT_SLOT_CONSUMERS
+        and row["canonical_path_hashes"]
+    )
+    slot["consumer_state"] = "V25_LEAF_CONSUMED"
+    slot["leaf_consumed"] = True
+    slot["location_projection_hashes"] = ("a" * 64,)
+    slot["rendered_canonical_path_hashes"] = ()
+    slot.pop("consumer_binding_hash", None)
+    slot["consumer_binding_hash"] = reg.digest(slot)
+    material = forged["materials"][0]
+    material.pop("material_hash", None)
+    material["material_hash"] = reg.digest(material)
+    body = dict(forged)
+    body.pop("receipt_hash", None)
+    forged["receipt_hash"] = reg.digest(body)
+
+    with pytest.raises(
+        reg.TraceabilityError,
+        match="STAGE1_VERTICAL_FALSE_V25_CONSUMPTION",
+    ):
+        v25.validate_stage1_vertical_product_receipt(forged)
 
 
 def test_dynamic_v25_projects_complete_original_frame_and_truthful_missingness():
@@ -553,12 +817,121 @@ def test_dynamic_v25_projects_complete_original_frame_and_truthful_missingness()
         row["id"] for row in scope["atomic_subfield_projections"]
     } == set(reg.ACCEPTED_WHOLE_PRODUCT_ATOMIC_SUBFIELDS)
     assert "另有7项全球细字段待独立绑定" in html
+    stage1 = receipt["stage1_vertical_product_receipt"]
+    atomic_rows = stage1["materials"][0]["atomic_subfield_rows"]
+    assert {row["v25_consumer_state"] for row in atomic_rows} == {
+        "V25_ATOMIC_MISSINGNESS_CONSUMED"
+    }
+    assert all(row["v25_consumer_bound"] is True for row in atomic_rows)
+    assert all(row["v25_atomic_fact_consumed"] is False for row in atomic_rows)
+    assert "ATOMIC_SUBFIELD_V25_CONSUMER_BINDING_INCOMPLETE" not in (
+        stage1["blocker_codes"]
+    )
     assert not any(fragment in html for fragment in (
         "示例成长科技ETF", "1.264元", "自选股X（6008X9）",
     ))
     original_markup = re.findall(r"<[^>]+>", before.decode("utf-8"))
     projected_markup = re.findall(r"<[^>]+>", html)
     assert projected_markup == original_markup
+
+
+def test_atomic_fact_value_and_hash_are_required_for_reader_and_stage1_consumption():
+    identifier = "GLOBAL_US_ACTUAL_INFLATION"
+    facts = {
+        "series_id": "SYNTHETIC_CPI",
+        "reference_period": "2026-09",
+        "index_value": 321.5,
+        "yoy_pct": 2.4,
+        "release_published_at": "2026-10-23T08:30:00+00:00",
+        "seasonal_adjustment": "SEASONALLY_ADJUSTED",
+        "value_unit": "INDEX_1982_84_100",
+    }
+    fact_hash = reg.digest(facts)
+    summary = v25._v25_atomic_fact_summary(identifier, facts)
+    assert "美国整体通胀：同比 2.40%" in summary
+    assert "2026-09" in summary
+    assert "2026-10-23T08:30:00+00:00" in summary
+
+    universe = {
+        "data_objects": [],
+        "atomic_subfield_admission_rows": [{
+            "id": identifier,
+            "state": "BOUND",
+            "facts": facts,
+            "source_fact_hash": fact_hash,
+            "fact_summary": summary,
+        }],
+    }
+    assert summary in v25._v25_domain_line(universe, 0)
+
+    scope = {
+        "id": identifier,
+        "state": "BOUND",
+        "consumer_projection": "MACHINE_RECEIPT_WITH_ROLE_SUMMARIZED_EMAIL",
+        "location_ids": ("block-1",),
+        "projection_sha256": "b" * 64,
+        "product_admission_hashes": ("a" * 64,),
+        "source_fact_hash": fact_hash,
+        "fact_summary": summary,
+    }
+    rendered = {
+        "block-1": {
+            "projection_sha256": "b" * 64,
+            "input_atomic_fact_hashes": (fact_hash,),
+        },
+    }
+    row = v25._stage1_atomic_subfield_consumer_row(
+        identifier,
+        admission={
+            "dataset_id": identifier,
+            "product_admitted": True,
+            "admission_hash": "a" * 64,
+        },
+        scope_projection=scope,
+        rendered_lookup=rendered,
+    )
+    assert row["v25_atomic_fact_consumed"] is True
+    assert row["v25_atomic_fact_hash_consumed"] is True
+    assert row["source_fact_hash"] == fact_hash
+
+    missing_hash = deepcopy(rendered)
+    missing_hash["block-1"]["input_atomic_fact_hashes"] = ()
+    blocked = v25._stage1_atomic_subfield_consumer_row(
+        identifier,
+        admission={
+            "dataset_id": identifier,
+            "product_admitted": True,
+            "admission_hash": "a" * 64,
+        },
+        scope_projection=scope,
+        rendered_lookup=missing_hash,
+    )
+    assert blocked["v25_atomic_fact_consumed"] is False
+
+
+def test_stage1_rejects_atomic_product_admission_without_fact_consumption():
+    projected = render_v2_5_dynamic_no_send(
+        [_v25_result()], report_date="2026-10-23",
+    )
+    forged = deepcopy(projected["receipt"]["stage1_vertical_product_receipt"])
+    row = forged["materials"][0]["atomic_subfield_rows"][0]
+    row["product_admitted"] = True
+    row["admission_hash"] = "a" * 64
+    row["v25_atomic_fact_consumed"] = False
+    row.pop("v25_consumer_binding_hash", None)
+    row["v25_consumer_binding_hash"] = reg.digest(row)
+    material = forged["materials"][0]
+    material.pop("material_hash", None)
+    material["material_hash"] = reg.digest(material)
+    body = dict(forged)
+    body.pop("receipt_hash", None)
+    forged["receipt_hash"] = reg.digest(body)
+
+    with pytest.raises(
+        reg.TraceabilityError,
+        match="STAGE1_VERTICAL_FALSE_ATOMIC_CONSUMPTION",
+    ):
+        v25.validate_stage1_vertical_product_receipt(forged)
 
 
 def test_dynamic_v25_email_is_reader_facing_while_full_scope_stays_in_receipt():

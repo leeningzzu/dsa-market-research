@@ -33,7 +33,7 @@ from src.services.data_object_admission import (
 
 def _grant(*, dataset_id: str, consumer: str, operation_id: str = "b1-nosend-20261023"):
     return seal_source_rights_evidence({
-        "schema_version": "source-rights-evidence-v1",
+        "schema_version": "source-rights-evidence-v2",
         "operation_id": operation_id,
         "intended_use": "NO_SEND_RESEARCH",
         "provider_identity": "BaostockFetcher",
@@ -44,6 +44,34 @@ def _grant(*, dataset_id: str, consumer: str, operation_id: str = "b1-nosend-202
         "terms_uri": "https://example.org/test-contract-only",
         "terms_sha256": "a" * 64,
         "terms_observed_at": "2026-10-22T09:00:00+00:00",
+        "terms_scope": "SYNTHETIC_TEST_CONTRACT",
+        "product_use_clause": "Synthetic fixture explicitly allows internal no-send research.",
+        "product_use_clause_sha256": "c2a9b98537611cb0c9e9cb165ab0a4a699d84f5a2644a5e1e23740d0af55c6e1",
+        "rights": {
+            "product_use": "ALLOWED",
+            "storage": "FORBIDDEN",
+            "training": "FORBIDDEN",
+            "redistribution": "FORBIDDEN",
+        },
+    })
+
+
+def _bls_grant(dataset_id: str, operation_id: str):
+    return seal_source_rights_evidence({
+        "schema_version": "source-rights-evidence-v2",
+        "operation_id": operation_id,
+        "intended_use": "NO_SEND_RESEARCH",
+        "provider_identity": "BLSPublicDataAPI",
+        "upstream_source_owner": "SYNTHETIC_BLS_TEST_CONTRACT",
+        "upstream_rights_state": "VERIFIED",
+        "dataset_id": dataset_id,
+        "consumer_scope": "MARKET_GLOBAL_TRANSMISSION",
+        "terms_uri": "https://example.org/test-bls-contract",
+        "terms_sha256": "b" * 64,
+        "terms_observed_at": "2026-10-22T09:00:00+00:00",
+        "terms_scope": "SYNTHETIC_TEST_CONTRACT",
+        "product_use_clause": "Synthetic fixture explicitly allows internal no-send research.",
+        "product_use_clause_sha256": "c2a9b98537611cb0c9e9cb165ab0a4a699d84f5a2644a5e1e23740d0af55c6e1",
         "rights": {
             "product_use": "ALLOWED",
             "storage": "FORBIDDEN",
@@ -100,6 +128,46 @@ def test_preflight_cannot_infer_external_grant_or_lose_exact_binding(mutation):
     with pytest.raises(DataObjectAdmissionError, match="B1_"):
         validate_b1_provider_preflight(
             grant, operation_id="b1-nosend-20261023",
+            intended_use="NO_SEND_RESEARCH",
+            dataset_id="P_DAILY",
+            consumer_scope="ASSET_RESEARCH_BRIEF",
+            research_as_of="2026-10-23T10:00:00+00:00",
+        )
+
+
+def test_software_package_license_cannot_stand_in_for_data_use_terms():
+    grant = _grant(dataset_id="P_DAILY", consumer="ASSET_RESEARCH_BRIEF")
+    changed = {key: value for key, value in grant.items() if key != "evidence_hash"}
+    changed["terms_scope"] = "SOFTWARE_PACKAGE_LICENSE"
+    changed["product_use_clause"] = "BSD License"
+    changed["product_use_clause_sha256"] = "170c0f4cee6fc262f8902676b7aa0e88e11f1777f1531934116898c43fd5086a"
+    forged = seal_source_rights_evidence(changed)
+    with pytest.raises(
+        DataObjectAdmissionError,
+        match="SOURCE_RIGHTS_EVIDENCE_TERMS_SCOPE_INVALID|B1_UPSTREAM_RIGHTS_EVIDENCE_INVALID",
+    ):
+        validate_b1_provider_preflight(
+            forged,
+            operation_id="b1-nosend-20261023",
+            intended_use="NO_SEND_RESEARCH",
+            dataset_id="P_DAILY",
+            consumer_scope="ASSET_RESEARCH_BRIEF",
+            research_as_of="2026-10-23T10:00:00+00:00",
+        )
+
+
+def test_product_use_clause_hash_must_bind_exact_reviewed_text():
+    grant = _grant(dataset_id="P_DAILY", consumer="ASSET_RESEARCH_BRIEF")
+    changed = {key: value for key, value in grant.items() if key != "evidence_hash"}
+    changed["product_use_clause"] = "Different clause"
+    forged = seal_source_rights_evidence(changed)
+    with pytest.raises(
+        DataObjectAdmissionError,
+        match="PRODUCT_USE_CLAUSE_HASH_MISMATCH|B1_UPSTREAM_RIGHTS_EVIDENCE_INVALID",
+    ):
+        validate_b1_provider_preflight(
+            forged,
+            operation_id="b1-nosend-20261023",
             intended_use="NO_SEND_RESEARCH",
             dataset_id="P_DAILY",
             consumer_scope="ASSET_RESEARCH_BRIEF",
@@ -184,6 +252,44 @@ def _runtime_b1_context(metadata=None):
 
 
 def test_runtime_product_receipt_reaches_original_76_object_admission_compiler():
+    # The producer seam is Registry-closed-world, not price-object hardcoded.
+    global_scope = {
+        **_runtime_obligation(),
+        "dataset_id": "G_VIX",
+        "domain": "GLOBAL",
+        "native_frequency": "daily/close",
+        "product_consumer": "MARKET_GLOBAL_TRANSMISSION",
+        "adjustment_basis": "NOT_APPLICABLE",
+        "units": {"value": "INDEX_POINT"},
+    }
+    grant = _grant(
+        dataset_id="G_VIX", consumer="MARKET_GLOBAL_TRANSMISSION",
+    )
+    metadata = {
+        **_runtime_metadata(global_scope),
+        "adjustment_basis": "NOT_APPLICABLE",
+        "units": {"value": "INDEX_POINT"},
+    }
+    context = {
+        "operation_id": "b1-nosend-20261023",
+        "intended_use": "NO_SEND_RESEARCH",
+        "research_as_of": "2026-10-23T10:00:00+00:00",
+        "rights_by_dataset": {"G_VIX": grant},
+        "source_metadata_by_dataset": {"G_VIX": metadata},
+    }
+    global_receipts = compile_b1_runtime_admission_receipts(
+        [global_scope], b1_context=context,
+    )
+    assert set(global_receipts) == {"G_VIX"}
+    global_view = compile_data_object_admission_view(
+        [global_scope], global_receipts,
+        operation_id="b1-nosend-20261023",
+        intended_use="NO_SEND_RESEARCH",
+        as_of="2026-10-23T10:00:00+00:00",
+    )
+    assert global_view["product_admitted_count"] == 1
+    assert global_view["objects"][0]["strategy_upgrade_authority"] is False
+
     """Synthetic positive verifies only the executable connector, not license."""
     obligation = _runtime_obligation()
     receipts = compile_b1_runtime_admission_receipts(
@@ -346,6 +452,200 @@ def _clocked_intraday_frames(code: str, observed_at: datetime) -> dict:
     )
     attach_intraday_data_identity(frame, identity)
     return {"5m": frame}
+
+
+def test_b1_bls_atomic_preacquire_is_shared_run_local_and_requires_full_grant_set():
+    from data_provider.bls_public_data_fetcher import BLS_SERIES_BY_DATASET
+
+    operation_id = "b1-bls-nosend-20261028"
+    rights = {
+        dataset_id: _bls_grant(dataset_id, operation_id)
+        for dataset_id in BLS_SERIES_BY_DATASET
+    }
+    pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+    pipeline.b1_rights_context = {
+        "schema_version": "b1-operation-rights-context-v1",
+        "operation_id": operation_id,
+        "intended_use": "NO_SEND_RESEARCH",
+        "allowed_instruments": ["600519", "510300"],
+        "rights_by_dataset": rights,
+    }
+    pipeline._b1_global_atomic_observations = {}
+    pipeline._b1_global_atomic_failure = None
+    observations = {
+        dataset_id: {
+            "dataset_id": dataset_id,
+            "state": "READY",
+            "facts": {"yoy_pct": index + 2.0},
+            "source_fact_hash": str(index + 1) * 64,
+        }
+        for index, dataset_id in enumerate(BLS_SERIES_BY_DATASET)
+    }
+    bundle = {
+        "atomic_subfield_source_observations": observations,
+        "storage_admitted": False,
+        "training_admitted": False,
+    }
+    with patch(
+        "data_provider.bls_public_data_fetcher.fetch_us_inflation_atomic_bundle",
+        return_value=bundle,
+    ) as producer:
+        pipeline._preacquire_b1_global_atomic_sources(
+            target_reference_time=datetime(2026, 10, 28, 8, 0, tzinfo=timezone.utc),
+        )
+    producer.assert_called_once()
+    assert pipeline._b1_global_atomic_observations == observations
+    context = pipeline._b1_nonprice_fundamental_context(
+        code="510300", asset_route="ETF", market="cn",
+    )
+    assert context["atomic_subfield_source_observations"] == observations
+    assert context["atomic_subfield_failure"] is None
+
+    incomplete = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+    incomplete.b1_rights_context = {
+        **pipeline.b1_rights_context,
+        "rights_by_dataset": dict(list(rights.items())[:-1]),
+    }
+    with patch(
+        "data_provider.bls_public_data_fetcher.fetch_us_inflation_atomic_bundle",
+    ) as forbidden:
+        with pytest.raises(
+            DataObjectAdmissionError, match="B1_BLS_ATOMIC_GRANT_SET_INCOMPLETE",
+        ):
+            incomplete._preacquire_b1_global_atomic_sources(
+                target_reference_time=datetime(2026, 10, 28, 8, 0, tzinfo=timezone.utc),
+            )
+    forbidden.assert_not_called()
+
+
+def test_b1_bls_environment_failure_keeps_atoms_unknown_without_aborting_price_chain():
+    from data_provider.bls_public_data_fetcher import (
+        BLS_SERIES_BY_DATASET,
+        BLSPublicDataError,
+    )
+
+    operation_id = "b1-bls-nosend-20261028"
+    pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+    pipeline.b1_rights_context = {
+        "schema_version": "b1-operation-rights-context-v1",
+        "operation_id": operation_id,
+        "intended_use": "NO_SEND_RESEARCH",
+        "allowed_instruments": ["600519"],
+        "rights_by_dataset": {
+            dataset_id: _bls_grant(dataset_id, operation_id)
+            for dataset_id in BLS_SERIES_BY_DATASET
+        },
+    }
+    with patch(
+        "data_provider.bls_public_data_fetcher.fetch_us_inflation_atomic_bundle",
+        side_effect=BLSPublicDataError("BLS_PROVIDER_REQUEST_FAILED"),
+    ):
+        pipeline._preacquire_b1_global_atomic_sources(
+            target_reference_time=datetime(2026, 10, 28, 8, 0, tzinfo=timezone.utc),
+        )
+    assert pipeline._b1_global_atomic_observations == {}
+    assert pipeline._b1_global_atomic_failure == "BLS_PROVIDER_REQUEST_FAILED"
+
+
+def test_b1_partial_nonprice_grants_bound_requests_before_dispatch():
+    """Filtering results after fetching ungranted datasets is not preflight."""
+    from data_provider.baostock_fetcher import BaostockFetcher
+    from tests.test_baostock_fetcher import _NonpriceBaostock, _session
+
+    operation_id = "bounded-nonprice-requests"
+    rights = {
+        dataset: _grant(dataset_id=dataset, consumer=consumer, operation_id=operation_id)
+        for dataset, consumer in (
+            ("P_CODE_IDENTITY", "ASSET_RESEARCH_BRIEF"),
+            ("S_CLASSIFICATION", "MARKET_SECTOR_SECTION"),
+        )
+    }
+    pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+    pipeline.b1_rights_context = {
+        "schema_version": "b1-operation-rights-context-v1",
+        "operation_id": operation_id,
+        "intended_use": "NO_SEND_RESEARCH",
+        "allowed_instruments": ["600519"],
+        "rights_by_dataset": rights,
+    }
+    fake = _NonpriceBaostock()
+    with patch.object(BaostockFetcher, "_baostock_session", side_effect=lambda: _session(fake)):
+        pipeline._preacquire_b1_nonprice_sources(
+            ["600519"], {"600519": date(2026, 10, 27)},
+            target_reference_time=datetime(2026, 10, 28, 8, 0, tzinfo=timezone.utc),
+        )
+    assert [name for name, _ in fake.calls] == [
+        "query_stock_basic", "query_stock_industry",
+    ]
+    assert set(pipeline._b1_nonprice_shared_observations) == {"S_CLASSIFICATION"}
+    assert set(pipeline._b1_nonprice_stock_bundles["600519"][
+        "data_object_source_observations"
+    ]) == {"P_CODE_IDENTITY"}
+
+
+def test_b1_nonprice_preacquire_uses_only_explicit_grants_and_separates_asset_scope():
+    operation_id = "b1-nonprice-nosend-20261028"
+    rights = {
+        dataset_id: _grant(
+            dataset_id=dataset_id,
+            consumer=consumer,
+            operation_id=operation_id,
+        )
+        for dataset_id, consumer in (
+            ("P_CODE_IDENTITY", "ASSET_RESEARCH_BRIEF"),
+            ("S_CLASSIFICATION", "MARKET_SECTOR_SECTION"),
+        )
+    }
+    pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+    pipeline.b1_rights_context = {
+        "schema_version": "b1-operation-rights-context-v1",
+        "operation_id": operation_id,
+        "intended_use": "NO_SEND_RESEARCH",
+        "allowed_instruments": ["600519"],
+        "rights_by_dataset": rights,
+    }
+    pipeline._b1_nonprice_shared_observations = {}
+    pipeline._b1_nonprice_stock_bundles = {}
+    bundle = {
+        "schema_version": "baostock-cn-nonprice-research-bundle-v1",
+        "data_object_source_observations": {
+            "P_CODE_IDENTITY": {"dataset_id": "P_CODE_IDENTITY"},
+            "S_CLASSIFICATION": {"dataset_id": "S_CLASSIFICATION"},
+            "P_VAL_RATIO": {"dataset_id": "P_VAL_RATIO"},
+        },
+        "quality_growth_input": None,
+        "business_valuation_input": None,
+    }
+    with patch(
+        "data_provider.baostock_fetcher.BaostockFetcher.get_cn_stock_nonprice_research_bundle",
+        return_value=bundle,
+    ) as producer:
+        pipeline._preacquire_b1_nonprice_sources(
+            ["600519"],
+            {"600519": date(2026, 10, 27)},
+            target_reference_time=datetime(2026, 10, 28, 8, 0, tzinfo=timezone.utc),
+        )
+
+    producer.assert_called_once_with(
+        "600519", research_date="2026-10-27",
+        requested_dataset_ids={"P_CODE_IDENTITY", "S_CLASSIFICATION"},
+    )
+    assert set(pipeline._b1_nonprice_shared_observations) == {"S_CLASSIFICATION"}
+    stock_bundle = pipeline._b1_nonprice_stock_bundles["600519"]
+    assert set(stock_bundle["data_object_source_observations"]) == {"P_CODE_IDENTITY"}
+    stock_context = pipeline._b1_nonprice_fundamental_context(
+        code="600519", asset_route="STOCK", market="cn",
+    )
+    etf_context = pipeline._b1_nonprice_fundamental_context(
+        code="510300", asset_route="ETF", market="cn",
+    )
+    assert set(stock_context["data_object_source_observations"]) == {
+        "P_CODE_IDENTITY", "S_CLASSIFICATION",
+    }
+    assert set(etf_context["data_object_source_observations"]) == {
+        "S_CLASSIFICATION",
+    }
+    assert "P_VAL_RATIO" not in stock_context["data_object_source_observations"]
 
 
 def test_b1_constructor_skips_database_model_search_and_context_services():

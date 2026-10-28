@@ -15,6 +15,7 @@ from html import escape as html_escape
 from html.parser import HTMLParser
 import json
 import math
+from numbers import Real
 from pathlib import Path
 import re
 from typing import Any
@@ -315,6 +316,33 @@ def compile_product_coverage(factor: Mapping) -> dict:
 
 
 V25_DYNAMIC_PRODUCT_SCHEMA_VERSION = "v25-dynamic-no-send-v1"
+STAGE1_VERTICAL_PRODUCT_RECEIPT_VERSION = (
+    "stage1-current-v25-real-product-vertical-v1"
+)
+_STAGE1_DIRECT_SLOT_CONSUMERS = frozenset({
+    "first_screen.conclusion",
+    "first_screen.price_or_valuation",
+    "first_screen.supply_distribution_risk",
+    "first_screen.trigger",
+    "first_screen.invalidation",
+    "first_screen.material_risks",
+    "asset.stock.quality_growth",
+    "asset.stock.valuation",
+    "asset.etf.underlying_valuation",
+    "asset.etf.premium_discount",
+    "asset.etf.liquidity_spread",
+    "asset.etf.tracking_concentration",
+    "audit.coverage",
+    "audit.data_time_quality",
+    "audit.historical_reference",
+    "audit.current_probability",
+})
+_STAGE1_TIMEFRAME_COMPOSITE_SLOT_CONSUMERS = frozenset({
+    "first_screen.higher_timeframe_thesis",
+    "first_screen.short_term_conflict_or_trigger",
+})
+_STAGE1_TIMEFRAME_SLOT_PREFIX = "detail.timeframe."
+
 _V25_CARD_CYCLES = {
     "growth-etf": tuple(f"cycle-{i:02d}" for i in range(14, 21)),
     "dividend-etf": tuple(f"cycle-{i:02d}" for i in range(21, 28)),
@@ -531,8 +559,9 @@ def _v25_material(result: Any) -> dict:
         brief = validate_investor_brief_binding(factor)
     except ValueError as exc:
         raise TraceabilityError("V25_DYNAMIC_CANONICAL_BINDING_INVALID") from exc
+    trace = validate_runtime_trace(factor)
     coverage = compile_product_coverage(factor)
-    universe = at(factor, "evidence_traceability.complete_research_universe")
+    universe = trace.get("complete_research_universe")
     gate = at(universe, "full_domain_data_gate")
     if not isinstance(universe, Mapping) or not isinstance(gate, Mapping):
         raise TraceabilityError("V25_DYNAMIC_FULL_DOMAIN_GATE_MISSING")
@@ -582,6 +611,7 @@ def _v25_material(result: Any) -> dict:
         "factor": factor,
         "brief": brief,
         "coverage": coverage,
+        "trace": trace,
         "universe": universe,
         "gate": gate,
         "delivery": delivery,
@@ -648,6 +678,28 @@ def _v25_scope_universe(materials: list[dict]) -> dict:
     Stock N/A (or the reverse).  Multiple candidate states aggregate
     conservatively and do not manufacture a Product-ready object.
     """
+    scope_as_of_values = tuple(sorted({
+        str(at(material, "factor.research_as_of") or "").strip()
+        for material in materials
+        if str(at(material, "factor.research_as_of") or "").strip()
+    }))
+    scope_operation_ids = tuple(sorted({
+        str(at(material, "factor.research_operation_id") or "").strip()
+        for material in materials
+        if str(at(material, "factor.research_operation_id") or "").strip()
+    }))
+    scope_intended_uses = tuple(sorted({
+        str(at(material, "factor.research_intended_use") or "").strip()
+        for material in materials
+        if str(at(material, "factor.research_intended_use") or "").strip()
+    }))
+    if len(scope_as_of_values) > 1:
+        raise TraceabilityError("V25_DYNAMIC_RESEARCH_ASOF_MISMATCH")
+    if len(scope_operation_ids) > 1:
+        raise TraceabilityError("V25_DYNAMIC_RESEARCH_OPERATION_MISMATCH")
+    if len(scope_intended_uses) > 1:
+        raise TraceabilityError("V25_DYNAMIC_RESEARCH_INTENDED_USE_MISMATCH")
+
     stock = compile_complete_research_universe_view({"asset_type": "stock"})
     etf = compile_complete_research_universe_view({"asset_type": "etf"})
     material_universes = [
@@ -709,6 +761,13 @@ def _v25_scope_universe(materials: list[dict]) -> dict:
                     at(material, "gate.current_product_admitted_dataset_ids") or ()
                 )
             }
+            admission_lookup = {
+                str(item.get("dataset_id") or ""): item
+                for item in (
+                    at(universe, "data_object_admission.objects") or ()
+                )
+                if isinstance(item, Mapping)
+            }
             for candidate in universe.get("data_objects") or ():
                 if (
                     not isinstance(candidate, Mapping)
@@ -717,10 +776,25 @@ def _v25_scope_universe(materials: list[dict]) -> dict:
                     continue
                 row = dict(candidate)
                 if dataset_id in admitted_ids:
+                    admission = admission_lookup.get(dataset_id)
+                    admission_hash = (
+                        str(admission.get("admission_hash") or "")
+                        if isinstance(admission, Mapping) else ""
+                    )
+                    if (
+                        not isinstance(admission, Mapping)
+                        or admission.get("product_admitted") is not True
+                        or len(admission_hash) != 64
+                    ):
+                        raise TraceabilityError(
+                            "V25_DYNAMIC_PRODUCT_ADMISSION_IDENTITY_MISSING:"
+                            + dataset_id
+                        )
                     row.update({
                         "state": "READY",
                         "reason": "PRODUCT_OPERATION_ADMITTED",
                         "independent_source_value_admitted": True,
+                        "product_admission_hash": admission_hash,
                     })
                 observed_rows.append(row)
         return observed_rows
@@ -762,12 +836,108 @@ def _v25_scope_universe(materials: list[dict]) -> dict:
             for item in observed
             if str(item.get("state") or "") != "NOT_APPLICABLE"
         )
+        row["product_admission_hashes"] = tuple(sorted({
+            str(item.get("product_admission_hash") or "")
+            for item in observed
+            if len(str(item.get("product_admission_hash") or "")) == 64
+        }))
+        if (
+            str(row.get("domain") or "") in {
+                "GLOBAL", "CN_MARKET", "SECTOR",
+            }
+            and state == "READY"
+            and len(row["product_admission_hashes"]) != 1
+        ):
+            row["state"] = "PARTIAL"
+            row["reason"] = "CROSS_MATERIAL_SHARED_DATA_IDENTITY_DRIFT"
+            row["independent_source_value_admitted"] = False
         row["strategy_upgrade_authority"] = False
         data_objects.append(row)
+
+    atomic_subfield_rows = []
+    for identifier in sorted(ACCEPTED_WHOLE_PRODUCT_ATOMIC_SUBFIELDS):
+        observed_admissions = []
+        observed_sources = []
+        for material in materials:
+            universe = material.get("universe")
+            admissions = (
+                at(universe, "atomic_subfield_admission.objects")
+                if isinstance(universe, Mapping) else ()
+            ) or ()
+            row = next(
+                (
+                    item for item in admissions
+                    if isinstance(item, Mapping)
+                    and str(item.get("dataset_id") or "") == identifier
+                ),
+                None,
+            )
+            if isinstance(row, Mapping):
+                observed_admissions.append(row)
+            source = next(
+                (
+                    item for item in (
+                        universe.get("atomic_subfield_obligations")
+                        if isinstance(universe, Mapping) else ()
+                    ) or ()
+                    if isinstance(item, Mapping)
+                    and str(item.get("dataset_id") or "") == identifier
+                    and str(item.get("state") or "") in {"READY", "PARTIAL"}
+                ),
+                None,
+            )
+            if isinstance(source, Mapping):
+                observed_sources.append(source)
+        admission_hashes = tuple(sorted({
+            str(row.get("admission_hash") or "")
+            for row in observed_admissions
+            if (
+                row.get("product_admitted") is True
+                and len(str(row.get("admission_hash") or "")) == 64
+            )
+        }))
+        source_fact_hashes = tuple(sorted({
+            str(row.get("source_fact_hash") or "")
+            for row in observed_sources
+            if len(str(row.get("source_fact_hash") or "")) == 64
+        }))
+        fact_payloads = [
+            dict(row.get("facts") or {}) for row in observed_sources
+            if isinstance(row.get("facts"), Mapping) and row.get("facts")
+        ]
+        bound = bool(materials) and (
+            len(observed_admissions) == len(materials)
+            and len(observed_sources) == len(materials)
+            and all(
+                row.get("product_admitted") is True
+                for row in observed_admissions
+            )
+            and len(admission_hashes) == 1
+            and len(source_fact_hashes) == 1
+            and len(fact_payloads) == len(materials)
+            and all(digest(value) == source_fact_hashes[0] for value in fact_payloads)
+        )
+        facts = fact_payloads[0] if bound else {}
+        atomic_subfield_rows.append({
+            "id": identifier,
+            "state": "BOUND" if bound else "UNRESOLVED_MISSINGNESS",
+            "product_admission_hashes": admission_hashes,
+            "source_fact_hash": source_fact_hashes[0] if bound else None,
+            "facts": facts,
+            "fact_summary": _v25_atomic_fact_summary(identifier, facts) if bound else None,
+            "reason": (
+                "EXACT_ATOMIC_PRODUCT_ADMISSION_AND_FACT_BOUND"
+                if bound else "EXACT_ATOMIC_PRODUCT_ADMISSION_OR_FACT_MISSING_OR_DRIFTED"
+            ),
+        })
 
     universe = dict(stock)
     universe["requirements"] = requirements
     universe["data_objects"] = data_objects
+    universe["atomic_subfield_admission_rows"] = atomic_subfield_rows
+    universe["scope_research_as_of_values"] = scope_as_of_values
+    universe["scope_research_operation_ids"] = scope_operation_ids
+    universe["scope_research_intended_uses"] = scope_intended_uses
     universe["full_domain_data_gate"] = compile_full_domain_data_gate(data_objects)
     universe["full_domain_data_gate_hash"] = universe["full_domain_data_gate"]["gate_hash"]
     requirement_rows = universe.get("requirements")
@@ -789,6 +959,41 @@ def _v25_scope_universe(materials: list[dict]) -> dict:
     ):
         raise TraceabilityError("V25_DYNAMIC_SCOPE_UNIVERSE_MISMATCH")
     return universe
+
+
+def _v25_atomic_fact_summary(identifier: str, facts: Mapping[str, Any]) -> str:
+    """Render one admitted atomic fact without treating a binding as a value."""
+    if not isinstance(facts, Mapping) or not facts:
+        return ""
+    labels = {
+        "GLOBAL_US_ACTUAL_INFLATION": "美国整体通胀",
+        "GLOBAL_US_CORE_INFLATION": "美国核心通胀",
+        "GLOBAL_US_SERVICE_INFLATION": "美国服务通胀",
+        "GLOBAL_US_5Y_INFLATION_EXPECTATION": "美国5年通胀预期",
+        "GLOBAL_SOX_INDEX": "费城半导体指数",
+        "GLOBAL_TECH_ETF_FLOW": "美国科技ETF资金流",
+        "GLOBAL_SEMICONDUCTOR_SOFTWARE_RELATIVE": "半导体/软件相对强弱",
+    }
+    label = labels.get(identifier, identifier)
+    period = _v25_plain(
+        facts.get("reference_period") or facts.get("as_of")
+        or facts.get("completed_through"),
+        "时点未标明",
+    )
+    released = _v25_plain(
+        facts.get("release_published_at") or facts.get("published_at"),
+        "发布时间未标明",
+    )
+    if isinstance(facts.get("yoy_pct"), (int, float)):
+        value = f"同比 {float(facts['yoy_pct']):.2f}%"
+    elif isinstance(facts.get("value"), (int, float)):
+        unit = _v25_plain(facts.get("value_unit"), "")
+        value = f"{float(facts['value']):.4g}{(' ' + unit) if unit else ''}"
+    elif isinstance(facts.get("index_value"), (int, float)):
+        value = f"指数 {float(facts['index_value']):.4g}"
+    else:
+        value = "已绑定事实缺少可显示数值"
+    return f"{label}：{value}（{period}；发布 {released}）"
 
 
 def _v25_scope_obligations(universe: Mapping) -> list[dict[str, Any]]:
@@ -834,6 +1039,11 @@ def _v25_scope_obligations(universe: Mapping) -> list[dict[str, Any]]:
             "native_frequency": native_frequency,
             "fact": fact,
             "consumer": consumer,
+            "product_admission_hashes": tuple(
+                str(value)
+                for value in item.get("product_admission_hashes") or ()
+                if len(str(value)) == 64
+            ),
             "text": (
                 f"数据对象 {identifier}｜{domain}｜{native_frequency}｜状态 {state}｜"
                 f"{fact}｜消费者 {consumer}"
@@ -849,14 +1059,34 @@ def _v25_scope_obligations(universe: Mapping) -> list[dict[str, Any]]:
                 "不适用时明确N/A"
             ),
         })
+    atomic_lookup = {
+        str(item.get("id") or ""): item
+        for item in universe.get("atomic_subfield_admission_rows") or ()
+        if isinstance(item, Mapping)
+    }
     for identifier in sorted(ACCEPTED_WHOLE_PRODUCT_ATOMIC_SUBFIELDS):
+        atomic = atomic_lookup.get(identifier, {})
+        state = str(atomic.get("state") or "UNRESOLVED_MISSINGNESS")
+        fact_summary = str(atomic.get("fact_summary") or "").strip()
+        source_fact_hash = str(atomic.get("source_fact_hash") or "").strip()
         rows.append({
             "kind": "atomic_subfield",
             "id": identifier,
-            "state": "UNRESOLVED_MISSINGNESS",
+            "state": state,
+            "product_admission_hashes": tuple(
+                str(value)
+                for value in atomic.get("product_admission_hashes") or ()
+                if len(str(value)) == 64
+            ),
+            "source_fact_hash": (
+                source_fact_hash if len(source_fact_hash) == 64 else None
+            ),
+            "facts": dict(atomic.get("facts") or {}),
+            "fact_summary": fact_summary or None,
             "text": (
-                f"Golden原子字段 {identifier}｜状态 UNRESOLVED_MISSINGNESS｜"
-                "不得由宽泛代理静默替代"
+                fact_summary
+                if state == "BOUND" and fact_summary
+                else f"Golden原子字段 {identifier}｜状态 {state}｜不得由宽泛代理静默替代"
             ),
         })
     return rows
@@ -966,6 +1196,7 @@ def _v25_bind_scope_obligations(
         raise TraceabilityError("V25_DYNAMIC_SCOPE_LOCATION_CAPACITY_INSUFFICIENT")
     counters: Counter = Counter()
     bound_rows: list[dict[str, Any]] = []
+    scope_text_by_block: dict[int, list[str]] = defaultdict(list)
     for obligation in obligations:
         key = _v25_audit_pool_key(obligation)
         options = pools.get(key) or pools.get("asset") or fallback
@@ -976,7 +1207,19 @@ def _v25_bind_scope_obligations(
             "location_ids": (f"block-{block_index}",),
             "consumer_projection": "MACHINE_RECEIPT_WITH_ROLE_SUMMARIZED_EMAIL",
         })
-    return {}, bound_rows
+        if (
+            obligation.get("kind") == "atomic_subfield"
+            and obligation.get("state") == "BOUND"
+            and str(obligation.get("fact_summary") or "").strip()
+            and len(str(obligation.get("source_fact_hash") or "")) == 64
+        ):
+            scope_text_by_block[block_index].append(
+                str(obligation["fact_summary"]).strip()
+            )
+    return {
+        block_index: "；".join(values)
+        for block_index, values in scope_text_by_block.items()
+    }, bound_rows
 
 
 def _v25_universe(value: Mapping | None) -> Mapping | None:
@@ -1004,13 +1247,24 @@ def _v25_domain_line(value: Mapping | None, index: int) -> str:
         for state in ("READY", "PARTIAL", "MISSING", "UNKNOWN", "NOT_ADMITTED", "NOT_APPLICABLE")
         if counts[state]
     ) or "无对象状态"
-    unresolved = tuple(sorted(
-        universe.get("known_atomic_subfield_obligations") or ()
-    ))
-    atomic = (
-        f"；另有{len(unresolved)}项全球细字段待独立绑定"
-        if domain == "GLOBAL" and unresolved else ""
+    atomic_rows = tuple(
+        row for row in universe.get("atomic_subfield_admission_rows") or ()
+        if isinstance(row, Mapping)
     )
+    unresolved = tuple(sorted(
+        str(row.get("id") or "") for row in atomic_rows
+        if row.get("state") != "BOUND"
+    ))
+    admitted_summaries = tuple(
+        str(row.get("fact_summary") or "").strip() for row in atomic_rows
+        if row.get("state") == "BOUND" and str(row.get("fact_summary") or "").strip()
+    )
+    atomic = ""
+    if domain == "GLOBAL":
+        if admitted_summaries:
+            atomic += "；" + "；".join(admitted_summaries)
+        if unresolved:
+            atomic += f"；另有{len(unresolved)}项全球细字段待独立绑定"
     return f"{_V25_DOMAIN_LABELS[domain]}：{body}{atomic}"
 
 
@@ -1124,6 +1378,356 @@ def _v25_missing_or_partial(material: Mapping | None) -> bool:
     }
 
 
+def _v25_number(value: Any, *, digits: int = 4) -> str | None:
+    if not isinstance(value, Real) or isinstance(value, bool):
+        return None
+    number = float(value)
+    if not math.isfinite(number):
+        return None
+    text = f"{number:.{digits}f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def _v25_level_price(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return value.get("price")
+    return value
+
+
+def _v25_family_execution_verified(
+    material: Mapping,
+    timeframe: str,
+    family: str,
+) -> bool:
+    """Require the exact method receipt and source-bound cell before leaf display."""
+    if (
+        not _v25_timeframe_leaf_admitted(material, timeframe)
+        or at(material, "factor.method_execution_receipt_policy") != "REQUIRED"
+    ):
+        return False
+    cells = at(material, "trace.timeframe_family_matrix.cells")
+    cell = next(
+        (
+            row for row in (cells or ())
+            if isinstance(row, Mapping)
+            and row.get("timeframe") == timeframe
+            and row.get("family") == family
+        ),
+        None,
+    )
+    if (
+        not isinstance(cell, Mapping)
+        or cell.get("state") not in _MATRIX_AVAILABLE_STATES
+        or at(cell, "runtime_binding.runtime_source_bound") is not True
+    ):
+        return False
+    current_methods = set(cell.get("current_method_ids") or ())
+    observed = tuple(
+        row for row in cell.get("method_coverage") or ()
+        if isinstance(row, Mapping)
+        and row.get("method_id") in current_methods
+        and row.get("state") in _MATRIX_AVAILABLE_STATES
+    )
+    return bool(observed) and all(
+        len(str(row.get("method_receipt_hash") or "")) == 64
+        and at(row, "runtime_source_binding.runtime_source_bound") is True
+        for row in observed
+    )
+
+
+def _v25_timeframe_leaf_payload(
+    material: Mapping | None,
+    timeframe: str,
+) -> dict[str, Any]:
+    """One bounded leaf bundle consumed by the unchanged V2.5 cycle text node."""
+    if material is None:
+        return {}
+    current = at(material.get("mtf") or {}, f"timeframes.{timeframe}")
+    current = current if isinstance(current, Mapping) else {}
+    factor = material.get("factor") if isinstance(material.get("factor"), Mapping) else {}
+    leaf_admitted = _v25_timeframe_leaf_admitted(material, timeframe)
+    family_verified = {
+        family: _v25_family_execution_verified(material, timeframe, family)
+        for family in (
+            "TREND_RS", "SUPPLY", "COST", "STRUCTURE",
+            "MOMENTUM", "PATTERN", "MTF",
+        )
+    }
+    trend = current.get("trend") if isinstance(current.get("trend"), Mapping) else {}
+    ma = current.get("ma_structure") if isinstance(current.get("ma_structure"), Mapping) else {}
+    structure = (
+        current.get("price_structure")
+        if isinstance(current.get("price_structure"), Mapping) else {}
+    )
+    macd_startup = (
+        current.get("macd_startup_stability")
+        if isinstance(current.get("macd_startup_stability"), Mapping) else {}
+    )
+    rsi_startup = (
+        current.get("rsi_startup_stability")
+        if isinstance(current.get("rsi_startup_stability"), Mapping) else {}
+    )
+    payload: dict[str, Any] = {
+        "timeframe": timeframe,
+        "dataset_id": _v25_timeframe_dataset_id(material, timeframe),
+        "product_admitted": leaf_admitted,
+        "family_execution_verified": family_verified,
+        "status": str(current.get("status") or "UNKNOWN"),
+        "role": str(current.get("role") or "ROLE_UNAVAILABLE"),
+        "summary": current.get("summary"),
+        "observations": current.get("observations"),
+        "completed_through": (
+            current.get("completed_through")
+            or current.get("latest_bar_date")
+            or current.get("latest_bar_end")
+        ),
+        "source_alignment": at(current, "source_alignment.status"),
+        "direction": trend.get("direction"),
+        "ma_alignment": trend.get("ma_alignment"),
+        "ma_values": dict(ma.get("ma_values") or {}),
+        "ma_slopes_pct": dict(ma.get("slope_vector_pct") or {}),
+        "ma_state": ma.get("state"),
+        "ma_ordering": ma.get("ordering"),
+        "ma_invalidation": ma.get("invalidation"),
+        "volume_status": trend.get("volume_status"),
+        "volume_ratio_5bar": trend.get("volume_ratio_5bar"),
+        "macd_status": trend.get("macd_status"),
+        "macd_values": dict(macd_startup.get("native_endpoint_values") or {}),
+        "macd_startup_state": macd_startup.get("status"),
+        "macd_startup_reason": macd_startup.get("reason"),
+        "rsi_status": trend.get("rsi_status"),
+        "rsi_values": dict(rsi_startup.get("reference_values") or {}),
+        "rsi_startup_state": rsi_startup.get("status"),
+        "rsi_startup_reason": rsi_startup.get("reason"),
+        "current_close": structure.get("current_close"),
+        "nearest_support": _v25_level_price(structure.get("nearest_support")),
+        "nearest_resistance": _v25_level_price(structure.get("nearest_resistance")),
+        "structure_event": at(structure, "structure_event.state"),
+        "structure_invalidation": at(structure, "structure_event.invalidation"),
+        "confirmed_pivot_count": len(structure.get("pivots") or ()),
+        "pattern_status": at(current, "pattern_trigger.status"),
+        "pattern_reason": at(current, "pattern_trigger.reason"),
+    }
+    if timeframe == "daily":
+        payload.update({
+            "relative_volume_20d": at(
+                factor,
+                "supply_demand_volume_price.completed_bar_context.relative_volume.volume_ratio_20d",
+            ),
+            "directional_volume_balance": at(
+                factor,
+                "supply_demand_volume_price.completed_bar_context.directional_volume.signed_volume_balance",
+            ),
+            "cmf_20": at(
+                factor,
+                "supply_demand_volume_price.completed_bar_context.close_location_flow.cmf_20",
+            ),
+            "cost_reference_20": at(
+                factor,
+                "cost_structure_evidence.context.bar_reference_cost.window_20.rolling_reference_price",
+            ),
+            "cost_reference_60": at(
+                factor,
+                "cost_structure_evidence.context.bar_reference_cost.window_60.rolling_reference_price",
+            ),
+            "macd_dif": at(
+                factor,
+                "volatility_momentum_evidence.context.momentum.macd.dif",
+            ),
+            "macd_dea": at(
+                factor,
+                "volatility_momentum_evidence.context.momentum.macd.dea",
+            ),
+            "macd_bar": at(
+                factor,
+                "volatility_momentum_evidence.context.momentum.macd.bar",
+            ),
+            "rsi_6": at(
+                factor,
+                "volatility_momentum_evidence.context.momentum.rsi.rsi_6",
+            ),
+            "rsi_12": at(
+                factor,
+                "volatility_momentum_evidence.context.momentum.rsi.rsi_12",
+            ),
+            "rsi_24": at(
+                factor,
+                "volatility_momentum_evidence.context.momentum.rsi.rsi_24",
+            ),
+            "roc_20_pct": at(
+                factor,
+                "volatility_momentum_evidence.context.momentum.roc_20_pct",
+            ),
+            "atr_wilder_14": at(
+                factor,
+                "volatility_momentum_evidence.context.volatility.atr_wilder_14",
+            ),
+            "primary_pattern_type": at(
+                factor,
+                "pattern_trigger_evidence.context.primary_pattern.pattern_type",
+            ),
+            "primary_pattern_lifecycle": at(
+                factor,
+                "pattern_trigger_evidence.context.primary_pattern.lifecycle",
+            ),
+            "candlestick_state": at(
+                factor,
+                "pattern_trigger_evidence.context.candlestick.status",
+            ),
+        })
+    family_fields = {
+        "TREND_RS": (
+            "direction", "ma_alignment", "ma_values", "ma_slopes_pct",
+            "ma_state", "ma_ordering", "ma_invalidation",
+        ),
+        "SUPPLY": (
+            "volume_status", "volume_ratio_5bar", "relative_volume_20d",
+            "directional_volume_balance", "cmf_20",
+        ),
+        "COST": ("cost_reference_20", "cost_reference_60"),
+        "STRUCTURE": (
+            "current_close", "nearest_support", "nearest_resistance",
+            "structure_event", "structure_invalidation", "confirmed_pivot_count",
+        ),
+        "MOMENTUM": (
+            "macd_status", "macd_values", "macd_startup_state",
+            "macd_startup_reason", "rsi_status", "rsi_values",
+            "rsi_startup_state", "rsi_startup_reason", "macd_dif",
+            "macd_dea", "macd_bar", "rsi_6", "rsi_12", "rsi_24",
+            "roc_20_pct", "atr_wilder_14",
+        ),
+        "PATTERN": (
+            "pattern_status", "pattern_reason", "primary_pattern_type",
+            "primary_pattern_lifecycle", "candlestick_state",
+        ),
+    }
+    for family, fields in family_fields.items():
+        if family_verified[family] is not True:
+            for field in fields:
+                payload.pop(field, None)
+    if not all(
+        family_verified[family]
+        for family in ("TREND_RS", "SUPPLY", "STRUCTURE", "MOMENTUM")
+    ):
+        payload["summary"] = None
+    return payload
+
+
+def _v25_timeframe_leaf_text(payload: Mapping) -> str:
+    if not payload:
+        return "周期叶事实未绑定。"
+    if payload.get("product_admitted") is not True:
+        return (
+            f"{payload.get('timeframe')}｜{payload.get('status')}｜职责 "
+            f"{payload.get('role')}｜当前Product数值未准入。"
+        )
+    parts = [
+        f"状态 {payload.get('status')}",
+        f"职责 {payload.get('role')}",
+        "方法执行 " + (
+            "/".join(
+                family for family, verified in (
+                    payload.get("family_execution_verified") or {}
+                ).items() if verified
+            ) or "METHOD_NOT_EXECUTED"
+        ),
+        *(
+            [f"摘要 {payload.get('summary')}"]
+            if str(payload.get("summary") or "").strip() else []
+        ),
+    ]
+    ma_values = payload.get("ma_values") if isinstance(payload.get("ma_values"), Mapping) else {}
+    if ma_values:
+        values = "/".join(
+            f"{name.upper()}={_v25_number(value) or 'NA'}"
+            for name, value in sorted(ma_values.items())
+        )
+        parts.append(
+            "SMA " + values
+            + f"；排列={payload.get('ma_ordering') or payload.get('ma_alignment') or 'UNKNOWN'}"
+            + f"；状态={payload.get('ma_state') or 'UNKNOWN'}"
+        )
+    slopes = payload.get("ma_slopes_pct") if isinstance(payload.get("ma_slopes_pct"), Mapping) else {}
+    if slopes:
+        parts.append("MA斜率% " + "/".join(
+            f"{name.upper()}={_v25_number(value) or 'NA'}"
+            for name, value in sorted(slopes.items())
+        ))
+    volume_bits = []
+    for label, key in (
+        ("5bar量比", "volume_ratio_5bar"),
+        ("20日量比", "relative_volume_20d"),
+        ("方向量", "directional_volume_balance"),
+        ("CMF20", "cmf_20"),
+    ):
+        number = _v25_number(payload.get(key))
+        if number is not None:
+            volume_bits.append(f"{label}={number}")
+    if payload.get("volume_status"):
+        volume_bits.insert(0, f"状态={payload.get('volume_status')}")
+    parts.append("供需/量价 " + ("；".join(volume_bits) if volume_bits else "DATA_MISSING"))
+    cost_bits = []
+    for label, key in (("成本20", "cost_reference_20"), ("成本60", "cost_reference_60")):
+        number = _v25_number(payload.get(key))
+        if number is not None:
+            cost_bits.append(f"{label}={number}")
+    parts.append("成本 " + ("；".join(cost_bits) if cost_bits else "ALGORITHM_OR_DATA_GAP"))
+    structure_bits = []
+    for label, key in (
+        ("现价", "current_close"),
+        ("支撑", "nearest_support"),
+        ("压力", "nearest_resistance"),
+    ):
+        number = _v25_number(payload.get(key))
+        if number is not None:
+            structure_bits.append(f"{label}={number}")
+    if payload.get("structure_event"):
+        structure_bits.append(f"事件={payload.get('structure_event')}")
+    structure_bits.append(f"确认枢轴={payload.get('confirmed_pivot_count') or 0}")
+    parts.append("结构 " + "；".join(structure_bits))
+    momentum_bits = []
+    for label, key in (
+        ("DIF", "macd_dif"), ("DEA", "macd_dea"), ("BAR", "macd_bar"),
+        ("RSI6", "rsi_6"), ("RSI12", "rsi_12"), ("RSI24", "rsi_24"),
+        ("ROC20%", "roc_20_pct"), ("ATR14", "atr_wilder_14"),
+    ):
+        number = _v25_number(payload.get(key))
+        if number is not None:
+            momentum_bits.append(f"{label}={number}")
+    if not momentum_bits:
+        macd_values = payload.get("macd_values") if isinstance(payload.get("macd_values"), Mapping) else {}
+        rsi_values = payload.get("rsi_values") if isinstance(payload.get("rsi_values"), Mapping) else {}
+        momentum_bits.extend(
+            f"{name}={_v25_number(value) or 'NA'}"
+            for name, value in sorted({**macd_values, **rsi_values}.items())
+            if name.endswith("latest") or name.startswith("MACD_")
+        )
+    momentum_bits.append(
+        f"MACD启动={payload.get('macd_startup_state') or 'UNKNOWN'}"
+    )
+    momentum_bits.append(
+        f"RSI启动={payload.get('rsi_startup_state') or 'UNKNOWN'}"
+    )
+    parts.append("波动/动量 " + "；".join(momentum_bits))
+    pattern_bits = [
+        value for value in (
+            f"形态={payload.get('primary_pattern_type')}" if payload.get("primary_pattern_type") else None,
+            f"生命周期={payload.get('primary_pattern_lifecycle')}" if payload.get("primary_pattern_lifecycle") else None,
+            f"K线={payload.get('candlestick_state')}" if payload.get("candlestick_state") else None,
+            f"周期形态={payload.get('pattern_status')}" if payload.get("pattern_status") else None,
+        ) if value
+    ]
+    parts.append("形态/触发 " + ("；".join(pattern_bits) if pattern_bits else "ALGORITHM_GAP"))
+    parts.append(
+        "多周期/来源 "
+        f"方向={payload.get('direction') or 'UNKNOWN'}；"
+        f"source={payload.get('source_alignment') or 'UNKNOWN'}；"
+        f"完成至={payload.get('completed_through') or 'UNKNOWN'}；"
+        f"observations={payload.get('observations') if payload.get('observations') is not None else 'UNKNOWN'}"
+    )
+    return "｜".join(parts)
+
+
 def _v25_timeframe(material: Mapping | None, timeframe: str, detail_index: int) -> str:
     label = _V25_TF_LABELS[timeframe]
     if material is None:
@@ -1136,10 +1740,8 @@ def _v25_timeframe(material: Mapping | None, timeframe: str, detail_index: int) 
     role = str(current.get("role") or at(material["brief"], f"timeframe_thesis.{timeframe}.role") or "ROLE_UNAVAILABLE")
     leaf_admitted = _v25_timeframe_leaf_admitted(material, timeframe)
     if detail_index == 0:
-        if not leaf_admitted:
-            return f"{label}｜{status}｜职责 {role}｜当前Product数值未准入。"
-        summary = current.get("summary") or at(material["brief"], f"timeframe_thesis.{timeframe}.summary")
-        return f"{label}｜状态 {status}｜职责 {role}｜{_v25_plain(summary, '无可核材料事件')}"
+        payload = _v25_timeframe_leaf_payload(material, timeframe)
+        return f"{label}｜{_v25_timeframe_leaf_text(payload)}"
     if not leaf_admitted:
         return f"{label}｜来源与完成时点未准入｜独立行动权限：否"
     return (
@@ -1242,6 +1844,136 @@ def _v25_card_missing_line(
     )
 
 
+def _v25_quality_line(material: Mapping | None) -> str:
+    quality = at(material, "factor.quality_evidence") if isinstance(material, Mapping) else None
+    if not isinstance(quality, Mapping) or quality.get("product_admitted") is not True:
+        return ""
+    summary = at(material, "brief.quality_growth.summary")
+    return _v25_plain(summary, "质量成长证据已准入，但没有可展示摘要")
+
+
+def _v25_etf_specific_line(material: Mapping | None) -> str:
+    evidence = at(material, "factor.etf_specific_evidence") if isinstance(material, Mapping) else None
+    if not isinstance(evidence, Mapping) or evidence.get("product_admitted") is not True:
+        return ""
+    summary = _v25_plain(evidence.get("summary"), "")
+    if summary:
+        return summary
+    values = []
+    for label, key in (
+        ("折溢价", "premium_discount_pct"),
+        ("点差", "spread_bps"),
+        ("份额变化", "shares_change_pct"),
+        ("跟踪误差", "tracking_error_pct"),
+    ):
+        number = _v25_number(evidence.get(key))
+        if number is not None:
+            values.append(f"{label}={number}")
+    return "；".join(values) or "ETF专项事实已准入"
+
+
+def _v25_audit_line(material: Mapping | None) -> str:
+    if not isinstance(material, Mapping):
+        return ""
+    mtf = material.get("mtf") if isinstance(material.get("mtf"), Mapping) else {}
+    frames = mtf.get("timeframes") if isinstance(mtf.get("timeframes"), Mapping) else {}
+    states = "/".join(
+        f"{tf}:{str((frames.get(tf) or {}).get('status') or 'MISSING')}"
+        for tf in TIMEFRAMES
+    )
+    snapshot = str(mtf.get("data_snapshot_identity") or "")
+    available = str(mtf.get("available_at_max") or "")
+    return (
+        f"7周期={states}；数据快照={'已绑定' if len(snapshot) == 64 else '未绑定'}；"
+        f"available_at={available or 'UNKNOWN'}"
+    )
+
+
+def _v25_block_canonical_path_hashes(
+    material: Mapping | None,
+    *,
+    semantic: str,
+    cycle_timeframe: str | None,
+) -> tuple[str, ...]:
+    """Hash only canonical inputs that the selected text branch actually consumed."""
+    if not isinstance(material, Mapping):
+        return ()
+    factor = material.get("factor") if isinstance(material.get("factor"), Mapping) else {}
+    paths: list[str] = []
+    if cycle_timeframe:
+        payload = _v25_timeframe_leaf_payload(material, cycle_timeframe)
+        if (
+            payload.get("product_admitted") is True
+            and any((payload.get("family_execution_verified") or {}).values())
+        ):
+            paths.append(
+                f"multi_timeframe_structure_context.timeframes.{cycle_timeframe}"
+            )
+    elif semantic == "identity":
+        daily = _v25_timeframe_leaf_payload(material, "daily")
+        if (
+            daily.get("product_admitted") is True
+            and daily.get("current_close") is not None
+            and any((daily.get("family_execution_verified") or {}).values())
+        ):
+            paths.append("price_structure_evidence.context.current_close")
+        if _v25_audit_line(material):
+            paths.extend((
+                "multi_timeframe_structure_context.timeframes",
+                "multi_timeframe_structure_context.data_snapshot_identity",
+            ))
+    elif semantic == "event-alert":
+        paths.extend(("canonical_decision.action", "canonical_decision.reason_codes"))
+    elif semantic == "valuation":
+        valuation = at(factor, "valuation_evidence")
+        if (
+            isinstance(valuation, Mapping)
+            and valuation.get("status") == "READY"
+            and valuation.get("product_admitted") is True
+        ):
+            paths.append("valuation_evidence")
+        etf_specific = at(factor, "etf_specific_evidence")
+        if (
+            isinstance(etf_specific, Mapping)
+            and etf_specific.get("product_admitted") is True
+            and _v25_etf_specific_line(material)
+        ):
+            paths.append("etf_specific_evidence")
+    elif semantic == "flow-box" and not _v25_missing_or_partial(material):
+        if at(factor, "supply_demand_volume_price.completed_bar_context.state") is not None:
+            paths.append("supply_demand_volume_price.completed_bar_context.state")
+        if _v25_quality_line(material):
+            paths.append("quality_evidence")
+        if _v25_etf_specific_line(material):
+            paths.append("etf_specific_evidence")
+    elif semantic == "attn" and not _v25_missing_or_partial(material):
+        if at(factor, "pattern_trigger_evidence.context") is not None:
+            paths.append("pattern_trigger_evidence.context")
+        if at(factor, "multi_timeframe_structure_context.timeframes.30m") is not None:
+            paths.append("multi_timeframe_structure_context.timeframes.30m")
+    elif semantic == "fail" and not _v25_missing_or_partial(material):
+        if at(factor, "price_structure_evidence.context.structure_event") is not None:
+            paths.append("price_structure_evidence.context.structure_event")
+        if at(factor, "canonical_decision.reason_codes") is not None:
+            paths.append("canonical_decision.reason_codes")
+    elif semantic == "small":
+        if not _v25_missing_or_partial(material) and at(
+            factor, "calibrated_probability_evidence"
+        ) is not None:
+            paths.append("calibrated_probability_evidence")
+        if _v25_audit_line(material):
+            paths.extend((
+                "multi_timeframe_structure_context.timeframes",
+                "multi_timeframe_structure_context.data_snapshot_identity",
+            ))
+    return tuple(sorted({
+        digest(value)
+        for path in paths
+        for value in (at(factor, path),)
+        if value is not None
+    }))
+
+
 def _v25_valuation_line(
     material: Mapping | None,
     card_id: str | None,
@@ -1250,7 +1982,10 @@ def _v25_valuation_line(
     asset_type = _v25_card_asset_type(material, card_id)
     role = _v25_card_role(card_id)
     if material is not None:
-        business = at(material, "factor.business_valuation")
+        business = (
+            at(material, "factor.valuation_evidence")
+            or at(material, "factor.business_valuation")
+        )
         shared = at(material, "factor.index_sector_valuations") or ()
         business_ready = (
             isinstance(business, Mapping)
@@ -1265,10 +2000,12 @@ def _v25_valuation_line(
         )
         if business_ready or shared_ready:
             valuation = material["brief"].get("valuation") or {}
-            return _v25_plain(
+            text = _v25_plain(
                 valuation.get("summary"),
                 f"估值状态 {_v25_plain(valuation.get('status'), 'UNKNOWN')}",
             )
+            etf_specific = _v25_etf_specific_line(material)
+            return "｜".join(value for value in (text, etf_specific) if value)
     if asset_type == "etf":
         rows = (
             f"{role}：交易价格与同一时点NAV/IOPV未绑定，不判断折溢价。",
@@ -1543,7 +2280,15 @@ def _v25_project_block(
             return "代表指数、市场宽度、成交与估值需绑定同一asof、来源、单位和完成bar。"
         if material is None:
             return f"{_v25_card_role(card_id)}｜对象身份、价格、单位与时点均未绑定"
-        return f"{material['name']}（{material['code']}）｜{_v25_plain(material['delivery'].get('asset_identity_text'), '市场/板块待确认')}｜{_v25_missing(material)}"
+        payload = _v25_timeframe_leaf_payload(material, "daily")
+        price = _v25_number(payload.get("current_close"))
+        audit = _v25_audit_line(material)
+        return (
+            f"{material['name']}（{material['code']}）｜"
+            f"{_v25_plain(material['delivery'].get('asset_identity_text'), '市场/板块待确认')}｜"
+            f"现价={price if price is not None else 'DATA_MISSING'}｜{audit}｜"
+            f"{_v25_missing(material)}"
+        )
     if semantic == "event-alert":
         if market_card:
             return "市场Product事实未准入｜无独立行动权限"
@@ -1605,7 +2350,16 @@ def _v25_project_block(
             return _v25_flow_line(None, card_id, ordinal, market_card=True)
         if _v25_missing_or_partial(material):
             return _v25_flow_line(material, card_id, ordinal)
-        return _v25_plain(at(material, "factor.supply_demand_volume_price.summary"), "供需材料无独立事件")
+        supply = _v25_plain(
+            at(material, "factor.supply_demand_volume_price.summary"),
+            "供需材料无独立事件",
+        )
+        asset_leaf = (
+            _v25_etf_specific_line(material)
+            if _v25_card_asset_type(material, card_id) == "etf"
+            else _v25_quality_line(material)
+        )
+        return "｜".join(value for value in (supply, asset_leaf) if value)
     if semantic == "attn":
         fallback = (
             f"{_v25_card_role(card_id)}：没有已形成触发"
@@ -1623,7 +2377,9 @@ def _v25_project_block(
             return fallback
         return _v25_plain(at(material, "brief.invalidation"), fallback)
     if semantic == "small":
-        return _v25_history_line(material, card_id)
+        history = _v25_history_line(material, card_id)
+        audit = _v25_audit_line(material)
+        return "｜".join(value for value in (history, audit) if value)
     if semantic == "candidate-note":
         return "候选允许为零或部分；未进入重点不等于永久否决。"
     if semantic == "footer":
@@ -1853,6 +2609,1043 @@ def _v25_email_consumer_quality(output: str) -> dict:
     }
 
 
+def _stage1_rollup_method_state(states: tuple[str, ...]) -> str:
+    current = tuple(state for state in states if state != "NOT_ADMITTED")
+    if not current:
+        return "NOT_ADMITTED"
+    if all(state == "NOT_APPLICABLE" for state in current):
+        return "NOT_APPLICABLE"
+    if any(state in {"READY", "PARTIAL"} for state in current):
+        return "READY" if all(state == "READY" for state in current) else "PARTIAL"
+    if any(state == "UNKNOWN" for state in current):
+        return "UNKNOWN"
+    return "MISSING"
+
+
+def _stage1_exact_method_invocation_verified(
+    rows: tuple[Mapping[str, Any], ...],
+    *,
+    strict: bool,
+    runtime_state: str,
+) -> bool:
+    """Verify one method from its own source-bound execution receipts."""
+    observed_rows = tuple(
+        row for row in rows
+        if row.get("state") in {"READY", "PARTIAL"}
+    )
+    return bool(
+        strict
+        and runtime_state in {"READY", "PARTIAL"}
+        and observed_rows
+        and all(
+            len(str(row.get("method_receipt_hash") or "")) == 64
+            and row.get("runtime_source_bound") is True
+            for row in observed_rows
+        )
+    )
+
+
+def _stage1_method_rows(material: Mapping) -> tuple[dict[str, Any], ...]:
+    factor = material["factor"]
+    trace = validate_runtime_trace(factor)
+    universe = trace["complete_research_universe"]
+    matrix = trace["timeframe_family_matrix"]
+    runtime_rows: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for cell in matrix.get("cells") or ():
+        if not isinstance(cell, Mapping):
+            continue
+        for row in cell.get("method_coverage") or ():
+            if not isinstance(row, Mapping):
+                continue
+            runtime_rows[str(row.get("method_id") or "")].append({
+                "timeframe": row.get("timeframe"),
+                "family": row.get("family"),
+                "state": row.get("state"),
+                "reason": row.get("reason"),
+                "method_receipt_hash": row.get("method_receipt_hash"),
+                "runtime_source_bound": bool(
+                    at(row, "runtime_source_binding.runtime_source_bound")
+                ),
+            })
+    for row in matrix.get("non_matrix_methods") or ():
+        if isinstance(row, Mapping):
+            runtime_rows[str(row.get("method_id") or "")].append({
+                "timeframe": "asset",
+                "family": tuple(row.get("family_targets") or ()),
+                "state": row.get("state"),
+                "reason": row.get("reason"),
+                "method_receipt_hash": None,
+                "runtime_source_bound": False,
+            })
+    strict = factor.get("method_execution_receipt_policy") == "REQUIRED"
+    result = []
+    for profile in universe.get("methods") or ():
+        if not isinstance(profile, Mapping):
+            continue
+        method_id = str(profile.get("method_id") or "")
+        rows = tuple(runtime_rows.get(method_id) or ())
+        states = tuple(str(row.get("state") or "UNKNOWN") for row in rows)
+        runtime_state = _stage1_rollup_method_state(states)
+        requirement_id = str(profile.get("requirement_id") or "")
+        # One sibling method may remain missing while this method has actually
+        # executed on source-bound inputs; a parent-family rollup must not erase
+        # that exact leaf proof.
+        invocation_verified = _stage1_exact_method_invocation_verified(
+            rows,
+            strict=strict,
+            runtime_state=runtime_state,
+        )
+        result.append({
+            "method_id": method_id,
+            "requirement_id": requirement_id,
+            "implementation_state": profile.get("leaf_implementation_state"),
+            "consumer_scope": profile.get("consumer_scope"),
+            "target_timeframes": tuple(profile.get("target_timeframes") or ()),
+            "effective_execution_timeframes": tuple(
+                profile.get("current_execution_timeframes") or ()
+            ),
+            "runtime_state": runtime_state,
+            "runtime_observation_count": len(rows),
+            "actual_invocation_verified": invocation_verified,
+            "runtime_source_bound": any(
+                row.get("runtime_source_bound") is True for row in rows
+            ),
+            "method_receipt_hashes": tuple(sorted({
+                str(row.get("method_receipt_hash"))
+                for row in rows if len(str(row.get("method_receipt_hash") or "")) == 64
+            })),
+            "product_slot_ids": tuple(profile.get("parent_product_slot_ids") or ()),
+            "strategy_clauses": tuple(profile.get("parent_strategy_clauses") or ()),
+        })
+    if len(result) != 43 or len({row["method_id"] for row in result}) != 43:
+        raise TraceabilityError("STAGE1_METHOD_CLOSED_WORLD_MISMATCH")
+    return tuple(result)
+
+
+def _stage1_scope_projection_binding(
+    scope_projection: Mapping,
+    rendered_lookup: Mapping[str, Mapping],
+) -> dict[str, Any]:
+    """Normalize one scope projection/render binding for all Stage-1 consumers."""
+    locations = tuple(
+        str(value) for value in scope_projection.get("location_ids") or ()
+    )
+    projection_hash = str(scope_projection.get("projection_sha256") or "")
+    projection_hashes = (
+        tuple(projection_hash for _ in locations) if projection_hash else ()
+    )
+    admission_hashes = tuple(
+        str(value)
+        for value in scope_projection.get("product_admission_hashes") or ()
+        if len(str(value)) == 64
+    )
+    rendered_matches = bool(
+        locations
+        and len(locations) == len(projection_hashes)
+        and all(
+            rendered_lookup.get(location_id, {}).get("projection_sha256")
+            == expected_hash
+            for location_id, expected_hash in zip(
+                locations, projection_hashes,
+            )
+        )
+    )
+    return {
+        "locations": locations,
+        "projection_hashes": projection_hashes,
+        "admission_hashes": admission_hashes,
+        "rendered_matches": rendered_matches,
+    }
+
+
+def _stage1_data_object_consumer_row(
+    row: Mapping,
+    *,
+    product_admitted: bool,
+    admission: Mapping,
+    scope_projection: Mapping,
+    rendered_lookup: Mapping[str, Mapping],
+    direct_leaf_dataset_ids: set[str],
+) -> dict[str, Any]:
+    """Bind one admitted object either to a numeric leaf or the exact scope audit.
+
+    The V2.5 body remains investor-facing.  A non-price object may therefore be
+    consumed by the accepted machine-scope projection plus its ordinary-language
+    location; that is not a numeric leaf and never grants action authority.
+    """
+    dataset_id = str(row.get("dataset_id") or "")
+    domain = str(row.get("domain") or "")
+    current_applicable = (
+        domain != "RECORD"
+        and str(row.get("state") or "") != "NOT_APPLICABLE"
+    )
+    admission_hash = str(admission.get("admission_hash") or "")
+    scope_binding = _stage1_scope_projection_binding(
+        scope_projection, rendered_lookup,
+    )
+    scope_admission_hashes = scope_binding["admission_hashes"]
+    scope_locations = scope_binding["locations"]
+    scope_hashes = scope_binding["projection_hashes"]
+    rendered_scope_matches = scope_binding["rendered_matches"]
+    admission_bound = bool(
+        product_admitted
+        and admission.get("dataset_id") == dataset_id
+        and admission.get("product_admitted") is True
+        and len(admission_hash) == 64
+    )
+    scope_consumed = bool(
+        admission_bound
+        and scope_projection.get("id") == dataset_id
+        and scope_projection.get("domain") == domain
+        and scope_projection.get("state") == "READY"
+        and admission_hash in scope_admission_hashes
+        and scope_projection.get("consumer_projection")
+        == "MACHINE_RECEIPT_WITH_ROLE_SUMMARIZED_EMAIL"
+        and rendered_scope_matches
+    )
+    direct_leaf_consumed = bool(
+        admission_bound and dataset_id in direct_leaf_dataset_ids
+    )
+    consumer_bound = direct_leaf_consumed or scope_consumed
+    consumer_state = (
+        "NOT_APPLICABLE"
+        if not current_applicable
+        else "NOT_PRODUCT_ADMITTED"
+        if not product_admitted
+        else "V25_PRICE_TIMEFRAME_LEAF_CONSUMED"
+        if direct_leaf_consumed
+        else "V25_MACHINE_SCOPE_CONSUMED"
+        if scope_consumed
+        else "V25_CONSUMER_BINDING_MISSING"
+    )
+    result = {
+        "dataset_id": dataset_id,
+        "domain": domain,
+        "state": str(row.get("state") or "UNKNOWN"),
+        "reason": str(row.get("reason") or ""),
+        "product_admitted": product_admitted,
+        "current_product_applicable": current_applicable,
+        "source_identity_observed": str(row.get("state") or "") in {
+            "READY", "PARTIAL",
+        },
+        "admission_hash": admission_hash or None,
+        "v25_leaf_consumed": direct_leaf_consumed,
+        "v25_scope_audit_consumed": scope_consumed,
+        "v25_consumer_bound": consumer_bound,
+        "v25_consumer_state": consumer_state,
+        "scope_projection_state": scope_projection.get("state"),
+        "scope_consumer_projection": scope_projection.get(
+            "consumer_projection"
+        ),
+        "scope_location_ids": scope_locations,
+        "scope_projection_hashes": scope_hashes,
+        "scope_product_admission_hashes": scope_admission_hashes,
+    }
+    result["v25_consumer_binding_hash"] = digest(result)
+    return result
+
+
+def _stage1_atomic_subfield_consumer_row(
+    identifier: str,
+    *,
+    admission: Mapping,
+    scope_projection: Mapping,
+    rendered_lookup: Mapping[str, Mapping],
+) -> dict[str, Any]:
+    admission_hash = str(admission.get("admission_hash") or "")
+    scope_binding = _stage1_scope_projection_binding(
+        scope_projection, rendered_lookup,
+    )
+    scope_admission_hashes = scope_binding["admission_hashes"]
+    scope_locations = scope_binding["locations"]
+    scope_hashes = scope_binding["projection_hashes"]
+    rendered_scope_matches = scope_binding["rendered_matches"]
+    source_fact_hash = str(scope_projection.get("source_fact_hash") or "")
+    rendered_fact_hashes = tuple(sorted({
+        str(value)
+        for location_id in scope_locations
+        for value in (
+            rendered_lookup.get(location_id, {}).get("input_atomic_fact_hashes") or ()
+        )
+        if len(str(value)) == 64
+    }))
+    product_admitted = bool(
+        admission.get("dataset_id") == identifier
+        and admission.get("product_admitted") is True
+        and len(admission_hash) == 64
+    )
+    # A visible, hashed missingness location proves that the V2.5 consumer is
+    # wired even when the underlying atomic fact is not yet Product-admitted.
+    # Keep that consumer proof separate from consumption of an admitted fact;
+    # otherwise an external data gap is misreported as an implementation gap.
+    scope_projection_bound = bool(
+        scope_projection.get("id") == identifier
+        and scope_projection.get("state") in {
+            "BOUND", "UNRESOLVED_MISSINGNESS",
+        }
+        and scope_projection.get("consumer_projection")
+        == "MACHINE_RECEIPT_WITH_ROLE_SUMMARIZED_EMAIL"
+        and rendered_scope_matches
+        and scope_locations
+        and len(scope_locations) == len(scope_hashes)
+        and all(len(str(value)) == 64 for value in scope_hashes)
+    )
+    admitted_fact_consumed = bool(
+        product_admitted
+        and scope_projection_bound
+        and scope_projection.get("state") == "BOUND"
+        and admission_hash in scope_admission_hashes
+        and len(source_fact_hash) == 64
+        and source_fact_hash in rendered_fact_hashes
+        and str(scope_projection.get("fact_summary") or "").strip()
+    )
+    result = {
+        "id": identifier,
+        "product_admitted": product_admitted,
+        "admission_hash": admission_hash or None,
+        "v25_scope_audit_consumed": scope_projection_bound,
+        "v25_consumer_bound": scope_projection_bound,
+        "v25_atomic_fact_consumed": admitted_fact_consumed,
+        "v25_consumer_state": (
+            "V25_ATOMIC_SCOPE_CONSUMED"
+            if admitted_fact_consumed
+            else "V25_ATOMIC_MISSINGNESS_CONSUMED"
+            if scope_projection_bound
+            else "V25_ATOMIC_CONSUMER_BINDING_MISSING"
+        ),
+        "scope_projection_state": scope_projection.get("state"),
+        "scope_consumer_projection": scope_projection.get(
+            "consumer_projection"
+        ),
+        "scope_location_ids": scope_locations,
+        "scope_projection_hashes": scope_hashes,
+        "scope_product_admission_hashes": scope_admission_hashes,
+        "source_fact_hash": source_fact_hash or None,
+        "rendered_atomic_fact_hashes": rendered_fact_hashes,
+        "v25_atomic_fact_hash_consumed": admitted_fact_consumed,
+    }
+    result["v25_consumer_binding_hash"] = digest(result)
+    return result
+
+
+def compile_stage1_vertical_product_receipt(
+    *,
+    materials: list[dict],
+    assignment: Mapping,
+    report_date: str,
+    rendered_blocks: list[dict[str, Any]],
+    slot_projections: list[dict[str, Any]],
+    whole_scope_projection: Mapping,
+) -> dict:
+    """Compile one no-substitution Stage-1 Product vertical over existing owners."""
+    rendered_lookup = {
+        str(row.get("block_id") or ""): row
+        for row in rendered_blocks if isinstance(row, Mapping)
+    }
+    scope_projection_lookup = {
+        str(row.get("id") or ""): row
+        for row in whole_scope_projection.get("data_object_projections") or ()
+        if isinstance(row, Mapping)
+    }
+    if len(scope_projection_lookup) != 76:
+        raise TraceabilityError("STAGE1_SCOPE_DATA_OBJECT_SET_MISMATCH")
+    atomic_scope_projection_lookup = {
+        str(row.get("id") or ""): row
+        for row in whole_scope_projection.get("atomic_subfield_projections") or ()
+        if isinstance(row, Mapping)
+    }
+    if (
+        frozenset(atomic_scope_projection_lookup)
+        != ACCEPTED_WHOLE_PRODUCT_ATOMIC_SUBFIELDS
+    ):
+        raise TraceabilityError("STAGE1_SCOPE_ATOMIC_SUBFIELD_SET_MISMATCH")
+    material_rows = []
+    for material in materials:
+        code = str(material.get("code") or "")
+        factor = material["factor"]
+        trace = validate_runtime_trace(factor)
+        universe = trace["complete_research_universe"]
+        gate = universe["full_domain_data_gate"]
+        admitted_ids = {
+            str(value) for value in gate.get("current_product_admitted_dataset_ids") or ()
+        }
+        methods = _stage1_method_rows(material)
+        method_lookup = {row["method_id"]: row for row in methods}
+        source_data_objects = tuple(
+            dict(row) for row in universe.get("data_objects") or ()
+            if isinstance(row, Mapping)
+        )
+        admission_lookup = {
+            str(row.get("dataset_id") or ""): row
+            for row in at(universe, "data_object_admission.objects") or ()
+            if isinstance(row, Mapping)
+        }
+        atomic_admission_lookup = {
+            str(row.get("dataset_id") or ""): row
+            for row in at(universe, "atomic_subfield_admission.objects") or ()
+            if isinstance(row, Mapping)
+        }
+        atomic_subfields = tuple(
+            _stage1_atomic_subfield_consumer_row(
+                identifier,
+                admission=atomic_admission_lookup.get(identifier, {}),
+                scope_projection=atomic_scope_projection_lookup.get(
+                    identifier, {}
+                ),
+                rendered_lookup=rendered_lookup,
+            )
+            for identifier in sorted(
+                ACCEPTED_WHOLE_PRODUCT_ATOMIC_SUBFIELDS
+            )
+        )
+        cells = []
+        for cell in trace["timeframe_family_matrix"].get("cells") or ():
+            timeframe = str(cell.get("timeframe") or "")
+            dataset_id = (
+                "E_PRICE_1D" if material["asset_type"] == "etf" else "P_DAILY"
+            ) if timeframe in {"monthly", "weekly", "daily"} else (
+                "E_PRICE_5M" if material["asset_type"] == "etf" else "P_5M"
+            )
+            current_method_ids = tuple(cell.get("current_method_ids") or ())
+            cells.append({
+                "cell_id": cell.get("cell_id"),
+                "timeframe": timeframe,
+                "family": cell.get("family"),
+                "state": cell.get("state"),
+                "reason": cell.get("reason"),
+                "runtime_source_bound": bool(
+                    at(cell, "runtime_binding.runtime_source_bound")
+                ),
+                "price_dataset_id": dataset_id,
+                "price_dataset_product_admitted": dataset_id in admitted_ids,
+                "current_method_ids": current_method_ids,
+                "all_current_methods_invocation_verified": bool(current_method_ids) and all(
+                    method_lookup.get(method_id, {}).get("actual_invocation_verified") is True
+                    for method_id in current_method_ids
+                ),
+                "cell_hash": cell.get("cell_hash"),
+            })
+        coverage_lookup = {
+            str(row.get("slot_id") or ""): row
+            for row in material["coverage"].get("slots") or ()
+            if isinstance(row, Mapping)
+        }
+        projected = [
+            row for row in slot_projections
+            if isinstance(row, Mapping) and str(row.get("asset_code") or "") == code
+        ]
+        slot_rows = []
+        for row in projected:
+            slot_id = str(row.get("slot_id") or "")
+            coverage = coverage_lookup.get(slot_id, {})
+            locations = tuple(str(value) for value in row.get("location_ids") or ())
+            location_hashes = tuple(
+                str(rendered_lookup.get(value, {}).get("projection_sha256") or "")
+                for value in locations
+            )
+            leaf_hashes = tuple(sorted({
+                str(rendered_lookup.get(value, {}).get("input_leaf_hash") or "")
+                for value in locations
+                if (
+                    len(str(rendered_lookup.get(value, {}).get("input_leaf_hash") or "")) == 64
+                    and rendered_lookup.get(value, {}).get(
+                        "input_leaf_product_admitted"
+                    ) is True
+                    and rendered_lookup.get(value, {}).get(
+                        "input_leaf_method_execution_verified"
+                    ) is True
+                )
+            }))
+            path_hashes = tuple(sorted({
+                digest(value)
+                for path in coverage.get("canonical_paths") or ()
+                for value in (at(factor, str(path)),)
+                if value is not None
+            }))
+            rendered_path_hashes = tuple(sorted({
+                str(path_hash)
+                for location_id in locations
+                for path_hash in (
+                    rendered_lookup.get(location_id, {}).get(
+                        "input_canonical_path_hashes"
+                    ) or ()
+                )
+                if len(str(path_hash)) == 64
+            }))
+            direct = slot_id in _STAGE1_DIRECT_SLOT_CONSUMERS
+            timeframe_bundle = (
+                slot_id.startswith(_STAGE1_TIMEFRAME_SLOT_PREFIX)
+                or slot_id in _STAGE1_TIMEFRAME_COMPOSITE_SLOT_CONSUMERS
+            )
+            evidence_available = coverage.get("state") == "EVIDENCE_AVAILABLE"
+            rendered_evidence = row.get("projection_state") in {
+                "RENDERED_EVIDENCE", "RENDERED_PARTIAL_EVIDENCE",
+            }
+            leaf_consumed = bool(
+                evidence_available
+                and rendered_evidence
+                and locations
+                and all(len(value) == 64 for value in location_hashes)
+                and (
+                    (timeframe_bundle and leaf_hashes)
+                    or (
+                        direct
+                        and path_hashes
+                        and set(path_hashes) <= set(rendered_path_hashes)
+                    )
+                )
+            )
+            consumer_state = (
+                "V25_LEAF_CONSUMED"
+                if leaf_consumed and material["fact_mode"] == "ADMITTED"
+                else "V25_PARTIAL_LEAF_CONSUMED"
+                if leaf_consumed and material["fact_mode"] == "PARTIALLY_ADMITTED"
+                else "SYNTHETIC_CONTRACT_ONLY"
+                if leaf_consumed and material["fact_mode"] == "SYNTHETIC_TEST"
+                else "V25_ROLE_SUMMARY_OR_MISSINGNESS_ONLY"
+            )
+            slot_row = {
+                "slot_id": slot_id,
+                "coverage_state": coverage.get("state"),
+                "projection_state": row.get("projection_state"),
+                "consumer_state": consumer_state,
+                "location_ids": locations,
+                "location_projection_hashes": location_hashes,
+                "canonical_path_hashes": path_hashes,
+                "rendered_canonical_path_hashes": rendered_path_hashes,
+                "timeframe_leaf_hashes": leaf_hashes,
+                "leaf_consumed": leaf_consumed,
+            }
+            slot_row["consumer_binding_hash"] = digest(slot_row)
+            slot_rows.append(slot_row)
+        rendered_price_dataset_ids = {
+            str(rendered_lookup.get(location_id, {}).get("input_leaf_dataset_id") or "")
+            for slot_row in slot_rows
+            if slot_row.get("projection_state") in {
+                "RENDERED_EVIDENCE", "RENDERED_PARTIAL_EVIDENCE",
+            }
+            for location_id in slot_row.get("location_ids") or ()
+            if (
+                rendered_lookup.get(location_id, {}).get(
+                    "input_leaf_product_admitted"
+                ) is True
+                and rendered_lookup.get(location_id, {}).get(
+                    "input_leaf_method_execution_verified"
+                ) is True
+            )
+        }
+        data_objects = tuple(
+            _stage1_data_object_consumer_row(
+                row,
+                product_admitted=(
+                    str(row.get("dataset_id") or "") in admitted_ids
+                ),
+                admission=admission_lookup.get(
+                    str(row.get("dataset_id") or ""), {}
+                ),
+                scope_projection=scope_projection_lookup.get(
+                    str(row.get("dataset_id") or ""), {}
+                ),
+                rendered_lookup=rendered_lookup,
+                direct_leaf_dataset_ids=rendered_price_dataset_ids,
+            )
+            for row in source_data_objects
+        )
+        factor_as_of_instant = str(
+            factor.get("research_as_of")
+            or at(factor, "multi_timeframe_structure_context.snapshot_observed_at")
+            or at(factor, "multi_timeframe_structure_context.available_at_max")
+            or ""
+        ).strip()
+        try:
+            factor_as_of_aware = _aware(factor_as_of_instant)
+        except TraceabilityError:
+            factor_as_of_aware = None
+        factor_as_of = (
+            factor_as_of_aware.date().isoformat()
+            if factor_as_of_aware is not None else ""
+        )
+        as_of_current = bool(factor_as_of) and factor_as_of == report_date
+        research_operation_id = str(
+            factor.get("research_operation_id") or ""
+        ).strip()
+        research_intended_use = str(
+            factor.get("research_intended_use") or ""
+        ).strip()
+        operation_context_valid = bool(research_operation_id) and (
+            research_intended_use == "NO_SEND_RESEARCH"
+        )
+        thirty = at(factor, "multi_timeframe_structure_context.timeframes.30m")
+        thirty = thirty if isinstance(thirty, Mapping) else {}
+        trigger_requirement = next(
+            (
+                row for row in universe.get("requirements") or ()
+                if isinstance(row, Mapping)
+                and row.get("requirement_id") == "INTRADAY_30m"
+            ),
+            {},
+        )
+        carrier_trigger = {
+            "carrier_state": str(thirty.get("status") or "MISSING"),
+            "carrier_strategy_admitted": thirty.get("strategy_admitted") is True,
+            "trigger_requirement_state": str(
+                trigger_requirement.get("state") or "UNKNOWN"
+            ),
+            "carrier_is_not_trigger": thirty.get("strategy_admitted") is not True,
+        }
+        blockers = []
+        if material["fact_mode"] != "ADMITTED" or gate.get("full_domain_product_ready") is not True:
+            blockers.append("FULL_DOMAIN_PRODUCT_DATA_NOT_READY")
+        if not as_of_current:
+            blockers.append("RESEARCH_ASOF_MISSING_OR_REPORT_DATE_MISMATCH")
+        if (
+            material["fact_mode"] == "ADMITTED"
+            and not operation_context_valid
+        ):
+            blockers.append(
+                "RESEARCH_OPERATION_CONTEXT_MISSING_OR_INVALID"
+            )
+        if any(
+            row["runtime_state"] in {"READY", "PARTIAL"}
+            and row["actual_invocation_verified"] is not True
+            for row in methods
+        ):
+            blockers.append("METHOD_OUTPUT_NOT_ACTUAL_INVOCATION_VERIFIED")
+        if any(
+            row["state"] in {"READY", "PARTIAL"}
+            and (
+                row["runtime_source_bound"] is not True
+                or row["price_dataset_product_admitted"] is not True
+            )
+            for row in cells
+        ):
+            blockers.append("TECHNICAL_CELL_NOT_SOURCE_AND_PRODUCT_BOUND")
+        if any(
+            row["coverage_state"] == "EVIDENCE_AVAILABLE"
+            and row["projection_state"] in {
+                "RENDERED_EVIDENCE", "RENDERED_PARTIAL_EVIDENCE",
+            }
+            and row["leaf_consumed"] is not True
+            for row in slot_rows
+        ):
+            blockers.append("V25_AVAILABLE_SLOT_LEAF_CONSUMPTION_INCOMPLETE")
+        if any(
+            row["current_product_applicable"] is True
+            and row["product_admitted"] is True
+            and row["v25_consumer_bound"] is not True
+            for row in data_objects
+        ):
+            blockers.append("PRODUCT_DATA_OBJECT_V25_CONSUMER_BINDING_INCOMPLETE")
+        if any(
+            row["v25_consumer_bound"] is not True
+            or (
+                row["product_admitted"] is True
+                and row["v25_atomic_fact_consumed"] is not True
+            )
+            for row in atomic_subfields
+        ):
+            blockers.append(
+                "ATOMIC_SUBFIELD_V25_CONSUMER_BINDING_INCOMPLETE"
+            )
+        if carrier_trigger["carrier_strategy_admitted"]:
+            blockers.append("TIMEFRAME_CARRIER_ILLEGALLY_PROMOTED_TO_TRIGGER")
+        material_row = {
+            "code": code,
+            "asset_type": material["asset_type"],
+            "fact_mode": material["fact_mode"],
+            "research_as_of": factor_as_of or None,
+            "research_as_of_instant": factor_as_of_instant or None,
+            "research_operation_id": research_operation_id or None,
+            "research_intended_use": research_intended_use or None,
+            "research_operation_context_valid": operation_context_valid,
+            "report_date": report_date,
+            "research_as_of_current": as_of_current,
+            "runtime_trace_hash": trace.get("runtime_trace_hash"),
+            "method_rows": methods,
+            "method_state_counts": dict(Counter(
+                row["runtime_state"] for row in methods
+            )),
+            "actual_invocation_verified_count": sum(
+                row["actual_invocation_verified"] is True for row in methods
+            ),
+            "data_object_rows": data_objects,
+            "atomic_subfield_rows": atomic_subfields,
+            "current_product_admitted_dataset_ids": tuple(sorted(admitted_ids)),
+            "cell_rows": tuple(cells),
+            "slot_rows": tuple(slot_rows),
+            "carrier_trigger_separation": carrier_trigger,
+            "blocker_codes": tuple(dict.fromkeys(blockers)),
+            "state": "FACT_READY" if not blockers else "HOLD",
+        }
+        material_row["material_hash"] = digest(material_row)
+        material_rows.append(material_row)
+    blockers = tuple(dict.fromkeys(
+        code
+        for material in material_rows
+        for code in material["blocker_codes"]
+    ))
+    if not material_rows:
+        blockers = ("NO_BOUND_RESEARCH_MATERIAL",)
+    document = {
+        "schema_version": STAGE1_VERTICAL_PRODUCT_RECEIPT_VERSION,
+        "report_date": report_date,
+        "material_count": len(material_rows),
+        "materials": tuple(material_rows),
+        "whole_scope_projection_hash": whole_scope_projection.get("projection_hash"),
+        "state": "FACT_READY" if material_rows and not blockers else "HOLD",
+        "blocker_codes": blockers,
+        "proof_scope": (
+            "CURRENT_RUNTIME_TO_V25_NO_SEND_CONSUMER_BINDING_"
+            "NOT_PROVIDER_RIGHTS_OR_DELIVERY_OR_LEARNING"
+        ),
+        "policy": {
+            "registered_is_not_executed": True,
+            "executed_is_not_product_admitted": True,
+            "product_admitted_is_not_v25_consumed": True,
+            "timeframe_carrier_is_not_strategy_trigger": True,
+            "historical_execution_never_backfills_current_report": True,
+            "role_summary_is_not_numeric_leaf_consumption": True,
+            "role_summary_is_not_data_object_leaf_consumption": True,
+            "machine_scope_receipt_is_data_object_consumer_not_numeric_leaf": True,
+            "exact_atomic_admission_is_required_for_atomic_fact_consumption": True,
+            "truthful_atomic_missingness_is_consumer_bound_not_fact_consumed": True,
+            "strategy_training_delivery_authority": False,
+        },
+    }
+    document["receipt_hash"] = digest(document)
+    return document
+
+
+def validate_stage1_vertical_product_receipt(value: Mapping) -> dict:
+    if not isinstance(value, Mapping) or value.get("schema_version") != STAGE1_VERTICAL_PRODUCT_RECEIPT_VERSION:
+        raise TraceabilityError("STAGE1_VERTICAL_RECEIPT_SCHEMA_MISMATCH")
+    body = dict(value)
+    claimed_hash = str(body.pop("receipt_hash", ""))
+    if len(claimed_hash) != 64 or digest(body) != claimed_hash:
+        raise TraceabilityError("STAGE1_VERTICAL_RECEIPT_HASH_MISMATCH")
+    materials = tuple(value.get("materials") or ())
+    if value.get("material_count") != len(materials):
+        raise TraceabilityError("STAGE1_VERTICAL_MATERIAL_COUNT_MISMATCH")
+    calculated_all_blockers: list[str] = []
+    for material in materials:
+        if not isinstance(material, Mapping):
+            raise TraceabilityError("STAGE1_VERTICAL_MATERIAL_INVALID")
+        material_body = dict(material)
+        material_hash = str(material_body.pop("material_hash", ""))
+        if len(material_hash) != 64 or digest(material_body) != material_hash:
+            raise TraceabilityError("STAGE1_VERTICAL_MATERIAL_HASH_MISMATCH")
+        methods = tuple(material.get("method_rows") or ())
+        cells = tuple(material.get("cell_rows") or ())
+        data_objects = tuple(material.get("data_object_rows") or ())
+        atomic_subfields = tuple(
+            material.get("atomic_subfield_rows") or ()
+        )
+        slots = tuple(material.get("slot_rows") or ())
+        if len(methods) != 43 or len({row.get("method_id") for row in methods}) != 43:
+            raise TraceabilityError("STAGE1_VERTICAL_METHOD_COUNT_MISMATCH")
+        if len(cells) != 56 or len({row.get("cell_id") for row in cells}) != 56:
+            raise TraceabilityError("STAGE1_VERTICAL_CELL_COUNT_MISMATCH")
+        if len(data_objects) != 76 or len({row.get("dataset_id") for row in data_objects}) != 76:
+            raise TraceabilityError("STAGE1_VERTICAL_DATA_OBJECT_COUNT_MISMATCH")
+        if (
+            len(atomic_subfields) != 7
+            or frozenset(
+                str(row.get("id") or "") for row in atomic_subfields
+            ) != ACCEPTED_WHOLE_PRODUCT_ATOMIC_SUBFIELDS
+        ):
+            raise TraceabilityError(
+                "STAGE1_VERTICAL_ATOMIC_SUBFIELD_COUNT_MISMATCH"
+            )
+        for atomic_row in atomic_subfields:
+            if not isinstance(atomic_row, Mapping):
+                raise TraceabilityError(
+                    "STAGE1_VERTICAL_ATOMIC_SUBFIELD_INVALID"
+                )
+            binding_body = dict(atomic_row)
+            binding_hash = str(
+                binding_body.pop("v25_consumer_binding_hash", "")
+            )
+            if len(binding_hash) != 64 or digest(binding_body) != binding_hash:
+                raise TraceabilityError(
+                    "STAGE1_VERTICAL_ATOMIC_CONSUMER_HASH_MISMATCH"
+                )
+            consumer_bound = atomic_row.get("v25_consumer_bound") is True
+            fact_consumed = atomic_row.get("v25_atomic_fact_consumed") is True
+            expected_state = (
+                "V25_ATOMIC_SCOPE_CONSUMED"
+                if fact_consumed
+                else "V25_ATOMIC_MISSINGNESS_CONSUMED"
+                if consumer_bound
+                else "V25_ATOMIC_CONSUMER_BINDING_MISSING"
+            )
+            if atomic_row.get("v25_consumer_state") != expected_state:
+                raise TraceabilityError(
+                    "STAGE1_VERTICAL_FALSE_ATOMIC_CONSUMPTION"
+                )
+            if consumer_bound and not (
+                atomic_row.get("scope_projection_state") in {
+                    "BOUND", "UNRESOLVED_MISSINGNESS",
+                }
+                and atomic_row.get("scope_consumer_projection")
+                == "MACHINE_RECEIPT_WITH_ROLE_SUMMARIZED_EMAIL"
+                and tuple(atomic_row.get("scope_location_ids") or ())
+                and len(tuple(atomic_row.get("scope_location_ids") or ()))
+                == len(tuple(atomic_row.get("scope_projection_hashes") or ()))
+                and all(
+                    len(str(item)) == 64
+                    for item in atomic_row.get("scope_projection_hashes") or ()
+                )
+            ):
+                raise TraceabilityError(
+                    "STAGE1_VERTICAL_FALSE_ATOMIC_CONSUMPTION"
+                )
+            if fact_consumed and not (
+                atomic_row.get("product_admitted") is True
+                and len(str(atomic_row.get("admission_hash") or "")) == 64
+                and len(str(atomic_row.get("source_fact_hash") or "")) == 64
+                and atomic_row.get("v25_atomic_fact_hash_consumed") is True
+                and str(atomic_row.get("source_fact_hash") or "") in {
+                    str(item)
+                    for item in (
+                        atomic_row.get("rendered_atomic_fact_hashes") or ()
+                    )
+                }
+                and atomic_row.get("scope_projection_state") == "BOUND"
+                and str(atomic_row.get("admission_hash") or "") in {
+                    str(item)
+                    for item in (
+                        atomic_row.get("scope_product_admission_hashes") or ()
+                    )
+                }
+            ):
+                raise TraceabilityError(
+                    "STAGE1_VERTICAL_FALSE_ATOMIC_CONSUMPTION"
+                )
+            if atomic_row.get("product_admitted") is True and not fact_consumed:
+                raise TraceabilityError(
+                    "STAGE1_VERTICAL_FALSE_ATOMIC_CONSUMPTION"
+                )
+        for data_row in data_objects:
+            if not isinstance(data_row, Mapping):
+                raise TraceabilityError("STAGE1_VERTICAL_DATA_OBJECT_INVALID")
+            binding_body = dict(data_row)
+            binding_hash = str(
+                binding_body.pop("v25_consumer_binding_hash", "")
+            )
+            if len(binding_hash) != 64 or digest(binding_body) != binding_hash:
+                raise TraceabilityError(
+                    "STAGE1_VERTICAL_DATA_OBJECT_CONSUMER_HASH_MISMATCH"
+                )
+            dataset_id = str(data_row.get("dataset_id") or "")
+            direct_leaf = data_row.get("v25_leaf_consumed") is True
+            scope_audit = data_row.get("v25_scope_audit_consumed") is True
+            consumer_bound = data_row.get("v25_consumer_bound") is True
+            applicable = data_row.get("current_product_applicable") is True
+            product_admitted = data_row.get("product_admitted") is True
+            if direct_leaf and not (
+                product_admitted
+                and len(str(data_row.get("admission_hash") or "")) == 64
+                and dataset_id in {
+                    "P_DAILY", "P_5M", "E_PRICE_1D", "E_PRICE_5M",
+                }
+            ):
+                raise TraceabilityError(
+                    "STAGE1_VERTICAL_FALSE_DATA_OBJECT_CONSUMPTION"
+                )
+            if scope_audit and not (
+                product_admitted
+                and len(str(data_row.get("admission_hash") or "")) == 64
+                and data_row.get("scope_projection_state") == "READY"
+                and str(data_row.get("admission_hash") or "") in {
+                    str(item)
+                    for item in (
+                        data_row.get("scope_product_admission_hashes") or ()
+                    )
+                }
+                and data_row.get("scope_consumer_projection")
+                == "MACHINE_RECEIPT_WITH_ROLE_SUMMARIZED_EMAIL"
+                and tuple(data_row.get("scope_location_ids") or ())
+                and all(
+                    str(item).startswith("block-")
+                    for item in data_row.get("scope_location_ids") or ()
+                )
+                and all(
+                    len(str(item)) == 64
+                    for item in data_row.get("scope_projection_hashes") or ()
+                )
+                and len(tuple(data_row.get("scope_location_ids") or ()))
+                == len(tuple(data_row.get("scope_projection_hashes") or ()))
+            ):
+                raise TraceabilityError(
+                    "STAGE1_VERTICAL_FALSE_DATA_OBJECT_CONSUMPTION"
+                )
+            if consumer_bound != (direct_leaf or scope_audit):
+                raise TraceabilityError(
+                    "STAGE1_VERTICAL_FALSE_DATA_OBJECT_CONSUMPTION"
+                )
+            expected_consumer_state = (
+                "NOT_APPLICABLE"
+                if not applicable
+                else "NOT_PRODUCT_ADMITTED"
+                if not product_admitted
+                else "V25_PRICE_TIMEFRAME_LEAF_CONSUMED"
+                if direct_leaf
+                else "V25_MACHINE_SCOPE_CONSUMED"
+                if scope_audit
+                else "V25_CONSUMER_BINDING_MISSING"
+            )
+            if data_row.get("v25_consumer_state") != expected_consumer_state:
+                raise TraceabilityError(
+                    "STAGE1_VERTICAL_FALSE_DATA_OBJECT_CONSUMPTION"
+                )
+        carrier = material.get("carrier_trigger_separation", {})
+        if carrier.get("carrier_is_not_trigger") is not True:
+            raise TraceabilityError("STAGE1_VERTICAL_CARRIER_TRIGGER_COLLAPSE")
+        for slot in slots:
+            if not isinstance(slot, Mapping):
+                raise TraceabilityError("STAGE1_VERTICAL_SLOT_INVALID")
+            slot_body = dict(slot)
+            slot_hash = str(slot_body.pop("consumer_binding_hash", ""))
+            if len(slot_hash) != 64 or digest(slot_body) != slot_hash:
+                raise TraceabilityError("STAGE1_VERTICAL_SLOT_HASH_MISMATCH")
+            slot_id = str(slot.get("slot_id") or "")
+            direct = slot_id in _STAGE1_DIRECT_SLOT_CONSUMERS
+            timeframe_bundle = (
+                slot_id.startswith(_STAGE1_TIMEFRAME_SLOT_PREFIX)
+                or slot_id in _STAGE1_TIMEFRAME_COMPOSITE_SLOT_CONSUMERS
+            )
+            canonical_hashes = {
+                str(item) for item in slot.get("canonical_path_hashes") or ()
+            }
+            rendered_hashes = {
+                str(item)
+                for item in slot.get("rendered_canonical_path_hashes") or ()
+            }
+            binding_verified = bool(
+                (timeframe_bundle and slot.get("timeframe_leaf_hashes"))
+                or (
+                    direct
+                    and canonical_hashes
+                    and canonical_hashes <= rendered_hashes
+                )
+            )
+            if slot.get("consumer_state") in {
+                "V25_LEAF_CONSUMED", "V25_PARTIAL_LEAF_CONSUMED",
+            } and not (
+                slot.get("leaf_consumed") is True
+                and slot.get("location_ids")
+                and all(
+                    len(str(item)) == 64
+                    for item in slot.get("location_projection_hashes") or ()
+                )
+                and binding_verified
+            ):
+                raise TraceabilityError("STAGE1_VERTICAL_FALSE_V25_CONSUMPTION")
+        calculated: list[str] = []
+        current_applicable = tuple(
+            row for row in data_objects
+            if row.get("current_product_applicable") is True
+        )
+        if (
+            material.get("fact_mode") != "ADMITTED"
+            or not current_applicable
+            or any(row.get("product_admitted") is not True for row in current_applicable)
+        ):
+            calculated.append("FULL_DOMAIN_PRODUCT_DATA_NOT_READY")
+        if material.get("research_as_of_current") is not True:
+            calculated.append("RESEARCH_ASOF_MISSING_OR_REPORT_DATE_MISMATCH")
+        operation_context_valid = (
+            material.get("research_operation_context_valid") is True
+        )
+        if material.get("fact_mode") == "ADMITTED" and not operation_context_valid:
+            calculated.append(
+                "RESEARCH_OPERATION_CONTEXT_MISSING_OR_INVALID"
+            )
+        if operation_context_valid:
+            try:
+                instant = _aware(material.get("research_as_of_instant"))
+            except TraceabilityError as exc:
+                raise TraceabilityError(
+                    "STAGE1_VERTICAL_RESEARCH_ASOF_INSTANT_INVALID"
+                ) from exc
+            if (
+                instant.date().isoformat() != material.get("research_as_of")
+                or not str(material.get("research_operation_id") or "").strip()
+                or material.get("research_intended_use") != "NO_SEND_RESEARCH"
+                or (
+                    material.get("fact_mode") == "ADMITTED"
+                    and material.get("research_as_of")
+                    != material.get("report_date")
+                )
+            ):
+                raise TraceabilityError(
+                    "STAGE1_VERTICAL_RESEARCH_OPERATION_CONTEXT_DRIFT"
+                )
+        if any(
+            row.get("runtime_state") in {"READY", "PARTIAL"}
+            and row.get("actual_invocation_verified") is not True
+            for row in methods
+        ):
+            calculated.append("METHOD_OUTPUT_NOT_ACTUAL_INVOCATION_VERIFIED")
+        if any(
+            row.get("state") in {"READY", "PARTIAL"}
+            and (
+                row.get("runtime_source_bound") is not True
+                or row.get("price_dataset_product_admitted") is not True
+            )
+            for row in cells
+        ):
+            calculated.append("TECHNICAL_CELL_NOT_SOURCE_AND_PRODUCT_BOUND")
+        if any(
+            row.get("coverage_state") == "EVIDENCE_AVAILABLE"
+            and row.get("projection_state") in {
+                "RENDERED_EVIDENCE", "RENDERED_PARTIAL_EVIDENCE",
+            }
+            and row.get("leaf_consumed") is not True
+            for row in slots
+        ):
+            calculated.append("V25_AVAILABLE_SLOT_LEAF_CONSUMPTION_INCOMPLETE")
+        if any(
+            row.get("current_product_applicable") is True
+            and row.get("product_admitted") is True
+            and row.get("v25_consumer_bound") is not True
+            for row in data_objects
+        ):
+            calculated.append(
+                "PRODUCT_DATA_OBJECT_V25_CONSUMER_BINDING_INCOMPLETE"
+            )
+        if any(
+            row.get("v25_consumer_bound") is not True
+            or (
+                row.get("product_admitted") is True
+                and row.get("v25_atomic_fact_consumed") is not True
+            )
+            for row in atomic_subfields
+        ):
+            calculated.append(
+                "ATOMIC_SUBFIELD_V25_CONSUMER_BINDING_INCOMPLETE"
+            )
+        if carrier.get("carrier_strategy_admitted") is True:
+            calculated.append("TIMEFRAME_CARRIER_ILLEGALLY_PROMOTED_TO_TRIGGER")
+        calculated_blockers = tuple(dict.fromkeys(calculated))
+        claimed_blockers = tuple(material.get("blocker_codes") or ())
+        if claimed_blockers != calculated_blockers:
+            raise TraceabilityError("STAGE1_VERTICAL_BLOCKER_VECTOR_MISMATCH")
+        expected_state = "FACT_READY" if not calculated_blockers else "HOLD"
+        if material.get("state") != expected_state:
+            raise TraceabilityError("STAGE1_VERTICAL_FALSE_FACT_READY")
+        calculated_all_blockers.extend(calculated_blockers)
+    expected_blockers = tuple(dict.fromkeys(calculated_all_blockers))
+    if not materials:
+        expected_blockers = ("NO_BOUND_RESEARCH_MATERIAL",)
+    if tuple(value.get("blocker_codes") or ()) != expected_blockers:
+        raise TraceabilityError("STAGE1_VERTICAL_GLOBAL_BLOCKER_VECTOR_MISMATCH")
+    expected_state = "FACT_READY" if materials and not expected_blockers else "HOLD"
+    if value.get("state") != expected_state:
+        raise TraceabilityError("STAGE1_VERTICAL_GLOBAL_STATE_MISMATCH")
+    return dict(value)
+
+
 def render_v2_5_dynamic_no_send(
     results: list[Any] | tuple[Any, ...],
     *,
@@ -1919,6 +3712,18 @@ def render_v2_5_dynamic_no_send(
         assignment,
     )
     assignment["scope_text_by_block"] = scope_text_by_block
+    atomic_fact_hashes_by_block: dict[str, tuple[str, ...]] = {}
+    for row in scope_projection_rows:
+        if row.get("kind") != "atomic_subfield":
+            continue
+        fact_hash = str(row.get("source_fact_hash") or "")
+        if len(fact_hash) != 64:
+            continue
+        for location_id in row.get("location_ids") or ():
+            values = set(atomic_fact_hashes_by_block.get(str(location_id), ()))
+            values.add(fact_hash)
+            atomic_fact_hashes_by_block[str(location_id)] = tuple(sorted(values))
+    assignment["scope_atomic_fact_hashes_by_block"] = atomic_fact_hashes_by_block
 
     replacements: list[tuple[int, int, str]] = []
     rendered_blocks = []
@@ -1937,6 +3742,9 @@ def render_v2_5_dynamic_no_send(
         projected = _v25_project_block(
             parser, block, original_text, assignment, block_ordinals[block_index], report_date
         ).strip() or "DATA_INSUFFICIENT"
+        scope_text = str(scope_text_by_block.get(block_index) or "").strip()
+        if scope_text and scope_text not in projected:
+            projected = f"{projected}｜{scope_text}"
         escaped = html_escape(projected, quote=False)
         inline_rank = 0
         for item in text_nodes:
@@ -1974,13 +3782,61 @@ def render_v2_5_dynamic_no_send(
             replacements.append((item["start"], item["end"], replacement))
         card = _v25_nearest(parser, block_index, class_name="card")
         cycle = _v25_nearest(parser, block_index, class_name="cycle")
+        semantic = _v25_semantic_for_block(parser, block_index)
+        card_id = card.get("id") if card else None
+        cycle_id = cycle.get("id") if cycle else None
+        cycle_timeframe = (
+            TIMEFRAMES[int(str(cycle_id).split("-")[1]) % len(TIMEFRAMES)]
+            if cycle_id else None
+        )
+        material = assignment["cards"].get(card_id) if card_id else None
+        leaf_payload = (
+            _v25_timeframe_leaf_payload(material, cycle_timeframe)
+            if cycle_timeframe and semantic != "cycle-title" else {}
+        )
+        indicator_family = next(
+            (
+                requirement
+                for label, requirement in _V25_FAMILY_REQUIREMENTS
+                if projected.startswith(label + "｜")
+            ),
+            None,
+        )
         rendered_blocks.append({
             "block_id": f"block-{block_index}",
             "mail": block["mail"],
-            "card_id": card.get("id") if card else None,
-            "cycle_id": cycle.get("id") if cycle else None,
-            "semantic": _v25_semantic_for_block(parser, block_index),
+            "card_id": card_id,
+            "cycle_id": cycle_id,
+            "timeframe": cycle_timeframe,
+            "semantic": semantic,
             "tag": block["tag"],
+            "projection_contract": (
+                "TIMEFRAME_LEAF_BUNDLE_V1" if leaf_payload else
+                "INDICATOR_FAMILY_ROLE_SUMMARY_V1" if indicator_family else
+                "ROLE_SUMMARY_OR_DIRECT_LEAF_V1"
+            ),
+            "indicator_family": indicator_family,
+            "input_leaf_hash": digest(leaf_payload) if leaf_payload else None,
+            "input_leaf_product_admitted": (
+                leaf_payload.get("product_admitted") is True if leaf_payload else False
+            ),
+            "input_leaf_dataset_id": (
+                leaf_payload.get("dataset_id") if leaf_payload else None
+            ),
+            "input_leaf_method_execution_verified": (
+                any((leaf_payload.get("family_execution_verified") or {}).values())
+                if leaf_payload else False
+            ),
+            "input_canonical_path_hashes": _v25_block_canonical_path_hashes(
+                material,
+                semantic=semantic,
+                cycle_timeframe=cycle_timeframe,
+            ),
+            "input_atomic_fact_hashes": tuple(
+                assignment.get("scope_atomic_fact_hashes_by_block", {}).get(
+                    f"block-{block_index}", ()
+                )
+            ),
             "projection_sha256": sha256(escaped.encode("utf-8")).hexdigest(),
         })
     replacements.sort(key=lambda row: row[0])
@@ -2013,6 +3869,9 @@ def render_v2_5_dynamic_no_send(
     if output_cards != card_ids or output_cycles != cycle_ids:
         raise TraceabilityError("V25_DYNAMIC_OUTPUT_STRUCTURE_DRIFT")
 
+    rendered_block_lookup = {
+        str(row.get("block_id") or ""): row for row in rendered_blocks
+    }
     slot_projections = []
     for card_id, material in assignment["cards"].items():
         by_slot = {
@@ -2021,22 +3880,40 @@ def render_v2_5_dynamic_no_send(
         } if material else {}
         for slot_id in sorted(ACCEPTED_PRODUCT_SLOT_IDS):
             coverage_row = by_slot.get(slot_id)
-            state = "RENDERED_EVIDENCE" if (
-                material is not None
-                and material["fact_mode"] in {"ADMITTED", "SYNTHETIC_TEST"}
-                and isinstance(coverage_row, Mapping)
+            location_ids = _v25_slot_block_ids(
+                slot_id,
+                card_id,
+                rendered_blocks,
+            )
+            product_leaf_visible = any(
+                rendered_block_lookup.get(location_id, {}).get(
+                    "input_leaf_product_admitted"
+                ) is True
+                for location_id in location_ids
+            )
+            evidence_available = (
+                isinstance(coverage_row, Mapping)
                 and coverage_row.get("state") == "EVIDENCE_AVAILABLE"
-            ) else "RENDERED_MISSINGNESS"
+            )
+            state = (
+                "RENDERED_EVIDENCE"
+                if material is not None
+                and material["fact_mode"] in {"ADMITTED", "SYNTHETIC_TEST"}
+                and evidence_available
+                else "RENDERED_PARTIAL_EVIDENCE"
+                if material is not None
+                and material["fact_mode"] == "PARTIALLY_ADMITTED"
+                and evidence_available
+                and product_leaf_visible
+                else "RENDERED_MISSINGNESS"
+            )
             slot_projections.append({
                 "card_id": card_id,
                 "asset_code": material.get("code") if material else None,
                 "slot_id": slot_id,
                 "projection_state": state,
-                "location_ids": _v25_slot_block_ids(
-                    slot_id,
-                    card_id,
-                    rendered_blocks,
-                ),
+                "product_leaf_visible": product_leaf_visible,
+                "location_ids": location_ids,
             })
     frame = {
         "mail_count": 3,
@@ -2100,6 +3977,15 @@ def render_v2_5_dynamic_no_send(
             row["id"]
             for row in atomic_subfield_projections
             if row.get("state") != "BOUND"
+        ),
+        "scope_research_as_of_values": tuple(
+            scope_universe.get("scope_research_as_of_values") or ()
+        ),
+        "scope_research_operation_ids": tuple(
+            scope_universe.get("scope_research_operation_ids") or ()
+        ),
+        "scope_research_intended_uses": tuple(
+            scope_universe.get("scope_research_intended_uses") or ()
         ),
         "timeframes": TIMEFRAMES,
         "market_cycle_ids": tuple(f"cycle-{i:02d}" for i in range(14)),
@@ -2190,6 +4076,15 @@ def render_v2_5_dynamic_no_send(
                 for row in data_object_projections
                 if row.get("domain") != "RECORD"
             )
+            and len(
+                whole_scope_projection["scope_research_as_of_values"]
+            ) == 1
+            and len(
+                whole_scope_projection["scope_research_operation_ids"]
+            ) == 1
+            and whole_scope_projection[
+                "scope_research_intended_uses"
+            ] == ("NO_SEND_RESEARCH",)
             and not whole_scope_projection["atomic_subfields_unresolved"]
         ),
         "dynamic_product_projection_admitted": True,
@@ -2203,6 +4098,19 @@ def render_v2_5_dynamic_no_send(
         "network_calls": 0,
         "database_writes": 0,
     }
+    receipt["stage1_vertical_product_receipt"] = (
+        compile_stage1_vertical_product_receipt(
+            materials=materials,
+            assignment=assignment,
+            report_date=report_date,
+            rendered_blocks=rendered_blocks,
+            slot_projections=slot_projections,
+            whole_scope_projection=whole_scope_projection,
+        )
+    )
+    validate_stage1_vertical_product_receipt(
+        receipt["stage1_vertical_product_receipt"]
+    )
     receipt["receipt_hash"] = digest(receipt)
     return {"html": output, "receipt": receipt}
 

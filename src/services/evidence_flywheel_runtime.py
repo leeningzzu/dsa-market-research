@@ -964,6 +964,13 @@ def _build_product_report_receipt(
             "all_input_facts_product_ready": dynamic_receipt.get(
                 "all_input_facts_product_ready"
             ),
+            "stage1_vertical_state": at(
+                dynamic_receipt, "stage1_vertical_product_receipt.state"
+            ),
+            "stage1_vertical_receipt_hash": at(
+                dynamic_receipt,
+                "stage1_vertical_product_receipt.receipt_hash",
+            ),
             "no_send": True,
         }
     trace = persisted_factor.get("evidence_traceability")
@@ -1632,6 +1639,55 @@ def _gate6_projection_rows(
     return rows
 
 
+def _gate6_validate_stage1_scope_binding(
+    consumer_row: Mapping[str, Any],
+    projection: Mapping[str, Any] | None,
+    *,
+    expected_state: str,
+    label: str,
+    require_admission: bool = True,
+) -> None:
+    expected_locations = tuple(
+        projection.get("location_ids") or ()
+    ) if isinstance(projection, Mapping) else ()
+    expected_hashes = tuple(
+        str(projection.get("projection_sha256") or "")
+        for _ in expected_locations
+    ) if isinstance(projection, Mapping) else ()
+    expected_admission_hashes = tuple(
+        str(value)
+        for value in (
+            projection.get("product_admission_hashes") or ()
+        )
+        if len(str(value)) == 64
+    ) if isinstance(projection, Mapping) else ()
+    if (
+        not isinstance(projection, Mapping)
+        or projection.get("state") != expected_state
+        or projection.get("consumer_projection")
+        != "MACHINE_RECEIPT_WITH_ROLE_SUMMARIZED_EMAIL"
+        or tuple(consumer_row.get("scope_location_ids") or ())
+        != expected_locations
+        or tuple(consumer_row.get("scope_projection_hashes") or ())
+        != expected_hashes
+        or tuple(
+            consumer_row.get("scope_product_admission_hashes") or ()
+        ) != expected_admission_hashes
+        or (
+            require_admission
+            and str(consumer_row.get("admission_hash") or "")
+            not in set(expected_admission_hashes)
+        )
+        or (
+            not require_admission
+            and expected_admission_hashes
+        )
+    ):
+        raise EvidenceFlywheelBoundaryError(
+            f"Gate5 Stage1 {label} scope binding mismatch"
+        )
+
+
 def _gate6_validate_gate5_receipt(receipt: Mapping[str, Any]) -> dict:
     if not isinstance(receipt, Mapping):
         raise EvidenceFlywheelBoundaryError("Gate6 requires a Gate5 receipt object")
@@ -1644,6 +1700,17 @@ def _gate6_validate_gate5_receipt(receipt: Mapping[str, Any]) -> dict:
         )
         if digest(body) != bound_hash:
             raise EvidenceFlywheelBoundaryError("Gate5 receipt hash mismatch")
+    from src.services.v2_5_evidence_coverage import (
+        validate_stage1_vertical_product_receipt,
+    )
+    try:
+        stage1_vertical = validate_stage1_vertical_product_receipt(
+            receipt.get("stage1_vertical_product_receipt")
+        )
+    except (TypeError, ValueError) as exc:
+        raise EvidenceFlywheelBoundaryError(
+            "Gate5 Stage1 vertical receipt invalid"
+        ) from exc
     required = {
         "schema_version": "v25-dynamic-no-send-v1",
         "authority": "ORIGINAL_GOLDEN_TEXT_NODE_PROJECTION_NO_SEND",
@@ -1703,6 +1770,21 @@ def _gate6_validate_gate5_receipt(receipt: Mapping[str, Any]) -> dict:
         )
     if tuple(scope.get("timeframes") or ()) != TIMEFRAMES:
         raise EvidenceFlywheelBoundaryError("Gate5 timeframe scope mismatch")
+    scope_as_of_values = tuple(
+        str(value) for value in scope.get("scope_research_as_of_values") or ()
+    )
+    scope_operation_ids = tuple(
+        str(value) for value in scope.get("scope_research_operation_ids") or ()
+    )
+    scope_intended_uses = tuple(
+        str(value) for value in scope.get("scope_research_intended_uses") or ()
+    )
+    if len(set(scope_as_of_values)) != len(scope_as_of_values):
+        raise EvidenceFlywheelBoundaryError("Gate5 research as-of duplicate")
+    if len(set(scope_operation_ids)) != len(scope_operation_ids):
+        raise EvidenceFlywheelBoundaryError("Gate5 research operation duplicate")
+    if len(set(scope_intended_uses)) != len(scope_intended_uses):
+        raise EvidenceFlywheelBoundaryError("Gate5 intended-use duplicate")
 
     requirement_rows = _gate6_projection_rows(
         scope.get("requirement_projections"),
@@ -1778,6 +1860,136 @@ def _gate6_validate_gate5_receipt(receipt: Mapping[str, Any]) -> dict:
     if len(scope_locations) != len(set(scope_locations)):
         raise EvidenceFlywheelBoundaryError("Gate5 whole-scope locations overlap")
 
+    rendered_blocks = receipt.get("rendered_blocks")
+    if (
+        isinstance(rendered_blocks, (str, bytes))
+        or not isinstance(rendered_blocks, Sequence)
+    ):
+        raise EvidenceFlywheelBoundaryError("Gate5 rendered blocks invalid")
+    rendered_lookup = {
+        str(row.get("block_id") or ""): row
+        for row in rendered_blocks if isinstance(row, Mapping)
+    }
+    if (
+        len(rendered_lookup) != len(rendered_blocks)
+        or len(rendered_lookup) != frame.get("dynamic_block_count")
+    ):
+        raise EvidenceFlywheelBoundaryError("Gate5 rendered block set mismatch")
+    for scope_row in (
+        *requirement_rows, *data_rows, *valuation_rows, *atomic_rows,
+    ):
+        location_id = str(scope_row["location_ids"][0])
+        if rendered_lookup.get(location_id, {}).get(
+            "projection_sha256"
+        ) != scope_row.get("projection_sha256"):
+            raise EvidenceFlywheelBoundaryError(
+                "Gate5 scope projection is not bound to rendered block"
+            )
+    if stage1_vertical.get("whole_scope_projection_hash") != projection_hash:
+        raise EvidenceFlywheelBoundaryError(
+            "Gate5 Stage1 whole-scope identity mismatch"
+        )
+    data_projection_lookup = {
+        str(row.get("id") or ""): row for row in data_rows
+    }
+    atomic_projection_lookup = {
+        str(row.get("id") or ""): row for row in atomic_rows
+    }
+    for material in stage1_vertical.get("materials") or ():
+        if material.get("research_operation_context_valid") is True:
+            if (
+                tuple(scope_as_of_values) != (
+                    str(material.get("research_as_of_instant") or ""),
+                )
+                or tuple(scope_operation_ids) != (
+                    str(material.get("research_operation_id") or ""),
+                )
+                or tuple(scope_intended_uses) != (
+                    str(material.get("research_intended_use") or ""),
+                )
+                or (
+                    material.get("fact_mode") == "ADMITTED"
+                    and material.get("research_as_of")
+                    != material.get("report_date")
+                )
+            ):
+                raise EvidenceFlywheelBoundaryError(
+                    "Gate5 Stage1 research operation context mismatch"
+                )
+        for data_object in material.get("data_object_rows") or ():
+            if data_object.get("v25_scope_audit_consumed") is not True:
+                continue
+            dataset_id = str(data_object.get("dataset_id") or "")
+            _gate6_validate_stage1_scope_binding(
+                data_object,
+                data_projection_lookup.get(dataset_id),
+                expected_state="READY",
+                label="data-object",
+            )
+        for atomic_subfield in material.get("atomic_subfield_rows") or ():
+            if atomic_subfield.get("v25_consumer_bound") is not True:
+                continue
+            identifier = str(atomic_subfield.get("id") or "")
+            atomic_fact_consumed = (
+                atomic_subfield.get("v25_atomic_fact_consumed") is True
+            )
+            _gate6_validate_stage1_scope_binding(
+                atomic_subfield,
+                atomic_projection_lookup.get(identifier),
+                expected_state=(
+                    "BOUND" if atomic_fact_consumed
+                    else "UNRESOLVED_MISSINGNESS"
+                ),
+                label="atomic",
+                require_admission=atomic_fact_consumed,
+            )
+        for slot in material.get("slot_rows") or ():
+            locations = tuple(slot.get("location_ids") or ())
+            expected_projection_hashes = tuple(
+                str(rendered_lookup.get(location_id, {}).get(
+                    "projection_sha256"
+                ) or "")
+                for location_id in locations
+            )
+            expected_rendered_paths = tuple(sorted({
+                str(path_hash)
+                for location_id in locations
+                for path_hash in (
+                    rendered_lookup.get(location_id, {}).get(
+                        "input_canonical_path_hashes"
+                    ) or ()
+                )
+                if len(str(path_hash)) == 64
+            }))
+            expected_leaf_hashes = tuple(sorted({
+                str(rendered_lookup.get(location_id, {}).get(
+                    "input_leaf_hash"
+                ) or "")
+                for location_id in locations
+                if (
+                    len(str(rendered_lookup.get(location_id, {}).get(
+                        "input_leaf_hash"
+                    ) or "")) == 64
+                    and rendered_lookup.get(location_id, {}).get(
+                        "input_leaf_product_admitted"
+                    ) is True
+                    and rendered_lookup.get(location_id, {}).get(
+                        "input_leaf_method_execution_verified"
+                    ) is True
+                )
+            }))
+            if (
+                tuple(slot.get("location_projection_hashes") or ())
+                != expected_projection_hashes
+                or tuple(slot.get("rendered_canonical_path_hashes") or ())
+                != expected_rendered_paths
+                or tuple(slot.get("timeframe_leaf_hashes") or ())
+                != expected_leaf_hashes
+            ):
+                raise EvidenceFlywheelBoundaryError(
+                    "Gate5 Stage1 slot is not bound to rendered blocks"
+                )
+
     slots = receipt.get("slot_projections")
     if isinstance(slots, (str, bytes)) or not isinstance(slots, Sequence):
         raise EvidenceFlywheelBoundaryError("Gate5 slot projections invalid")
@@ -1795,7 +2007,10 @@ def _gate6_validate_gate5_receipt(receipt: Mapping[str, Any]) -> dict:
     if any(
         not tuple(row.get("location_ids") or ())
         or str(row.get("projection_state") or "")
-        not in {"RENDERED_EVIDENCE", "RENDERED_MISSINGNESS"}
+        not in {
+            "RENDERED_EVIDENCE", "RENDERED_PARTIAL_EVIDENCE",
+            "RENDERED_MISSINGNESS",
+        }
         for row in slot_rows
     ):
         raise EvidenceFlywheelBoundaryError("Gate5 slot projection material invalid")
@@ -1814,7 +2029,13 @@ def _gate6_validate_gate5_receipt(receipt: Mapping[str, Any]) -> dict:
                 for row in results
             )
             or tuple(scope.get("atomic_subfields_unresolved") or ())
-            or any(row.get("state") != "BOUND" for row in atomic_rows)
+            or any(
+                row.get("state") != "BOUND"
+                or len(tuple(row.get("product_admission_hashes") or ())) != 1
+                or len(str(tuple(row.get("product_admission_hashes") or ())[0]))
+                != 64
+                for row in atomic_rows
+            )
             or any(
                 str(row.get("state") or "") not in {"READY", "NOT_APPLICABLE"}
                 for row in data_rows
@@ -1824,6 +2045,27 @@ def _gate6_validate_gate5_receipt(receipt: Mapping[str, Any]) -> dict:
             raise EvidenceFlywheelBoundaryError(
                 "Gate5 Product-ready claim is not supported by projections"
             )
+        if not (
+            len(scope_as_of_values) == 1
+            and len(scope_operation_ids) == 1
+            and scope_intended_uses == ("NO_SEND_RESEARCH",)
+            and all(
+                material.get("research_operation_context_valid") is True
+                for material in stage1_vertical.get("materials") or ()
+            )
+        ):
+            raise EvidenceFlywheelBoundaryError(
+                "Gate5 Product-ready research operation context invalid"
+            )
+    stage1_ready = stage1_vertical.get("state") == "FACT_READY"
+    if product_ready and not stage1_ready:
+        raise EvidenceFlywheelBoundaryError(
+            "Gate5 Product-ready claim is not supported by Stage1 vertical receipt"
+        )
+    if stage1_ready and not product_ready:
+        raise EvidenceFlywheelBoundaryError(
+            "Gate5 Stage1 vertical receipt exceeds whole-product readiness"
+        )
     return dict(receipt)
 
 
@@ -1992,14 +2234,24 @@ def compile_gate6_learning_admission(
         for name in _GATE6_STAGE_ORDER
     }
     reasons: list[str] = []
-    product_ready = gate5.get("all_input_facts_product_ready") is True
+    stage1_vertical = gate5["stage1_vertical_product_receipt"]
+    stage1_ready = stage1_vertical.get("state") == "FACT_READY"
+    product_ready = (
+        gate5.get("all_input_facts_product_ready") is True
+        and stage1_ready
+    )
+    gate5_reasons = [] if product_ready else [
+        "FULL_DOMAIN_PRODUCT_DATA_NOT_READY",
+        "STAGE1_VERTICAL_PRODUCT_NOT_READY",
+    ]
     stages["GATE5_DYNAMIC_PRODUCT"] = {
         "state": "PASS_FACT_READY" if product_ready else "PASS_MISSINGNESS_COMPLETE",
-        "reason_codes": [] if product_ready else ["FULL_DOMAIN_PRODUCT_DATA_NOT_READY"],
+        "reason_codes": gate5_reasons,
         "output_sha256": gate5.get("output_sha256"),
+        "stage1_vertical_state": stage1_vertical.get("state"),
+        "stage1_vertical_receipt_hash": stage1_vertical.get("receipt_hash"),
     }
-    if not product_ready:
-        reasons.append("FULL_DOMAIN_PRODUCT_DATA_NOT_READY")
+    reasons.extend(gate5_reasons)
 
     recording = None
     if recording_receipt is None:

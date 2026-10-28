@@ -35,7 +35,7 @@ def _admission(dataset_id: str, **receipt_overrides):
         "redistribution": "FORBIDDEN",
     }
     rights_evidence = seal_source_rights_evidence({
-        "schema_version": "source-rights-evidence-v1",
+        "schema_version": "source-rights-evidence-v2",
         "operation_id": "op-quality-nosend-20261016-r001",
         "intended_use": "NO_SEND_RESEARCH",
         "provider_identity": "synthetic-lawful-provider",
@@ -46,6 +46,9 @@ def _admission(dataset_id: str, **receipt_overrides):
         "terms_uri": "https://example.invalid/terms/synthetic",
         "terms_sha256": "c" * 64,
         "terms_observed_at": "2026-10-15T07:00:00+00:00",
+        "terms_scope": "SYNTHETIC_TEST_CONTRACT",
+        "product_use_clause": "Synthetic fixture explicitly allows internal no-send research.",
+        "product_use_clause_sha256": "c2a9b98537611cb0c9e9cb165ab0a4a699d84f5a2644a5e1e23740d0af55c6e1",
         "rights": rights,
     })
     receipt = seal_data_object_admission_receipt({

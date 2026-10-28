@@ -9,6 +9,7 @@ UNKNOWN rights, units, vintages or clocks remain not admitted.
 from __future__ import annotations
 
 from collections.abc import Mapping
+import hashlib
 import json
 from pathlib import Path
 from datetime import date, datetime, time, timezone
@@ -19,7 +20,7 @@ from src.services.pit_identity import sha256_payload
 
 
 SCHEMA_VERSION = "data-object-admission-receipt-v1"
-RIGHTS_EVIDENCE_SCHEMA_VERSION = "source-rights-evidence-v1"
+RIGHTS_EVIDENCE_SCHEMA_VERSION = "source-rights-evidence-v2"
 B1_RIGHTS_CONTEXT_SCHEMA_VERSION = "b1-operation-rights-context-v1"
 RIGHTS_EVIDENCE_PURPOSE_NO_SEND = "NO_SEND_RESEARCH"
 RIGHTS_EVIDENCE_PURPOSE_LEARNING = "LEARNING_RESEARCH"
@@ -28,6 +29,12 @@ RIGHTS_EVIDENCE_PURPOSES = frozenset({
     RIGHTS_EVIDENCE_PURPOSE_LEARNING,
 })
 RIGHTS_EVIDENCE_STATES = frozenset({"VERIFIED", "UNKNOWN"})
+RIGHTS_TERMS_SCOPES = frozenset({
+    "OFFICIAL_PROVIDER_DATA_USE_STATEMENT",
+    "UPSTREAM_DATASET_TERMS",
+    "SIGNED_PROVIDER_CONTRACT",
+    "SYNTHETIC_TEST_CONTRACT",
+})
 RIGHTS_VALUES = frozenset({"ALLOWED", "FORBIDDEN", "UNKNOWN", "NOT_APPLICABLE"})
 ADMISSION_STATES = frozenset({
     "NOT_APPLICABLE",
@@ -76,6 +83,9 @@ _REQUIRED_RIGHTS_EVIDENCE_FIELDS = frozenset({
     "terms_uri",
     "terms_sha256",
     "terms_observed_at",
+    "terms_scope",
+    "product_use_clause",
+    "product_use_clause_sha256",
     "rights",
     "evidence_hash",
 })
@@ -251,9 +261,24 @@ def validate_source_rights_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
     ):
         if not _text(result.get(key)):
             raise DataObjectAdmissionError("SOURCE_RIGHTS_EVIDENCE_FIELD_MISSING:" + key)
-    for key in ("terms_sha256", "evidence_hash"):
+    for key in ("terms_sha256", "product_use_clause_sha256", "evidence_hash"):
         if not _is_sha256(result.get(key)):
             raise DataObjectAdmissionError("SOURCE_RIGHTS_EVIDENCE_HASH_INVALID:" + key)
+    terms_scope = _text(result.get("terms_scope")).upper()
+    if terms_scope not in RIGHTS_TERMS_SCOPES:
+        raise DataObjectAdmissionError("SOURCE_RIGHTS_EVIDENCE_TERMS_SCOPE_INVALID")
+    product_use_clause = _text(result.get("product_use_clause"))
+    if not product_use_clause or len(product_use_clause) > 1000:
+        raise DataObjectAdmissionError("SOURCE_RIGHTS_EVIDENCE_PRODUCT_USE_CLAUSE_INVALID")
+    expected_clause_hash = hashlib.sha256(
+        product_use_clause.encode("utf-8")
+    ).hexdigest()
+    if result.get("product_use_clause_sha256") != expected_clause_hash:
+        raise DataObjectAdmissionError(
+            "SOURCE_RIGHTS_EVIDENCE_PRODUCT_USE_CLAUSE_HASH_MISMATCH"
+        )
+    result["terms_scope"] = terms_scope
+    result["product_use_clause"] = product_use_clause
     state = _text(result.get("upstream_rights_state")).upper()
     if state not in RIGHTS_EVIDENCE_STATES:
         raise DataObjectAdmissionError("SOURCE_RIGHTS_EVIDENCE_STATE_INVALID")
@@ -269,6 +294,13 @@ def validate_source_rights_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
     if any(item not in RIGHTS_VALUES for item in normalized_rights.values()):
         raise DataObjectAdmissionError("SOURCE_RIGHTS_EVIDENCE_RIGHTS_VALUE_INVALID")
     result["rights"] = normalized_rights
+    if terms_scope == "OFFICIAL_PROVIDER_DATA_USE_STATEMENT" and any(
+        normalized_rights[key] != "FORBIDDEN"
+        for key in ("storage", "training", "redistribution")
+    ):
+        raise DataObjectAdmissionError(
+            "SOURCE_RIGHTS_EVIDENCE_STATEMENT_CANNOT_GRANT_SECONDARY_RIGHTS"
+        )
     _parse_aware_datetime(result["terms_observed_at"])
     expected_hash = sha256_payload({key: result[key] for key in result if key != "evidence_hash"})
     if result["evidence_hash"] != expected_hash:
@@ -450,17 +482,20 @@ def compile_b1_runtime_admission_receipts(
     supplied_metadata = b1_context.get("source_metadata_by_dataset") or {}
     if not isinstance(rights_by_dataset, Mapping) or not isinstance(supplied_metadata, Mapping):
         raise DataObjectAdmissionError("B1_RECEIPT_PRODUCER_SCHEMA_INVALID")
-    accepted = {"P_DAILY", "P_5M", "E_PRICE_1D", "E_PRICE_5M"}
     known = {
         _text(item.get("dataset_id")): dict(item)
         for item in obligations
         if item.get("state") != "NOT_APPLICABLE"
     }
-    if set(supplied_metadata) - (set(known) & accepted):
+    # The 76-object Registry is the closed world. Do not permanently privilege
+    # four price objects: any applicable object may compile only after its
+    # existing producer has supplied the same complete runtime identity and an
+    # exact operation grant. Missing producers remain lawful nontriggers.
+    if set(supplied_metadata) - set(known):
         raise DataObjectAdmissionError("B1_RECEIPT_PRODUCER_ORPHAN_SOURCE")
 
     receipts: dict[str, dict[str, Any]] = {}
-    for dataset_id in sorted(set(rights_by_dataset) & set(known) & accepted):
+    for dataset_id in sorted(set(rights_by_dataset) & set(known)):
         scope = known[dataset_id]
         required_source = (
             "provider_identity", "provider_route", "source_identity_hash",
@@ -808,6 +843,8 @@ def compile_data_object_admission(
         "intended_use": rights_evidence.get("intended_use") if isinstance(rights_evidence, Mapping) else None,
         "upstream_source_owner": rights_evidence.get("upstream_source_owner") if isinstance(rights_evidence, Mapping) else None,
         "terms_uri": rights_evidence.get("terms_uri") if isinstance(rights_evidence, Mapping) else None,
+        "terms_scope": rights_evidence.get("terms_scope") if isinstance(rights_evidence, Mapping) else None,
+        "product_use_clause_sha256": rights_evidence.get("product_use_clause_sha256") if isinstance(rights_evidence, Mapping) else None,
         "rights_terms_observed_at": rights_evidence.get("terms_observed_at") if isinstance(rights_evidence, Mapping) else None,
         "historical_pit_eligible": normalized["historical_pit_eligible"],
         "provider_identity": normalized["provider_identity"],

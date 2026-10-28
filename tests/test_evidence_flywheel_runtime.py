@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
+
 from datetime import date, datetime, timezone
 import json
 import os
@@ -1523,7 +1525,7 @@ def test_native_zero_model_record_writes_only_the_admitted_temp_db_surfaces(
         "redistribution": "FORBIDDEN",
     }
     synthetic_grant = seal_source_rights_evidence({
-        "schema_version": "source-rights-evidence-v1",
+        "schema_version": "source-rights-evidence-v2",
         "operation_id": "test-flywheel-p0-daily",
         "intended_use": "NO_SEND_RESEARCH",
         "provider_identity": "test",
@@ -1534,6 +1536,9 @@ def test_native_zero_model_record_writes_only_the_admitted_temp_db_surfaces(
         "terms_uri": "https://example.org/unit-fixture-only",
         "terms_sha256": "a" * 64,
         "terms_observed_at": "2026-09-01T00:00:00+00:00",
+        "terms_scope": "SYNTHETIC_TEST_CONTRACT",
+        "product_use_clause": "Synthetic fixture explicitly allows internal no-send research.",
+        "product_use_clause_sha256": "c2a9b98537611cb0c9e9cb165ab0a4a699d84f5a2644a5e1e23740d0af55c6e1",
         "rights": synthetic_rights,
     })
     rights_file = tmp_path / "b1-synthetic-rights.json"
@@ -1810,6 +1815,7 @@ def test_manifest_phase_is_idempotent_and_cannot_admit_training(isolated_db) -> 
 
 def _gate6_gate5_receipt(*, product_ready: bool = False) -> dict:
     from src.services.v2_5_evidence_coverage import render_v2_5_dynamic_no_send
+    from src.services import v2_5_evidence_coverage as v25
     from tests.test_evidence_traceability_registry import native_summary
 
     result = SimpleNamespace(
@@ -1830,24 +1836,251 @@ def _gate6_gate5_receipt(*, product_ready: bool = False) -> dict:
         [result], report_date="2026-10-23",
     )["receipt"]
     if product_ready:
-        # Contract-reachability fixture only: this converts every dependent
-        # projection consistently. A single rehashed boolean must still fail.
+        # Contract-reachability fixture only.  It rewrites every dependent
+        # machine identity consistently; it is not a provider or licence claim.
         receipt = json.loads(json.dumps(receipt))
         scope = receipt["whole_scope_projection"]
+        rendered_by_id = {
+            str(row["block_id"]): row for row in receipt["rendered_blocks"]
+        }
+        data_projection_by_id = {
+            str(row["id"]): row for row in scope["data_object_projections"]
+        }
+        atomic_projection_by_id = {
+            str(row["id"]): row
+            for row in scope["atomic_subfield_projections"]
+        }
+        stage1 = receipt["stage1_vertical_product_receipt"]
+        research_as_of = "2026-10-23T10:00:00+00:00"
+        research_operation_id = "synthetic-stage1-product-ready"
+        scope["scope_research_as_of_values"] = [research_as_of]
+        scope["scope_research_operation_ids"] = [research_operation_id]
+        scope["scope_research_intended_uses"] = ["NO_SEND_RESEARCH"]
+
         scope["atomic_subfields_unresolved"] = []
         for row in scope["data_object_projections"]:
-            if row["domain"] != "RECORD" and row["state"] != "NOT_APPLICABLE":
+            if row["domain"] != "RECORD":
                 row["state"] = "READY"
-        for row in scope["atomic_subfield_projections"]:
+                row["product_admission_hashes"] = [digest({
+                    "dataset_id": row["id"],
+                    "kind": "synthetic-product-admission",
+                })]
+        synthetic_atomic_fact_hashes = {}
+        for index, row in enumerate(scope["atomic_subfield_projections"]):
             row["state"] = "BOUND"
+            row["product_admission_hashes"] = [digest({
+                "atomic_subfield_id": row["id"],
+                "kind": "synthetic-atomic-admission",
+            })]
+            facts = {
+                "value": float(index + 1),
+                "value_unit": "SYNTHETIC_TEST_UNIT",
+                "reference_period": "2026-09",
+                "release_published_at": "2026-10-14T12:30:00+00:00",
+            }
+            fact_hash = digest(facts)
+            row["facts"] = facts
+            row["source_fact_hash"] = fact_hash
+            row["fact_summary"] = (
+                f"SYNTHETIC_ATOMIC_{row['id']}={index + 1}"
+            )
+            synthetic_atomic_fact_hashes[str(row["id"])] = fact_hash
+            for location_id in row["location_ids"]:
+                block = rendered_by_id[str(location_id)]
+                block["input_atomic_fact_hashes"] = tuple(sorted({
+                    *tuple(block.get("input_atomic_fact_hashes") or ()),
+                    fact_hash,
+                }))
         scope.pop("projection_hash", None)
         scope["projection_hash"] = digest(scope)
-        for row in receipt["slot_projections"]:
-            row["projection_state"] = "RENDERED_EVIDENCE"
+        stage1["whole_scope_projection_hash"] = scope["projection_hash"]
+
+        slot_projection_lookup = {
+            (str(row.get("asset_code") or ""), str(row.get("slot_id") or "")): row
+            for row in receipt["slot_projections"]
+        }
+        for material in stage1["materials"]:
+            material["fact_mode"] = "ADMITTED"
+            material["research_as_of"] = material["report_date"]
+            material["research_as_of_instant"] = research_as_of
+            material["research_operation_id"] = research_operation_id
+            material["research_intended_use"] = "NO_SEND_RESEARCH"
+            material["research_operation_context_valid"] = True
+            material["research_as_of_current"] = True
+            for row in material["method_rows"]:
+                if row["runtime_state"] in {"READY", "PARTIAL"}:
+                    row["actual_invocation_verified"] = True
+                    row["runtime_source_bound"] = True
+            for row in material["cell_rows"]:
+                if row["state"] in {"READY", "PARTIAL"}:
+                    row["runtime_source_bound"] = True
+                    row["price_dataset_product_admitted"] = True
+                    row["all_current_methods_invocation_verified"] = True
+
+            # First bind each available slot to the same rendered block inputs.
+            for row in material["slot_rows"]:
+                if row["coverage_state"] != "EVIDENCE_AVAILABLE":
+                    continue
+                key = (str(material["code"]), str(row["slot_id"]))
+                slot_projection_lookup[key]["projection_state"] = "RENDERED_EVIDENCE"
+                row["projection_state"] = "RENDERED_EVIDENCE"
+                slot_id = str(row["slot_id"])
+                direct = slot_id in v25._STAGE1_DIRECT_SLOT_CONSUMERS
+                timeframe_bundle = (
+                    slot_id.startswith(v25._STAGE1_TIMEFRAME_SLOT_PREFIX)
+                    or slot_id in v25._STAGE1_TIMEFRAME_COMPOSITE_SLOT_CONSUMERS
+                )
+                if direct:
+                    canonical_hashes = tuple(row["canonical_path_hashes"]) or (
+                        digest({"slot_id": slot_id, "kind": "canonical-input"}),
+                    )
+                    row["canonical_path_hashes"] = canonical_hashes
+                    for location_id in row["location_ids"]:
+                        block = rendered_by_id[str(location_id)]
+                        block["input_canonical_path_hashes"] = tuple(sorted({
+                            *tuple(block.get("input_canonical_path_hashes") or ()),
+                            *canonical_hashes,
+                        }))
+                elif timeframe_bundle:
+                    leaf_hash = digest({
+                        "slot_id": slot_id, "kind": "timeframe-leaf",
+                    })
+                    for location_id in row["location_ids"]:
+                        block = rendered_by_id[str(location_id)]
+                        block["input_leaf_hash"] = leaf_hash
+                        block["input_leaf_product_admitted"] = True
+                        block["input_leaf_method_execution_verified"] = True
+                        block["input_leaf_dataset_id"] = (
+                            "P_DAILY"
+                            if block.get("timeframe") in {
+                                "monthly", "weekly", "daily",
+                            }
+                            else "P_5M"
+                        )
+
+            # Then derive the Stage1 slot receipt only from those rendered blocks.
+            for row in material["slot_rows"]:
+                locations = tuple(str(value) for value in row["location_ids"])
+                row["location_projection_hashes"] = tuple(
+                    str(rendered_by_id[value]["projection_sha256"])
+                    for value in locations
+                )
+                row["rendered_canonical_path_hashes"] = tuple(sorted({
+                    str(path_hash)
+                    for value in locations
+                    for path_hash in (
+                        rendered_by_id[value].get("input_canonical_path_hashes")
+                        or ()
+                    )
+                }))
+                row["timeframe_leaf_hashes"] = tuple(sorted({
+                    str(rendered_by_id[value].get("input_leaf_hash") or "")
+                    for value in locations
+                    if (
+                        len(str(rendered_by_id[value].get("input_leaf_hash") or ""))
+                        == 64
+                        and rendered_by_id[value].get(
+                            "input_leaf_product_admitted"
+                        ) is True
+                        and rendered_by_id[value].get(
+                            "input_leaf_method_execution_verified"
+                        ) is True
+                    )
+                }))
+                if row["coverage_state"] == "EVIDENCE_AVAILABLE":
+                    row["leaf_consumed"] = True
+                    row["consumer_state"] = "V25_LEAF_CONSUMED"
+                row.pop("consumer_binding_hash", None)
+                row["consumer_binding_hash"] = digest(row)
+
+            rendered_price_ids = {
+                str(block.get("input_leaf_dataset_id") or "")
+                for block in rendered_by_id.values()
+                if (
+                    block.get("input_leaf_product_admitted") is True
+                    and block.get("input_leaf_method_execution_verified") is True
+                )
+            }
+            admitted_dataset_ids = []
+            for row in material["data_object_rows"]:
+                if not row["current_product_applicable"]:
+                    continue
+                dataset_id = str(row["dataset_id"])
+                projection = data_projection_by_id[dataset_id]
+                admission_hash = projection["product_admission_hashes"][0]
+                admitted_dataset_ids.append(dataset_id)
+                row.update({
+                    "state": "READY",
+                    "product_admitted": True,
+                    "admission_hash": admission_hash,
+                    "v25_leaf_consumed": dataset_id in rendered_price_ids,
+                    "v25_scope_audit_consumed": True,
+                    "v25_consumer_bound": True,
+                    "v25_consumer_state": (
+                        "V25_PRICE_TIMEFRAME_LEAF_CONSUMED"
+                        if dataset_id in rendered_price_ids
+                        else "V25_MACHINE_SCOPE_CONSUMED"
+                    ),
+                    "scope_projection_state": "READY",
+                    "scope_consumer_projection": (
+                        "MACHINE_RECEIPT_WITH_ROLE_SUMMARIZED_EMAIL"
+                    ),
+                    "scope_location_ids": tuple(projection["location_ids"]),
+                    "scope_projection_hashes": tuple(
+                        projection["projection_sha256"]
+                        for _ in projection["location_ids"]
+                    ),
+                    "scope_product_admission_hashes": tuple(
+                        projection["product_admission_hashes"]
+                    ),
+                })
+                row.pop("v25_consumer_binding_hash", None)
+                row["v25_consumer_binding_hash"] = digest(row)
+            for row in material["atomic_subfield_rows"]:
+                projection = atomic_projection_by_id[str(row["id"])]
+                admission_hash = projection["product_admission_hashes"][0]
+                fact_hash = synthetic_atomic_fact_hashes[str(row["id"])]
+                row.update({
+                    "product_admitted": True,
+                    "admission_hash": admission_hash,
+                    "v25_scope_audit_consumed": True,
+                    "v25_consumer_bound": True,
+                    "v25_atomic_fact_consumed": True,
+                    "v25_atomic_fact_hash_consumed": True,
+                    "source_fact_hash": fact_hash,
+                    "rendered_atomic_fact_hashes": (fact_hash,),
+                    "v25_consumer_state": "V25_ATOMIC_SCOPE_CONSUMED",
+                    "scope_projection_state": "BOUND",
+                    "scope_consumer_projection": (
+                        "MACHINE_RECEIPT_WITH_ROLE_SUMMARIZED_EMAIL"
+                    ),
+                    "scope_location_ids": tuple(projection["location_ids"]),
+                    "scope_projection_hashes": tuple(
+                        projection["projection_sha256"]
+                        for _ in projection["location_ids"]
+                    ),
+                    "scope_product_admission_hashes": tuple(
+                        projection["product_admission_hashes"]
+                    ),
+                })
+                row.pop("v25_consumer_binding_hash", None)
+                row["v25_consumer_binding_hash"] = digest(row)
+            material["current_product_admitted_dataset_ids"] = tuple(
+                sorted(set(admitted_dataset_ids))
+            )
+            material["blocker_codes"] = ()
+            material["state"] = "FACT_READY"
+            material.pop("material_hash", None)
+            material["material_hash"] = digest(material)
+
         for row in receipt["results"]:
             row["fact_mode"] = "ADMITTED"
             row["full_domain_product_ready"] = True
         receipt["all_input_facts_product_ready"] = True
+        stage1["blocker_codes"] = ()
+        stage1["state"] = "FACT_READY"
+        stage1.pop("receipt_hash", None)
+        stage1["receipt_hash"] = digest(stage1)
         receipt.pop("receipt_hash", None)
         receipt["receipt_hash"] = digest(receipt)
     return receipt
@@ -1863,6 +2096,8 @@ def test_gate6_current_missingness_product_compiles_complete_hold_vector() -> No
     assert receipt["stages"]["GATE5_DYNAMIC_PRODUCT"]["state"] == (
         "PASS_MISSINGNESS_COMPLETE"
     )
+    assert receipt["stages"]["GATE5_DYNAMIC_PRODUCT"]["stage1_vertical_state"] == "HOLD"
+    assert "STAGE1_VERTICAL_PRODUCT_NOT_READY" in receipt["reason_codes"]
     assert "FULL_DOMAIN_PRODUCT_DATA_NOT_READY" in receipt["reason_codes"]
     assert "RECORDING_RECEIPT_MISSING" in receipt["reason_codes"]
     assert "PIT_MANIFEST_MISSING" in receipt["reason_codes"]
@@ -1933,6 +2168,8 @@ def test_gate6_current_product_can_be_fact_ready_before_first_recording():
 
     assert receipt["state"] == "HOLD"
     assert receipt["stages"]["GATE5_DYNAMIC_PRODUCT"]["state"] == "PASS_FACT_READY"
+    assert receipt["stages"]["GATE5_DYNAMIC_PRODUCT"]["stage1_vertical_state"] == "FACT_READY"
+    assert "STAGE1_VERTICAL_PRODUCT_NOT_READY" not in receipt["reason_codes"]
     assert "FULL_DOMAIN_PRODUCT_DATA_NOT_READY" not in receipt["reason_codes"]
     assert "RECORDING_RECEIPT_MISSING" in receipt["reason_codes"]
     assert "PIT_MANIFEST_MISSING" in receipt["reason_codes"]
@@ -1961,6 +2198,21 @@ def test_gate6_rejects_forged_gate5_and_out_of_order_promotion() -> None:
         match="Product-ready claim is not supported",
     ):
         compile_gate6_learning_admission(gate5_receipt=flag_only)
+
+    stage1_downgraded = _gate6_gate5_receipt(product_ready=True)
+    stage1_downgraded["stage1_vertical_product_receipt"] = deepcopy(
+        _gate6_gate5_receipt()["stage1_vertical_product_receipt"]
+    )
+    stage1_downgraded.pop("receipt_hash", None)
+    stage1_downgraded["receipt_hash"] = digest(stage1_downgraded)
+    with pytest.raises(
+        EvidenceFlywheelBoundaryError,
+        match=(
+            "Product-ready claim is not supported by Stage1 vertical receipt"
+            "|Stage1 whole-scope identity mismatch"
+        ),
+    ):
+        compile_gate6_learning_admission(gate5_receipt=stage1_downgraded)
 
     reordered = json.loads(json.dumps(_gate6_gate5_receipt()))
     reordered_scope = reordered["whole_scope_projection"]

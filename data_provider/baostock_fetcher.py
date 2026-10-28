@@ -15,9 +15,10 @@ BaostockFetcher - 备用数据源 2 (Priority 3)
 """
 
 import logging
+import math
 import re
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from importlib import metadata
 from typing import Optional, Generator
 
@@ -144,6 +145,110 @@ def verify_cn_index_completed_close_source_frame(
         "independent_source_value_admitted": False,
         "strategy_upgrade_authority": False,
     }
+
+
+NONPRICE_SOURCE_OBSERVATION_SCHEMA_VERSION = "data-object-source-observation-v1"
+NONPRICE_BUNDLE_SCHEMA_VERSION = "baostock-cn-nonprice-research-bundle-v1"
+
+
+def _result_rows(result, *, expected_fields: tuple[str, ...] | None = None) -> tuple[list[str], list[list[str]]]:
+    if str(getattr(result, "error_code", "")) != "0":
+        raise DataFetchError(
+            "BaoStock nonprice query failed: "
+            + str(getattr(result, "error_msg", "UNKNOWN"))
+        )
+    fields = [str(item) for item in (getattr(result, "fields", None) or [])]
+    if expected_fields is not None and fields != list(expected_fields):
+        raise DataFetchError(
+            "BaoStock nonprice field drift: " + ",".join(fields)
+        )
+    rows: list[list[str]] = []
+    while result.next():
+        row = [str(item) for item in result.get_row_data()]
+        if len(row) != len(fields):
+            raise DataFetchError("BaoStock nonprice row width drift")
+        rows.append(row)
+    return fields, rows
+
+
+def _rows_as_dicts(fields: list[str], rows: list[list[str]]) -> list[dict[str, str]]:
+    return [dict(zip(fields, row)) for row in rows]
+
+
+def _finite_float(value: object) -> float | None:
+    try:
+        result = float(str(value or "").strip())
+    except (TypeError, ValueError):
+        return None
+    return result if math.isfinite(result) else None
+
+
+def _latest_iso_date(rows: list[dict[str, str]], *keys: str, fallback: str) -> str:
+    values: list[str] = []
+    for row in rows:
+        for key in keys:
+            text = str(row.get(key) or "").strip()
+            try:
+                values.append(date.fromisoformat(text[:10]).isoformat())
+            except ValueError:
+                continue
+    return max(values) if values else fallback
+
+
+def _nonprice_observation(
+    *,
+    dataset_id: str,
+    state: str,
+    reason_codes: tuple[str, ...],
+    provider_route: str,
+    query_identity: dict,
+    raw_payload: object,
+    observed_at: datetime,
+    completed_through: str,
+    units: dict[str, str],
+    currency: str,
+    adjustment_basis: str,
+    facts: dict,
+) -> dict:
+    if state not in {"READY", "PARTIAL"}:
+        raise DataFetchError("BaoStock nonprice observation state invalid")
+    content_sha256 = sha256_payload(raw_payload)
+    identity = {
+        "dataset_id": dataset_id,
+        "provider_identity": "BaostockFetcher",
+        "provider_route": provider_route,
+        "query_identity": query_identity,
+        "content_sha256": content_sha256,
+        "observed_at": observed_at.astimezone(timezone.utc).isoformat(),
+        "completed_through": completed_through,
+    }
+    body = {
+        "schema_version": NONPRICE_SOURCE_OBSERVATION_SCHEMA_VERSION,
+        "dataset_id": dataset_id,
+        "state": state,
+        "reason_codes": tuple(reason_codes),
+        "provider_identity": "BaostockFetcher",
+        "provider_route": provider_route,
+        "producer_authority": (
+            "BaostockFetcher.get_cn_stock_nonprice_research_bundle"
+        ),
+        "source_identity_hash": sha256_payload(identity),
+        "source_content_sha256": content_sha256,
+        "source_observed_at": observed_at.astimezone(timezone.utc).isoformat(),
+        "source_available_at": observed_at.astimezone(timezone.utc).isoformat(),
+        "completed_through": completed_through,
+        "units": dict(units),
+        "currency": currency,
+        "adjustment_basis": adjustment_basis,
+        "revision": "observed-response-sha256:" + content_sha256,
+        "vintage": observed_at.astimezone(timezone.utc).isoformat(),
+        "historical_pit_eligible": False,
+        "independent_source_value_admitted": True,
+        "strategy_upgrade_authority": False,
+        "facts": facts,
+    }
+    body["observation_hash"] = sha256_payload(body)
+    return body
 
 
 class BaostockFetcher(BaseFetcher):
@@ -497,6 +602,477 @@ class BaostockFetcher(BaseFetcher):
         source["identity_hash"] = sha256_payload(source)
         frame.attrs["cn_index_completed_close_source"] = source
         return frame
+
+    def get_cn_stock_nonprice_research_bundle(
+        self,
+        stock_code: str,
+        *,
+        research_date: str,
+        requested_dataset_ids: set[str] | None = None,
+    ) -> dict:
+        """Read bounded current non-price facts without persistence or action authority.
+
+        The bundle uses only BaoStock's existing public query surface and records
+        the response known in this process.  It is current Product evidence, not
+        historical PIT, and partial objects remain PARTIAL even when their exact
+        operation rights later admit the displayed leaf.
+        """
+        try:
+            target = date.fromisoformat(str(research_date))
+        except ValueError as exc:
+            raise DataFetchError("BaoStock nonprice research date invalid") from exc
+        code = normalize_stock_code(str(stock_code or ""))
+        if not (code.isdigit() and len(code) == 6):
+            raise DataFetchError("BaoStock nonprice requires one six-digit CN stock")
+        if code.startswith(("51", "52", "56", "58", "15", "16", "18")):
+            raise DataFetchError("BaoStock stock nonprice bundle does not admit ETF route")
+        bs_code = self._convert_stock_code(code)
+
+        query_consumers = {
+            "stock_basic": {"P_CODE_IDENTITY"},
+            "stock_industry": {"P_INDUSTRY", "S_CLASSIFICATION"},
+            "all_stock": {"M_ASOF_UNIVERSE"},
+            "adjust_factor": {"P_PRICE_FACTOR", "P_SHARES_EVENTS"},
+            "dividend": {"P_DIVIDEND"},
+            "valuation_daily": {"P_VAL_RATIO", "P_QUOTE_LIQUID"},
+            "profit": {"P_FIN_VINTAGE", "P_EARNINGS_GROWTH", "P_CASH_FLOW",
+                       "P_BALANCE_SHEET", "P_SHARES_EVENTS"},
+            "prior_profit": {"P_EARNINGS_GROWTH"},
+            "growth": {"P_EARNINGS_GROWTH"},
+            "balance": {"P_BALANCE_SHEET"},
+            "cash_flow": {"P_CASH_FLOW"},
+            "money_supply_month": {"M_PBOC_MONEY"},
+        }
+        supported = set().union(*query_consumers.values())
+        requested = supported if requested_dataset_ids is None else set(requested_dataset_ids)
+        if not requested or requested - supported:
+            raise DataFetchError("BaoStock nonprice dataset selection empty or unknown")
+        raw: dict[str, dict] = {}
+        with self._baostock_session() as bs:
+            def query(name: str, fetch, *, family: str | None = None):
+                # The callable must remain lazy: post-fetch filtering is too late.
+                if not requested.intersection(query_consumers[family or name]):
+                    raw[name] = {"fields": [], "rows": []}
+                    return []
+                fields, rows = _result_rows(fetch())
+                raw[name] = {"fields": fields, "rows": rows}
+                return _rows_as_dicts(fields, rows)
+
+            basic = query("stock_basic", lambda: bs.query_stock_basic(code=bs_code))
+            if "P_CODE_IDENTITY" in requested and (
+                len(basic) != 1 or basic[0].get("code") != bs_code
+            ):
+                raise DataFetchError("BaoStock stock identity response mismatch")
+            all_industry = query(
+                "stock_industry", lambda: bs.query_stock_industry(date=target.isoformat()),
+            )
+            industry = [row for row in all_industry if row.get("code") == bs_code]
+            if len(industry) > 1:
+                raise DataFetchError("BaoStock stock industry response ambiguous")
+            all_stock = query(
+                "all_stock", lambda: bs.query_all_stock(day=target.isoformat()),
+            )
+            stock_status = [row for row in all_stock if row.get("code") == bs_code]
+            if len(stock_status) > 1:
+                raise DataFetchError("BaoStock stock universe response ambiguous")
+            factors = query(
+                "adjust_factor", lambda: bs.query_adjust_factor(
+                    bs_code, start_date=f"{max(2000, target.year - 3)}-01-01",
+                    end_date=target.isoformat(),
+                ),
+            )
+            dividends: list[dict[str, str]] = []
+            for year in (target.year, target.year - 1):
+                dividends.extend(query(
+                    f"dividend_{year}", lambda: bs.query_dividend_data(
+                        bs_code, year=str(year), yearType="report",
+                    ), family="dividend",
+                ))
+            valuation = query(
+                "valuation_daily", lambda: bs.query_history_k_data_plus(
+                    bs_code,
+                    "date,code,close,volume,amount,adjustflag,turn,pctChg,"
+                    "peTTM,pbMRQ,psTTM,pcfNcfTTM",
+                    start_date=target.isoformat(), end_date=target.isoformat(),
+                    frequency="d", adjustflag="2",
+                ),
+            )
+            valuation = [row for row in valuation if row.get("code") == bs_code]
+            if len(valuation) > 1:
+                raise DataFetchError("BaoStock valuation response ambiguous")
+            financial: dict[str, list[dict[str, str]]] = {}
+            selected: tuple[int, int] | None = None
+            current_quarter = min(4, max(1, (target.month + 2) // 3))
+            candidates: list[tuple[int, int]] = []
+            if requested.intersection(query_consumers["profit"]):
+                for year in range(target.year, max(target.year - 4, 1999), -1):
+                    quarter_ceiling = current_quarter if year == target.year else 4
+                    candidates.extend((year, quarter) for quarter in range(quarter_ceiling, 0, -1))
+            for year, quarter in candidates:
+                rows = query(
+                    f"profit_{year}q{quarter}",
+                    lambda: bs.query_profit_data(bs_code, year=year, quarter=quarter),
+                    family="profit",
+                )
+                rows = [row for row in rows if row.get("code") == bs_code
+                        and row.get("pubDate") and row["pubDate"] <= target.isoformat()]
+                if rows:
+                    financial["profit"] = rows
+                    selected = (year, quarter)
+                    break
+            if selected is not None:
+                year, quarter = selected
+                for name, function in (
+                    ("growth", bs.query_growth_data),
+                    ("balance", bs.query_balance_data),
+                    ("cash_flow", bs.query_cash_flow_data),
+                ):
+                    rows = query(
+                        f"{name}_{year}q{quarter}",
+                        lambda: function(bs_code, year=year, quarter=quarter), family=name,
+                    )
+                    financial[name] = [row for row in rows if row.get("code") == bs_code
+                                       and (not row.get("pubDate") or row["pubDate"] <= target.isoformat())]
+                prior_profit = query(
+                    f"profit_{year - 1}q{quarter}",
+                    lambda: bs.query_profit_data(bs_code, year=year - 1, quarter=quarter),
+                    family="prior_profit",
+                )
+                financial["prior_profit"] = [row for row in prior_profit if row.get("code") == bs_code]
+            money_start = f"{max(2000, target.year - 2)}-01"
+            money = query(
+                "money_supply_month", lambda: bs.query_money_supply_data_month(
+                    start_date=money_start, end_date=target.strftime("%Y-%m"),
+                ),
+            )
+        observed_at = datetime.now(timezone.utc)
+
+        observations: dict[str, dict] = {}
+        basic_row = basic[0] if basic else {}
+        observations["P_CODE_IDENTITY"] = _nonprice_observation(
+            dataset_id="P_CODE_IDENTITY",
+            state="PARTIAL",
+            reason_codes=("BOARD_AND_CORPORATE_ACTIONS_NOT_IN_BASIC_RESPONSE",),
+            provider_route="baostock.query_stock_basic",
+            query_identity={"code": bs_code},
+            raw_payload=raw["stock_basic"],
+            observed_at=observed_at,
+            completed_through=target.isoformat(),
+            units={"identity": "TEXT", "date": "ISO_DATE"},
+            currency="NOT_APPLICABLE",
+            adjustment_basis="NOT_APPLICABLE",
+            facts={
+                "code": basic_row.get("code"),
+                "name": basic_row.get("code_name"),
+                "ipo_date": basic_row.get("ipoDate"),
+                "out_date": basic_row.get("outDate"),
+                "security_type": basic_row.get("type"),
+                "listing_status": basic_row.get("status"),
+            },
+        )
+        if industry:
+            row = industry[0]
+            observations["P_INDUSTRY"] = _nonprice_observation(
+                dataset_id="P_INDUSTRY",
+                state="PARTIAL",
+                reason_codes=("REVENUE_STRUCTURE_NOT_IN_CLASSIFICATION_RESPONSE",),
+                provider_route="baostock.query_stock_industry",
+                query_identity={"code": bs_code, "date": target.isoformat()},
+                raw_payload={"fields": raw["stock_industry"]["fields"], "rows": [row]},
+                observed_at=observed_at,
+                completed_through=row.get("updateDate") or target.isoformat(),
+                units={"classification": "TEXT", "date": "ISO_DATE"},
+                currency="NOT_APPLICABLE",
+                adjustment_basis="NOT_APPLICABLE",
+                facts={
+                    "industry": row.get("industry"),
+                    "classification": row.get("industryClassification"),
+                    "update_date": row.get("updateDate"),
+                },
+            )
+        if all_industry:
+            observations["S_CLASSIFICATION"] = _nonprice_observation(
+                dataset_id="S_CLASSIFICATION",
+                state="PARTIAL",
+                reason_codes=("CLASSIFICATION_VALID_TO_AND_HISTORICAL_MEMBERSHIP_UNKNOWN",),
+                provider_route="baostock.query_stock_industry",
+                query_identity={"date": target.isoformat(), "scope": "ALL_CN_SECURITIES"},
+                raw_payload=raw["stock_industry"],
+                observed_at=observed_at,
+                completed_through=_latest_iso_date(
+                    all_industry, "updateDate", fallback=target.isoformat(),
+                ),
+                units={"classification": "TEXT", "member_count": "COUNT"},
+                currency="NOT_APPLICABLE",
+                adjustment_basis="NOT_APPLICABLE",
+                facts={
+                    "member_count": len(all_industry),
+                    "classification_systems": sorted({
+                        row.get("industryClassification") for row in all_industry
+                        if row.get("industryClassification")
+                    }),
+                },
+            )
+        if all_stock:
+            observations["M_ASOF_UNIVERSE"] = _nonprice_observation(
+                dataset_id="M_ASOF_UNIVERSE",
+                state="PARTIAL",
+                reason_codes=("HISTORICAL_LISTING_DELISTING_SUSPENSION_AND_INDEX_MEMBERSHIP_VERSIONS_INCOMPLETE",),
+                provider_route="baostock.query_all_stock",
+                query_identity={"day": target.isoformat()},
+                raw_payload=raw["all_stock"],
+                observed_at=observed_at,
+                completed_through=target.isoformat(),
+                units={"security_count": "COUNT", "trade_status": "ENUM"},
+                currency="NOT_APPLICABLE",
+                adjustment_basis="NOT_APPLICABLE",
+                facts={
+                    "security_count": len(all_stock),
+                    "target_trade_status": (
+                        stock_status[0].get("tradeStatus") if stock_status else None
+                    ),
+                },
+            )
+        if factors:
+            observations["P_PRICE_FACTOR"] = _nonprice_observation(
+                dataset_id="P_PRICE_FACTOR",
+                state="PARTIAL",
+                reason_codes=("COMPLETE_CORPORATE_ACTION_VINTAGE_CHAIN_NOT_PROVEN",),
+                provider_route="baostock.query_adjust_factor",
+                query_identity={"code": bs_code, "end_date": target.isoformat()},
+                raw_payload=raw["adjust_factor"],
+                observed_at=observed_at,
+                completed_through=_latest_iso_date(
+                    factors, "dividOperateDate", "foreAdjustFactor", fallback=target.isoformat(),
+                ),
+                units={"adjustment_factor": "RATIO", "date": "ISO_DATE"},
+                currency="NOT_APPLICABLE",
+                adjustment_basis="PUBLISHED_RAW_QFQ_HFQ_FACTORS",
+                facts={"factor_rows": factors},
+            )
+        if dividends:
+            observations["P_DIVIDEND"] = _nonprice_observation(
+                dataset_id="P_DIVIDEND",
+                state="PARTIAL",
+                reason_codes=("MULTI_YEAR_FREQUENCY_AND_ALL_EVENT_REVISIONS_INCOMPLETE",),
+                provider_route="baostock.query_dividend_data",
+                query_identity={"code": bs_code, "years": [target.year - 1, target.year]},
+                raw_payload={"rows": dividends},
+                observed_at=observed_at,
+                completed_through=_latest_iso_date(
+                    dividends, "dividPayDate", "dividRegistDate", "dividOperateDate",
+                    fallback=target.isoformat(),
+                ),
+                units={"cash_per_share": "CNY_PER_SHARE", "share_count": "SHARE", "date": "ISO_DATE"},
+                currency="CNY",
+                adjustment_basis="NOT_APPLICABLE",
+                facts={"dividend_rows": dividends},
+            )
+        if valuation:
+            row = valuation[0]
+            valuation_facts = {
+                key: _finite_float(row.get(key))
+                for key in (
+                    "close", "volume", "amount", "turn", "pctChg",
+                    "peTTM", "pbMRQ", "psTTM", "pcfNcfTTM",
+                )
+            }
+            observations["P_VAL_RATIO"] = _nonprice_observation(
+                dataset_id="P_VAL_RATIO",
+                state="PARTIAL",
+                reason_codes=("MARKET_CAP_EV_HISTORY_AND_COMPARABLE_RANGE_NOT_PROVEN",),
+                provider_route="baostock.query_history_k_data_plus",
+                query_identity={"code": bs_code, "date": target.isoformat(), "adjustflag": "2"},
+                raw_payload=raw["valuation_daily"],
+                observed_at=observed_at,
+                completed_through=row.get("date") or target.isoformat(),
+                units={"price": "CNY_PER_LISTED_UNIT", "valuation_ratio": "RATIO"},
+                currency="CNY",
+                adjustment_basis="QFQ",
+                facts={key: value for key, value in valuation_facts.items() if key in {"peTTM", "pbMRQ", "psTTM", "pcfNcfTTM"}},
+            )
+            observations["P_QUOTE_LIQUID"] = _nonprice_observation(
+                dataset_id="P_QUOTE_LIQUID",
+                state="PARTIAL",
+                reason_codes=("INTRADAY_BID_ASK_AND_MARKET_CAP_NOT_IN_DAILY_RESPONSE",),
+                provider_route="baostock.query_history_k_data_plus",
+                query_identity={"code": bs_code, "date": target.isoformat(), "adjustflag": "2"},
+                raw_payload=raw["valuation_daily"],
+                observed_at=observed_at,
+                completed_through=row.get("date") or target.isoformat(),
+                units={"price": "CNY_PER_LISTED_UNIT", "volume": "SHARE", "amount": "CNY", "turnover": "PERCENT"},
+                currency="CNY",
+                adjustment_basis="QFQ",
+                facts={key: value for key, value in valuation_facts.items() if key in {"close", "volume", "amount", "turn", "pctChg"}},
+            )
+        if selected is not None and financial.get("profit"):
+            year, quarter = selected
+            profit = financial["profit"][0]
+            stat_date = profit.get("statDate") or target.isoformat()
+            pub_date = profit.get("pubDate") or None
+            observations["P_FIN_VINTAGE"] = _nonprice_observation(
+                dataset_id="P_FIN_VINTAGE",
+                state="PARTIAL",
+                reason_codes=("CORRECTION_VERSION_AND_REVISION_HISTORY_NOT_PUBLISHED_BY_ROUTE",),
+                provider_route="baostock.query_profit_data",
+                query_identity={"code": bs_code, "year": year, "quarter": quarter},
+                raw_payload=raw[f"profit_{year}q{quarter}"],
+                observed_at=observed_at,
+                completed_through=stat_date,
+                units={"period": "ISO_DATE", "publication": "ISO_DATE"},
+                currency="NOT_APPLICABLE",
+                adjustment_basis="NOT_APPLICABLE",
+                facts={
+                    "financial_period_end": stat_date,
+                    "published_date": pub_date,
+                    "financial_version": f"{year}Q{quarter}_CURRENT_OBSERVATION",
+                },
+            )
+            current_revenue = _finite_float(profit.get("MBRevenue"))
+            current_profit = _finite_float(profit.get("netProfit"))
+            prior = (financial.get("prior_profit") or [{}])[0]
+            prior_revenue = _finite_float(prior.get("MBRevenue"))
+            prior_profit = _finite_float(prior.get("netProfit"))
+            revenue_yoy = (
+                (current_revenue / prior_revenue - 1.0) * 100.0
+                if current_revenue is not None and prior_revenue not in (None, 0.0)
+                else None
+            )
+            profit_yoy = (
+                (current_profit / prior_profit - 1.0) * 100.0
+                if current_profit is not None and prior_profit not in (None, 0.0)
+                else None
+            )
+            gross_margin = _finite_float(profit.get("gpMargin"))
+            observations["P_EARNINGS_GROWTH"] = _nonprice_observation(
+                dataset_id="P_EARNINGS_GROWTH",
+                state="PARTIAL",
+                reason_codes=("GUIDANCE_AND_REVENUE_SEGMENT_STRUCTURE_NOT_IN_ROUTE",),
+                provider_route="baostock.query_profit_data+query_growth_data",
+                query_identity={"code": bs_code, "year": year, "quarter": quarter, "prior_year": year - 1},
+                raw_payload={
+                    "profit": raw[f"profit_{year}q{quarter}"],
+                    "growth": raw.get(f"growth_{year}q{quarter}"),
+                    "prior_profit": raw.get(f"profit_{year - 1}q{quarter}"),
+                },
+                observed_at=observed_at,
+                completed_through=stat_date,
+                units={"currency": "CNY", "ratio": "PERCENT", "share_count": "SHARE"},
+                currency="CNY",
+                adjustment_basis="NOT_APPLICABLE",
+                facts={
+                    "revenue": current_revenue,
+                    "net_profit": current_profit,
+                    "gross_margin_pct": gross_margin * 100.0 if gross_margin is not None else None,
+                    "revenue_growth_yoy_pct": revenue_yoy,
+                    "net_profit_growth_yoy_pct": profit_yoy,
+                    "eps_ttm": _finite_float(profit.get("epsTTM")),
+                    "total_share": _finite_float(profit.get("totalShare")),
+                    "growth_route": (financial.get("growth") or [None])[0],
+                },
+            )
+            cash = (financial.get("cash_flow") or [{}])[0]
+            cfo_to_np = _finite_float(cash.get("CFOToNP"))
+            derived_cfo = (
+                cfo_to_np * current_profit
+                if cfo_to_np is not None and current_profit is not None else None
+            )
+            observations["P_CASH_FLOW"] = _nonprice_observation(
+                dataset_id="P_CASH_FLOW",
+                state="PARTIAL",
+                reason_codes=("CAPEX_FCFF_FCFE_AND_ABSOLUTE_CFO_SOURCE_NOT_COMPLETE",),
+                provider_route="baostock.query_cash_flow_data",
+                query_identity={"code": bs_code, "year": year, "quarter": quarter},
+                raw_payload=raw.get(f"cash_flow_{year}q{quarter}") or {"fields": [], "rows": []},
+                observed_at=observed_at,
+                completed_through=stat_date,
+                units={"cash_flow_ratio": "RATIO", "derived_cash_flow": "CNY"},
+                currency="CNY",
+                adjustment_basis="NOT_APPLICABLE",
+                facts={
+                    "cash_flow_ratios": cash,
+                    "derived_operating_cash_flow": derived_cfo,
+                    "derivation": "CFOToNP_TIMES_NET_PROFIT" if derived_cfo is not None else None,
+                },
+            )
+            balance = (financial.get("balance") or [{}])[0]
+            observations["P_BALANCE_SHEET"] = _nonprice_observation(
+                dataset_id="P_BALANCE_SHEET",
+                state="PARTIAL",
+                reason_codes=("ABSOLUTE_DEBT_ASSETS_AND_BANK_QUALITY_FIELDS_NOT_IN_ROUTE",),
+                provider_route="baostock.query_balance_data",
+                query_identity={"code": bs_code, "year": year, "quarter": quarter},
+                raw_payload=raw.get(f"balance_{year}q{quarter}") or {"fields": [], "rows": []},
+                observed_at=observed_at,
+                completed_through=stat_date,
+                units={"solvency_ratio": "RATIO"},
+                currency="NOT_APPLICABLE",
+                adjustment_basis="NOT_APPLICABLE",
+                facts={"balance_ratios": balance},
+            )
+            observations["P_SHARES_EVENTS"] = _nonprice_observation(
+                dataset_id="P_SHARES_EVENTS",
+                state="PARTIAL",
+                reason_codes=("INCENTIVE_BUYBACK_CANCELLATION_AND_PLACEMENT_EVENTS_INCOMPLETE",),
+                provider_route="baostock.query_profit_data+query_adjust_factor",
+                query_identity={"code": bs_code, "year": year, "quarter": quarter},
+                raw_payload={"profit": raw[f"profit_{year}q{quarter}"], "factors": raw["adjust_factor"]},
+                observed_at=observed_at,
+                completed_through=max(stat_date, _latest_iso_date(factors, "dividOperateDate", fallback=stat_date)),
+                units={"share_count": "SHARE", "factor": "RATIO"},
+                currency="NOT_APPLICABLE",
+                adjustment_basis="PUBLISHED_SHARE_AND_ADJUSTMENT_EVENTS",
+                facts={
+                    "total_share": _finite_float(profit.get("totalShare")),
+                    "liquid_share": _finite_float(profit.get("liqaShare")),
+                    "factor_rows": factors,
+                },
+            )
+        if money:
+            last = money[-1]
+            observations["M_PBOC_MONEY"] = _nonprice_observation(
+                dataset_id="M_PBOC_MONEY",
+                state="PARTIAL",
+                reason_codes=("SOCIAL_FINANCING_AND_RELEASE_REVISION_CHAIN_NOT_IN_ROUTE",),
+                provider_route="baostock.query_money_supply_data_month",
+                query_identity={"start_date": money_start, "end_date": target.strftime("%Y-%m")},
+                raw_payload=raw["money_supply_month"],
+                observed_at=observed_at,
+                completed_through=str(last.get("statYear") or "") + "-" + str(last.get("statMonth") or "").zfill(2),
+                units={"money_supply": "CNY_100_MILLION", "growth": "PERCENT"},
+                currency="CNY",
+                adjustment_basis="NOT_APPLICABLE",
+                facts={"latest": last, "observation_count": len(money)},
+            )
+
+        observations = {
+            dataset_id: row for dataset_id, row in observations.items()
+            if dataset_id in requested
+        }
+        bundle = {
+            "schema_version": NONPRICE_BUNDLE_SCHEMA_VERSION,
+            "asset_id": code,
+            "research_date": target.isoformat(),
+            "provider_identity": self.name,
+            "observed_at": observed_at.astimezone(timezone.utc).isoformat(),
+            "data_object_source_observations": observations,
+            "quality_growth_input": None,
+            "quality_blocker_codes": (
+                "ABSOLUTE_TOTAL_DEBT_AND_TOTAL_ASSETS_NOT_PROVEN",
+                "FINANCIAL_CORRECTION_VERSION_NOT_PROVEN",
+            ),
+            "business_valuation_input": None,
+            "valuation_blocker_codes": (
+                "ACCEPTED_LOW_HIGH_VALUATION_ASSUMPTION_RANGE_NOT_PROVEN",
+            ),
+            "storage_admitted": False,
+            "training_admitted": False,
+            "strategy_upgrade_authority": False,
+            "independent_action_authority": False,
+        }
+        bundle["bundle_hash"] = sha256_payload(bundle)
+        return bundle
+
 
     def get_intraday_data(
         self,

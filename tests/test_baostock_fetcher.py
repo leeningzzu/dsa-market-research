@@ -29,6 +29,23 @@ class _Result:
         return self._rows[self._index]
 
 
+class _NamedResult:
+    def __init__(self, fields, rows, *, error_code: str = "0", error_msg: str = ""):
+        self.fields = list(fields)
+        self.error_code = error_code
+        self.error_msg = error_msg
+        self._rows = [list(row) for row in rows]
+        self._index = -1
+
+    def next(self) -> bool:
+        self._index += 1
+        return self._index < len(self._rows)
+
+    def get_row_data(self):
+        return self._rows[self._index]
+
+
+
 class _FakeBaostock:
     def __init__(self, result: _Result) -> None:
         self.result = result
@@ -88,6 +105,189 @@ def test_baostock_failed_query_never_emits_observed_identity() -> None:
     with patch.object(fetcher, "_baostock_session", side_effect=lambda: _session(fake)):
         with pytest.raises(DataFetchError, match="查询失败"):
             fetcher._fetch_raw_data("600519", "2026-01-01", "2026-01-31")
+
+class _NonpriceBaostock:
+    def __init__(self):
+        self.calls = []
+
+    def _result(self, name, fields, rows, **kwargs):
+        self.calls.append((name, kwargs))
+        return _NamedResult(fields, rows)
+
+    def query_stock_basic(self, **kwargs):
+        return self._result(
+            "query_stock_basic",
+            ["code", "code_name", "ipoDate", "outDate", "type", "status"],
+            [["sh.600519", "贵州茅台", "2001-08-27", "", "1", "1"]],
+            **kwargs,
+        )
+
+    def query_stock_industry(self, **kwargs):
+        return self._result(
+            "query_stock_industry",
+            ["updateDate", "code", "code_name", "industry", "industryClassification"],
+            [["2026-10-26", "sh.600519", "贵州茅台", "C15酒、饮料和精制茶制造业", "证监会行业分类"]],
+            **kwargs,
+        )
+
+    def query_all_stock(self, **kwargs):
+        return self._result(
+            "query_all_stock", ["code", "tradeStatus", "code_name"],
+            [["sh.600519", "1", "贵州茅台"]], **kwargs,
+        )
+
+    def query_adjust_factor(self, code, **kwargs):
+        return self._result(
+            "query_adjust_factor",
+            ["code", "dividOperateDate", "foreAdjustFactor", "backAdjustFactor", "adjustFactor"],
+            [[code, "2025-06-27", "0.5", "2.0", "1.0"]],
+            code=code, **kwargs,
+        )
+
+    def query_dividend_data(self, code, **kwargs):
+        return self._result(
+            "query_dividend_data",
+            ["code", "dividPreNoticeDate", "dividAgmPumDate", "dividPlanAnnounceDate", "dividRegistDate", "dividOperateDate", "dividPayDate", "dividStockMarketDate", "dividCashPsBeforeTax", "dividCashPsAfterTax", "dividStocksPs", "dividCashStock", "dividReserveToStockPs"],
+            [[code, "2025-04-03", "2025-06-20", "2025-06-21", "2025-06-26", "2025-06-27", "2025-06-27", "", "27.67", "24.903", "0", "1", "0"]]
+            if kwargs.get("year") == "2025" else [],
+            code=code, **kwargs,
+        )
+
+    def query_history_k_data_plus(self, code, fields, **kwargs):
+        return self._result(
+            "query_history_k_data_plus", fields.split(","),
+            [["2026-10-27", code, "1400", "100000", "140000000", "2", "0.3", "1.1", "20", "6", "15", "18"]],
+            code=code, requested_fields=fields, **kwargs,
+        )
+
+    @staticmethod
+    def _financial_fields(name):
+        return {
+            "profit": ["code", "pubDate", "statDate", "roeAvg", "npMargin", "gpMargin", "netProfit", "epsTTM", "MBRevenue", "totalShare", "liqaShare"],
+            "operation": ["code", "pubDate", "statDate", "NRTurnRatio", "NRTurnDays", "INVTurnRatio", "INVTurnDays", "CATurnRatio", "AssetTurnRatio"],
+            "growth": ["code", "pubDate", "statDate", "YOYEquity", "YOYAsset", "YOYNI", "YOYEPSBasic", "YOYPNI"],
+            "balance": ["code", "pubDate", "statDate", "currentRatio", "quickRatio", "cashRatio", "YOYLiability", "liabilityToAsset", "assetToEquity"],
+            "cash_flow": ["code", "pubDate", "statDate", "CAToAsset", "NCAToAsset", "tangibleAssetToAsset", "ebitToInterest", "CFOToOR", "CFOToNP", "CFOToGr"],
+            "dupont": ["code", "pubDate", "statDate", "dupontROE", "dupontAssetStoEquity", "dupontAssetTurn", "dupontPnitoni", "dupontNitogr", "dupontTaxBurden", "dupontIntburden", "dupontEbittogr"],
+        }[name]
+
+    def _financial(self, name, code, year, quarter):
+        fields = self._financial_fields(name)
+        rows = []
+        if (year, quarter) == (2026, 2):
+            values = {
+                "profit": [code, "2026-08-15", "2026-06-30", "0.19", "0.52", "0.91", "51000000000", "75", "95000000000", "1256197800", "1256197800"],
+                "operation": [code, "2026-08-15", "2026-06-30", "36", "5", "0.15", "1200", "0.36", "0.31"],
+                "growth": [code, "2026-08-15", "2026-06-30", "0.1", "0.05", "0.09", "0.09", "0.09"],
+                "balance": [code, "2026-08-15", "2026-06-30", "5", "4", "3", "0.04", "0.2", "1.25"],
+                "cash_flow": [code, "2026-08-15", "2026-06-30", "0.2", "0.8", "0.9", "30", "0.55", "1.1", "0.4"],
+                "dupont": [code, "2026-08-15", "2026-06-30", "0.2", "1.25", "0.31", "0.52", "0.55", "0.9", "0.95", "0.6"],
+            }
+            rows = [values[name]]
+        elif name == "profit" and (year, quarter) == (2025, 2):
+            rows = [[code, "2025-08-13", "2025-06-30", "0.18", "0.51", "0.90", "47000000000", "70", "89000000000", "1256197800", "1256197800"]]
+        return self._result(name, fields, rows, code=code, year=year, quarter=quarter)
+
+    def query_profit_data(self, code, year=None, quarter=None): return self._financial("profit", code, year, quarter)
+    def query_operation_data(self, code, year=None, quarter=None): return self._financial("operation", code, year, quarter)
+    def query_growth_data(self, code, year=None, quarter=None): return self._financial("growth", code, year, quarter)
+    def query_balance_data(self, code, year=None, quarter=None): return self._financial("balance", code, year, quarter)
+    def query_cash_flow_data(self, code, year=None, quarter=None): return self._financial("cash_flow", code, year, quarter)
+    def query_dupont_data(self, code, year=None, quarter=None): return self._financial("dupont", code, year, quarter)
+
+    def query_money_supply_data_month(self, **kwargs):
+        return self._result(
+            "query_money_supply_data_month",
+            ["statYear", "statMonth", "m0Month", "m0YOY", "m0ChainRelative", "m1Month", "m1YOY", "m1ChainRelative", "m2Month", "m2YOY", "m2ChainRelative"],
+            [["2026", "09", "130000", "10", "1", "1100000", "8", "0.5", "3300000", "7", "0.4"]],
+            **kwargs,
+        )
+
+
+def test_baostock_nonprice_bundle_is_source_bound_partial_and_non_authoritative() -> None:
+    fake = _NonpriceBaostock()
+    fetcher = BaostockFetcher()
+    observed = datetime(2026, 10, 28, 7, 30, tzinfo=timezone.utc)
+
+    class _Clock:
+        @classmethod
+        def now(cls, tz=None):
+            return observed
+
+    with (
+        patch.object(fetcher, "_baostock_session", side_effect=lambda: _session(fake)),
+        patch("data_provider.baostock_fetcher.datetime", _Clock),
+    ):
+        bundle = fetcher.get_cn_stock_nonprice_research_bundle(
+            "600519", research_date="2026-10-27",
+        )
+
+    observations = bundle["data_object_source_observations"]
+    assert {
+        "P_CODE_IDENTITY", "P_INDUSTRY", "S_CLASSIFICATION",
+        "M_ASOF_UNIVERSE", "P_PRICE_FACTOR", "P_DIVIDEND",
+        "P_VAL_RATIO", "P_QUOTE_LIQUID", "P_FIN_VINTAGE",
+        "P_EARNINGS_GROWTH", "P_CASH_FLOW", "P_BALANCE_SHEET",
+        "P_SHARES_EVENTS", "M_PBOC_MONEY",
+    } <= set(observations)
+    assert all(row["state"] == "PARTIAL" for row in observations.values())
+    assert all(row["historical_pit_eligible"] is False for row in observations.values())
+    assert all(row["strategy_upgrade_authority"] is False for row in observations.values())
+    assert all(
+        row["observation_hash"]
+        == sha256_payload({key: value for key, value in row.items() if key != "observation_hash"})
+        for row in observations.values()
+    )
+    growth = observations["P_EARNINGS_GROWTH"]["facts"]
+    assert growth["revenue_growth_yoy_pct"] > 0
+    assert growth["net_profit_growth_yoy_pct"] > 0
+    assert bundle["quality_growth_input"] is None
+    assert bundle["business_valuation_input"] is None
+    assert bundle["storage_admitted"] is False
+    assert bundle["training_admitted"] is False
+
+
+@pytest.mark.parametrize("dataset,allowed_queries", [
+    ("P_CODE_IDENTITY", {"query_stock_basic"}),
+    ("S_CLASSIFICATION", {"query_stock_industry"}),
+    ("P_VAL_RATIO", {"query_history_k_data_plus"}),
+    ("P_CASH_FLOW", {"profit", "cash_flow"}),
+    ("P_SHARES_EVENTS", {"profit", "query_adjust_factor"}),
+    ("M_PBOC_MONEY", {"query_money_supply_data_month"}),
+])
+def test_nonprice_selection_limits_actual_query_calls(dataset, allowed_queries):
+    fake = _NonpriceBaostock()
+    fetcher = BaostockFetcher()
+    with patch.object(fetcher, "_baostock_session", side_effect=lambda: _session(fake)):
+        bundle = fetcher.get_cn_stock_nonprice_research_bundle(
+            "600519", research_date="2026-10-27", requested_dataset_ids={dataset},
+        )
+    assert {name for name, _ in fake.calls} == allowed_queries
+    assert set(bundle["data_object_source_observations"]) == {dataset}
+    assert bundle["storage_admitted"] is False
+
+
+@pytest.mark.parametrize("selection", [set(), {"NOT_A_REGISTERED_OBJECT"}])
+def test_nonprice_invalid_selection_is_rejected_before_login(selection):
+    fetcher = BaostockFetcher()
+    with patch.object(fetcher, "_baostock_session") as login:
+        with pytest.raises(DataFetchError, match="selection empty or unknown"):
+            fetcher.get_cn_stock_nonprice_research_bundle(
+                "600519", research_date="2026-10-27", requested_dataset_ids=selection,
+            )
+    login.assert_not_called()
+
+
+def test_baostock_nonprice_bundle_rejects_etf_before_provider_dispatch() -> None:
+    fake = _NonpriceBaostock()
+    fetcher = BaostockFetcher()
+    with patch.object(fetcher, "_baostock_session", side_effect=lambda: _session(fake)):
+        with pytest.raises(DataFetchError, match="does not admit ETF"):
+            fetcher.get_cn_stock_nonprice_research_bundle(
+                "510300", research_date="2026-10-27",
+            )
+    assert fake.calls == []
+
 
 class _MinuteResult(_Result):
     fields = ["date", "time", "code", "open", "high", "low", "close", "volume", "amount", "adjustflag"]

@@ -22,6 +22,7 @@ DAILY_DATA_IDENTITY_FRAME_ATTR = "daily_data_identity"
 DAILY_ACQUISITION_RECEIPT_SCHEMA_VERSION = "dsa-daily-acquisition-v1"
 DAILY_ACQUISITION_RECEIPT_FRAME_ATTR = "dsa_daily_acquisition_receipt"
 DAILY_WINDOW_EXTENSION_RECEIPT_SCHEMA_VERSION = "dsa-daily-window-extension-v1"
+DAILY_COMPLETION_BRIDGE_RECEIPT_SCHEMA_VERSION = "dsa-daily-completion-bridge-v1"
 
 _IDENTITY_STATES = frozenset({"OBSERVED", "UNCLASSIFIED"})
 _ADJUSTMENT_BASES = frozenset({"raw", "qfq", "hfq", "total_return"})
@@ -508,6 +509,60 @@ def validate_daily_window_extension_receipt(value: Any) -> dict[str, Any]:
     return payload
 
 
+def seal_daily_completion_bridge_receipt(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Seal one run-local same-provider completed-5m to daily bridge receipt."""
+    payload = dict(value)
+    payload.pop("receipt_hash", None)
+    payload["receipt_hash"] = sha256_payload(payload)
+    return validate_daily_completion_bridge_receipt(payload)
+
+
+def validate_daily_completion_bridge_receipt(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise DailyDataIdentityError("daily completion bridge receipt must be an object")
+    payload = json.loads(canonical_json(dict(value)))
+    if payload.get("schema_version") != DAILY_COMPLETION_BRIDGE_RECEIPT_SCHEMA_VERSION:
+        raise DailyDataIdentityError("daily completion bridge schema_version mismatch")
+    required_text = (
+        "algorithm_version", "instrument", "target_date", "provider_identity",
+        "daily_parent_identity_hash", "intraday_parent_identity_hash",
+        "daily_parent_returned_end", "intraday_completed_session",
+        "derived_row_hash", "receipt_hash",
+    )
+    for key in required_text:
+        if not str(payload.get(key) or "").strip():
+            raise DailyDataIdentityError(f"daily completion bridge missing {key}")
+    if payload["algorithm_version"] != "same-provider-completed-5m-to-1d-v1":
+        raise DailyDataIdentityError("daily completion bridge algorithm mismatch")
+    payload["instrument"] = _instrument_text(payload.get("instrument"))
+    target = _date_text(payload.get("target_date"))
+    previous = _date_text(payload.get("daily_parent_returned_end"))
+    completed = _date_text(payload.get("intraday_completed_session"))
+    if not payload["instrument"] or not target or not previous or completed != target or previous >= target:
+        raise DailyDataIdentityError("daily completion bridge date or instrument mismatch")
+    payload["target_date"] = target
+    payload["daily_parent_returned_end"] = previous
+    payload["intraday_completed_session"] = completed
+    for key in (
+        "daily_parent_identity_hash", "intraday_parent_identity_hash",
+        "derived_row_hash", "receipt_hash",
+    ):
+        if not _is_sha256(payload.get(key)):
+            raise DailyDataIdentityError("daily completion bridge hashes must be exact 64-hex")
+    if payload.get("minute_row_count") != 48 or payload.get("minute_provider_method_call_count") != 1:
+        raise DailyDataIdentityError("daily completion bridge requires exactly one complete 48-bar provider call")
+    for key in (
+        "storage_admitted", "training_admitted", "strategy_admitted",
+        "independent_action_authority",
+    ):
+        if payload.get(key) is not False:
+            raise DailyDataIdentityError("daily completion bridge cannot grant durable or action authority")
+    expected_hash = sha256_payload({key: item for key, item in payload.items() if key != "receipt_hash"})
+    if payload.get("receipt_hash") != expected_hash:
+        raise DailyDataIdentityError("daily completion bridge receipt hash mismatch")
+    return payload
+
+
 def seal_daily_acquisition_receipt(value: Mapping[str, Any]) -> dict[str, Any]:
     payload = dict(value)
     payload.pop("receipt_hash", None)
@@ -575,13 +630,27 @@ def validate_daily_acquisition_receipt(value: Any) -> dict[str, Any]:
         ):
             raise DailyDataIdentityError("daily cache-hit receipt is inconsistent")
     extension = payload.get("bounded_window_extension")
+    bridge = payload.get("daily_completion_bridge")
     provider_calls = payload.get("provider_method_call_count")
-    if extension is None:
-        if mode == "VERIFIED_PROVIDER_CALL" and provider_calls != 1:
-            raise DailyDataIdentityError("multiple daily provider calls require extension receipt")
-    else:
+    bridge_calls = 0
+    if bridge is not None:
         if mode != "VERIFIED_PROVIDER_CALL":
-            raise DailyDataIdentityError("daily cache hit cannot contain extension receipt")
+            raise DailyDataIdentityError("daily cache hit cannot contain completion bridge")
+        bridge = validate_daily_completion_bridge_receipt(bridge)
+        payload["daily_completion_bridge"] = bridge
+        bridge_calls = bridge["minute_provider_method_call_count"]
+        if (
+            payload.get("instrument") != bridge["instrument"]
+            or payload.get("target_date") != bridge["target_date"]
+            or payload.get("provider_identity") != bridge["provider_identity"]
+        ):
+            raise DailyDataIdentityError("daily acquisition completion bridge binding mismatch")
+    if extension is None:
+        if mode == "VERIFIED_PROVIDER_CALL" and provider_calls != 1 + bridge_calls:
+            raise DailyDataIdentityError("multiple provider calls require a bound extension or completion bridge")
+    else:
+        if mode != "VERIFIED_PROVIDER_CALL" or bridge is not None:
+            raise DailyDataIdentityError("daily extension cannot combine with cache hit or completion bridge")
         extension = validate_daily_window_extension_receipt(extension)
         payload["bounded_window_extension"] = extension
         if (

@@ -27,6 +27,7 @@ from src.services.data_object_admission import (
 MANIFEST_VERSION = "evidence-product-traceability-v1"
 TRACE_VERSION = "canonical-evidence-trace-v2"
 METHOD_EXECUTION_RECEIPT_VERSION = "method-execution-receipt-v1"
+DATA_OBJECT_SOURCE_OBSERVATION_VERSION = "data-object-source-observation-v1"
 STOCK_STRATEGY = "stock_trend_quality_pullback_v1"
 BASELINE_SHA256 = "039ca6394baf9cf39494cc29f512802b114c8227f8c965723197a8df4b9de823"
 BASELINE_BYTES = 125919
@@ -242,6 +243,43 @@ ACCEPTED_WHOLE_PRODUCT_ATOMIC_SUBFIELDS = frozenset({
     "GLOBAL_SOX_INDEX", "GLOBAL_TECH_ETF_FLOW",
     "GLOBAL_SEMICONDUCTOR_SOFTWARE_RELATIVE",
 })
+ATOMIC_SUBFIELD_CATALOG = (
+    (
+        "GLOBAL_US_ACTUAL_INFLATION",
+        "美国整体通胀实际公布值及精确发布日期",
+        "monthly/released",
+    ),
+    (
+        "GLOBAL_US_CORE_INFLATION",
+        "美国核心通胀实际公布值及精确发布日期",
+        "monthly/released",
+    ),
+    (
+        "GLOBAL_US_SERVICE_INFLATION",
+        "美国服务通胀实际公布值及精确发布日期",
+        "monthly/released",
+    ),
+    (
+        "GLOBAL_US_5Y_INFLATION_EXPECTATION",
+        "美国5年通胀预期及观测时点",
+        "daily/close",
+    ),
+    (
+        "GLOBAL_SOX_INDEX",
+        "费城半导体指数价格与完成时点",
+        "daily/close",
+    ),
+    (
+        "GLOBAL_TECH_ETF_FLOW",
+        "美国科技ETF可核资金流及原生公布时点",
+        "daily/published",
+    ),
+    (
+        "GLOBAL_SEMICONDUCTOR_SOFTWARE_RELATIVE",
+        "半导体与软件资产相对强弱及一致基准",
+        "daily/close",
+    ),
+)
 CURRENT_PRODUCT_DATA_DOMAINS = frozenset({
     "GLOBAL", "CN_MARKET", "SECTOR", "ETF", "STOCK",
 })
@@ -3672,6 +3710,198 @@ def _verified_cn_sector_scope(factor: Mapping) -> dict[str, dict]:
     }
 
 
+def compile_atomic_subfield_obligations(factor: Mapping) -> list[dict]:
+    """Compile the seven exact Golden atoms without broad-proxy substitution."""
+    if not isinstance(factor, Mapping):
+        raise TraceabilityError("ATOMIC_SUBFIELD_FACTOR_INVALID")
+    catalog_ids = tuple(row[0] for row in ATOMIC_SUBFIELD_CATALOG)
+    if (
+        len(catalog_ids) != 7
+        or len(set(catalog_ids)) != 7
+        or frozenset(catalog_ids) != ACCEPTED_WHOLE_PRODUCT_ATOMIC_SUBFIELDS
+    ):
+        raise TraceabilityError("ATOMIC_SUBFIELD_CATALOG_MISMATCH")
+    observations = factor.get("atomic_subfield_source_observations")
+    if observations is None:
+        observations = {}
+    if not isinstance(observations, Mapping):
+        raise TraceabilityError("ATOMIC_SUBFIELD_SOURCE_OBSERVATIONS_INVALID")
+    unknown = sorted(set(str(key) for key in observations) - set(catalog_ids))
+    if unknown:
+        raise TraceabilityError(
+            "ATOMIC_SUBFIELD_SOURCE_OBSERVATION_ORPHAN:" + ",".join(unknown)
+        )
+    allowed_source_fields = {
+        "dataset_id", "state", "reason", "provider_identity",
+        "provider_route", "source_identity_hash", "source_content_sha256",
+        "source_observed_at", "source_available_at", "completed_through",
+        "units", "currency", "adjustment_basis", "revision", "vintage",
+        "facts", "source_fact_hash",
+    }
+    rows = []
+    for dataset_id, fact, frequency in ATOMIC_SUBFIELD_CATALOG:
+        row = {
+            "dataset_id": dataset_id,
+            "domain": "GLOBAL",
+            "fact_or_fields": fact,
+            "native_frequency": frequency,
+            "product_consumer": "MARKET_GLOBAL_TRANSMISSION",
+            "state": "UNKNOWN",
+            "reason": "NO_INDEPENDENT_TYPED_ATOMIC_SOURCE",
+            "independent_source_value_admitted": False,
+            "historical_pit_eligible": False,
+            "strategy_upgrade_authority": False,
+        }
+        source = observations.get(dataset_id)
+        if source is not None:
+            if not isinstance(source, Mapping):
+                raise TraceabilityError(
+                    "ATOMIC_SUBFIELD_SOURCE_OBSERVATION_INVALID:" + dataset_id
+                )
+            extra = set(source) - allowed_source_fields
+            if extra:
+                raise TraceabilityError(
+                    "ATOMIC_SUBFIELD_SOURCE_OBSERVATION_FIELD_INVALID:"
+                    + dataset_id + ":" + ",".join(sorted(extra))
+                )
+            if source.get("dataset_id") not in (None, "", dataset_id):
+                raise TraceabilityError(
+                    "ATOMIC_SUBFIELD_SOURCE_OBSERVATION_ID_MISMATCH:"
+                    + dataset_id
+                )
+            source_state = str(source.get("state") or "PARTIAL")
+            if source_state not in {"READY", "PARTIAL", "MISSING", "UNKNOWN"}:
+                raise TraceabilityError(
+                    "ATOMIC_SUBFIELD_SOURCE_OBSERVATION_STATE_INVALID:"
+                    + dataset_id
+                )
+            facts = source.get("facts")
+            fact_hash = str(source.get("source_fact_hash") or "").strip()
+            if source_state in {"READY", "PARTIAL"}:
+                if not isinstance(facts, Mapping) or not facts:
+                    raise TraceabilityError(
+                        "ATOMIC_SUBFIELD_SOURCE_FACTS_MISSING:" + dataset_id
+                    )
+                if len(fact_hash) != 64 or digest(facts) != fact_hash:
+                    raise TraceabilityError(
+                        "ATOMIC_SUBFIELD_SOURCE_FACT_HASH_MISMATCH:" + dataset_id
+                    )
+            elif facts not in (None, {}) or fact_hash:
+                raise TraceabilityError(
+                    "ATOMIC_SUBFIELD_UNOBSERVED_FACTS_FORBIDDEN:" + dataset_id
+                )
+            row.update({
+                key: value
+                for key, value in source.items()
+                if key not in {"dataset_id", "state", "reason"}
+            })
+            row["state"] = source_state
+            row["reason"] = str(
+                source.get("reason")
+                or "ATOMIC_SOURCE_OBSERVED_RIGHTS_NOT_ADMITTED"
+            )
+        rows.append(row)
+    return rows
+
+
+def _verified_data_object_source_scope(factor: Mapping) -> dict[str, dict]:
+    """Validate generic producer-owned non-price observations without inventing facts."""
+    raw = factor.get("data_object_source_observations")
+    if raw is None:
+        return {}
+    if not isinstance(raw, Mapping):
+        raise TraceabilityError("DATA_OBJECT_SOURCE_OBSERVATIONS_INVALID")
+    accepted_ids = {
+        dataset_id
+        for _domain, _consumer, entries in _DATA_OBJECT_CATALOG
+        for dataset_id, _fact, _frequency in entries
+    }
+    required = {
+        "schema_version", "dataset_id", "state", "reason_codes",
+        "provider_identity", "provider_route", "producer_authority",
+        "source_identity_hash", "source_content_sha256",
+        "source_observed_at", "source_available_at", "completed_through",
+        "units", "currency", "adjustment_basis", "revision", "vintage",
+        "historical_pit_eligible", "independent_source_value_admitted",
+        "strategy_upgrade_authority", "facts", "observation_hash",
+    }
+    result: dict[str, dict] = {}
+    for key, value in raw.items():
+        dataset_id = str(key or "").strip()
+        if dataset_id not in accepted_ids or not isinstance(value, Mapping):
+            raise TraceabilityError("DATA_OBJECT_SOURCE_OBSERVATION_ORPHAN")
+        row = dict(value)
+        if set(row) != required:
+            raise TraceabilityError(
+                "DATA_OBJECT_SOURCE_OBSERVATION_SCHEMA_MISMATCH:" + dataset_id
+            )
+        if (
+            row.get("schema_version") != DATA_OBJECT_SOURCE_OBSERVATION_VERSION
+            or row.get("dataset_id") != dataset_id
+            or row.get("state") not in {"READY", "PARTIAL"}
+            or not isinstance(row.get("reason_codes"), (list, tuple))
+            or not isinstance(row.get("units"), Mapping)
+            or not row.get("units")
+            or not isinstance(row.get("facts"), Mapping)
+            or row.get("historical_pit_eligible") is not False
+            or row.get("independent_source_value_admitted") is not True
+            or row.get("strategy_upgrade_authority") is not False
+        ):
+            raise TraceabilityError(
+                "DATA_OBJECT_SOURCE_OBSERVATION_INVALID:" + dataset_id
+            )
+        for hash_key in (
+            "source_identity_hash", "source_content_sha256", "observation_hash",
+        ):
+            digest_text = str(row.get(hash_key) or "").lower()
+            if len(digest_text) != 64 or any(
+                character not in "0123456789abcdef" for character in digest_text
+            ):
+                raise TraceabilityError(
+                    "DATA_OBJECT_SOURCE_OBSERVATION_HASH_INVALID:" + dataset_id
+                )
+        expected_hash = digest({
+            field: row[field] for field in row if field != "observation_hash"
+        })
+        if row["observation_hash"] != expected_hash:
+            raise TraceabilityError(
+                "DATA_OBJECT_SOURCE_OBSERVATION_HASH_MISMATCH:" + dataset_id
+            )
+        for text_key in (
+            "provider_identity", "provider_route", "producer_authority",
+            "source_observed_at", "source_available_at", "completed_through",
+            "currency", "adjustment_basis", "revision", "vintage",
+        ):
+            if not str(row.get(text_key) or "").strip():
+                raise TraceabilityError(
+                    "DATA_OBJECT_SOURCE_OBSERVATION_FIELD_MISSING:"
+                    + dataset_id + ":" + text_key
+                )
+        result[dataset_id] = {
+            "state": row["state"],
+            "reason": ",".join(str(item) for item in row["reason_codes"]),
+            "provider_identity": row["provider_identity"],
+            "provider_route": row["provider_route"],
+            "source_identity_hash": row["source_identity_hash"],
+            "source_content_sha256": row["source_content_sha256"],
+            "source_observed_at": row["source_observed_at"],
+            "source_available_at": row["source_available_at"],
+            "completed_through": row["completed_through"],
+            "units": dict(row["units"]),
+            "currency": row["currency"],
+            "adjustment_basis": row["adjustment_basis"],
+            "revision": row["revision"],
+            "vintage": row["vintage"],
+            "producer_authority": row["producer_authority"],
+            "source_fact_hash": digest(row["facts"]),
+            "source_observation_hash": row["observation_hash"],
+            "historical_pit_eligible": False,
+            "independent_source_value_admitted": True,
+            "strategy_upgrade_authority": False,
+        }
+    return result
+
+
 def _compile_accepted_data_object_scope(factor: Mapping) -> list[dict]:
     """Expose accepted DATA obligations, not invented data values or strategy votes."""
     rows = [
@@ -3716,6 +3946,14 @@ def _compile_accepted_data_object_scope(factor: Mapping) -> list[dict]:
     market_source_scope.update(_verified_cn_market_5m_source_scope(factor))
     market_source_scope.update(_verified_cn_market_7tf_scope(factor))
     sector_source_scope = _verified_cn_sector_scope(factor)
+    generic_source_scope = _verified_data_object_source_scope(factor)
+    occupied = (
+        set(base_source_scope)
+        | set(market_source_scope)
+        | set(sector_source_scope)
+    )
+    if occupied & set(generic_source_scope):
+        raise TraceabilityError("DATA_OBJECT_SOURCE_OBSERVATION_OWNER_CONFLICT")
     objects = []
     for dataset_id, domain, fact, frequency, consumer in rows:
         applicable = (
@@ -3742,6 +3980,8 @@ def _compile_accepted_data_object_scope(factor: Mapping) -> list[dict]:
             row.update(market_source_scope[dataset_id])
         if applicable and dataset_id in sector_source_scope:
             row.update(sector_source_scope[dataset_id])
+        if applicable and dataset_id in generic_source_scope:
+            row.update(generic_source_scope[dataset_id])
         objects.append(row)
     return objects
 
@@ -3925,16 +4165,33 @@ def compile_full_domain_data_gate(
             raise TraceabilityError("FULL_DOMAIN_DATA_ADMISSION_COUNT_MISMATCH")
 
     admitted = set(product_admitted_ids)
-    unresolved_all_ids = tuple(sorted(set(applicable_ids) - admitted))
+    # Rights admission makes an observed leaf displayable; it does not make an
+    # incomplete object satisfy the full-domain exit.  Product readiness needs
+    # both the exact operation admission and a producer-owned READY state.
+    ready_ids = {
+        str(row["dataset_id"])
+        for row in rows
+        if str(row.get("state") or "") == "READY"
+    }
+    ready_and_admitted = ready_ids & admitted
+    unresolved_all_ids = tuple(sorted(
+        set(applicable_ids) - ready_and_admitted
+    ))
     current_product_admitted_ids = tuple(sorted(
         set(current_product_applicable_ids) & admitted
     ))
+    current_product_ready_ids = tuple(sorted(
+        set(current_product_applicable_ids) & ready_and_admitted
+    ))
     record_admitted_ids = tuple(sorted(set(record_applicable_ids) & admitted))
+    record_ready_ids = tuple(sorted(
+        set(record_applicable_ids) & ready_and_admitted
+    ))
     unresolved_product_ids = tuple(sorted(
-        set(current_product_applicable_ids) - set(current_product_admitted_ids)
+        set(current_product_applicable_ids) - set(current_product_ready_ids)
     ))
     unresolved_record_ids = tuple(sorted(
-        set(record_applicable_ids) - set(record_admitted_ids)
+        set(record_applicable_ids) - set(record_ready_ids)
     ))
     current_product_domain_counts = {
         domain: sum(
@@ -3959,9 +4216,13 @@ def compile_full_domain_data_gate(
         "current_product_applicable_object_count": len(current_product_applicable_ids),
         "current_product_admitted_count": len(current_product_admitted_ids),
         "current_product_admitted_dataset_ids": current_product_admitted_ids,
+        "current_product_ready_count": len(current_product_ready_ids),
+        "current_product_ready_dataset_ids": current_product_ready_ids,
         "record_object_count": len(record_applicable_ids),
         "record_admitted_count": len(record_admitted_ids),
         "record_admitted_dataset_ids": record_admitted_ids,
+        "record_ready_count": len(record_ready_ids),
+        "record_ready_dataset_ids": record_ready_ids,
         "unresolved_product_dataset_ids": unresolved_product_ids,
         "unresolved_record_dataset_ids": unresolved_record_ids,
         "unresolved_all_applicable_dataset_ids": unresolved_all_ids,
@@ -3979,6 +4240,7 @@ def compile_full_domain_data_gate(
             "not_applicable_is_not_failure": True,
             "catalog_count_never_implies_product_readiness": True,
             "every_product_ready_object_requires_validated_operation_admission": True,
+            "product_admission_without_object_ready_is_partial_not_full_domain": True,
             "future_record_artifacts_remain_accounted_but_do_not_block_current_product": True,
             "record_outcome_and_pit_have_independent_later_clocks": True,
             "product_admission_does_not_grant_storage_training_or_action": True,
@@ -4147,6 +4409,50 @@ def compile_complete_research_universe_view(
         except DataObjectAdmissionError as exc:
             raise TraceabilityError(str(exc)) from exc
 
+    atomic_obligations = compile_atomic_subfield_obligations(factor)
+    atomic_receipts = factor.get("atomic_subfield_admission_receipts")
+    if atomic_receipts is None:
+        atomic_receipts = {}
+    if not isinstance(atomic_receipts, Mapping):
+        raise TraceabilityError("ATOMIC_SUBFIELD_ADMISSION_RECEIPTS_INVALID")
+    atomic_target_as_of = (
+        factor.get("research_as_of")
+        or at(factor, "multi_timeframe_structure_context.snapshot_observed_at")
+        or at(factor, "multi_timeframe_structure_context.available_at_max")
+        or at(factor, "shared_report_context.research_as_of")
+    )
+    atomic_operation_id = str(
+        factor.get("research_operation_id") or ""
+    ).strip()
+    atomic_intended_use = str(
+        factor.get("research_intended_use") or ""
+    ).strip()
+    if atomic_receipts and not atomic_target_as_of:
+        raise TraceabilityError(
+            "ATOMIC_SUBFIELD_ADMISSION_RESEARCH_ASOF_MISSING"
+        )
+    if atomic_receipts and (
+        not atomic_operation_id or atomic_intended_use != "NO_SEND_RESEARCH"
+    ):
+        raise TraceabilityError(
+            "ATOMIC_SUBFIELD_ADMISSION_OPERATION_CONTEXT_MISSING_OR_INVALID"
+        )
+    try:
+        atomic_admission_view = compile_data_object_admission_view(
+            atomic_obligations,
+            atomic_receipts,
+            as_of=atomic_target_as_of,
+            operation_id=atomic_operation_id,
+            intended_use=atomic_intended_use,
+        )
+    except DataObjectAdmissionError as exc:
+        raise TraceabilityError(str(exc)) from exc
+    atomic_product_ids = tuple(sorted(
+        str(row.get("dataset_id") or "")
+        for row in atomic_admission_view.get("objects") or ()
+        if isinstance(row, Mapping) and row.get("product_admitted") is True
+    ))
+
     valuation_route_ids = tuple(
         _owner_literals("src/services/business_valuation_service.py").get(
             "VALUATION_ROUTE_IDS", ()
@@ -4189,6 +4495,10 @@ def compile_complete_research_universe_view(
         "known_atomic_subfield_obligations": tuple(sorted(
             ACCEPTED_WHOLE_PRODUCT_ATOMIC_SUBFIELDS
         )),
+        "atomic_subfield_obligations": atomic_obligations,
+        "atomic_subfield_admission": atomic_admission_view,
+        "atomic_subfield_admission_hash": atomic_admission_view["view_hash"],
+        "atomic_subfield_product_admitted_ids": atomic_product_ids,
         "full_domain_data_gate": full_domain_data_gate,
         "full_domain_data_gate_hash": full_domain_data_gate["gate_hash"],
         **(
@@ -4208,6 +4518,8 @@ def compile_complete_research_universe_view(
             "methods": len(method_rows),
             "strategy_bindings": len(strategy_rows),
             "technical_matrix_cells": len(cells),
+            "atomic_subfields": len(atomic_obligations),
+            "atomic_subfields_product_admitted": len(atomic_product_ids),
         },
         "policy": {
             "timeframe_family_matrix_is_technical_subset_only": True,
@@ -4217,6 +4529,8 @@ def compile_complete_research_universe_view(
             "email_llm_are_projection_consumers_not_evidence_producers": True,
             "data_object_rights_are_operation_specific_and_fail_closed": True,
             "product_admission_never_implies_storage_training_or_redistribution": True,
+            "broad_global_objects_never_substitute_exact_atomic_subfields": True,
+            "atomic_subfields_reuse_operation_specific_admission": True,
         },
     }
     document["universe_hash"] = digest(document)

@@ -444,7 +444,7 @@ def test_receipt_only_fetch_trims_future_provider_bars_before_save():
         "allowed_instruments": ["600519"],
         "rights_by_dataset": {
             "P_DAILY": seal_source_rights_evidence({
-                "schema_version": "source-rights-evidence-v1",
+                "schema_version": "source-rights-evidence-v2",
                 "operation_id": "test-p0-receipt-only-future-trim",
                 "intended_use": "NO_SEND_RESEARCH",
                 "provider_identity": "FixtureSource",
@@ -455,6 +455,9 @@ def test_receipt_only_fetch_trims_future_provider_bars_before_save():
                 "terms_uri": "https://example.invalid/test-fixture-only",
                 "terms_sha256": "a" * 64,
                 "terms_observed_at": "2026-09-01T00:00:00+00:00",
+                "terms_scope": "SYNTHETIC_TEST_CONTRACT",
+                "product_use_clause": "Synthetic fixture explicitly allows internal no-send research and isolated test storage.",
+                "product_use_clause_sha256": "ca21d3a08155dcb3fec82357bd4ec7c42a98be2f6c8c3624976edd97ee84cfb9",
                 "rights": {
                     "product_use": "ALLOWED",
                     "storage": "ALLOWED",

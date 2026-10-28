@@ -15,7 +15,7 @@ Without a valid package, strict CN Stock/ordinary-ETF research stops before prov
 | Ordinary Stock | `P_DAILY` | `P_5M` | `ASSET_RESEARCH_BRIEF` |
 | Ordinary ETF | `E_PRICE_1D` | `E_PRICE_5M` | `ETF_ASSET_BRIEF` |
 
-Every grant must bind the same `operation_id`, `intended_use=NO_SEND_RESEARCH`, exact provider identity, upstream source owner, dataset, consumer, terms URI, terms SHA-256, terms observation time and four rights.
+Every grant must bind the same `operation_id`, `intended_use=NO_SEND_RESEARCH`, exact provider identity, upstream source owner, dataset, consumer, terms URI, exact terms bytes SHA-256, terms observation time, terms scope, an exact reviewed product-use clause plus its SHA-256, and four rights. A software package license or package-registry classifier is not an upstream data-use grant.
 
 ## Exact package shape
 
@@ -27,7 +27,7 @@ Every grant must bind the same `operation_id`, `intended_use=NO_SEND_RESEARCH`, 
   "allowed_instruments": ["600519", "510300"],
   "rights_by_dataset": {
     "P_DAILY": {
-      "schema_version": "source-rights-evidence-v1",
+      "schema_version": "source-rights-evidence-v2",
       "operation_id": "operator-defined-stable-operation-id",
       "intended_use": "NO_SEND_RESEARCH",
       "provider_identity": "EXACT_FETCHER_NAME",
@@ -38,6 +38,9 @@ Every grant must bind the same `operation_id`, `intended_use=NO_SEND_RESEARCH`, 
       "terms_uri": "https://authoritative.example/terms",
       "terms_sha256": "64-hex-sha256-of-the-observed-terms",
       "terms_observed_at": "2026-10-23T00:00:00+00:00",
+      "terms_scope": "OFFICIAL_PROVIDER_DATA_USE_STATEMENT",
+      "product_use_clause": "exact short clause from the observed official data-use statement",
+      "product_use_clause_sha256": "64-hex-sha256-of-that-exact-clause",
       "rights": {
         "product_use": "ALLOWED",
         "storage": "FORBIDDEN",
@@ -50,7 +53,7 @@ Every grant must bind the same `operation_id`, `intended_use=NO_SEND_RESEARCH`, 
 }
 ```
 
-The example is descriptive and is deliberately not a valid provider grant. Do not replace the placeholders with assumptions. `upstream_rights_state=VERIFIED` requires independently checked terms; API availability, an SDK license, a green CI run or a user statement alone is insufficient.
+The example is descriptive and is deliberately not a valid provider grant. Do not replace the placeholders with assumptions. `upstream_rights_state=VERIFIED` requires independently checked upstream data terms or an official provider data-use statement. API availability, an SDK/package license, a package-registry license classifier, a green CI run, or a user statement alone is insufficient. An `OFFICIAL_PROVIDER_DATA_USE_STATEMENT` may admit only internal Product use; storage, training, and redistribution must remain `FORBIDDEN` unless separate explicit upstream terms are observed.
 
 ## Runtime behavior
 

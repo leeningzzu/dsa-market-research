@@ -5,6 +5,8 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
+from data_provider.daily_data_identity import sha256_payload
+
 from src.analyzer import AnalysisResult
 from src.services.factor_decision_summary import (
     apply_canonical_decision_to_result,
@@ -160,6 +162,67 @@ def test_factor_and_investor_brief_keep_stock_etf_and_index_valuation_layers_sep
         etf_payload["underlying_valuation"]["receipt_hash"]
     )
     assert factor["index_sector_valuations"][0]["scope"] == "etf_underlying"
+    assert factor["valuation_evidence"] == factor["business_valuation"]
+    assert "quality_evidence" in factor
+    assert factor["quality_evidence"] == factor["fundamental_quality"]
+
+
+def test_global_atomic_sources_merge_from_b1_fundamental_context_and_conflicts_fail_closed():
+    facts = {
+        "series_id": "SYNTHETIC_CPI",
+        "reference_period": "2026-09",
+        "index_value": 310.0,
+        "yoy_pct": 2.4,
+        "release_published_at": "2026-10-14T12:30:00+00:00",
+        "seasonal_adjustment": "SEASONALLY_ADJUSTED",
+        "value_unit": "INDEX_1982_84_100",
+    }
+    observation = {
+        "dataset_id": "GLOBAL_US_ACTUAL_INFLATION",
+        "state": "READY",
+        "provider_identity": "BLSPublicDataAPI",
+        "provider_route": "bls.publicAPI.v2.timeseries+CPI_release",
+        "source_identity_hash": "1" * 64,
+        "source_content_sha256": "2" * 64,
+        "source_observed_at": "2026-10-28T08:00:00+00:00",
+        "source_available_at": "2026-10-14T12:30:00+00:00",
+        "completed_through": "2026-09",
+        "units": {"index_value": "INDEX_1982_84_100", "yoy_pct": "PERCENT"},
+        "currency": "NOT_APPLICABLE",
+        "adjustment_basis": "SEASONALLY_ADJUSTED",
+        "revision": "observed-response-sha256:" + "2" * 64,
+        "vintage": "2026-10-14T12:30:00+00:00",
+        "facts": facts,
+        "source_fact_hash": sha256_payload(facts),
+    }
+    summary = build_stock_factor_decision_summary(
+        _trend(),
+        fundamental_context={
+            "atomic_subfield_source_observations": {
+                "GLOBAL_US_ACTUAL_INFLATION": observation,
+            },
+        },
+    )
+    assert summary["atomic_subfield_source_observations"][
+        "GLOBAL_US_ACTUAL_INFLATION"
+    ]["facts"]["yoy_pct"] == 2.4
+
+    conflicting = deepcopy(observation)
+    conflicting["source_identity_hash"] = "3" * 64
+    with pytest.raises(ValueError, match="atomic subfield source observation conflict"):
+        build_stock_factor_decision_summary(
+            _trend(),
+            fundamental_context={
+                "atomic_subfield_source_observations": {
+                    "GLOBAL_US_ACTUAL_INFLATION": observation,
+                },
+            },
+            market_structure_context={
+                "atomic_subfield_source_observations": {
+                    "GLOBAL_US_ACTUAL_INFLATION": conflicting,
+                },
+            },
+        )
 
 
 def test_summary_reuses_existing_score_without_inventing_probability_or_win_rate():

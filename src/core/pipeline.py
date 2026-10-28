@@ -39,12 +39,15 @@ from data_provider.daily_data_identity import (
     DailyDataIdentityError,
     attach_daily_acquisition_receipt,
     attach_daily_data_identity,
+    build_daily_data_identity,
     extract_daily_acquisition_receipt,
     extract_daily_data_identity,
     extract_daily_data_identity_from_records,
     rebind_daily_data_identity,
     seal_daily_acquisition_receipt,
+    seal_daily_completion_bridge_receipt,
     seal_daily_window_extension_receipt,
+    verified_observed_daily_frame_provider,
     verify_observed_daily_frame_request,
 )
 from data_provider.us_index_mapping import is_us_index_code
@@ -1117,6 +1120,10 @@ class StockAnalysisPipeline:
         self._run_local_intraday_timeframes: Dict[
             Tuple[str, str], Dict[str, pd.DataFrame]
         ] = {}
+        self._b1_nonprice_shared_observations: Dict[str, Dict[str, Any]] = {}
+        self._b1_nonprice_stock_bundles: Dict[str, Dict[str, Any]] = {}
+        self._b1_global_atomic_observations: Dict[str, Dict[str, Any]] = {}
+        self._b1_global_atomic_failure: Optional[str] = None
         self._concept_rankings_cache_lock = threading.Lock()
         self._concept_rankings_cache: Dict[str, Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]] = {}
         
@@ -1287,6 +1294,417 @@ class StockAnalysisPipeline:
                 value.attrs = deepcopy(frame.attrs)
                 copied[key] = value
             return copied
+
+    def _bridge_b1_daily_provider_lag_with_completed_5m(
+        self,
+        *,
+        frame: pd.DataFrame,
+        source_name: str,
+        code: str,
+        target_date: date,
+        history_start: date,
+        requested_sessions: List[date],
+        asset_admission: Mapping[str, Any],
+        b1_context: Mapping[str, Any],
+        current_time: Optional[datetime],
+        observation_time_frozen: bool,
+    ) -> pd.DataFrame:
+        """Append exactly one completed daily bar from the same-provider 5m source.
+
+        This is a narrow B1 run-local bridge for a provider whose daily endpoint
+        still ends at the immediately previous completed XSHG session.  It may
+        not fill older gaps, change provider/basis/currency, persist the derived
+        row, or grant strategy/training authority.
+        """
+        if source_name != "BaostockFetcher" or not requested_sessions:
+            raise DailyDataIdentityError("B1_DAILY_COMPLETION_BRIDGE_PROVIDER_OR_CALENDAR_INVALID")
+        daily_identity = extract_daily_data_identity(frame, strict=True)
+        if daily_identity is None or verified_observed_daily_frame_provider(frame) != source_name:
+            raise DailyDataIdentityError("B1_DAILY_COMPLETION_BRIDGE_DAILY_IDENTITY_INVALID")
+        instrument = normalize_stock_code(code)
+        if (
+            daily_identity.get("instrument") != instrument
+            or daily_identity.get("requested_start") != history_start.isoformat()
+            or daily_identity.get("requested_end") != target_date.isoformat()
+            or daily_identity.get("observed_adjustment_basis") != "qfq"
+            or daily_identity.get("requested_adjustment_basis") != "qfq"
+            or daily_identity.get("currency") != "CNY"
+            or str(daily_identity.get("volume_unit") or "").lower() != "share"
+            or str(daily_identity.get("amount_unit") or "").upper() != "CNY"
+        ):
+            raise DailyDataIdentityError("B1_DAILY_COMPLETION_BRIDGE_DAILY_SEMANTICS_MISMATCH")
+        dates = pd.to_datetime(frame.get("date"), errors="coerce")
+        if dates.isna().any() or dates.duplicated().any():
+            raise DailyDataIdentityError("B1_DAILY_COMPLETION_BRIDGE_DAILY_DATES_INVALID")
+        returned_dates = [value.date() for value in dates]
+        if len(requested_sessions) < 2 or returned_dates != requested_sessions[-len(returned_dates)-1:-1]:
+            raise DailyDataIdentityError("B1_DAILY_COMPLETION_BRIDGE_NOT_EXACT_PREVIOUS_SUFFIX")
+        previous_session = requested_sessions[-2]
+        if returned_dates[-1] != previous_session or requested_sessions[-1] != target_date:
+            raise DailyDataIdentityError("B1_DAILY_COMPLETION_BRIDGE_NOT_ONE_SESSION_LAG")
+
+        minute_dataset = (
+            "E_PRICE_5M" if asset_admission.get("asset_route") == "ETF" else "P_5M"
+        )
+        minute_consumer = (
+            "ETF_ASSET_BRIEF" if asset_admission.get("asset_route") == "ETF"
+            else "ASSET_RESEARCH_BRIEF"
+        )
+        minute_grant = validate_b1_provider_preflight(
+            (b1_context.get("rights_by_dataset") or {}).get(minute_dataset),
+            operation_id=b1_context.get("operation_id"),
+            intended_use=b1_context.get("intended_use"),
+            dataset_id=minute_dataset,
+            consumer_scope=minute_consumer,
+            research_as_of=b1_context.get("research_as_of"),
+        )
+        if (
+            minute_grant.get("provider_identity") != source_name
+            or minute_grant["rights"].get("storage") == "ALLOWED"
+        ):
+            raise DailyDataIdentityError("B1_DAILY_COMPLETION_BRIDGE_MINUTE_GRANT_INVALID")
+        fetcher = self.fetcher_manager._get_fetcher_by_name(
+            source_name, capability="intraday_5m",
+        )
+        if fetcher is None:
+            raise DailyDataIdentityError("B1_DAILY_COMPLETION_BRIDGE_FETCHER_MISSING")
+        five_minute = self.fetcher_manager._call_fetcher_method(
+            fetcher,
+            "get_intraday_data",
+            instrument,
+            start_date=target_date.isoformat(),
+            end_date=target_date.isoformat(),
+            frequency="5",
+        )
+        from data_provider.intraday_data_identity import extract_intraday_data_identity
+
+        minute_identity = extract_intraday_data_identity(five_minute, strict=True)
+        query = minute_identity.get("query_identity") or {}
+        profile = asset_admission.get("product_profile")
+        exchange = (
+            str(profile.get("listing_exchange") or "").strip().lower()
+            if isinstance(profile, Mapping) else ""
+        )
+        if exchange not in {"sh", "sz"}:
+            exchange = "sh" if instrument.startswith(("5", "6", "9")) else "sz"
+        if (
+            minute_identity.get("provider_identity") != source_name
+            or minute_identity.get("requested_start") != target_date.isoformat()
+            or minute_identity.get("requested_end") != target_date.isoformat()
+            or minute_identity.get("observed_adjustment_basis") != "qfq"
+            or minute_identity.get("requested_adjustment_basis") != "qfq"
+            or minute_identity.get("currency") != "CNY"
+            or str(minute_identity.get("volume_unit") or "").lower() != "share"
+            or str(minute_identity.get("amount_unit") or "").upper() != "CNY"
+            or str(query.get("code") or "").lower() != f"{exchange}.{instrument}"
+            or str(query.get("frequency") or "") != "5"
+            or str(query.get("adjustflag") or "") != "2"
+            or set(five_minute["code"].astype(str)) != {instrument}
+        ):
+            raise DailyDataIdentityError("B1_DAILY_COMPLETION_BRIDGE_MINUTE_SEMANTICS_MISMATCH")
+        try:
+            validate_complete_cn_5m_sessions(
+                five_minute, expected_session_dates=[target_date],
+            )
+        except IntradayBarError as exc:
+            raise DailyDataIdentityError(
+                "B1_DAILY_COMPLETION_BRIDGE_INCOMPLETE_MINUTE_SESSION"
+            ) from exc
+        ceiling = pd.Timestamp(_provider_observation_ceiling(
+            current_time,
+            market="cn",
+            target_date=target_date,
+            observation_time_frozen=observation_time_frozen,
+        ))
+        for clock_key in ("observed_at", "available_at_max"):
+            observed = pd.to_datetime(minute_identity.get(clock_key), utc=True, errors="coerce")
+            if pd.isna(observed) or observed > ceiling:
+                raise DailyDataIdentityError("B1_DAILY_COMPLETION_BRIDGE_MINUTE_CLOCK_INVALID")
+
+        ordered = five_minute.sort_values("bar_end", kind="stable")
+        previous_close = float(pd.to_numeric(frame["close"], errors="raise").iloc[-1])
+        close = float(ordered["close"].iloc[-1])
+        derived = {
+            "date": target_date,
+            "open": float(ordered["open"].iloc[0]),
+            "high": float(ordered["high"].max()),
+            "low": float(ordered["low"].min()),
+            "close": close,
+            "volume": float(ordered["volume"].sum()),
+            "amount": float(ordered["amount"].sum()),
+            "pct_chg": (close / previous_close - 1.0) * 100.0,
+        }
+        if "code" in frame.columns:
+            derived["code"] = instrument
+        if "data_source" in frame.columns:
+            derived["data_source"] = source_name
+        row = {column: derived.get(column) for column in frame.columns}
+        combined = pd.concat([frame.copy(deep=True), pd.DataFrame([row])], ignore_index=True)
+        combined.attrs = deepcopy(frame.attrs)
+        composite_source_hash = sha256_payload({
+            "algorithm_version": "same-provider-completed-5m-to-1d-v1",
+            "daily_parent_identity_hash": daily_identity["identity_hash"],
+            "intraday_parent_identity_hash": minute_identity["identity_hash"],
+            "target_date": target_date.isoformat(),
+            "derived_row": derived,
+        })
+        observed_at = max(
+            pd.Timestamp(daily_identity["observed_at"]),
+            pd.Timestamp(minute_identity["observed_at"]),
+            pd.Timestamp(minute_identity["available_at_max"]),
+        ).tz_convert("UTC").to_pydatetime()
+        combined_identity = build_daily_data_identity(
+            combined,
+            provider_identity=source_name,
+            provider_route=(
+                str(daily_identity["provider_route"])
+                + "|" + str(minute_identity["provider_route"])
+                + "|same-provider-completed-5m-to-1d-v1"
+            ),
+            actual_response_branch="daily_response_plus_completed_same_provider_5m_session",
+            requested_adjustment_basis="qfq",
+            observed_adjustment_basis="qfq",
+            basis_evidence="daily_and_completed_5m_both_returned_adjustflag=2",
+            requested_start=history_start.isoformat(),
+            requested_end=target_date.isoformat(),
+            currency="CNY",
+            volume_unit="share",
+            amount_unit="CNY",
+            identity_state="OBSERVED",
+            observed_at=observed_at,
+            raw_response_sha256=composite_source_hash,
+            instrument=instrument,
+            revision="derived-composite-sha256:" + composite_source_hash,
+            vintage=observed_at.isoformat(),
+        )
+        attach_daily_data_identity(combined, combined_identity)
+        bridge = seal_daily_completion_bridge_receipt({
+            "schema_version": "dsa-daily-completion-bridge-v1",
+            "algorithm_version": "same-provider-completed-5m-to-1d-v1",
+            "instrument": instrument,
+            "target_date": target_date.isoformat(),
+            "provider_identity": source_name,
+            "daily_parent_identity_hash": daily_identity["identity_hash"],
+            "intraday_parent_identity_hash": minute_identity["identity_hash"],
+            "daily_parent_returned_end": previous_session.isoformat(),
+            "intraday_completed_session": target_date.isoformat(),
+            "derived_row_hash": sha256_payload(derived),
+            "minute_row_count": len(five_minute),
+            "minute_provider_method_call_count": 1,
+            "storage_admitted": False,
+            "training_admitted": False,
+            "strategy_admitted": False,
+            "independent_action_authority": False,
+        })
+        combined.attrs["dsa_daily_completion_bridge"] = bridge
+        return combined
+
+
+    def _preacquire_b1_global_atomic_sources(
+        self,
+        *,
+        target_reference_time: datetime,
+    ) -> None:
+        """Acquire granted BLS inflation atoms once, without persistence or action."""
+        context = self._bind_b1_run_context(
+            target_reference_time, persist=False,
+        )
+        if not isinstance(context, Mapping):
+            return
+        from data_provider.bls_public_data_fetcher import (
+            BLS_ATOMIC_PROVIDER_IDENTITY,
+            BLS_SERIES_BY_DATASET,
+            BLSPublicDataError,
+            fetch_us_inflation_atomic_bundle,
+        )
+
+        grants = context.get("rights_by_dataset") or {}
+        present = set(BLS_SERIES_BY_DATASET) & set(grants)
+        if not present:
+            self._b1_global_atomic_observations = {}
+            self._b1_global_atomic_failure = None
+            return
+        if present != set(BLS_SERIES_BY_DATASET):
+            raise DataObjectAdmissionError("B1_BLS_ATOMIC_GRANT_SET_INCOMPLETE")
+        for dataset_id in sorted(present):
+            grant = validate_b1_provider_preflight(
+                grants.get(dataset_id),
+                operation_id=context.get("operation_id"),
+                intended_use=context.get("intended_use"),
+                dataset_id=dataset_id,
+                consumer_scope="MARKET_GLOBAL_TRANSMISSION",
+                research_as_of=context.get("research_as_of"),
+            )
+            if grant.get("provider_identity") != BLS_ATOMIC_PROVIDER_IDENTITY:
+                raise DataObjectAdmissionError(
+                    "B1_BLS_ATOMIC_PROVIDER_MISMATCH:" + dataset_id
+                )
+        try:
+            bundle = fetch_us_inflation_atomic_bundle(
+                research_as_of=target_reference_time,
+                b1_context=context,
+            )
+        except BLSPublicDataError as exc:
+            if str(exc).startswith("BLS_PROVIDER_REQUEST_FAILED"):
+                self._b1_global_atomic_observations = {}
+                self._b1_global_atomic_failure = str(exc)
+                logger.warning(
+                    "B1 BLS atomic source unavailable; keep atoms UNKNOWN: %s",
+                    exc,
+                )
+                return
+            raise DataObjectAdmissionError(str(exc)) from exc
+        observations = bundle.get("atomic_subfield_source_observations")
+        if not isinstance(observations, Mapping):
+            raise DataObjectAdmissionError("B1_BLS_ATOMIC_BUNDLE_INVALID")
+        self._b1_global_atomic_observations = deepcopy(dict(observations))
+        self._b1_global_atomic_failure = None
+
+
+    def _preacquire_b1_nonprice_sources(
+        self,
+        codes: List[str],
+        targets: Mapping[str, date],
+        *,
+        target_reference_time: datetime,
+    ) -> None:
+        """Acquire only explicitly granted BaoStock non-price objects, run-local."""
+        context = self._bind_b1_run_context(
+            target_reference_time, persist=False,
+        )
+        if not isinstance(context, Mapping):
+            return
+        grants = context.get("rights_by_dataset") or {}
+        if not isinstance(grants, Mapping):
+            raise DataObjectAdmissionError("B1_OPERATION_CONTEXT_MISSING")
+        consumers = {
+            "P_CODE_IDENTITY": "ASSET_RESEARCH_BRIEF",
+            "P_PRICE_FACTOR": "ASSET_RESEARCH_BRIEF",
+            "P_QUOTE_LIQUID": "ASSET_RESEARCH_BRIEF",
+            "P_FIN_VINTAGE": "ASSET_RESEARCH_BRIEF",
+            "P_EARNINGS_GROWTH": "ASSET_RESEARCH_BRIEF",
+            "P_CASH_FLOW": "ASSET_RESEARCH_BRIEF",
+            "P_BALANCE_SHEET": "ASSET_RESEARCH_BRIEF",
+            "P_SHARES_EVENTS": "ASSET_RESEARCH_BRIEF",
+            "P_DIVIDEND": "ASSET_RESEARCH_BRIEF",
+            "P_INDUSTRY": "ASSET_RESEARCH_BRIEF",
+            "P_VAL_RATIO": "ASSET_RESEARCH_BRIEF",
+            "S_CLASSIFICATION": "MARKET_SECTOR_SECTION",
+            "M_ASOF_UNIVERSE": "MARKET_REGIME_BRIEF",
+            "M_PBOC_MONEY": "MARKET_REGIME_BRIEF",
+        }
+        admitted_ids: set[str] = set()
+        for dataset_id, consumer in consumers.items():
+            grant = grants.get(dataset_id)
+            if grant is None:
+                continue
+            validated = validate_b1_provider_preflight(
+                grant,
+                operation_id=context.get("operation_id"),
+                intended_use=context.get("intended_use"),
+                dataset_id=dataset_id,
+                consumer_scope=consumer,
+                research_as_of=context.get("research_as_of"),
+            )
+            if validated["provider_identity"] != "BaostockFetcher":
+                continue
+            admitted_ids.add(dataset_id)
+        if not admitted_ids:
+            return
+
+        stock_code = next((
+            str(resolve_cn_price_asset(code).get("instrument") or "")
+            for code in codes
+            if resolve_cn_price_asset(code).get("asset_route") == "STOCK"
+        ), "")
+        if not stock_code or stock_code not in targets:
+            return
+        from data_provider.baostock_fetcher import BaostockFetcher
+        bundle = BaostockFetcher().get_cn_stock_nonprice_research_bundle(
+            stock_code,
+            research_date=targets[stock_code].isoformat(),
+            requested_dataset_ids=admitted_ids,
+        )
+        observations = bundle.get("data_object_source_observations")
+        if not isinstance(observations, Mapping):
+            raise DataObjectAdmissionError("B1_NONPRICE_SOURCE_BUNDLE_INVALID")
+        filtered = {
+            str(dataset_id): deepcopy(value)
+            for dataset_id, value in observations.items()
+            if str(dataset_id) in admitted_ids
+        }
+        shared = {
+            dataset_id: value
+            for dataset_id, value in filtered.items()
+            if dataset_id.startswith(("M_", "S_"))
+        }
+        stock = {
+            dataset_id: value
+            for dataset_id, value in filtered.items()
+            if dataset_id.startswith("P_")
+        }
+        self._b1_nonprice_shared_observations = shared
+        self._b1_nonprice_stock_bundles = {
+            stock_code: {
+                **dict(bundle),
+                "data_object_source_observations": stock,
+            }
+        }
+
+    def _b1_nonprice_fundamental_context(
+        self,
+        *,
+        code: str,
+        asset_route: str,
+        market: str,
+    ) -> Dict[str, Any]:
+        observations = deepcopy(
+            getattr(self, "_b1_nonprice_shared_observations", {}) or {}
+        )
+        bundle = None
+        if asset_route == "STOCK":
+            bundle = (
+                getattr(self, "_b1_nonprice_stock_bundles", {}) or {}
+            ).get(normalize_stock_code(code))
+            if isinstance(bundle, Mapping):
+                observations.update(deepcopy(
+                    bundle.get("data_object_source_observations") or {}
+                ))
+        return {
+            "market": market,
+            "status": "PARTIAL" if observations else "NOT_ADMITTED",
+            "reason": (
+                "B1_NONPRICE_SOURCES_PARTIALLY_ADMITTED"
+                if observations else "B1_NONPRICE_SOURCE_NOT_ADMITTED"
+            ),
+            "source_chain": ["BaostockFetcher"] if observations else [],
+            "coverage": {
+                "data_object_ids": tuple(sorted(observations)),
+                "product_fact_count": len(observations),
+            },
+            "belong_boards": [],
+            "data_object_source_observations": observations,
+            "atomic_subfield_source_observations": deepcopy(
+                getattr(self, "_b1_global_atomic_observations", {}) or {}
+            ),
+            "atomic_subfield_failure": getattr(
+                self, "_b1_global_atomic_failure", None
+            ),
+            "quality_growth_input": (
+                deepcopy(bundle.get("quality_growth_input"))
+                if isinstance(bundle, Mapping) else None
+            ),
+            "business_valuation_input": (
+                deepcopy(bundle.get("business_valuation_input"))
+                if isinstance(bundle, Mapping) else None
+            ),
+            "quality_blocker_codes": tuple(
+                bundle.get("quality_blocker_codes") or ()
+            ) if isinstance(bundle, Mapping) else (),
+            "valuation_blocker_codes": tuple(
+                bundle.get("valuation_blocker_codes") or ()
+            ) if isinstance(bundle, Mapping) else (),
+        }
 
     def _extend_daily_history_for_monthly_macd(
         self,
@@ -1617,6 +2035,9 @@ class StockAnalysisPipeline:
             current_time=target_reference_time,
             persist_context=False,
         )
+        self._preacquire_b1_global_atomic_sources(
+            target_reference_time=target_reference_time,
+        )
         targets: Dict[str, date] = {}
         self._b1_preacquisition_active = True
         try:
@@ -1657,6 +2078,12 @@ class StockAnalysisPipeline:
                     raise DataObjectAdmissionError(
                         "B1_PREACQUIRE_5M_FAILED:" + instrument
                     )
+
+            self._preacquire_b1_nonprice_sources(
+                codes,
+                targets,
+                target_reference_time=target_reference_time,
+            )
 
             decision_time = datetime.now(timezone.utc)
             for instrument, target_date in targets.items():
@@ -1792,6 +2219,7 @@ class StockAnalysisPipeline:
                 and isinstance(getattr(self, "b1_rights_context", None), Mapping)
             )
             b1_daily_grant = None
+            b1 = None
             if b1_active:
                 b1 = self._bind_b1_run_context(
                     current_time,
@@ -1956,6 +2384,37 @@ class StockAnalysisPipeline:
                 )
                 return True, None
 
+            requested_sessions = resolve_session_range_fail_closed(
+                market, history_start, target_date,
+            )
+            if not requested_sessions:
+                raise DailyDataIdentityError(
+                    "daily request exchange-session range is unavailable"
+                )
+            observed_daily_dates = pd.to_datetime(df["date"], errors="coerce")
+            if observed_daily_dates.isna().any():
+                raise DailyDataIdentityError("daily response contains an invalid date")
+            if (
+                b1_daily_grant is not None
+                and b1_daily_grant["rights"]["storage"] != "ALLOWED"
+                and not bool(getattr(self, "p0_bounded_trial", False))
+                and observed_daily_dates.max().date() != target_date
+            ):
+                if not isinstance(b1, Mapping):
+                    raise DailyDataIdentityError("B1_DAILY_COMPLETION_BRIDGE_CONTEXT_MISSING")
+                df = self._bridge_b1_daily_provider_lag_with_completed_5m(
+                    frame=df,
+                    source_name=source_name,
+                    code=code,
+                    target_date=target_date,
+                    history_start=history_start,
+                    requested_sessions=requested_sessions,
+                    asset_admission=asset_admission,
+                    b1_context=b1,
+                    current_time=current_time,
+                    observation_time_frozen=bool(observation_time_frozen),
+                )
+            completion_bridge = df.attrs.get("dsa_daily_completion_bridge")
             identity = verify_observed_daily_frame_request(
                 df,
                 instrument=code,
@@ -1975,13 +2434,6 @@ class StockAnalysisPipeline:
                 and identity.get("currency") != asset_admission["product_profile"]["currency"]
             ):
                 raise DailyDataIdentityError("ETF_DAILY_LISTING_CURRENCY_MISMATCH")
-            requested_sessions = resolve_session_range_fail_closed(
-                market, history_start, target_date,
-            )
-            if not requested_sessions:
-                raise DailyDataIdentityError(
-                    "daily request exchange-session range is unavailable"
-                )
             returned_dates = [
                 value.date()
                 for value in pd.to_datetime(df["date"], errors="raise")
@@ -1995,22 +2447,25 @@ class StockAnalysisPipeline:
                 )
             storage_frame = df.copy(deep=True)
             storage_frame.attrs = deepcopy(df.attrs)
-            (
-                df, identity, daily_window_plan, requested_sessions, returned_dates,
-                window_extension,
-            ) = self._extend_daily_history_for_monthly_macd(
-                frame=df,
-                source_name=source_name,
-                identity=identity,
-                code=code,
-                market=str(market or "").strip().lower(),
-                target_date=target_date,
-                current_time=current_time,
-                base_plan=daily_window_plan,
-                observation_time_frozen=bool(observation_time_frozen),
-                requested_sessions=requested_sessions,
-                returned_dates=returned_dates,
-            )
+            if completion_bridge is None:
+                (
+                    df, identity, daily_window_plan, requested_sessions, returned_dates,
+                    window_extension,
+                ) = self._extend_daily_history_for_monthly_macd(
+                    frame=df,
+                    source_name=source_name,
+                    identity=identity,
+                    code=code,
+                    market=str(market or "").strip().lower(),
+                    target_date=target_date,
+                    current_time=current_time,
+                    base_plan=daily_window_plan,
+                    observation_time_frozen=bool(observation_time_frozen),
+                    requested_sessions=requested_sessions,
+                    returned_dates=returned_dates,
+                )
+            else:
+                window_extension = None
             history_start = daily_window_plan["start_date"]
             receipt = seal_daily_acquisition_receipt({
                 "schema_version": DAILY_ACQUISITION_RECEIPT_SCHEMA_VERSION,
@@ -2044,13 +2499,20 @@ class StockAnalysisPipeline:
                 "provider_route": identity["provider_route"],
                 "provider_method_call_count": (
                     window_extension["provider_method_call_count"]
-                    if window_extension is not None else 1
+                    if window_extension is not None
+                    else 1 + (completion_bridge or {}).get(
+                        "minute_provider_method_call_count", 0,
+                    )
                 ),
                 "provider_http_request_count": None,
                 "persistence_status": "NOT_ATTEMPTED",
                 **(
                     {"bounded_window_extension": window_extension}
                     if window_extension is not None else {}
+                ),
+                **(
+                    {"daily_completion_bridge": completion_bridge}
+                    if completion_bridge is not None else {}
                 ),
                 "actual_consumer": "StockAnalysisPipeline.analyze_stock",
             })
@@ -2578,14 +3040,11 @@ class StockAnalysisPipeline:
             # - 关闭开关时仍返回 not_supported 结构
             fundamental_context = None
             if b1_no_send:
-                fundamental_context = {
-                    "market": market,
-                    "status": "NOT_ADMITTED",
-                    "reason": "B1_FUNDAMENTAL_SOURCE_NOT_ADMITTED",
-                    "source_chain": [],
-                    "coverage": {},
-                    "belong_boards": [],
-                }
+                fundamental_context = self._b1_nonprice_fundamental_context(
+                    code=code,
+                    asset_route=asset_admission["asset_route"],
+                    market=market,
+                )
                 market_structure_context = None
             else:
                 try:

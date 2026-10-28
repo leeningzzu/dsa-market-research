@@ -17,6 +17,11 @@ from data_provider.daily_data_identity import (
     sha256_payload,
     validate_daily_acquisition_receipt,
 )
+from data_provider.intraday_data_identity import (
+    attach_intraday_data_identity,
+    build_intraday_data_identity,
+)
+from src.services.intraday_bar_service import normalize_cn_completed_5m_bars
 from src.core.pipeline import StockAnalysisPipeline
 from src.services.data_object_admission import seal_source_rights_evidence
 from src.services.evidence_traceability_registry import (
@@ -185,7 +190,7 @@ def _pipeline(target: date) -> StockAnalysisPipeline:
         "allowed_instruments": ("600519", "510300"),
         "rights_by_dataset": {
             "P_DAILY": seal_source_rights_evidence({
-                "schema_version": "source-rights-evidence-v1",
+                "schema_version": "source-rights-evidence-v2",
                 "operation_id": "test-daily-acquisition-current",
                 "intended_use": "NO_SEND_RESEARCH",
                 "provider_identity": "BaostockFetcher",
@@ -196,6 +201,9 @@ def _pipeline(target: date) -> StockAnalysisPipeline:
                 "terms_uri": "https://example.org/unit-fixture-only",
                 "terms_sha256": "a" * 64,
                 "terms_observed_at": "2026-10-01T00:00:00+00:00",
+                "terms_scope": "SYNTHETIC_TEST_CONTRACT",
+                "product_use_clause": "Synthetic fixture explicitly allows internal no-send research.",
+                "product_use_clause_sha256": "c2a9b98537611cb0c9e9cb165ab0a4a699d84f5a2644a5e1e23740d0af55c6e1",
                 "rights": rights,
             }),
         },
@@ -231,6 +239,177 @@ def _context(target: date, observations: int) -> dict:
             for timeframe in ("monthly", "weekly", "daily", "60m", "30m", "15m", "5m")
         },
     }
+
+
+def _completed_target_5m(
+    target: date,
+    *,
+    code: str = "600519",
+    provider: str = "BaostockFetcher",
+    observed_basis: str = "qfq",
+    complete: bool = True,
+) -> pd.DataFrame:
+    labels = list(pd.date_range(
+        f"{target.isoformat()} 09:35:00", f"{target.isoformat()} 11:30:00",
+        freq="5min",
+    )) + list(pd.date_range(
+        f"{target.isoformat()} 13:05:00", f"{target.isoformat()} 15:00:00",
+        freq="5min",
+    ))
+    if not complete:
+        labels = labels[:-1]
+    raw = pd.DataFrame([
+        {
+            "date": target.isoformat(),
+            "time": stamp.strftime("%Y%m%d%H%M%S") + "000",
+            "code": f"sh.{code}",
+            "open": str(20.0 + index / 100.0),
+            "high": str(20.2 + index / 100.0),
+            "low": str(19.8 + index / 100.0),
+            "close": str(20.1 + index / 100.0),
+            "volume": "100",
+            "amount": "2000",
+            "adjustflag": "2",
+        }
+        for index, stamp in enumerate(labels)
+    ])
+    observed = datetime.combine(target, datetime.max.time(), tzinfo=timezone.utc)
+    frame = normalize_cn_completed_5m_bars(
+        raw, stock_code=code, data_source=provider, observed_at=observed,
+    )
+    identity = build_intraday_data_identity(
+        frame,
+        provider_identity=provider,
+        provider_route="baostock.query_history_k_data_plus",
+        package_version="0.9.4",
+        query_identity={
+            "code": f"sh.{code}",
+            "frequency": "5",
+            "adjustflag": "2",
+            "start_date": target.isoformat(),
+            "end_date": target.isoformat(),
+        },
+        requested_adjustment_basis="qfq",
+        observed_adjustment_basis=observed_basis,
+        basis_evidence="unit-test-completed-session",
+        timeframe="5m",
+        timezone_name="Asia/Shanghai",
+        session_calendar="XSHG",
+        currency="CNY",
+        volume_unit="share",
+        amount_unit="CNY",
+        requested_start=target.isoformat(),
+        requested_end=target.isoformat(),
+        identity_state="OBSERVED",
+        observed_at=observed,
+        source_rows_sha256="d" * 64,
+    )
+    attach_intraday_data_identity(frame, identity)
+    frame["intraday_data_identity_hash"] = identity["identity_hash"]
+    return frame
+
+
+def _bridge_pipeline(target: date) -> StockAnalysisPipeline:
+    pipeline = _pipeline(target)
+    operation_id = pipeline.b1_rights_context["operation_id"]
+    daily = pipeline.b1_rights_context["rights_by_dataset"]["P_DAILY"]
+    daily_payload = {key: value for key, value in daily.items() if key != "evidence_hash"}
+    daily_payload["rights"] = {
+        **daily_payload["rights"], "storage": "FORBIDDEN",
+    }
+    pipeline.b1_rights_context["rights_by_dataset"]["P_DAILY"] = (
+        seal_source_rights_evidence(daily_payload)
+    )
+    minute_payload = dict(daily_payload)
+    minute_payload.update({
+        "operation_id": operation_id,
+        "dataset_id": "P_5M",
+        "consumer_scope": "ASSET_RESEARCH_BRIEF",
+    })
+    pipeline.b1_rights_context["rights_by_dataset"]["P_5M"] = (
+        seal_source_rights_evidence(minute_payload)
+    )
+    pipeline.fetcher_manager._get_fetcher_by_name.return_value = object()
+    return pipeline
+
+
+def test_b1_daily_provider_one_session_lag_uses_same_provider_completed_5m_run_local() -> None:
+    target = date(2026, 10, 12)
+    sessions = _sessions(target, count=5)
+    pipeline = _bridge_pipeline(target)
+    pipeline.fetcher_manager.get_daily_data.return_value = (
+        _typed_frame(
+            sessions[:-1],
+            requested_start=sessions[0].isoformat(),
+            requested_end=target.isoformat(),
+        ),
+        "BaostockFetcher",
+    )
+    minute = _completed_target_5m(target)
+    pipeline.fetcher_manager._call_fetcher_method.return_value = minute
+
+    with patch.object(
+        pipeline_owner, "_current_daily_window_plan",
+        return_value=_plan(target, sessions),
+    ):
+        success, error = pipeline.fetch_and_save_stock_data("600519")
+
+    assert success is True and error is None
+    admitted = pipeline._get_run_local_daily_history(
+        code="600519", target_date=target,
+    )
+    assert admitted is not None
+    assert pd.to_datetime(admitted["date"]).dt.date.iloc[-1] == target
+    assert admitted.iloc[-1]["open"] == pytest.approx(minute.iloc[0]["open"])
+    assert admitted.iloc[-1]["close"] == pytest.approx(minute.iloc[-1]["close"])
+    assert admitted.iloc[-1]["volume"] == pytest.approx(minute["volume"].sum())
+    assert admitted.iloc[-1]["amount"] == pytest.approx(minute["amount"].sum())
+    receipt = extract_daily_acquisition_receipt(admitted, strict=True)
+    assert receipt["provider_method_call_count"] == 2
+    assert receipt["persistence_status"] == "RIGHTS_NOT_ADMITTED_RUN_LOCAL_ONLY"
+    bridge = receipt["daily_completion_bridge"]
+    assert bridge["target_date"] == target.isoformat()
+    assert bridge["daily_parent_returned_end"] == sessions[-2].isoformat()
+    assert bridge["intraday_completed_session"] == target.isoformat()
+    assert bridge["minute_row_count"] == 48
+    assert bridge["storage_admitted"] is False
+    pipeline.db.save_daily_data.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "defect", ["incomplete", "wrong_provider", "wrong_basis", "wrong_code", "two_session_lag"],
+)
+def test_b1_daily_completion_bridge_rejects_incomplete_cross_source_or_nonadjacent(defect: str) -> None:
+    target = date(2026, 10, 12)
+    sessions = _sessions(target, count=5)
+    pipeline = _bridge_pipeline(target)
+    daily_sessions = sessions[:-2] if defect == "two_session_lag" else sessions[:-1]
+    pipeline.fetcher_manager.get_daily_data.return_value = (
+        _typed_frame(
+            daily_sessions,
+            requested_start=sessions[0].isoformat(),
+            requested_end=target.isoformat(),
+        ),
+        "BaostockFetcher",
+    )
+    minute = _completed_target_5m(
+        target,
+        code="600000" if defect == "wrong_code" else "600519",
+        provider="OtherFetcher" if defect == "wrong_provider" else "BaostockFetcher",
+        observed_basis="hfq" if defect == "wrong_basis" else "qfq",
+        complete=defect != "incomplete",
+    )
+    pipeline.fetcher_manager._call_fetcher_method.return_value = minute
+
+    with patch.object(
+        pipeline_owner, "_current_daily_window_plan",
+        return_value=_plan(target, sessions),
+    ):
+        success, error = pipeline.fetch_and_save_stock_data("600519")
+
+    assert success is False
+    assert "DAILY_ACQUISITION_BINDING_INVALID" in (error or "")
+    pipeline.db.save_daily_data.assert_not_called()
 
 
 def test_provider_wrong_instrument_is_rejected_before_storage() -> None:

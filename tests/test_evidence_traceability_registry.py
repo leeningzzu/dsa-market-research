@@ -529,6 +529,8 @@ def test_complete_research_universe_view_prevents_scope_collapse_beyond_7x8():
         "methods": len(EXPECTED_METHOD_WINDOW_IDS),
         "strategy_bindings": 13,
         "technical_matrix_cells": 56,
+        "atomic_subfields": 7,
+        "atomic_subfields_product_admitted": 0,
     }
     assert {row["plane"] for row in universe["planes"]} == {
         "TECHNICAL_EVIDENCE", "FUNDAMENTAL_AND_STRATEGY", "MARKET_AND_ASSET",
@@ -570,6 +572,184 @@ def test_complete_research_universe_view_prevents_scope_collapse_beyond_7x8():
         "GLOBAL_SEMICONDUCTOR_SOFTWARE_RELATIVE",
     }
 
+
+
+def test_exact_atomic_subfield_reuses_operation_admission_without_broad_proxy():
+    dataset_id = "GLOBAL_US_ACTUAL_INFLATION"
+    operation_id = "atomic-nosend-20261023"
+    facts = {
+        "series_id": "SYNTHETIC_CPI",
+        "reference_period": "2026-09",
+        "index_value": 321.5,
+        "yoy_pct": 2.4,
+        "release_published_at": "2026-10-23T08:30:00+00:00",
+        "seasonal_adjustment": "SEASONALLY_ADJUSTED",
+        "value_unit": "INDEX_1982_84_100",
+    }
+    source = {
+        "dataset_id": dataset_id,
+        "state": "PARTIAL",
+        "provider_identity": "SyntheticAtomicProvider",
+        "provider_route": "synthetic.atomic.release",
+        "source_identity_hash": "1" * 64,
+        "source_content_sha256": "2" * 64,
+        "source_observed_at": "2026-10-23T09:00:00+00:00",
+        "source_available_at": "2026-10-23T08:30:00+00:00",
+        "completed_through": "2026-10-23",
+        "units": {"value": "PERCENT"},
+        "currency": "NOT_APPLICABLE",
+        "adjustment_basis": "NOT_APPLICABLE",
+        "revision": "SYNTHETIC_RELEASE_V1",
+        "vintage": "2026-10-23T08:30:00+00:00",
+        "facts": facts,
+        "source_fact_hash": reg.digest(facts),
+    }
+    rights = seal_source_rights_evidence({
+        "schema_version": "source-rights-evidence-v2",
+        "operation_id": operation_id,
+        "intended_use": "NO_SEND_RESEARCH",
+        "provider_identity": source["provider_identity"],
+        "upstream_source_owner": "SYNTHETIC_FIXTURE_NOT_REAL_LICENSE",
+        "upstream_rights_state": "VERIFIED",
+        "dataset_id": dataset_id,
+        "consumer_scope": "MARKET_GLOBAL_TRANSMISSION",
+        "terms_uri": "https://example.org/atomic-test-contract-only",
+        "terms_sha256": "3" * 64,
+        "terms_observed_at": "2026-10-22T09:00:00+00:00",
+        "terms_scope": "SYNTHETIC_TEST_CONTRACT",
+        "product_use_clause": "Synthetic fixture explicitly allows internal no-send research.",
+        "product_use_clause_sha256": "c2a9b98537611cb0c9e9cb165ab0a4a699d84f5a2644a5e1e23740d0af55c6e1",
+        "rights": {
+            "product_use": "ALLOWED",
+            "storage": "FORBIDDEN",
+            "training": "FORBIDDEN",
+            "redistribution": "FORBIDDEN",
+        },
+    })
+    receipt = seal_data_object_admission_receipt({
+        "schema_version": "data-object-admission-receipt-v1",
+        "dataset_id": dataset_id,
+        "provider_identity": source["provider_identity"],
+        "provider_route": source["provider_route"],
+        "native_frequency": "monthly/released",
+        "source_identity_hash": source["source_identity_hash"],
+        "content_sha256": source["source_content_sha256"],
+        "observed_at": source["source_observed_at"],
+        "available_at": source["source_available_at"],
+        "completed_through": source["completed_through"],
+        "units": source["units"],
+        "currency": source["currency"],
+        "adjustment_basis": source["adjustment_basis"],
+        "revision": source["revision"],
+        "vintage": source["vintage"],
+        "rights": rights["rights"],
+        "rights_evidence": rights,
+        "historical_pit_eligible": False,
+        "consumer_scope": "MARKET_GLOBAL_TRANSMISSION",
+    })
+    factor = native_summary()
+    factor.update({
+        "research_as_of": "2026-10-23T10:00:00+00:00",
+        "research_operation_id": operation_id,
+        "research_intended_use": "NO_SEND_RESEARCH",
+        "atomic_subfield_source_observations": {dataset_id: source},
+        "atomic_subfield_admission_receipts": {dataset_id: receipt},
+    })
+    universe = reg.compile_complete_research_universe_view(factor)
+    atomic = universe["atomic_subfield_admission"]
+    by_id = {row["dataset_id"]: row for row in atomic["objects"]}
+
+    assert len(atomic["objects"]) == 7
+    assert atomic["product_admitted_count"] == 1
+    assert by_id[dataset_id]["product_admitted"] is True
+    assert by_id[dataset_id]["storage_admitted"] is False
+    assert by_id[dataset_id]["learning_admitted"] is False
+    assert universe["atomic_subfield_product_admitted_ids"] == (dataset_id,)
+    obligation = next(
+        row for row in universe["atomic_subfield_obligations"]
+        if row["dataset_id"] == dataset_id
+    )
+    assert obligation["facts"] == facts
+    assert obligation["source_fact_hash"] == reg.digest(facts)
+    assert len(universe["atomic_subfield_admission_hash"]) == 64
+
+    missing = reg.compile_complete_research_universe_view(native_summary())
+    assert missing["atomic_subfield_admission"]["product_admitted_count"] == 0
+    assert missing["atomic_subfield_product_admitted_ids"] == ()
+
+    forged_hash = deepcopy(factor)
+    forged_hash["atomic_subfield_source_observations"][dataset_id][
+        "source_fact_hash"
+    ] = "0" * 64
+    with pytest.raises(
+        reg.TraceabilityError,
+        match="ATOMIC_SUBFIELD_SOURCE_FACT_HASH_MISMATCH",
+    ):
+        reg.compile_complete_research_universe_view(forged_hash)
+
+    forged = deepcopy(factor)
+    forged["atomic_subfield_source_observations"] = {
+        "GLOBAL_NOT_ACCEPTED": source,
+    }
+    with pytest.raises(
+        reg.TraceabilityError,
+        match="ATOMIC_SUBFIELD_SOURCE_OBSERVATION_ORPHAN",
+    ):
+        reg.compile_complete_research_universe_view(forged)
+
+
+def test_generic_nonprice_source_observation_is_partial_source_not_strategy_authority():
+    body = {
+        "schema_version": "data-object-source-observation-v1",
+        "dataset_id": "P_CODE_IDENTITY",
+        "state": "PARTIAL",
+        "reason_codes": ("BOARD_AND_CORPORATE_ACTIONS_NOT_IN_BASIC_RESPONSE",),
+        "provider_identity": "BaostockFetcher",
+        "provider_route": "baostock.query_stock_basic",
+        "producer_authority": "BaostockFetcher.get_cn_stock_nonprice_research_bundle",
+        "source_identity_hash": "1" * 64,
+        "source_content_sha256": "2" * 64,
+        "source_observed_at": "2026-10-28T07:30:00+00:00",
+        "source_available_at": "2026-10-28T07:30:00+00:00",
+        "completed_through": "2026-10-27",
+        "units": {"identity": "TEXT"},
+        "currency": "NOT_APPLICABLE",
+        "adjustment_basis": "NOT_APPLICABLE",
+        "revision": "observed-response-sha256:" + "2" * 64,
+        "vintage": "2026-10-28T07:30:00+00:00",
+        "historical_pit_eligible": False,
+        "independent_source_value_admitted": True,
+        "strategy_upgrade_authority": False,
+        "facts": {"code": "sh.600519", "name": "贵州茅台"},
+    }
+    body["observation_hash"] = reg.digest(body)
+    factor = native_summary()
+    factor["data_object_source_observations"] = {
+        "P_CODE_IDENTITY": body,
+    }
+
+    universe = reg.compile_complete_research_universe_view(factor)
+    row = next(
+        item for item in universe["data_objects"]
+        if item["dataset_id"] == "P_CODE_IDENTITY"
+    )
+    assert row["state"] == "PARTIAL"
+    assert row["provider_identity"] == "BaostockFetcher"
+    assert row["source_fact_hash"] == reg.digest(body["facts"])
+    assert row["historical_pit_eligible"] is False
+    assert row["strategy_upgrade_authority"] is False
+    assert universe["full_domain_data_gate"]["full_domain_product_ready"] is False
+
+    forged = deepcopy(factor)
+    forged["data_object_source_observations"]["P_CODE_IDENTITY"] = {
+        **body,
+        "facts": {"code": "sh.000001", "name": "伪造"},
+    }
+    with pytest.raises(
+        reg.TraceabilityError,
+        match="DATA_OBJECT_SOURCE_OBSERVATION_HASH_MISMATCH",
+    ):
+        reg.compile_complete_research_universe_view(forged)
 
 
 def test_foundation_receipt_separates_raw_declared_effective_and_runtime_states():
@@ -725,6 +905,8 @@ def _fully_product_admitted_full_domain(asset_type, *, include_record=False):
         revision = "SYNTHETIC_TEST_REVISION_1"
         vintage = "2026-10-21T09:00:00+00:00"
         obligation.update({
+            "state": "READY",
+            "reason": "SYNTHETIC_FULL_DOMAIN_READY_TEST_ONLY",
             "provider_identity": provider,
             "provider_route": provider_route,
             "source_identity_hash": source_identity_hash,
@@ -739,7 +921,7 @@ def _fully_product_admitted_full_domain(asset_type, *, include_record=False):
             "vintage": vintage,
         })
         rights_evidence = seal_source_rights_evidence({
-            "schema_version": "source-rights-evidence-v1",
+            "schema_version": "source-rights-evidence-v2",
             "operation_id": operation_id,
             "intended_use": intended_use,
             "provider_identity": provider,
@@ -750,6 +932,9 @@ def _fully_product_admitted_full_domain(asset_type, *, include_record=False):
             "terms_uri": "https://example.invalid/terms/full-domain-test",
             "terms_sha256": "c" * 64,
             "terms_observed_at": "2026-10-21T08:00:00+00:00",
+            "terms_scope": "SYNTHETIC_TEST_CONTRACT",
+            "product_use_clause": "Synthetic fixture explicitly allows internal no-send research.",
+            "product_use_clause_sha256": "c2a9b98537611cb0c9e9cb165ab0a4a699d84f5a2644a5e1e23740d0af55c6e1",
             "rights": rights,
         })
         receipts[dataset_id] = seal_data_object_admission_receipt({
@@ -805,6 +990,27 @@ def test_full_domain_data_gate_current_product_ready_does_not_require_future_rec
         "L_LEDGER", "L_OUTCOME", "L_PIT_MANIFEST", "L_IMMUTABLE_BYTES",
     }
     assert admission["learning_admitted_count"] == 0
+
+
+def test_full_domain_product_ready_requires_object_ready_not_only_product_rights():
+    obligations, admission = _fully_product_admitted_full_domain("stock")
+    partial = next(
+        row for row in obligations
+        if row["domain"] == "STOCK" and row["dataset_id"] == "P_CASH_FLOW"
+    )
+    partial["state"] = "PARTIAL"
+    partial["reason"] = "SYNTHETIC_PARTIAL_SOURCE_TEST_ONLY"
+
+    gate = reg.compile_full_domain_data_gate(obligations, admission)
+
+    assert gate["product_admitted_count"] == 60
+    assert gate["current_product_admitted_count"] == 60
+    assert gate["current_product_ready_count"] == 59
+    assert gate["full_domain_product_ready"] is False
+    assert "P_CASH_FLOW" in gate["unresolved_product_dataset_ids"]
+    assert gate["policy"][
+        "product_admission_without_object_ready_is_partial_not_full_domain"
+    ] is True
 
 
 def test_full_domain_data_gate_all_obligations_ready_remains_a_separate_later_state():
@@ -1081,7 +1287,7 @@ def _p_daily_operation_admission(factor):
         "redistribution": "FORBIDDEN",
     }
     rights_evidence = seal_source_rights_evidence({
-        "schema_version": "source-rights-evidence-v1",
+        "schema_version": "source-rights-evidence-v2",
         "operation_id": operation_id,
         "intended_use": "NO_SEND_RESEARCH",
         "provider_identity": source_row["provider_identity"],
@@ -1092,6 +1298,9 @@ def _p_daily_operation_admission(factor):
         "terms_uri": "https://example.invalid/terms/current-stock",
         "terms_sha256": "c" * 64,
         "terms_observed_at": "2026-10-01T00:00:00+00:00",
+        "terms_scope": "SYNTHETIC_TEST_CONTRACT",
+        "product_use_clause": "Synthetic fixture explicitly allows internal no-send research.",
+        "product_use_clause_sha256": "c2a9b98537611cb0c9e9cb165ab0a4a699d84f5a2644a5e1e23740d0af55c6e1",
         "rights": rights,
     })
     receipt = seal_data_object_admission_receipt({

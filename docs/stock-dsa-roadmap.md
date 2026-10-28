@@ -3,15 +3,16 @@
 > 本文是现有DSA机器图、执行合同和运行证据的维护者视图，不是新的Source、策略、数据库、调度器或报告权威。机器可读不变量见 `docs/stock-dsa-stage-baseline-v1.json`；真实状态仍由GitHub代码、CI、运行回执和合法数据证据决定。
 
 <!-- CURRENT_MASTER_CONTROL_START -->
-## 当前控制页：总目标、依赖图与退出条件（2026-10-27）
+## 当前控制页：总目标、依赖图与退出条件（2026-10-28）
 
-CONTROL_ID = STOCK_DSA_MASTER_ROUTE_20261027_A1A2_FOUNDATION_LOCAL_PASS_R001
-CURRENT_CANDIDATE_HEAD = 9602700b0be8ae967f966c88d807f550ab831d5b
-CURRENT_CANDIDATE_PARENT = d303562c1955b4a532897722125e9c1f64a69f9b
+CONTROL_ID = STOCK_DSA_MASTER_ROUTE_20261028_STAGE1_AUTHORIZED_CANDIDATE_R001
+CURRENT_CANDIDATE_HEAD = d75c2969f72fa3f40017bb6ae16d9ca947709057
+CURRENT_CANDIDATE_PARENT = ded125634894bf2915db6a91e661ec6fc9280313
+HEAD_SCOPE = last accepted feature checkpoint; current uncommitted Stage1 candidate and future CI are not implied accepted
 LAST_VERIFIED_MAIN_BASELINE = b32570b1562deaefa99f500a9c68eb7d1caf6f56
 CURRENT_PR = #31 / Draft / Open / not merged
-LATEST_REQUIRED_CI = #91 / Run40458152958 / success on 9602700b（A0当前Product/未来RECORD分时远程接受；A1/A2本地候选未提交）
-SOURCE_CHECKPOINT = Current Project authority is paired 01/05 v3.526 plus the six stable Owners
+LATEST_REQUIRED_CI = #93 / Run40480935427 / success on d75c2969（A1/A2工程scoped接受；当前Stage1候选须独立自然CI）
+SOURCE_CHECKPOINT = Physically installed paired 01/05 v3.527 plus six stable Owners; current user authorizes bounded feature commit/push and isolated CNEquity 0.16.0 trial, not merge or Product permission
 AUTHORITY = exact Git/运行证据 > current 01 > 02/03 > 04/05 > Factor > 06 > 旧Chat
 **这是一份现有路线的维护者状态投影，不是新架构、第二个Source、第二数据库或调度器。原775边图和V2.5原件保持不变；旧dated checkpoint继续作为历史。**
 
@@ -25,10 +26,10 @@ AUTHORITY = exact Git/运行证据 > current 01 > 02/03 > 04/05 > Factor > 06 > 
 
 ### 0.2 当前事实与本次纠偏
 
-- Gate0–6、邮件读者合同和A0已在精确feature HEAD `9602700b`与自然CI #91保持CLOSED_SCOPED_NO_REPLAY；PR #31仍Draft/Open/未merge，main未改变。
+- A0由CI91接受；A1/A2已在精确feature checkpoint `d75c2969`与自然CI #93 scoped接受，保持CLOSED_SCOPED_NO_REPLAY；PR #31仍Draft/Open/未merge，main未改变。本地Stage1后继不借用CI93证明。
 - A0已远程接受：76项义务继续完整记账，72个当前Product对象与4个未来RECORD对象分时；合法部分日线/分钟叶事实可见，未准入叶隐藏，合法WAIT/veto/未触发可在独立存储许可下Recording，而Outcome/PIT/训练/Promotion继续后置。
-- A1本地候选在现有Registry/Factor/V2.5内建立唯一基础回执：43方法、25个已有技术方法、172目标组合、34原始声明、52最终effective声明、5个override、56运行矩阵格、当前Product准入、canonical与27槽消费者分别核验；声明、历史执行和当前READY不得互相替代。
-- A2本地候选保持九路企业/ETF估值和76对象不变，新增M_ERP_VAL/S_VALUATION/E_UNDERLYING_VAL的指数/行业聚合估值回执；股票显式主方法与可选交叉核验，ETF的E_PREMIUM交易价/NAV区间与E_UNDERLYING_VAL底层指数估值分层进入同一Factor/InvestorBrief/V2.5消费者。
+- A1远程接受的工程在现有Registry/Factor/V2.5内建立唯一基础回执：43方法、25个已有技术方法、172目标组合、34原始声明、52最终effective声明、5个override、56运行矩阵格、当前Product准入、canonical与27槽消费者分别核验；声明、历史执行和当前READY不得互相替代。
+- A2远程接受的工程保持九路企业/ETF估值和76对象不变，新增M_ERP_VAL/S_VALUATION/E_UNDERLYING_VAL的指数/行业聚合估值回执；股票显式主方法与可选交叉核验，ETF的E_PREMIUM交易价/NAV区间与E_UNDERLYING_VAL底层指数估值分层进入同一Factor/InvestorBrief/V2.5消费者。
 - A1/A2不增加指标算法、策略权重、canonical、veto、Provider、数据库、模型或Golden；真实同一as-of数据、估值数值和交付仍须独立运行证据。
 
 ### 0.3 详细依赖图：实线是数据/决策依赖，虚线是诊断或显式后继反馈
@@ -110,6 +111,7 @@ flowchart TD
 | B5窗口到方法 | 既有7TF carrier、56格、43方法及动态窗口 | 保持各方法独立required/requested/returned、warm-up、recursive、确认和完成bar | 月线MACD/RSI与延期经典方法保留真实状态，不从邮件文本补READY |
 | M2上下文到筛选 | Global/Market/Sector/Stock/ETF/Screening | 共享上下文、固定Universe漏选/成本审计和各资产适用事实 | Global/Market/Sector与ETF专项多数UNKNOWN；阻断依赖它们的正向资格 |
 | B8邮件与产品 | 原Registry/Coverage/Factor/Notification/V2.5/EmailSender | 机器回执保留26要求/76对象/9估值/7细字段；正文按三envelope、8族、7周期、资产专项和逐叶准入呈现 | 邮件读者合同CI90通过；A0本地PASS；不真实发送或冒充全数据报告 |
+| Stage1当前真实V2.5纵向回执 | 原DataAdmission/Registry/Factor/Coverage/Flywheel，不新增系统 | 同一材料同时绑定43方法实际调用、56格来源与价格Product准入、76对象、research_as_of及27槽真实叶消费者；Global原子字段还必须绑定typed facts、source fact hash与最终文本块fact hash，Product准入不能替代方法执行或实际数值消费 | 2026-10-28本地真实NO_SEND：600519/510300四价格对象Product准入，000300完成bar源级PARTIAL；600519非价格实源探针覆盖14对象但均PARTIAL。B1同源5m→日线补桥本地PASS；BLS三项通胀薄适配器及数值消费者合成本地PASS，但无代理实际探针terms/API/release均HTTP 403且真实条款包未封印，新增原子Product=0。AKShare运行包缺失，Eastmoney/Sina/FRED/Tushare权利未闭合；全域数据与七原子字段仍阻断FACT_READY，SMTP和学习未准入 |
 | L1/M3第二链 | 原History/Journal/Ledger/Outcome/PIT与实验Owner | 有效当前canonical＋独立存储许可→首次合法Recording与完整机会分母→成熟Outcome→冻结PIT→OOT/Logistic/条件LightGBM/校准/Shadow | 当前未创建合法Recording且PIT缺失，Gate6继续HOLD；Product缺失可被记录但不能训练或Promotion |
 阶段是依赖关系，不是所有工作线强制串行。当前邮件消费者候选只修读者角色与审计分层；真实数据仍只从B1对应Owner重入，不复制分析引擎或另建报告系统。
 ### 0.6 动态窗口与减负的准确位置
@@ -135,20 +137,27 @@ flowchart TD
 | DSA/已接受AlphaSift派生 | KEEP：原粗细筛/服务/Diagnostics | 真实execution_receipt已接，不新增筛选Shell；本次不扩充复盘Agent |
 | LEAN官方market-hour consolidators | ADAPT模式：交易时段锚点、资源释放、公司行动边界 | 原XSHG bar service/period完成负例；不安装其broker/调度栈 |
 | Freqtrade recursive/lookahead | ADAPT测试：多长度末端比较＋prefix/信号反例 | 原方法测试；单币/单资产切片不适合直接验证横截面RS；未触发信号不能当无lookahead证明 |
-| CNEquity | ADAPT目录概念：history_mode/coverage/backfill vs snapshot-only | 下一四对象source-capability核验；官网开发树不等于本机已安装版本，注册数/文档范围不等于实得/版权 |
+| CNEquity | PROMOTE_TO_BOUNDED_TRIAL：唯一A股bulk/PIT数据平面候选；当前官方稳定版观察为0.16.0，moving main已准备0.18.0 | 只映射M_BASIC_BREADTH/M_UP_ABOVE_MA/M_NEW_HILO/M_MEDIAN_EQUAL/M_ASOF_UNIVERSE、财报vintage/三表/股本事件/估值比率及Sector分类/RS/宽度；必须证明实际采集、history_mode、coverage、source/version/fetched_at、单位和operation权利。注册不等于采集，软件许可证不等于上游数据权利；不得拥有DSA canonical/report/model，未授权不安装/建湖 |
 | OpenBB标准化 | ADAPT query/data模型分离 | 原typed identities；统一字段不等于来源独立认证；不安装完整平台 |
 | CZSC | DEFER执行直到窄Chan适配trigger | FX/BI/ZS、confirmed事件；1.0 Rust和旧Python有接口差异，先pin/version/license/replay |
 | Qlib/scikit-learn | DEFER真实学习，ADAPT PIT/成组重要性方法 | PIT需公告日/期末/修订版；不以当前回补替代历史vintage，不新增数据库权威 |
+| aistockmind.cn（箴研） | CONTRACT_BOUND claim donor：单报告逐claim核验 | 只消费业务驱动、财务变化、风险、情景假设和原始来源定位；600519 bounded trial已核验2026H1营收+1.47%、归母净利-1.95%及“以消费者为中心、以市场需求为驱动”的改革表述。PE19x、25-35x中枢和30%-80%空间保持分析意见，禁止作为事实、估值输出、概率或canonical动作 |
 
-公开一次资料本轮已重新核验（2026-10-17）：LEAN https://www.quantconnect.com/docs/v2/writing-algorithms/consolidating-data/consolidator-types/market-hour-aware-consolidators ；Freqtrade https://www.freqtrade.io/en/stable/recursive-analysis/ 与 https://www.freqtrade.io/en/stable/lookahead-analysis/ ；CNEquity https://rootsunc.github.io/CNEquity/datasets/catalog/ ；OpenBB https://docs.openbb.co/odp/python/developer/standardization ；CZSC https://github.com/waditu/czsc ；Qlib https://qlib.readthedocs.io/en/latest/advanced/PIT.html ；相关特征 https://scikit-learn.org/stable/auto_examples/inspection/plot_permutation_importance_multicollinear.html 。这是模式/文档核验，不是安装、数据许可、接口全审计或收益证明。
+公开一次资料本轮已重新核验（2026-10-28）：LEAN https://www.quantconnect.com/docs/v2/writing-algorithms/consolidating-data/consolidator-types/market-hour-aware-consolidators ；Freqtrade https://www.freqtrade.io/en/stable/recursive-analysis/ 与 https://www.freqtrade.io/en/stable/lookahead-analysis/ ；CNEquity releases/repository/catalog/sources（稳定0.16.0、moving main准备0.18.0、55个日更数据集、只读MCP、by_date/snapshot_with_backfill/snapshot_only）https://github.com/rootSunc/CNEquity 与 https://rootsunc.github.io/CNEquity/datasets/catalog/ ；aistockmind 600519公开研报及贵州茅台2026H1报告/业绩说明会；OpenBB https://docs.openbb.co/odp/python/developer/standardization ；CZSC https://github.com/waditu/czsc ；Qlib https://qlib.readthedocs.io/en/latest/advanced/PIT.html 。CNEquity/aistockmind的本轮结果保存在`.tmp/stock_dsa_b1/CNE_AISTOCKMIND_BOUNDED_CONSUMPTION_R001.json`；这仍不是安装、全站抓取、数据许可或收益证明。
+
+### 0.8.1 Donor动态消费防遗漏
+
+成熟项目必须绑定 `DISCOVERED → SOURCE_METHOD_REVIEWED → CONTRACT_BOUND → CODE_TEST_CONSUMED → NATIVE_PRODUCT_VALIDATED`，并同时记录 exact consumer、re-entry trigger、proof ceiling、rollback。仅出现在04或聊天中不算消费；当前Product缺口持续且最相关donor仍停在REVIEWED时，下一material action必须先做bounded trial或写明独立反例，禁止直接继续custom BUILD。该规则落在现有roadmap/stage/test，不创建新的审批服务。
+
+机器图决策：接受的775边原图保持不变。当前仅更新状态投影；只有CNEquity被显式晋升为持久字节/查询/版本Owner或其他物理权威边界改变时，才触发Architecture与原机器图checkpoint。
 
 ### 0.9 Role Review、反例与唯一下一步
 
-Role Review（9602700b / CI91 / A1A2 local candidate）：Program继续KEEP唯一DSA、原775边图、原V2.5和现有Registry/Factor/Valuation/Pipeline/V2.5消费者。A0=REMOTE_PASS；PRODUCT=REVISE→A1/A2本地GREEN：七周期×八族effective配置、运行矩阵、数据准入和消费者统一，Stock/ETF/Index估值分层；DATA_MODEL=PASS_SCOPED：仍只用76对象及既有九路；PROCESS_CONSUMER=PASS_SCOPED：Factor/InvestorBrief/V2.5分别显示股票主估值、指数/行业聚合和ETF交易/NAV与底层估值；LEARNING=HOLD；AUTHORITY=A0 CI91 PASS/A1A2 remote OPEN；ANTI_BLOAT=无新文件/依赖/Shell/DB/renderer/canonical/model。
+Role Review（d75c2969 / CI91 / CI93 / Stage1 real NO_SEND local candidate）：Program继续KEEP唯一DSA、原775边图、原V2.5和现有Registry/Factor/Valuation/Pipeline/V2.5消费者。A0=CI91 REMOTE_PASS，A1/A2=CI93 REMOTE_PASS_SCOPED_NO_REPLAY；PRODUCT=REVISE：`source-rights-evidence-v2`已阻断软件许可证替代数据权利，Stage1真实运行将600519/510300四价格对象准入并把000300完成bar保留为源级PARTIAL；600519真实非价格探针覆盖14对象但全部PARTIAL，质量/估值仍缺绝对债务资产、修订版本及接受假设区间。B1日线T+1断点以同源完整5m单会话run-local补桥。七Global原子字段现要求真实facts/hash进入最终V2.5，不再以admission或槽位冒充数值；BLS三项通胀薄适配器合成本地PASS，但本机无代理实际探针三域HTTP 403、真实条款包未封印，故新增Product=0。AKShare运行包缺失，Eastmoney/Sina/FRED/Tushare缺精确权利或运行条件。DATA_MODEL=PARTIAL_REAL_PRICE_AND_NONPRICE_SOURCE_PROBE，Global原子字段/Market宽度/ETF专项仍OPEN；PROCESS_CONSUMER=LOCAL_PASS_SCOPED；LEARNING=HOLD；AUTHORITY=exact public HEAD d75c2969 parent；ANTI_BLOAT=无新Shell/DB/scheduler/canonical/model、无安装，候选待最终回归与远程接受。
 
-FIXED_STATUS_VECTOR = PROJECT_SOURCE_8_UNIQUE_V3526; A0_REMOTE_ACCEPTED_CI91; A1_EFFECTIVE_52_OF_172_DECLARATION_BOUND_TO_56_RUNTIME_CELLS_LOCAL_PASS; A2_STOCK_INDEX_SECTOR_ETF_VALUATION_LAYERS_LOCAL_PASS; EXACT76_AND_NINE_ROUTES_RETAINED; V25_ORIGINAL_UNCHANGED; ACTUAL_CURRENT_DATA_AND_RECORDING_NOT_CREATED; LEARNING_HOLD; PROVIDER_DB_SEND_TRAIN_PROMOTION_EFFECT_0.
+FIXED_STATUS_VECTOR = PROJECT_SOURCE_8_UNIQUE_V3527; A0_REMOTE_ACCEPTED_CI91; A1_A2_REMOTE_ACCEPTED_CI93_SCOPED_NO_REPLAY; RIGHTS_V2_SOFTWARE_LICENSE_SUBSTITUTION_BLOCKED; STAGE1_REAL_20261028_PRICE_OBJECTS_4_PRODUCT_ADMITTED_INDEX_000300_SOURCE_PARTIAL; BAOSTOCK_NONPRICE_14_SOURCE_PARTIAL; B1_SAME_PROVIDER_5M_TO_DAILY_ONE_SESSION_BRIDGE_LOCAL_PASS; GLOBAL_ATOMIC_TYPED_FACT_HASH_AND_V25_CONSUMPTION_REQUIRED; BLS_CPI3_THIN_ADAPTER_LOCAL_PASS_REAL_ENVIRONMENT_HTTP403_PRODUCT_ADMITTED_0; AKSHARE_RUNTIME_ABSENT; EASTMONEY_SINA_FRED_TUSHARE_RIGHTS_NOT_ADMITTED; REAL_REPLAY_STOP_PROVIDER_NETWORK; STAGE1_VERTICAL_HOLD_FULL_DOMAIN_AND_ATOMIC_SUBFIELDS; EXACT76_AND_NINE_ROUTES_RETAINED; V25_ORIGINAL_UNCHANGED; RECORDING_NOT_CREATED; LEARNING_HOLD; DB_SEND_MODEL_TRAIN_PROMOTION_EFFECT_0.
 
-UNIQUE_NEXT_STEP = 对A1/A2本地候选完成自然邻接、静态检查与精确范围Closure；只有用户另行授权才原子提交/非强制推送。远程PASS后进入同一as-of 600519＋510300＋沪深300基础样本，不夹带Chan、额外指标、发送或训练。
+UNIQUE_NEXT_STEP = 不再等待单一Provider：保留BaoStock四价格对象与14对象探针；仅在精确条款字节与operation grant可封印时执行BLS CPI三原子真实NO_SEND，当前本机HTTP 403不重试；同时按替代生产者矩阵只接入现有可运行且权利明确的Market宽度/ETF专项薄适配器。AKShare运行包缺失或Eastmoney/Sina/FRED/Tushare条款未闭合时保持UNKNOWN，不安装、不换第二数据平台；不夹带Chan、白盒阈值、发送、Recording或训练。
 
 PASS = effective配置不被34个原始声明覆盖；56格逐项保留状态/原因/生产者，历史不回填当前；股票、指数/行业、ETF估值使用各自数据对象、时点、权重和消费者，ETF不把NAV当底层盈利估值；策略、canonical、veto、权利和Golden不变。STOP = 静态目录冒充READY、复制算法、个股估值套指数/ETF、ETF用E_UNDERLYING_VAL生成折溢价、指数生成合理点位或动作、增加第十路线/第二系统、未经授权Git或外部效果。CURRENT_ROUTE_STILL_WORTH_CONTINUING=YES；INSTRUCTIONS_UPDATE_DECISION=NO_DELTA；SOURCES_UPDATE_DECISION=DEFER_TO_A1A2_REMOTE_MILESTONE_TO_AVOID_CHURN。
 <!-- CURRENT_MASTER_CONTROL_END -->

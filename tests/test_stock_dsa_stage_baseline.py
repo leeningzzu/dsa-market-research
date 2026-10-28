@@ -106,7 +106,7 @@ def test_stage_ladder_keeps_parent_product_and_blocking_order_explicit() -> None
         "P1_PROMOTION_RELEASE",
     ]
     assert baseline["route_decision"]["next_primary"] == (
-        "A1_A2_FOUNDATION_REMOTE_ACCEPTANCE"
+        "STAGE1_CURRENT_V25_REAL_PRODUCT_VERTICAL"
     )
     assert [stage["id"] for stage in stages if stage.get("next_primary")] == [
         "B8_FULL_DELIVERY_NO_SEND"
@@ -117,36 +117,36 @@ def test_stage_ladder_keeps_parent_product_and_blocking_order_explicit() -> None
     assert stages[6]["blocked_by"] == "L1_LEGAL_LEDGER_OUTCOME_PIT"
     assert stages[7]["blocked_by"] == "M3_CALIBRATION_SHADOW"
     assert baseline["acceptance"]["direct_main_push"] is False
-    # CI91 closes A0 on the exact feature checkpoint. A1/A2 remain local and
-    # neither state implies actual complete data, valuation, delivery, learning,
-    # or Promotion authority.
+    # CI91 closes A0 and CI93 closes A1/A2 engineering on the exact feature
+    # checkpoint. Neither state implies actual complete data, valuation,
+    # delivery, learning, or Promotion authority.
     assert baseline["acceptance"]["required_checks"] == [
         "ai-governance", "backend-gate", "docker-build",
     ]
     acceptance = baseline["acceptance"]
     assert acceptance["state"] == (
-        "A0_CI91_REMOTE_ACCEPTED_A1A2_FOUNDATION_LOCAL_PASS_SCOPED_PR31_DRAFT"
+        "A0_CI91_A1A2_CI93_REMOTE_ACCEPTED_SCOPED_STAGE1_LOCAL_CANDIDATE_PR31_DRAFT"
     )
-    assert acceptance["candidate_head"] == "9602700b0be8ae967f966c88d807f550ab831d5b"
-    assert acceptance["candidate_parent"] == "d303562c1955b4a532897722125e9c1f64a69f9b"
+    assert acceptance["candidate_head"] == "d75c2969f72fa3f40017bb6ae16d9ca947709057"
+    assert acceptance["candidate_parent"] == "ded125634894bf2915db6a91e661ec6fc9280313"
     assert acceptance["candidate_head_scope"] == (
         "LATEST_ACCEPTED_FEATURE_CHECKPOINT_NOT_MAIN_PRODUCTION"
     )
     assert acceptance["latest_required_ci"] == {
-        "run_number": 91,
-        "run_id": 40458152958,
+        "run_number": 93,
+        "run_id": 40480935427,
         "conclusion": "success",
     }
-    # CI86 remains the direct failed predecessor; older failures remain in Git/history.
+    # CI92 remains the direct failed predecessor; older failures remain in Git/history.
     assert acceptance["prior_failed_ci"] == {
-        "run_number": 86,
-        "run_id": 40257545700,
-        "head": "a899586bb5822ddf589cc2f6928e2852acf12b39",
+        "run_number": 92,
+        "run_id": 40472704093,
+        "head": "ded125634894bf2915db6a91e661ec6fc9280313",
         "conclusion": "failure",
     }
     assert acceptance["pull_request_state"] == "DRAFT_OPEN_NOT_MERGED"
     assert baseline["route_decision"]["next_primary"] == (
-        "A1_A2_FOUNDATION_REMOTE_ACCEPTANCE"
+        "STAGE1_CURRENT_V25_REAL_PRODUCT_VERTICAL"
     )
 
 
@@ -157,7 +157,9 @@ def test_gate5_gate6_local_evidence_matches_current_fail_closed_runtime() -> Non
     gate6 = compile_gate6_learning_admission(gate5_receipt=gate5)
 
     expected_gate5 = evidence["gate5"]
-    assert expected_gate5["state"] == "PASS_A0_CURRENT_PRODUCT_RECORD_SPLIT_LOCAL_UNCOMMITTED"
+    assert expected_gate5["state"] == "PASS_STAGE1_VERTICAL_FAIL_CLOSED_LOCAL_CANDIDATE"
+    assert expected_gate5["stage1_vertical_receipt_required"] is True
+    assert expected_gate5["stage1_vertical_state"] == "HOLD"
     assert expected_gate5["current_product_catalog_count"] == 72
     assert expected_gate5["future_record_object_count"] == 4
     assert expected_gate5["future_record_blocks_current_product"] is False
@@ -200,10 +202,138 @@ def test_gate5_gate6_local_evidence_matches_current_fail_closed_runtime() -> Non
     assert gate6["model_training_runs"] == 0
 
 
+def test_current_stage1_real_run_is_scoped_partial_and_fail_closed() -> None:
+    evidence = _baseline()["current_stage1_real_run_evidence"]
+    assert evidence["state"] == "PASS_SCOPED_REAL_READ_NO_SEND_STAGE1_HOLD"
+    assert evidence["rights_schema_version"] == "source-rights-evidence-v2"
+    assert evidence["product_admitted_dataset_ids"] == [
+        "P_DAILY", "P_5M", "E_PRICE_1D", "E_PRICE_5M",
+    ]
+    assert evidence["stock_product_admitted_count"] == 2
+    assert evidence["etf_product_admitted_count"] == 2
+    assert evidence["storage_training_redistribution"] == "FORBIDDEN"
+    index = evidence["index_000300"]
+    assert index["state"] == "SOURCE_IDENTITY_ONLY_PARTIAL"
+    assert index["completed_through"] == "2026-10-27"
+    assert index["future_bar_backfilled"] is False
+    assert index["numeric_value_consumed"] is False
+    assert index["strategy_upgrade_authority"] is False
+    v25 = evidence["v2_5_no_send"]
+    assert v25["bytes"] == 107013
+    assert v25["baseline_sha256"] == (
+        "039ca6394baf9cf39494cc29f512802b114c8227f8c965723197a8df4b9de823"
+    )
+    assert v25["stage1_state"] == "HOLD"
+    assert v25["blocker_codes"] == [
+        "FULL_DOMAIN_PRODUCT_DATA_NOT_READY",
+        "ATOMIC_SUBFIELD_V25_CONSUMER_BINDING_INCOMPLETE",
+    ]
+    assert v25["html_persisted"] is False
+    assert v25["delivery_authority"] is False
+    assert all(value == 0 or value is False for value in evidence["effects"].values())
+
+
+def test_current_nonprice_probe_and_daily_completion_bridge_are_scoped() -> None:
+    evidence = _baseline()["current_stage1_nonprice_and_daily_bridge_evidence"]
+    assert evidence["state"] == (
+        "PASS_SCOPED_LOCAL_BRIDGE_REAL_NONPRICE_SOURCE_PARTIAL_PROVIDER_REPLAY_STOP"
+    )
+    probe = evidence["nonprice_source_probe"]
+    assert probe["asset_id"] == "600519"
+    assert probe["dataset_count"] == len(probe["dataset_ids"]) == 14
+    assert probe["all_states"] == "PARTIAL"
+    assert probe["quality_growth_input_present"] is False
+    assert probe["business_valuation_input_present"] is False
+    assert probe["storage_training_strategy_authority"] is False
+    operation = evidence["rights_operation"]
+    assert operation["operation_id"] == "stock-dsa-nosend-20261028-baostock-v2-r002"
+    assert operation["grant_count"] == 19
+    bridge = evidence["daily_completion_bridge"]
+    assert bridge["scope"] == "B1_NO_SEND_EXACT_ONE_XSHG_SESSION_LAG_ONLY"
+    assert bridge["same_provider_basis_currency_required"] is True
+    assert bridge["complete_target_5m_bar_count"] == 48
+    assert bridge["focused_tests_passed"] == 41
+    assert bridge["natural_regression_tests_passed"] == 446
+    assert set(bridge["negative_cases"]) == {
+        "INCOMPLETE_5M_SESSION", "WRONG_PROVIDER", "WRONG_ADJUSTMENT_BASIS",
+        "WRONG_INSTRUMENT", "TWO_SESSION_LAG",
+    }
+    assert bridge["storage_admitted"] is False
+    assert bridge["training_admitted"] is False
+    assert bridge["strategy_admitted"] is False
+    assert bridge["independent_action_authority"] is False
+    replay = evidence["real_replay"]
+    assert replay["state"] == "STOP_PROVIDER_NETWORK"
+    assert replay["further_retries_stopped"] is True
+    assert all(value == 0 or value is False for value in evidence["effects"].values())
+
+
+def test_alternative_producer_matrix_preserves_real_execution_and_rights_boundaries() -> None:
+    evidence = _baseline()["current_stage1_alternative_producer_evidence"]
+    assert evidence["state"] == (
+        "LOCAL_CODE_PASS_REAL_ENVIRONMENT_BLOCKED_NO_NEW_PRODUCT"
+    )
+    counts = evidence["matrix_counts"]
+    assert counts["data_objects"] == 76
+    assert counts["atomic_subfields"] == 7
+    assert counts["current_product_admitted_data_objects"] == 4
+    assert counts["current_product_admitted_atomic_subfields"] == 0
+    assert counts["real_nonprice_partial_producers"] == 14
+    contract = evidence["atomic_fact_contract"]
+    assert contract["admission_hash_alone_is_sufficient"] is False
+    assert contract["typed_facts_required"] is True
+    assert contract["source_fact_hash_required"] is True
+    assert contract["final_v2_5_block_fact_hash_required"] is True
+    assert contract["slot_or_binding_state_can_substitute_numeric_value"] is False
+    bls = evidence["bls_cpi3"]
+    assert len(bls["datasets"]) == 3
+    assert bls["local_contract_tests_passed"] == 4
+    assert bls["pipeline_integration_tests_passed"] == 2
+    assert bls["official_terms_bytes_locally_sealed"] is False
+    assert bls["real_source_receipts_observed"] is False
+    assert bls["product_admitted_count"] == 0
+    assert all(
+        value == 403
+        for key, value in bls["actual_no_proxy_probe"].items()
+        if key.endswith("_status")
+    )
+    assert bls["actual_no_proxy_probe"]["further_local_retries_stopped"] is True
+    assert all(value == 0 for value in evidence["effects"].values())
+
+
+def test_mature_donors_are_bound_to_consumers_and_not_misreported_as_adopted() -> None:
+    evidence = _baseline()["mature_donor_activation_evidence"]
+    assert evidence["state"] == "ROUTE_ROOT_FIXED_BOUNDED_CONSUMPTION_PREWRITE"
+    assert evidence["failure_class"] == "DONOR_REGISTERED_BUT_NOT_CONSUMER_ACTIVATED"
+    assert evidence["user_discovery"] == "TRUE_POSITIVE"
+    assert evidence["maturity_states"] == [
+        "DISCOVERED", "SOURCE_METHOD_REVIEWED", "CONTRACT_BOUND",
+        "CODE_TEST_CONSUMED", "NATIVE_PRODUCT_VALIDATED",
+    ]
+    cne = evidence["cnequity"]
+    assert cne["official_stable_release_observed"] == "0.16.0"
+    assert cne["current_maturity"] == "CONTRACT_BOUND_PREWRITE"
+    assert cne["bounded_dataset_consumers"] == 14
+    assert cne["installation_performed"] is False
+    assert cne["data_pull_performed"] is False
+    assert cne["storage_rights_admitted"] is False
+    assert cne["production_canonical_report_model_authority"] is False
+    claims = evidence["aistockmind"]
+    assert claims["current_maturity"] == "CLAIM_VERIFICATION_BOUNDED_TRIAL_PASS_SCOPED"
+    assert claims["verified_primary_source_claims"] == 3
+    assert claims["unverified_analytical_opinions"] == 1
+    assert claims["market_fact_indicator_valuation_probability_canonical_authority"] is False
+    graph = evidence["machine_graph"]
+    assert graph["accepted_775_edge_graph_update_required"] is False
+    assert graph["status_projection_update_required"] is True
+    assert evidence["stage1_complex_gate_count"] == 3
+    assert all(value == 0 for value in evidence["effects"].values())
+
+
 def test_a1_a2_local_foundation_evidence_is_scoped_and_non_authoritative() -> None:
     evidence = _baseline()["a1_a2_local_evidence"]
     assert evidence["state"] == (
-        "PASS_SCOPED_LOCAL_UNCOMMITTED_REMOTE_ACCEPTANCE_OPEN"
+        "REMOTE_ACCEPTED_CI93_SCOPED_NO_REPLAY"
     )
     a1 = evidence["a1"]
     assert a1 == {
@@ -293,11 +423,28 @@ def test_stage_baseline_locks_bounded_hierarchical_mtf_screening() -> None:
     assert regression["stock_index_sector_and_etf_valuation_layers_are_separate"] is True
     assert regression["etf_premium_discount_does_not_use_underlying_valuation_dataset"] is True
     assert regression["index_sector_valuation_has_no_fair_value_action_or_veto_authority"] is True
+    assert regression[
+        "stage1_vertical_requires_actual_invocation_product_admission_and_v25_leaf_consumption"
+    ] is True
+    assert regression["empty_materials_never_fact_ready"] is True
+    assert regression["nonprice_objects_use_same_b1_closed_world_compiler"] is True
+    assert regression[
+        "daily_provider_lag_bridge_requires_same_provider_complete_48_bar_session"
+    ] is True
+    assert regression[
+        "daily_provider_lag_bridge_only_fills_exact_one_completed_session"
+    ] is True
+    assert regression[
+        "daily_provider_lag_bridge_never_persists_or_grants_strategy_authority"
+    ] is True
+    assert regression["software_package_license_cannot_substitute_upstream_data_terms"] is True
+    assert regression["official_data_use_statement_cannot_grant_storage_training_or_redistribution"] is True
+    assert regression["research_date_never_backfills_uncompleted_index_bar"] is True
 
 
 def test_indicator_backlog_is_subordinate_to_the_current_product_route() -> None:
     decision = _baseline()["route_decision"]
-    assert decision["next_primary"] == "A1_A2_FOUNDATION_REMOTE_ACCEPTANCE"
+    assert decision["next_primary"] == "STAGE1_CURRENT_V25_REAL_PRODUCT_VERTICAL"
     assert decision["bounded_indicator_sub_lanes"] == [
         "MONTHLY_RSI_HISTORY_IF_LEGAL",
         "15M_CONFIRMATION",
