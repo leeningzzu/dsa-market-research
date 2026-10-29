@@ -112,6 +112,63 @@ def _validated_runtime_cn_index_source_observation(
     return dict(value)
 
 
+def _validated_runtime_cn_index_5m_source_observation(
+    value: Any,
+    *,
+    trade_date: date,
+    source: str,
+) -> Optional[Dict[str, Any]]:
+    """Allow only live, nonnumeric source evidence; never history/PIT reuse."""
+    if source != "market_review_runtime" or not isinstance(value, Mapping):
+        return None
+    expected = {
+        "schema_version": "cn-index-completed-5m-source-v1",
+        "dataset_id": "M_INDEX_BARS",
+        "source_state": "PARTIAL",
+        "provider_identity": "EastmoneyIndex5mAdapter",
+        "provider_route": "eastmoney.index_zh_a_hist_min_em|push2his/qt/stock/kline/get",
+        "completed_through": trade_date.isoformat(),
+        "source_data_rights": "UNKNOWN",
+        "volume_unit": "UNKNOWN",
+        "amount_unit": "UNKNOWN",
+        "historical_pit_eligible": False,
+        "independent_source_value_admitted": False,
+        "native_recursive_stability_admitted": False,
+        "strategy_upgrade_authority": False,
+    }
+    if set(value) != set(expected) | {
+        "source_code", "observed_at", "identity_hash",
+        "content_sha256", "session_count", "row_count", "receipt_sha256",
+    }:
+        return None
+    from data_provider.daily_data_identity import sha256_payload
+    if sha256_payload({k: v for k, v in value.items() if k != "receipt_sha256"}) != value.get("receipt_sha256"):
+        return None
+    if any(value.get(k) != v for k, v in expected.items()):
+        return None
+    if value.get("source_code") not in {"sh.000001", "sh.000300"}:
+        return None
+    for key in ("content_sha256", "identity_hash"):
+        digest = str(value.get(key) or "")
+        if len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest.lower()):
+            return None
+    sessions = value.get("session_count")
+    rows = value.get("row_count")
+    if type(sessions) is not int or type(rows) is not int or sessions < 1 or rows != sessions * 48:
+        return None
+    try:
+        obs = datetime.fromisoformat(str(value.get("observed_at") or ""))
+        if obs.tzinfo is None or obs.utcoffset() is None:
+            return None
+        from src.core.trading_calendar import resolve_latest_completed_session_fail_closed
+        latest = resolve_latest_completed_session_fail_closed("cn", current_time=obs)
+        if latest is None or latest < trade_date:
+            return None
+    except (ValueError, TypeError):
+        return None
+    return dict(value)
+
+
 @dataclass(frozen=True)
 class DailyMarketContext:
     """Low-sensitivity daily market background for stock analysis prompts."""
@@ -128,6 +185,7 @@ class DailyMarketContext:
     full_report: Optional[str] = None
     market_light: Optional[Dict[str, Any]] = None
     cn_index_completed_close_source: Optional[Dict[str, Any]] = None
+    cn_index_completed_5m_source: Optional[Dict[str, Any]] = None
 
     def to_safe_dict(self) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
@@ -142,6 +200,10 @@ class DailyMarketContext:
         if self.cn_index_completed_close_source is not None:
             payload["cn_index_completed_close_source"] = dict(
                 self.cn_index_completed_close_source
+            )
+        if self.cn_index_completed_5m_source is not None:
+            payload["cn_index_completed_5m_source"] = dict(
+                self.cn_index_completed_5m_source
             )
         return payload
 
@@ -683,6 +745,11 @@ class DailyMarketContextService:
             trade_date=trade_date,
             source=source,
         )
+        cn_index_minute_source = _validated_runtime_cn_index_5m_source_observation(
+            scoped_payload.get("cn_index_completed_5m_source"),
+            trade_date=trade_date,
+            source=source,
+        )
         return DailyMarketContext(
             region=normalized_region,
             trade_date=trade_date,
@@ -696,6 +763,7 @@ class DailyMarketContextService:
             full_report=full_report,
             market_light=_validated_market_light_payload(scoped_payload.get("market_light")),
             cn_index_completed_close_source=cn_index_source,
+            cn_index_completed_5m_source=cn_index_minute_source,
         )
 
 

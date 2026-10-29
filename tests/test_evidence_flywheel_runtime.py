@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
+
 from datetime import date, datetime, timezone
 import json
 import os
@@ -11,13 +13,14 @@ import sqlite3
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import exchange_calendars as xcals
 import pandas as pd
 import pytest
 from sqlalchemy import inspect, select, text
 
 from src.analyzer import GeminiAnalyzer
 from src.config import Config
-from src.core.pipeline import StockAnalysisPipeline
+from src.core.pipeline import StockAnalysisPipeline, _current_daily_window_plan
 from src.notification import NotificationService
 from src.repositories.prediction_ledger_repo import PredictionLedgerRepository
 from src.services.evidence_flywheel_runtime import (
@@ -29,12 +32,14 @@ from src.services.evidence_flywheel_runtime import (
     _require_fresh_sqlite_file,
     _write_receipt_file,
     build_pit_manifest_receipt,
+    compile_gate6_learning_admission,
     evaluate_prediction_outcome,
     record_canonical_run,
     replay_specified_codes_daily_sessions,
 )
 from src.services.pit_dataset_service import PITDatasetService
 from src.services.evidence_traceability_registry import MANIFEST_HASH, METRIC_BINDINGS, digest
+from src.services.data_object_admission import seal_source_rights_evidence
 from src.services.prediction_ledger_service import (
     TRACE_FEATURE_SCHEMA_VERSION,
     traced_feature_schema_hash,
@@ -353,7 +358,19 @@ def _pipeline_factory(observed: dict, receipt: dict | None):
 
 
 def _synthetic_daily_history(*, end_date: date, periods: int = 320) -> pd.DataFrame:
-    dates = pd.bdate_range(end=end_date, periods=periods)
+    calendar = xcals.get_calendar("XSHG")
+    end_session = calendar.date_to_session(end_date, direction="previous")
+    # Keep this isolated fixture inside the installed exchange calendar.  A
+    # backward sessions_window call may cross the calendar's first supported
+    # session and return no usable window on some calendar versions; that is
+    # an environment boundary, not evidence that production may backfill bars.
+    available = calendar.sessions_in_range(calendar.first_session, end_session)
+    if len(available) < periods:
+        raise AssertionError("synthetic fixture lacks enough completed XSHG sessions")
+    sessions = available[-periods:]
+    if len(sessions) != periods:
+        raise AssertionError("synthetic fixture requires exact completed XSHG sessions")
+    dates = [session.date() for session in sessions]
     close = [
         100.0 + index * 0.03 + (-0.20 if index % 5 == 0 else 0.05)
         for index in range(periods)
@@ -361,12 +378,13 @@ def _synthetic_daily_history(*, end_date: date, periods: int = 320) -> pd.DataFr
     frame = pd.DataFrame(
         {
             "code": ["600519"] * periods,
-            "date": dates.date,
+            "date": dates,
             "open": [value - 0.10 for value in close],
             "high": [value + 0.40 for value in close],
             "low": [value - 0.40 for value in close],
             "close": close,
             "volume": [1_000_000.0 + (index % 10) * 10_000.0 for index in range(periods)],
+            "data_source": ["test"] * periods,
         }
     )
     frame["amount"] = frame["close"] * frame["volume"]
@@ -469,6 +487,8 @@ def test_record_phase_reuses_bounded_pipeline_and_restores_config(monkeypatch) -
     )
 
     assert receipt["status"] == "RECORDED"
+    assert receipt["record_count"] == 1
+    assert receipt["ledger_receipts"][0]["created"] is True
     assert receipt["notification_suppressed"] is True
     assert receipt["external_durability"] == "NOT_REQUESTED"
     assert receipt["training_requested"] is False
@@ -1200,6 +1220,82 @@ def test_product_report_receipt_reuses_existing_delivery_fact_identity(
     assert receipt["v25_semantic_coverage"]["actual_render_consumer_proven"] is False
 
 
+def test_current_whole_product_report_receipt_proves_dynamic_v25_no_send(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from src.services import evidence_flywheel_runtime as runtime
+    from tests.test_evidence_traceability_registry import native_summary
+
+    factor = native_summary()
+    persisted_factor = json.loads(json.dumps(factor, ensure_ascii=False))
+    brief = factor["investor_brief"]
+    report = tmp_path / "report_20261023.md"
+    report.write_text(
+        "# actual current report\n"
+        + str(brief["one_line_conclusion"]) + "\n"
+        + str(brief["fused_paragraph"]) + "\n"
+        + str(brief["coverage_text"]) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(runtime, "_PRODUCT_REPORTS_DIR", tmp_path)
+    monkeypatch.setattr(
+        runtime,
+        "_persisted_factor_snapshot",
+        lambda db_manager, pipeline, prediction_hash: (persisted_factor, 11),
+    )
+    trace = factor["evidence_traceability"]
+    monkeypatch.setattr(
+        runtime,
+        "_ledger_identity_snapshot",
+        lambda db_manager, prediction_hash: {
+            "evidence_traceability_identity": {
+                "method_window_policy_hash": trace["method_window_policy_hash"],
+                "timeframe_family_matrix_hash": trace["timeframe_family_matrix_hash"],
+                "complete_research_universe_hash": trace[
+                    "complete_research_universe_hash"
+                ],
+            }
+        },
+    )
+
+    class FakePipeline:
+        @staticmethod
+        def _delivery_fact_hash(value):
+            return digest(value)
+
+    result = SimpleNamespace(
+        code="600519",
+        name="测试股票",
+        dashboard={
+            "factor_decision": factor,
+            "research_delivery": {
+                "selection_source": "SPECIFIED_CODES",
+                "delivery_envelope": "ASSET_RESEARCH_BRIEF_WATCHLIST",
+                "asset_type": "stock",
+                "asset_identity_text": "A股｜主板",
+                "product_group": "WATCHLIST_STOCK",
+            },
+        },
+    )
+    receipt = runtime._build_product_report_receipt(
+        db_manager=object(),
+        pipeline=FakePipeline(),
+        result=result,
+        prediction_hash="f" * 64,
+    )
+
+    v25 = receipt["v25_semantic_coverage"]
+    assert v25["rendered"] is True
+    assert v25["actual_render_consumer_proven"] is True
+    assert v25["no_send"] is True
+    assert v25["slot_projection_count"] == 270
+    assert v25["all_input_facts_product_ready"] is False
+    assert len(v25["output_sha256"]) == 64
+    assert len(v25["frame_contract_hash"]) == 64
+    assert len(v25["whole_scope_projection_hash"]) == 64
+
+
 def test_record_phase_fails_closed_when_model_request_count_is_nonzero() -> None:
     class BadPipeline:
         def __init__(self, **kwargs):
@@ -1382,6 +1478,9 @@ def test_native_zero_model_record_writes_only_the_admitted_temp_db_surfaces(
     )
 
     target_date = date(2026, 9, 24)  # Independently completed XSHG session
+    daily_plan = _current_daily_window_plan(
+        market="cn", target_date=target_date,
+    )
     frame = _synthetic_daily_history(end_date=target_date)
     typed = build_daily_data_identity(
         frame, provider_identity="test",
@@ -1390,10 +1489,11 @@ def test_native_zero_model_record_writes_only_the_admitted_temp_db_surfaces(
         requested_adjustment_basis="qfq",
         observed_adjustment_basis="qfq",
         basis_evidence="EXPLICIT_ISOLATED_SYNTHETIC_PRICE_SERIES",
-        requested_start=str(frame.iloc[0]["date"]),
-        requested_end=str(target_date),
+        requested_start=daily_plan["start_date"].isoformat(),
+        requested_end=target_date.isoformat(),
         currency="CNY", volume_unit="share", amount_unit="CNY",
         identity_state="OBSERVED",
+        instrument="600519",
         observed_at=datetime(2026, 9, 24, 10, 0, tzinfo=timezone.utc),
     )
     attach_daily_data_identity(frame, typed)
@@ -1418,6 +1518,37 @@ def test_native_zero_model_record_writes_only_the_admitted_temp_db_surfaces(
     config.agent_skills = []
     config.report_language = "zh"
     config.max_workers = 1
+    synthetic_rights = {
+        "product_use": "ALLOWED",
+        "storage": "ALLOWED",
+        "training": "FORBIDDEN",
+        "redistribution": "FORBIDDEN",
+    }
+    synthetic_grant = seal_source_rights_evidence({
+        "schema_version": "source-rights-evidence-v2",
+        "operation_id": "test-flywheel-p0-daily",
+        "intended_use": "NO_SEND_RESEARCH",
+        "provider_identity": "test",
+        "upstream_source_owner": "TEST_FIXTURE_ONLY_NOT_REAL_LICENSE",
+        "upstream_rights_state": "VERIFIED",
+        "dataset_id": "P_DAILY",
+        "consumer_scope": "ASSET_RESEARCH_BRIEF",
+        "terms_uri": "https://example.org/unit-fixture-only",
+        "terms_sha256": "a" * 64,
+        "terms_observed_at": "2026-09-01T00:00:00+00:00",
+        "terms_scope": "SYNTHETIC_TEST_CONTRACT",
+        "product_use_clause": "Synthetic fixture explicitly allows internal no-send research.",
+        "product_use_clause_sha256": "c2a9b98537611cb0c9e9cb165ab0a4a699d84f5a2644a5e1e23740d0af55c6e1",
+        "rights": synthetic_rights,
+    })
+    rights_file = tmp_path / "b1-synthetic-rights.json"
+    rights_file.write_text(json.dumps({
+        "schema_version": "b1-operation-rights-context-v1",
+        "operation_id": "test-flywheel-p0-daily",
+        "intended_use": "NO_SEND_RESEARCH",
+        "allowed_instruments": ["600519"],
+        "rights_by_dataset": {"P_DAILY": synthetic_grant},
+    }), encoding="utf-8")
 
     market_structure = MagicMock()
     market_structure.build_context.return_value = None
@@ -1446,7 +1577,29 @@ def test_native_zero_model_record_writes_only_the_admitted_temp_db_surfaces(
         factor = result.dashboard["factor_decision"]
         assert factor["method_execution_receipt_policy"] == "REQUIRED"
         assert factor["canonical_decision"]["evidence_state"] == "PROVEN"
-        assert factor["canonical_decision"]["action"] == "WAIT"
+        canonical = factor["canonical_decision"]
+        gate4 = factor["gate4_decision_package"]
+        assert canonical["action"] == "PASS"
+        assert canonical["public_action"] == "avoid"
+        assert canonical["hard_veto"] is True
+        assert "GATE4_DATA_VETO" in canonical["reason_codes"]
+        assert gate4["state"] == "VETOED"
+        assert gate4["canonical_action_authority"] is True
+        assert gate4["correlation_dedup"]["status"] == "VERIFIED"
+        assert gate4["correlation_dedup"]["group_count"] == 15
+        assert set(gate4["vetoes"]) == {
+            "DATA", "RISK", "LIQUIDITY", "EXECUTION",
+        }
+        assert gate4["all_veto_lanes_evaluated"] is True
+        assert gate4["vetoes"]["DATA"]["state"] == "VETO"
+        assert all(
+            lane["state"] in {"PASS", "VETO"}
+            for lane in gate4["vetoes"].values()
+        )
+        assert gate4["storage_admitted"] is False
+        assert gate4["learning_admitted"] is False
+        assert gate4["score_or_probability_authority"] is False
+        assert factor["investor_brief"]["gate4_decision_package"] == gate4
         assert factor["composite_score"] is not None
         assert factor["multi_timeframe_structure_context"]["price_identity_reasons"] == []
         try:
@@ -1481,7 +1634,8 @@ def test_native_zero_model_record_writes_only_the_admitted_temp_db_surfaces(
              side_effect=AssertionError("strict unlicensed Ledger write attempted"),
          ) as ledger_persist, \
          patch("src.analyzer.get_api_keys_for_model") as get_keys, \
-         patch("src.analyzer.litellm.completion") as completion:
+         patch("src.analyzer.litellm.completion") as completion, \
+         patch.object(config, "b1_rights_evidence_path", str(rights_file)):
         with pytest.raises(
             EvidenceFlywheelRuntimeError,
             match="canonical result is missing a Prediction Ledger receipt",
@@ -1657,3 +1811,656 @@ def test_manifest_phase_is_idempotent_and_cannot_admit_training(isolated_db) -> 
     assert first["training_requested"] is False
     assert first["external_durability"] == "NOT_REQUESTED"
     assert "NO_WHITE_BOX_OPPORTUNITIES" in first["training_admission_reasons"]
+
+
+def _gate6_gate5_receipt(*, product_ready: bool = False) -> dict:
+    from src.services.v2_5_evidence_coverage import render_v2_5_dynamic_no_send
+    from src.services import v2_5_evidence_coverage as v25
+    from tests.test_evidence_traceability_registry import native_summary
+
+    result = SimpleNamespace(
+        code="600519",
+        name="合成测试股票",
+        dashboard={
+            "factor_decision": native_summary(),
+            "research_delivery": {
+                "selection_source": "SPECIFIED_CODES",
+                "delivery_envelope": "ASSET_RESEARCH_BRIEF_WATCHLIST",
+                "asset_type": "stock",
+                "asset_identity_text": "A股｜主板",
+                "product_group": "WATCHLIST_STOCK",
+            },
+        },
+    )
+    receipt = render_v2_5_dynamic_no_send(
+        [result], report_date="2026-10-23",
+    )["receipt"]
+    if product_ready:
+        # Contract-reachability fixture only.  It rewrites every dependent
+        # machine identity consistently; it is not a provider or licence claim.
+        receipt = json.loads(json.dumps(receipt))
+        scope = receipt["whole_scope_projection"]
+        rendered_by_id = {
+            str(row["block_id"]): row for row in receipt["rendered_blocks"]
+        }
+        data_projection_by_id = {
+            str(row["id"]): row for row in scope["data_object_projections"]
+        }
+        atomic_projection_by_id = {
+            str(row["id"]): row
+            for row in scope["atomic_subfield_projections"]
+        }
+        stage1 = receipt["stage1_vertical_product_receipt"]
+        research_as_of = "2026-10-23T10:00:00+00:00"
+        research_operation_id = "synthetic-stage1-product-ready"
+        scope["scope_research_as_of_values"] = [research_as_of]
+        scope["scope_research_operation_ids"] = [research_operation_id]
+        scope["scope_research_intended_uses"] = ["NO_SEND_RESEARCH"]
+
+        scope["atomic_subfields_unresolved"] = []
+        for row in scope["data_object_projections"]:
+            if row["domain"] != "RECORD":
+                row["state"] = "READY"
+                row["product_admission_hashes"] = [digest({
+                    "dataset_id": row["id"],
+                    "kind": "synthetic-product-admission",
+                })]
+        synthetic_atomic_fact_hashes = {}
+        for index, row in enumerate(scope["atomic_subfield_projections"]):
+            row["state"] = "BOUND"
+            row["product_admission_hashes"] = [digest({
+                "atomic_subfield_id": row["id"],
+                "kind": "synthetic-atomic-admission",
+            })]
+            facts = {
+                "value": float(index + 1),
+                "value_unit": "SYNTHETIC_TEST_UNIT",
+                "reference_period": "2026-09",
+                "release_published_at": "2026-10-14T12:30:00+00:00",
+            }
+            fact_hash = digest(facts)
+            row["facts"] = facts
+            row["source_fact_hash"] = fact_hash
+            row["fact_summary"] = (
+                f"SYNTHETIC_ATOMIC_{row['id']}={index + 1}"
+            )
+            synthetic_atomic_fact_hashes[str(row["id"])] = fact_hash
+            for location_id in row["location_ids"]:
+                block = rendered_by_id[str(location_id)]
+                block["input_atomic_fact_hashes"] = tuple(sorted({
+                    *tuple(block.get("input_atomic_fact_hashes") or ()),
+                    fact_hash,
+                }))
+        scope.pop("projection_hash", None)
+        scope["projection_hash"] = digest(scope)
+        stage1["whole_scope_projection_hash"] = scope["projection_hash"]
+
+        slot_projection_lookup = {
+            (str(row.get("asset_code") or ""), str(row.get("slot_id") or "")): row
+            for row in receipt["slot_projections"]
+        }
+        for material in stage1["materials"]:
+            material["fact_mode"] = "ADMITTED"
+            material["research_as_of"] = material["report_date"]
+            material["research_as_of_instant"] = research_as_of
+            material["research_operation_id"] = research_operation_id
+            material["research_intended_use"] = "NO_SEND_RESEARCH"
+            material["research_operation_context_valid"] = True
+            material["research_as_of_current"] = True
+            for row in material["method_rows"]:
+                if row["runtime_state"] in {"READY", "PARTIAL"}:
+                    row["actual_invocation_verified"] = True
+                    row["runtime_source_bound"] = True
+            for row in material["cell_rows"]:
+                if row["state"] in {"READY", "PARTIAL"}:
+                    row["runtime_source_bound"] = True
+                    row["price_dataset_product_admitted"] = True
+                    row["all_current_methods_invocation_verified"] = True
+
+            # First bind each available slot to the same rendered block inputs.
+            for row in material["slot_rows"]:
+                if row["coverage_state"] != "EVIDENCE_AVAILABLE":
+                    continue
+                key = (str(material["code"]), str(row["slot_id"]))
+                slot_projection_lookup[key]["projection_state"] = "RENDERED_EVIDENCE"
+                row["projection_state"] = "RENDERED_EVIDENCE"
+                slot_id = str(row["slot_id"])
+                direct = slot_id in v25._STAGE1_DIRECT_SLOT_CONSUMERS
+                timeframe_bundle = (
+                    slot_id.startswith(v25._STAGE1_TIMEFRAME_SLOT_PREFIX)
+                    or slot_id in v25._STAGE1_TIMEFRAME_COMPOSITE_SLOT_CONSUMERS
+                )
+                if direct:
+                    canonical_hashes = tuple(row["canonical_path_hashes"]) or (
+                        digest({"slot_id": slot_id, "kind": "canonical-input"}),
+                    )
+                    row["canonical_path_hashes"] = canonical_hashes
+                    for location_id in row["location_ids"]:
+                        block = rendered_by_id[str(location_id)]
+                        block["input_canonical_path_hashes"] = tuple(sorted({
+                            *tuple(block.get("input_canonical_path_hashes") or ()),
+                            *canonical_hashes,
+                        }))
+                elif timeframe_bundle:
+                    leaf_hash = digest({
+                        "slot_id": slot_id, "kind": "timeframe-leaf",
+                    })
+                    for location_id in row["location_ids"]:
+                        block = rendered_by_id[str(location_id)]
+                        block["input_leaf_hash"] = leaf_hash
+                        block["input_leaf_product_admitted"] = True
+                        block["input_leaf_method_execution_verified"] = True
+                        block["input_leaf_dataset_id"] = (
+                            "P_DAILY"
+                            if block.get("timeframe") in {
+                                "monthly", "weekly", "daily",
+                            }
+                            else "P_5M"
+                        )
+
+            # Then derive the Stage1 slot receipt only from those rendered blocks.
+            for row in material["slot_rows"]:
+                locations = tuple(str(value) for value in row["location_ids"])
+                row["location_projection_hashes"] = tuple(
+                    str(rendered_by_id[value]["projection_sha256"])
+                    for value in locations
+                )
+                row["rendered_canonical_path_hashes"] = tuple(sorted({
+                    str(path_hash)
+                    for value in locations
+                    for path_hash in (
+                        rendered_by_id[value].get("input_canonical_path_hashes")
+                        or ()
+                    )
+                }))
+                row["timeframe_leaf_hashes"] = tuple(sorted({
+                    str(rendered_by_id[value].get("input_leaf_hash") or "")
+                    for value in locations
+                    if (
+                        len(str(rendered_by_id[value].get("input_leaf_hash") or ""))
+                        == 64
+                        and rendered_by_id[value].get(
+                            "input_leaf_product_admitted"
+                        ) is True
+                        and rendered_by_id[value].get(
+                            "input_leaf_method_execution_verified"
+                        ) is True
+                    )
+                }))
+                if row["coverage_state"] == "EVIDENCE_AVAILABLE":
+                    row["leaf_consumed"] = True
+                    row["consumer_state"] = "V25_LEAF_CONSUMED"
+                row.pop("consumer_binding_hash", None)
+                row["consumer_binding_hash"] = digest(row)
+
+            rendered_price_ids = {
+                str(block.get("input_leaf_dataset_id") or "")
+                for block in rendered_by_id.values()
+                if (
+                    block.get("input_leaf_product_admitted") is True
+                    and block.get("input_leaf_method_execution_verified") is True
+                )
+            }
+            admitted_dataset_ids = []
+            for row in material["data_object_rows"]:
+                if not row["current_product_applicable"]:
+                    continue
+                dataset_id = str(row["dataset_id"])
+                projection = data_projection_by_id[dataset_id]
+                admission_hash = projection["product_admission_hashes"][0]
+                admitted_dataset_ids.append(dataset_id)
+                row.update({
+                    "state": "READY",
+                    "product_admitted": True,
+                    "admission_hash": admission_hash,
+                    "v25_leaf_consumed": dataset_id in rendered_price_ids,
+                    "v25_scope_audit_consumed": True,
+                    "v25_consumer_bound": True,
+                    "v25_consumer_state": (
+                        "V25_PRICE_TIMEFRAME_LEAF_CONSUMED"
+                        if dataset_id in rendered_price_ids
+                        else "V25_MACHINE_SCOPE_CONSUMED"
+                    ),
+                    "scope_projection_state": "READY",
+                    "scope_consumer_projection": (
+                        "MACHINE_RECEIPT_WITH_ROLE_SUMMARIZED_EMAIL"
+                    ),
+                    "scope_location_ids": tuple(projection["location_ids"]),
+                    "scope_projection_hashes": tuple(
+                        projection["projection_sha256"]
+                        for _ in projection["location_ids"]
+                    ),
+                    "scope_product_admission_hashes": tuple(
+                        projection["product_admission_hashes"]
+                    ),
+                })
+                row.pop("v25_consumer_binding_hash", None)
+                row["v25_consumer_binding_hash"] = digest(row)
+            for row in material["atomic_subfield_rows"]:
+                projection = atomic_projection_by_id[str(row["id"])]
+                admission_hash = projection["product_admission_hashes"][0]
+                fact_hash = synthetic_atomic_fact_hashes[str(row["id"])]
+                row.update({
+                    "product_admitted": True,
+                    "admission_hash": admission_hash,
+                    "v25_scope_audit_consumed": True,
+                    "v25_consumer_bound": True,
+                    "v25_atomic_fact_consumed": True,
+                    "v25_atomic_fact_hash_consumed": True,
+                    "source_fact_hash": fact_hash,
+                    "rendered_atomic_fact_hashes": (fact_hash,),
+                    "v25_consumer_state": "V25_ATOMIC_SCOPE_CONSUMED",
+                    "scope_projection_state": "BOUND",
+                    "scope_consumer_projection": (
+                        "MACHINE_RECEIPT_WITH_ROLE_SUMMARIZED_EMAIL"
+                    ),
+                    "scope_location_ids": tuple(projection["location_ids"]),
+                    "scope_projection_hashes": tuple(
+                        projection["projection_sha256"]
+                        for _ in projection["location_ids"]
+                    ),
+                    "scope_product_admission_hashes": tuple(
+                        projection["product_admission_hashes"]
+                    ),
+                })
+                row.pop("v25_consumer_binding_hash", None)
+                row["v25_consumer_binding_hash"] = digest(row)
+            material["current_product_admitted_dataset_ids"] = tuple(
+                sorted(set(admitted_dataset_ids))
+            )
+            material["blocker_codes"] = ()
+            material["state"] = "FACT_READY"
+            material.pop("material_hash", None)
+            material["material_hash"] = digest(material)
+
+        for row in receipt["results"]:
+            row["fact_mode"] = "ADMITTED"
+            row["full_domain_product_ready"] = True
+        receipt["all_input_facts_product_ready"] = True
+        stage1["blocker_codes"] = ()
+        stage1["state"] = "FACT_READY"
+        stage1.pop("receipt_hash", None)
+        stage1["receipt_hash"] = digest(stage1)
+        receipt.pop("receipt_hash", None)
+        receipt["receipt_hash"] = digest(receipt)
+    return receipt
+
+
+def test_gate6_current_missingness_product_compiles_complete_hold_vector() -> None:
+    receipt = compile_gate6_learning_admission(
+        gate5_receipt=_gate6_gate5_receipt(),
+    )
+
+    assert receipt["state"] == "HOLD"
+    assert len(receipt["stage_order"]) == 10
+    assert receipt["stages"]["GATE5_DYNAMIC_PRODUCT"]["state"] == (
+        "PASS_MISSINGNESS_COMPLETE"
+    )
+    assert receipt["stages"]["GATE5_DYNAMIC_PRODUCT"]["stage1_vertical_state"] == "HOLD"
+    assert "STAGE1_VERTICAL_PRODUCT_NOT_READY" in receipt["reason_codes"]
+    assert "FULL_DOMAIN_PRODUCT_DATA_NOT_READY" in receipt["reason_codes"]
+    assert "RECORDING_RECEIPT_MISSING" in receipt["reason_codes"]
+    assert "PIT_MANIFEST_MISSING" in receipt["reason_codes"]
+    assert receipt["current_probability_authority"] is False
+    assert receipt["training_effect_authority"] is False
+    assert receipt["promotion_effect_authority"] is False
+    assert receipt["broker_or_automatic_trading_authority"] is False
+    assert receipt["network_calls"] == 0
+    assert receipt["database_writes"] == 0
+    assert receipt["model_training_runs"] == 0
+    assert len(receipt["admission_hash"]) == 64
+
+
+def test_gate6_accepts_lawful_wait_recording_before_all_product_facts_are_ready():
+    recording = {
+        "schema_version": "evidence-flywheel-runtime-receipt-v1",
+        "phase": "record",
+        "status": "RECORDED",
+        "notification_suppressed": True,
+        "training_requested": False,
+        "model_request_count": 0,
+        "record_count": 1,
+        "intended_cohort_id": "6" * 64,
+        "ledger_receipts": [{
+            "status": "RECORDED",
+            "prediction_hash": "1" * 64,
+            "pit_eligible": False,
+        }],
+    }
+
+    receipt = compile_gate6_learning_admission(
+        gate5_receipt=_gate6_gate5_receipt(),
+        recording_receipt=recording,
+    )
+
+    assert receipt["state"] == "HOLD"
+    assert receipt["stages"]["GATE5_DYNAMIC_PRODUCT"]["state"] == (
+        "PASS_MISSINGNESS_COMPLETE"
+    )
+    assert receipt["stages"]["RECORDING_LEDGER"]["state"] == "PARTIAL"
+    assert "RECORDING_RECEIPT_MISSING" not in receipt["reason_codes"]
+    assert "FULL_DOMAIN_PRODUCT_DATA_NOT_READY" in receipt["reason_codes"]
+    assert "PIT_ELIGIBILITY_INCOMPLETE" in receipt["reason_codes"]
+    assert "OUTCOME_RECEIPTS_MISSING" in receipt["reason_codes"]
+    assert "PIT_MANIFEST_MISSING" in receipt["reason_codes"]
+    assert receipt["current_probability_authority"] is False
+    assert receipt["training_effect_authority"] is False
+    assert receipt["promotion_effect_authority"] is False
+    assert receipt["database_writes"] == 0
+    assert receipt["model_training_runs"] == 0
+
+    invalid = dict(recording)
+    invalid["notification_suppressed"] = False
+    with pytest.raises(
+        EvidenceFlywheelBoundaryError,
+        match="recording receipt boundary mismatch",
+    ):
+        compile_gate6_learning_admission(
+            gate5_receipt=_gate6_gate5_receipt(),
+            recording_receipt=invalid,
+        )
+
+
+def test_gate6_current_product_can_be_fact_ready_before_first_recording():
+    receipt = compile_gate6_learning_admission(
+        gate5_receipt=_gate6_gate5_receipt(product_ready=True),
+    )
+
+    assert receipt["state"] == "HOLD"
+    assert receipt["stages"]["GATE5_DYNAMIC_PRODUCT"]["state"] == "PASS_FACT_READY"
+    assert receipt["stages"]["GATE5_DYNAMIC_PRODUCT"]["stage1_vertical_state"] == "FACT_READY"
+    assert "STAGE1_VERTICAL_PRODUCT_NOT_READY" not in receipt["reason_codes"]
+    assert "FULL_DOMAIN_PRODUCT_DATA_NOT_READY" not in receipt["reason_codes"]
+    assert "RECORDING_RECEIPT_MISSING" in receipt["reason_codes"]
+    assert "PIT_MANIFEST_MISSING" in receipt["reason_codes"]
+    assert receipt["current_probability_authority"] is False
+    assert receipt["training_effect_authority"] is False
+    assert receipt["promotion_effect_authority"] is False
+    assert receipt["database_writes"] == 0
+    assert receipt["model_training_runs"] == 0
+
+
+def test_gate6_rejects_forged_gate5_and_out_of_order_promotion() -> None:
+    gate5 = _gate6_gate5_receipt()
+    gate5["learning_authority"] = True
+    with pytest.raises(
+        EvidenceFlywheelBoundaryError,
+        match="Gate5 receipt hash mismatch|Gate5 receipt invariant mismatch",
+    ):
+        compile_gate6_learning_admission(gate5_receipt=gate5)
+
+    flag_only = _gate6_gate5_receipt()
+    flag_only["all_input_facts_product_ready"] = True
+    flag_only.pop("receipt_hash", None)
+    flag_only["receipt_hash"] = digest(flag_only)
+    with pytest.raises(
+        EvidenceFlywheelBoundaryError,
+        match="Product-ready claim is not supported",
+    ):
+        compile_gate6_learning_admission(gate5_receipt=flag_only)
+
+    stage1_downgraded = _gate6_gate5_receipt(product_ready=True)
+    stage1_downgraded["stage1_vertical_product_receipt"] = deepcopy(
+        _gate6_gate5_receipt()["stage1_vertical_product_receipt"]
+    )
+    stage1_downgraded.pop("receipt_hash", None)
+    stage1_downgraded["receipt_hash"] = digest(stage1_downgraded)
+    with pytest.raises(
+        EvidenceFlywheelBoundaryError,
+        match=(
+            "Product-ready claim is not supported by Stage1 vertical receipt"
+            "|Stage1 whole-scope identity mismatch"
+        ),
+    ):
+        compile_gate6_learning_admission(gate5_receipt=stage1_downgraded)
+
+    reordered = json.loads(json.dumps(_gate6_gate5_receipt()))
+    reordered_scope = reordered["whole_scope_projection"]
+    reordered_scope["requirement_projections"].reverse()
+    reordered_scope.pop("projection_hash", None)
+    reordered_scope["projection_hash"] = digest(reordered_scope)
+    reordered.pop("receipt_hash", None)
+    reordered["receipt_hash"] = digest(reordered)
+    with pytest.raises(
+        EvidenceFlywheelBoundaryError,
+        match="requirement projection order mismatch",
+    ):
+        compile_gate6_learning_admission(gate5_receipt=reordered)
+
+    rebound = json.loads(json.dumps(_gate6_gate5_receipt()))
+    rebound_scope = rebound["whole_scope_projection"]
+    data_rows = rebound_scope["data_object_projections"]
+    data_rows[0]["fact"], data_rows[1]["fact"] = (
+        data_rows[1]["fact"], data_rows[0]["fact"],
+    )
+    rebound_scope.pop("projection_hash", None)
+    rebound_scope["projection_hash"] = digest(rebound_scope)
+    rebound.pop("receipt_hash", None)
+    rebound["receipt_hash"] = digest(rebound)
+    with pytest.raises(
+        EvidenceFlywheelBoundaryError,
+        match="data-object semantic binding mismatch",
+    ):
+        compile_gate6_learning_admission(gate5_receipt=rebound)
+
+    slot_deleted = json.loads(json.dumps(_gate6_gate5_receipt()))
+    slot_deleted["slot_projections"].pop()
+    slot_deleted.pop("receipt_hash", None)
+    slot_deleted["receipt_hash"] = digest(slot_deleted)
+    with pytest.raises(
+        EvidenceFlywheelBoundaryError,
+        match="slot projection count mismatch",
+    ):
+        compile_gate6_learning_admission(gate5_receipt=slot_deleted)
+
+    with pytest.raises(
+        EvidenceFlywheelBoundaryError,
+        match="Promotion cannot precede frozen Shadow",
+    ):
+        compile_gate6_learning_admission(
+            gate5_receipt=_gate6_gate5_receipt(product_ready=True),
+            promotion_receipt={
+                "schema_version": "explicit-promotion-receipt-v1",
+                "status": "APPROVED",
+            },
+        )
+
+
+def test_gate6_complete_synthetic_chain_is_reachable_but_effects_remain_separate() -> None:
+    prediction_hash = "1" * 64
+    dataset_hash = "2" * 64
+    logistic_model_hash = "3" * 64
+    calibrator_hash = "4" * 64
+    shadow_id = "5" * 64
+    recording = {
+        "schema_version": "evidence-flywheel-runtime-receipt-v1",
+        "phase": "record",
+        "status": "RECORDED",
+        "notification_suppressed": True,
+        "training_requested": False,
+        "model_request_count": 0,
+        "record_count": 1,
+        "intended_cohort_id": "6" * 64,
+        "ledger_receipts": [{
+            "status": "RECORDED",
+            "prediction_hash": prediction_hash,
+            "pit_eligible": True,
+        }],
+    }
+    outcomes = [{
+        "schema_version": "evidence-flywheel-runtime-receipt-v1",
+        "phase": "evaluate-outcome",
+        "status": "TAKE_SUCCESS",
+        "prediction_hash": prediction_hash,
+        "training_requested": False,
+    }]
+    pit = {
+        "schema_version": "evidence-flywheel-runtime-receipt-v1",
+        "phase": "build-manifest",
+        "status": "MANIFEST_FROZEN",
+        "dataset_hash": dataset_hash,
+        "final_test_state": "SEALED",
+        "training_admission": "ADMITTED",
+        "training_admission_reasons": [],
+        "training_requested": False,
+        "counts": {
+            "included_by_fold": {
+                "TRAIN": 80,
+                "VALIDATION": 20,
+                "FINAL_TEST": 20,
+            }
+        },
+    }
+    whitebox = {
+        "schema_version": "whitebox-oot-receipt-v1",
+        "status": "PASS",
+        "dataset_hash": dataset_hash,
+        "model_family": "WHITE_BOX_RULE_BASELINE",
+        "walk_forward": True,
+        "leakage_checks_passed": True,
+        "final_test_untouched": True,
+        "receipt_hash": "7" * 64,
+    }
+    logistic = {
+        "schema_version": "logistic-meta-receipt-v1",
+        "status": "PASS",
+        "dataset_hash": dataset_hash,
+        "model_family": "LOGISTIC_REGRESSION",
+        "model_hash": logistic_model_hash,
+        "receipt_hash": "8" * 64,
+    }
+    calibration = {
+        "schema_version": "independent-calibration-receipt-v1",
+        "status": "PASS",
+        "dataset_hash": dataset_hash,
+        "model_hash": logistic_model_hash,
+        "independent_calibration_set": True,
+        "calibrator_hash": calibrator_hash,
+        "receipt_hash": "9" * 64,
+    }
+    shadow = {
+        "schema_version": "frozen-shadow-receipt-v1",
+        "status": "PASS",
+        "dataset_hash": dataset_hash,
+        "model_hash": logistic_model_hash,
+        "calibrator_hash": calibrator_hash,
+        "frozen": True,
+        "automatic_trading": False,
+        "automatic_parameter_updates": False,
+        "shadow_id": shadow_id,
+        "receipt_hash": "a" * 64,
+    }
+    promotion = {
+        "schema_version": "explicit-promotion-receipt-v1",
+        "status": "APPROVED",
+        "explicit_promotion": True,
+        "automatic": False,
+        "dataset_hash": dataset_hash,
+        "model_hash": logistic_model_hash,
+        "calibrator_hash": calibrator_hash,
+        "shadow_id": shadow_id,
+        "promotion_id": "b" * 64,
+    }
+
+    receipt = compile_gate6_learning_admission(
+        gate5_receipt=_gate6_gate5_receipt(product_ready=True),
+        recording_receipt=recording,
+        outcome_receipts=outcomes,
+        pit_manifest_receipt=pit,
+        whitebox_oot_receipt=whitebox,
+        logistic_receipt=logistic,
+        calibration_receipt=calibration,
+        shadow_receipt=shadow,
+        promotion_receipt=promotion,
+    )
+
+    assert receipt["state"] == (
+        "READY_FOR_SEPARATELY_AUTHORIZED_PROMOTION_EFFECT"
+    )
+    assert receipt["reason_codes"] == []
+    assert receipt["stages"]["LIGHTGBM_INCREMENTAL"]["state"] == (
+        "NOT_REQUESTED"
+    )
+    assert receipt["current_probability_authority"] is False
+    assert receipt["training_effect_authority"] is False
+    assert receipt["promotion_effect_authority"] is False
+    assert receipt["broker_or_automatic_trading_authority"] is False
+    assert receipt["model_training_runs"] == 0
+
+
+def test_gate6_lightgbm_requires_independent_incremental_gain() -> None:
+    gate5 = _gate6_gate5_receipt(product_ready=True)
+    prediction_hash = "c" * 64
+    recording = {
+        "schema_version": "evidence-flywheel-runtime-receipt-v1",
+        "phase": "record",
+        "status": "RECORDED",
+        "notification_suppressed": True,
+        "training_requested": False,
+        "model_request_count": 0,
+        "record_count": 1,
+        "intended_cohort_id": "d" * 64,
+        "ledger_receipts": [{
+            "status": "RECORDED",
+            "prediction_hash": prediction_hash,
+            "pit_eligible": True,
+        }],
+    }
+    outcomes = [{
+        "schema_version": "evidence-flywheel-runtime-receipt-v1",
+        "phase": "evaluate-outcome",
+        "status": "TAKE_FAIL",
+        "prediction_hash": prediction_hash,
+        "training_requested": False,
+    }]
+    pit = {
+        "schema_version": "evidence-flywheel-runtime-receipt-v1",
+        "phase": "build-manifest",
+        "status": "MANIFEST_FROZEN",
+        "dataset_hash": "e" * 64,
+        "final_test_state": "SEALED",
+        "training_admission": "ADMITTED",
+        "training_admission_reasons": [],
+        "training_requested": False,
+        "counts": {},
+    }
+    whitebox = {
+        "schema_version": "whitebox-oot-receipt-v1",
+        "status": "PASS",
+        "dataset_hash": "e" * 64,
+        "model_family": "WHITE_BOX_RULE_BASELINE",
+        "walk_forward": True,
+        "leakage_checks_passed": True,
+        "final_test_untouched": True,
+        "receipt_hash": "f" * 64,
+    }
+    logistic = {
+        "schema_version": "logistic-meta-receipt-v1",
+        "status": "PASS",
+        "dataset_hash": "e" * 64,
+        "model_family": "LOGISTIC_REGRESSION",
+        "model_hash": "1" * 64,
+        "receipt_hash": "2" * 64,
+    }
+    with pytest.raises(
+        EvidenceFlywheelBoundaryError,
+        match="LightGBM incremental proof is incomplete",
+    ):
+        compile_gate6_learning_admission(
+            gate5_receipt=gate5,
+            recording_receipt=recording,
+            outcome_receipts=outcomes,
+            pit_manifest_receipt=pit,
+            whitebox_oot_receipt=whitebox,
+            logistic_receipt=logistic,
+            lightgbm_meta_receipt={
+                "schema_version": "lightgbm-meta-receipt-v1",
+                "status": "PASS",
+                "dataset_hash": "e" * 64,
+                "model_family": "LIGHTGBM_META",
+                "model_hash": "3" * 64,
+                "logistic_model_hash": "1" * 64,
+                "incremental_gain_proven": False,
+                "receipt_hash": "4" * 64,
+            },
+        )

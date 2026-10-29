@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, call, patch
 from types import SimpleNamespace
 
@@ -16,6 +17,10 @@ import pandas as pd
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from data_provider.base import DataFetcherManager
+from data_provider.daily_data_identity import (
+    build_daily_data_identity,
+    attach_daily_data_identity,
+)
 from data_provider.pytdx_fetcher import PytdxFetcher
 from src.core.pipeline import StockAnalysisPipeline
 
@@ -159,8 +164,10 @@ class TestPrefetchStockNames(unittest.TestCase):
         self.assertEqual(name, "平安银行")
         manager.get_realtime_quote.assert_called_once_with("000001.SZ", log_final_failure=False)
 
-    def test_fetch_and_save_stock_data_uses_lightweight_name_lookup(self):
+    def test_legacy_non_b1_fetch_uses_lightweight_name_lookup(self):
         pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+        pipeline.p0_bounded_trial = True
+        pipeline.p0_receipt_only = False
         pipeline.fetcher_manager = MagicMock()
         pipeline.db = MagicMock()
         pipeline.fetcher_manager.get_stock_name.return_value = "贵州茅台"
@@ -168,23 +175,29 @@ class TestPrefetchStockNames(unittest.TestCase):
         pipeline._resolve_resume_target_date = MagicMock(
             return_value=pd.Timestamp("2026-10-12").date()
         )
-        pipeline.fetcher_manager.get_daily_data.return_value = (
-            pd.DataFrame(
-                [
-                    {
-                        "date": "2026-03-27",
-                        "open": 1.0,
-                        "high": 1.0,
-                        "low": 1.0,
-                        "close": 1.0,
-                        "volume": 1,
-                        "amount": 1.0,
-                        "pct_chg": 0.0,
-                    }
-                ]
-            ),
-            "dummy",
+        # The name-lookup consumer must have typed OBSERVED source identity;
+        # a raw DataFrame is correctly rejected upstream.
+        frame = pd.DataFrame([{
+            "date": "2026-10-12", "open": 1.0, "high": 1.0,
+            "low": 1.0, "close": 1.0, "volume": 1,
+            "amount": 1.0, "pct_chg": 0.0, "data_source": "dummy",
+        }])
+        identity = build_daily_data_identity(
+            frame,
+            provider_identity="dummy", provider_route="unit.name_prefetch",
+            actual_response_branch="synthetic:qfq",
+            requested_adjustment_basis="qfq", observed_adjustment_basis="qfq",
+            basis_evidence="synthetic test contract only",
+            requested_start="2015-02-02", requested_end="2026-10-12",
+            currency="CNY", volume_unit="share", amount_unit="CNY",
+            identity_state="OBSERVED",
+            observed_at=datetime(2026, 10, 12, 12, tzinfo=timezone.utc),
+            instrument="600519",
         )
+        attach_daily_data_identity(frame, identity)
+        pipeline.fetcher_manager.get_daily_data.return_value = (frame, "dummy")
+        # This legacy non-B1 test owns only name lookup and old persistence.
+        # Strict B1 NO_SEND run-local storage denial is covered separately.
         pipeline.db.save_daily_data.return_value = 1
 
         success, error = StockAnalysisPipeline.fetch_and_save_stock_data(pipeline, "600519")
@@ -192,6 +205,7 @@ class TestPrefetchStockNames(unittest.TestCase):
         self.assertTrue(success)
         self.assertIsNone(error)
         pipeline.fetcher_manager.get_stock_name.assert_called_once_with("600519", allow_realtime=False)
+        pipeline.db.save_daily_data.assert_called_once()
         fetch_args = pipeline.fetcher_manager.get_daily_data.call_args
         self.assertEqual(fetch_args.args, ("600519",))
         self.assertIn("start_date", fetch_args.kwargs)

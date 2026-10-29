@@ -16,6 +16,11 @@ from src.config import Config
 
 from src.services import evidence_traceability_registry as reg
 from src.services.cost_structure_service import build_cost_structure_context
+from src.services.data_object_admission import (
+    compile_data_object_admission_view,
+    seal_data_object_admission_receipt,
+    seal_source_rights_evidence,
+)
 from src.services.factor_decision_summary import build_stock_factor_decision_summary
 from src.services.multi_timeframe_structure_service import build_multi_timeframe_structure_context
 from src.services.pattern_trigger_service import build_pattern_trigger_context, _dedupe_patterns
@@ -312,7 +317,9 @@ def test_method_window_policy_view_is_complete_manifest_bound_and_non_mutating()
     assert methods["CHAN"]["window_classes"] == ("INCREMENTAL_STATE_MACHINE",)
     assert methods["CHAN"]["current_execution_timeframes"] == ()
     assert methods["VALUATION"]["target_timeframes"] == ("asset",)
-    assert methods["VALUATION"]["window_classes"] == ("VINTAGE_ASOF",)
+    assert methods["VALUATION"]["window_classes"] == ("VINTAGE_ASOF", "CROSS_SECTIONAL_ASOF")
+    assert methods["VALUATION"]["consumer_scope"] == "ASSET_LAYER"
+    assert methods["VALUATION"]["current_execution_timeframes"] == ("asset",)
 
     pattern_slots = {
         slot["id"]
@@ -349,8 +356,10 @@ def test_method_window_policy_view_is_complete_manifest_bound_and_non_mutating()
         "warmup": 26,
         "config_hash": "5ea82ff077b04d411d4f62b41800d07ebbd7a547726db2481e3aa07db61c5b0f",
     }
-    assert reg.digest(pre_intraday_manifest) == "f5e3a015bcdcfae5f74f91008f037414a234c2bb4c2eb9c51297006b5109fa19"
-    assert reg.MANIFEST_HASH == "3e3fbf1160cedf84f326b2a4183c306c4b58b78e83001f70e865575f5bbd9375"
+    # Explicit manifest-version refreeze for accepted source-bound Quality/Valuation
+    # owners; historical pre-admission digests remain in Git. V2.5 is unchanged.
+    assert reg.digest(pre_intraday_manifest) == "93755e701f5be6d2262ec5cdd8413fe4f232f9ae71e85778f86e4c6f672c338f"
+    assert reg.MANIFEST_HASH == "72626f853407bac7ac7a500707aa40b6c89b307f944c39a303b5601f15fbd64e"
     assert reg.MANIFEST_HASH == manifest_before == reg.digest(reg.manifest_document())
     assert reg.digest(reg.METRIC_BINDINGS) == metrics_before == "ac2e214238229453592464d99ed6341651f7d232c9339da66d2fec7fc4d6729a"
     assert not any(
@@ -520,6 +529,8 @@ def test_complete_research_universe_view_prevents_scope_collapse_beyond_7x8():
         "methods": len(EXPECTED_METHOD_WINDOW_IDS),
         "strategy_bindings": 13,
         "technical_matrix_cells": 56,
+        "atomic_subfields": 7,
+        "atomic_subfields_product_admitted": 0,
     }
     assert {row["plane"] for row in universe["planes"]} == {
         "TECHNICAL_EVIDENCE", "FUNDAMENTAL_AND_STRATEGY", "MARKET_AND_ASSET",
@@ -540,10 +551,508 @@ def test_complete_research_universe_view_prevents_scope_collapse_beyond_7x8():
     body.pop("universe_hash")
     assert reg.digest(body) == universe["universe_hash"]
     assert trace["complete_research_universe_hash"] == universe["universe_hash"]
+    data_gate = universe["full_domain_data_gate"]
+    assert data_gate["full_domain_accounted_pass"] is True
+    assert data_gate["full_domain_product_ready"] is False
+    assert data_gate["accounted_object_count"] == 76
+    assert data_gate["domain_counts"] == {
+        "GLOBAL": 18, "CN_MARKET": 18, "SECTOR": 7,
+        "ETF": 12, "STOCK": 17, "RECORD": 4,
+    }
+    assert data_gate["unresolved_product_dataset_ids"]
+    assert set(universe["valuation_route_ids"]) == {
+        "MATURE_INDUSTRIAL_CONSUMER", "HIGH_GROWTH_TECH", "BANK", "INSURANCE",
+        "CYCLICAL_RESOURCE", "UTILITY_INFRASTRUCTURE", "REIT",
+        "LOSS_MAKING_EARLY_GROWTH", "ETF",
+    }
+    assert set(universe["known_atomic_subfield_obligations"]) == {
+        "GLOBAL_US_ACTUAL_INFLATION", "GLOBAL_US_CORE_INFLATION",
+        "GLOBAL_US_SERVICE_INFLATION", "GLOBAL_US_5Y_INFLATION_EXPECTATION",
+        "GLOBAL_SOX_INDEX", "GLOBAL_TECH_ETF_FLOW",
+        "GLOBAL_SEMICONDUCTOR_SOFTWARE_RELATIVE",
+    }
 
 
 
-def _closed_typed_stock_source_factor():
+def test_exact_atomic_subfield_reuses_operation_admission_without_broad_proxy():
+    dataset_id = "GLOBAL_US_ACTUAL_INFLATION"
+    operation_id = "atomic-nosend-20261023"
+    facts = {
+        "series_id": "SYNTHETIC_CPI",
+        "reference_period": "2026-09",
+        "index_value": 321.5,
+        "yoy_pct": 2.4,
+        "release_published_at": "2026-10-23T08:30:00+00:00",
+        "seasonal_adjustment": "SEASONALLY_ADJUSTED",
+        "value_unit": "INDEX_1982_84_100",
+    }
+    source = {
+        "dataset_id": dataset_id,
+        "state": "PARTIAL",
+        "provider_identity": "SyntheticAtomicProvider",
+        "provider_route": "synthetic.atomic.release",
+        "source_identity_hash": "1" * 64,
+        "source_content_sha256": "2" * 64,
+        "source_observed_at": "2026-10-23T09:00:00+00:00",
+        "source_available_at": "2026-10-23T08:30:00+00:00",
+        "completed_through": "2026-10-23",
+        "units": {"value": "PERCENT"},
+        "currency": "NOT_APPLICABLE",
+        "adjustment_basis": "NOT_APPLICABLE",
+        "revision": "SYNTHETIC_RELEASE_V1",
+        "vintage": "2026-10-23T08:30:00+00:00",
+        "facts": facts,
+        "source_fact_hash": reg.digest(facts),
+    }
+    rights = seal_source_rights_evidence({
+        "schema_version": "source-rights-evidence-v2",
+        "operation_id": operation_id,
+        "intended_use": "NO_SEND_RESEARCH",
+        "provider_identity": source["provider_identity"],
+        "upstream_source_owner": "SYNTHETIC_FIXTURE_NOT_REAL_LICENSE",
+        "upstream_rights_state": "VERIFIED",
+        "dataset_id": dataset_id,
+        "consumer_scope": "MARKET_GLOBAL_TRANSMISSION",
+        "terms_uri": "https://example.org/atomic-test-contract-only",
+        "terms_sha256": "3" * 64,
+        "terms_observed_at": "2026-10-22T09:00:00+00:00",
+        "terms_scope": "SYNTHETIC_TEST_CONTRACT",
+        "product_use_clause": "Synthetic fixture explicitly allows internal no-send research.",
+        "product_use_clause_sha256": "c2a9b98537611cb0c9e9cb165ab0a4a699d84f5a2644a5e1e23740d0af55c6e1",
+        "rights": {
+            "product_use": "ALLOWED",
+            "storage": "FORBIDDEN",
+            "training": "FORBIDDEN",
+            "redistribution": "FORBIDDEN",
+        },
+    })
+    receipt = seal_data_object_admission_receipt({
+        "schema_version": "data-object-admission-receipt-v1",
+        "dataset_id": dataset_id,
+        "provider_identity": source["provider_identity"],
+        "provider_route": source["provider_route"],
+        "native_frequency": "monthly/released",
+        "source_identity_hash": source["source_identity_hash"],
+        "content_sha256": source["source_content_sha256"],
+        "observed_at": source["source_observed_at"],
+        "available_at": source["source_available_at"],
+        "completed_through": source["completed_through"],
+        "units": source["units"],
+        "currency": source["currency"],
+        "adjustment_basis": source["adjustment_basis"],
+        "revision": source["revision"],
+        "vintage": source["vintage"],
+        "rights": rights["rights"],
+        "rights_evidence": rights,
+        "historical_pit_eligible": False,
+        "consumer_scope": "MARKET_GLOBAL_TRANSMISSION",
+    })
+    factor = native_summary()
+    factor.update({
+        "research_as_of": "2026-10-23T10:00:00+00:00",
+        "research_operation_id": operation_id,
+        "research_intended_use": "NO_SEND_RESEARCH",
+        "atomic_subfield_source_observations": {dataset_id: source},
+        "atomic_subfield_admission_receipts": {dataset_id: receipt},
+    })
+    universe = reg.compile_complete_research_universe_view(factor)
+    atomic = universe["atomic_subfield_admission"]
+    by_id = {row["dataset_id"]: row for row in atomic["objects"]}
+
+    assert len(atomic["objects"]) == 7
+    assert atomic["product_admitted_count"] == 1
+    assert by_id[dataset_id]["product_admitted"] is True
+    assert by_id[dataset_id]["storage_admitted"] is False
+    assert by_id[dataset_id]["learning_admitted"] is False
+    assert universe["atomic_subfield_product_admitted_ids"] == (dataset_id,)
+    obligation = next(
+        row for row in universe["atomic_subfield_obligations"]
+        if row["dataset_id"] == dataset_id
+    )
+    assert obligation["facts"] == facts
+    assert obligation["source_fact_hash"] == reg.digest(facts)
+    assert len(universe["atomic_subfield_admission_hash"]) == 64
+
+    missing = reg.compile_complete_research_universe_view(native_summary())
+    assert missing["atomic_subfield_admission"]["product_admitted_count"] == 0
+    assert missing["atomic_subfield_product_admitted_ids"] == ()
+
+    forged_hash = deepcopy(factor)
+    forged_hash["atomic_subfield_source_observations"][dataset_id][
+        "source_fact_hash"
+    ] = "0" * 64
+    with pytest.raises(
+        reg.TraceabilityError,
+        match="ATOMIC_SUBFIELD_SOURCE_FACT_HASH_MISMATCH",
+    ):
+        reg.compile_complete_research_universe_view(forged_hash)
+
+    forged = deepcopy(factor)
+    forged["atomic_subfield_source_observations"] = {
+        "GLOBAL_NOT_ACCEPTED": source,
+    }
+    with pytest.raises(
+        reg.TraceabilityError,
+        match="ATOMIC_SUBFIELD_SOURCE_OBSERVATION_ORPHAN",
+    ):
+        reg.compile_complete_research_universe_view(forged)
+
+
+def test_generic_nonprice_source_observation_is_partial_source_not_strategy_authority():
+    body = {
+        "schema_version": "data-object-source-observation-v1",
+        "dataset_id": "P_CODE_IDENTITY",
+        "state": "PARTIAL",
+        "reason_codes": ("BOARD_AND_CORPORATE_ACTIONS_NOT_IN_BASIC_RESPONSE",),
+        "provider_identity": "BaostockFetcher",
+        "provider_route": "baostock.query_stock_basic",
+        "producer_authority": "BaostockFetcher.get_cn_stock_nonprice_research_bundle",
+        "source_identity_hash": "1" * 64,
+        "source_content_sha256": "2" * 64,
+        "source_observed_at": "2026-10-28T07:30:00+00:00",
+        "source_available_at": "2026-10-28T07:30:00+00:00",
+        "completed_through": "2026-10-27",
+        "units": {"identity": "TEXT"},
+        "currency": "NOT_APPLICABLE",
+        "adjustment_basis": "NOT_APPLICABLE",
+        "revision": "observed-response-sha256:" + "2" * 64,
+        "vintage": "2026-10-28T07:30:00+00:00",
+        "historical_pit_eligible": False,
+        "independent_source_value_admitted": True,
+        "strategy_upgrade_authority": False,
+        "facts": {"code": "sh.600519", "name": "贵州茅台"},
+    }
+    body["observation_hash"] = reg.digest(body)
+    factor = native_summary()
+    factor["data_object_source_observations"] = {
+        "P_CODE_IDENTITY": body,
+    }
+
+    universe = reg.compile_complete_research_universe_view(factor)
+    row = next(
+        item for item in universe["data_objects"]
+        if item["dataset_id"] == "P_CODE_IDENTITY"
+    )
+    assert row["state"] == "PARTIAL"
+    assert row["provider_identity"] == "BaostockFetcher"
+    assert row["source_fact_hash"] == reg.digest(body["facts"])
+    assert row["historical_pit_eligible"] is False
+    assert row["strategy_upgrade_authority"] is False
+    assert universe["full_domain_data_gate"]["full_domain_product_ready"] is False
+
+    forged = deepcopy(factor)
+    forged["data_object_source_observations"]["P_CODE_IDENTITY"] = {
+        **body,
+        "facts": {"code": "sh.000001", "name": "伪造"},
+    }
+    with pytest.raises(
+        reg.TraceabilityError,
+        match="DATA_OBJECT_SOURCE_OBSERVATION_HASH_MISMATCH",
+    ):
+        reg.compile_complete_research_universe_view(forged)
+
+
+def test_foundation_receipt_separates_raw_declared_effective_and_runtime_states():
+    factor = native_summary()
+    receipt = reg.compile_foundation_evidence_receipt(factor)
+
+    assert receipt["method_profile_count"] == 43
+    assert receipt["existing_method_count"] == 28
+    assert receipt["deferred_method_count"] == 15
+    assert receipt["technical_existing_method_count"] == 25
+    assert receipt["target_method_timeframe_pairs"] == 172
+    assert receipt["declared_execution_pairs"] == 34
+    assert receipt["effective_execution_pairs"] == 52
+    assert len(receipt["effective_override_rows"]) == 5
+    assert receipt["matrix_cell_count"] == 56
+    assert sum(receipt["matrix_state_counts"].values()) == 56
+    assert receipt["policy"]["declaration_is_not_runtime_ready"] is True
+    assert receipt["policy"]["effective_profiles_supersede_raw_constructor_scope"] is True
+    assert receipt["policy"]["historical_execution_never_backfills_current_product"] is True
+    assert receipt["policy"]["independent_action_authority"] is False
+    assert len(receipt["receipt_hash"]) == 64
+
+
+def test_foundation_receipt_rejects_resurrection_of_raw_pre_override_profiles(monkeypatch):
+    declared = {
+        profile.method_id: profile
+        for profile in reg.DECLARED_METHOD_WINDOW_PROFILES
+    }
+    resurrected = tuple(
+        replace(
+            profile,
+            current_execution_timeframes=(
+                declared[profile.method_id].current_execution_timeframes
+            ),
+        )
+        for profile in reg.METHOD_WINDOW_PROFILES
+    )
+    monkeypatch.setattr(reg, "METHOD_WINDOW_PROFILES", resurrected)
+
+    with pytest.raises(
+        reg.TraceabilityError,
+        match="FOUNDATION_EFFECTIVE_METHOD_SCOPE_MISMATCH",
+    ):
+        native_summary()
+
+
+def test_full_domain_data_gate_rejects_deletion_duplicate_domain_and_state_tamper():
+    factor = native_summary()
+    objects = factor["evidence_traceability"]["complete_research_universe"]["data_objects"]
+    gate = reg.compile_full_domain_data_gate(objects)
+    assert gate["full_domain_accounted_pass"] is True
+    assert gate["full_domain_product_ready"] is False
+
+    with pytest.raises(reg.TraceabilityError, match="FULL_DOMAIN_DATA_OBJECT_SET_MISMATCH"):
+        reg.compile_full_domain_data_gate(objects[:-1])
+    duplicate = deepcopy(objects)
+    duplicate[-1] = deepcopy(duplicate[0])
+    with pytest.raises(reg.TraceabilityError, match="FULL_DOMAIN_DATA_OBJECT_SET_MISMATCH"):
+        reg.compile_full_domain_data_gate(duplicate)
+    wrong_domain = deepcopy(objects)
+    wrong_domain[0]["domain"] = "STOCK"
+    with pytest.raises(
+        reg.TraceabilityError,
+        match="CATALOG_BINDING_MISMATCH",
+    ):
+        reg.compile_full_domain_data_gate(wrong_domain)
+    swapped_domains = deepcopy(objects)
+    global_row = next(row for row in swapped_domains if row["domain"] == "GLOBAL")
+    market_row = next(row for row in swapped_domains if row["domain"] == "CN_MARKET")
+    global_row["domain"], market_row["domain"] = (
+        market_row["domain"], global_row["domain"]
+    )
+    with pytest.raises(
+        reg.TraceabilityError,
+        match="CATALOG_BINDING_MISMATCH",
+    ):
+        reg.compile_full_domain_data_gate(swapped_domains)
+    wrong_state = deepcopy(objects)
+    wrong_state[0]["state"] = "READY_BY_ASSERTION"
+    with pytest.raises(reg.TraceabilityError, match="STATE_INVALID"):
+        reg.compile_full_domain_data_gate(wrong_state)
+
+
+def test_full_domain_empty_admission_is_lawful_accounting_nontrigger():
+    universe = reg.compile_complete_research_universe_view({
+        "asset_type": "stock",
+        "data_object_admission_receipts": {},
+    })
+    admission = universe["data_object_admission"]
+    gate = universe["full_domain_data_gate"]
+
+    assert len(admission["objects"]) == 76
+    assert admission["product_admitted_count"] == 0
+    assert admission["counts"] == {
+        "LEARNING_ADMITTED": 0,
+        "NOT_APPLICABLE": 12,
+        "NOT_OBSERVED": 64,
+        "PRODUCT_ADMITTED": 0,
+        "SOURCE_IDENTITY_ONLY": 0,
+    }
+    assert gate["full_domain_accounted_pass"] is True
+    assert gate["full_domain_product_ready"] is False
+    assert gate["current_product_applicable_object_count"] == 60
+    assert gate["record_object_count"] == 4
+    assert len(gate["unresolved_product_dataset_ids"]) == 60
+    assert len(gate["unresolved_all_applicable_dataset_ids"]) == 64
+    assert set(gate["unresolved_record_dataset_ids"]) == {
+        "L_LEDGER", "L_OUTCOME", "L_PIT_MANIFEST", "L_IMMUTABLE_BYTES",
+    }
+
+    forged = deepcopy(admission)
+    forged["objects"].pop()
+    with pytest.raises(reg.TraceabilityError, match="FULL_DOMAIN_DATA_ADMISSION_SET_MISMATCH"):
+        reg.compile_full_domain_data_gate(universe["data_objects"], forged)
+
+
+def _fully_product_admitted_full_domain(asset_type, *, include_record=False):
+    operation_id = "op-full-domain-positive-20261026-r001"
+    intended_use = "NO_SEND_RESEARCH"
+    universe = reg.compile_complete_research_universe_view({
+        "asset_type": asset_type,
+    })
+    obligations = deepcopy(universe["data_objects"])
+    receipts = {}
+    rights = {
+        "product_use": "ALLOWED",
+        "storage": "FORBIDDEN",
+        "training": "FORBIDDEN",
+        "redistribution": "FORBIDDEN",
+    }
+    for obligation in obligations:
+        if obligation["state"] == "NOT_APPLICABLE":
+            continue
+        if obligation["domain"] == "RECORD" and not include_record:
+            continue
+        dataset_id = obligation["dataset_id"]
+        provider = "synthetic-lawful-full-domain-provider"
+        provider_route = "synthetic.full_domain." + dataset_id.lower()
+        source_identity_hash = reg.digest({
+            "dataset_id": dataset_id,
+            "kind": "source_identity",
+        })
+        content_sha256 = reg.digest({
+            "dataset_id": dataset_id,
+            "kind": "source_content",
+        })
+        observed_at = "2026-10-21T10:00:00+00:00"
+        available_at = "2026-10-21T09:00:00+00:00"
+        completed_through = "2026-10-20"
+        units = {"value": "EXPLICIT_TEST_NATIVE_UNIT"}
+        currency = "CNY"
+        adjustment_basis = "NOT_APPLICABLE"
+        revision = "SYNTHETIC_TEST_REVISION_1"
+        vintage = "2026-10-21T09:00:00+00:00"
+        obligation.update({
+            "state": "READY",
+            "reason": "SYNTHETIC_FULL_DOMAIN_READY_TEST_ONLY",
+            "provider_identity": provider,
+            "provider_route": provider_route,
+            "source_identity_hash": source_identity_hash,
+            "source_content_sha256": content_sha256,
+            "source_observed_at": observed_at,
+            "source_available_at": available_at,
+            "completed_through": completed_through,
+            "units": units,
+            "currency": currency,
+            "adjustment_basis": adjustment_basis,
+            "revision": revision,
+            "vintage": vintage,
+        })
+        rights_evidence = seal_source_rights_evidence({
+            "schema_version": "source-rights-evidence-v2",
+            "operation_id": operation_id,
+            "intended_use": intended_use,
+            "provider_identity": provider,
+            "upstream_source_owner": "synthetic-licensed-upstream",
+            "upstream_rights_state": "VERIFIED",
+            "dataset_id": dataset_id,
+            "consumer_scope": obligation["product_consumer"],
+            "terms_uri": "https://example.invalid/terms/full-domain-test",
+            "terms_sha256": "c" * 64,
+            "terms_observed_at": "2026-10-21T08:00:00+00:00",
+            "terms_scope": "SYNTHETIC_TEST_CONTRACT",
+            "product_use_clause": "Synthetic fixture explicitly allows internal no-send research.",
+            "product_use_clause_sha256": "c2a9b98537611cb0c9e9cb165ab0a4a699d84f5a2644a5e1e23740d0af55c6e1",
+            "rights": rights,
+        })
+        receipts[dataset_id] = seal_data_object_admission_receipt({
+            "schema_version": "data-object-admission-receipt-v1",
+            "dataset_id": dataset_id,
+            "provider_identity": provider,
+            "provider_route": provider_route,
+            "native_frequency": obligation["native_frequency"],
+            "source_identity_hash": source_identity_hash,
+            "content_sha256": content_sha256,
+            "observed_at": observed_at,
+            "available_at": available_at,
+            "completed_through": completed_through,
+            "units": units,
+            "currency": currency,
+            "adjustment_basis": adjustment_basis,
+            "revision": revision,
+            "vintage": vintage,
+            "rights": rights,
+            "rights_evidence": rights_evidence,
+            "historical_pit_eligible": False,
+            "consumer_scope": obligation["product_consumer"],
+        })
+    admission = compile_data_object_admission_view(
+        obligations,
+        receipts,
+        as_of="2026-10-21T10:30:00+00:00",
+        operation_id=operation_id,
+        intended_use=intended_use,
+    )
+    return obligations, admission
+
+
+@pytest.mark.parametrize(
+    ("asset_type", "expected_product", "expected_applicable"),
+    (("stock", 60, 64), ("etf", 55, 59)),
+)
+def test_full_domain_data_gate_current_product_ready_does_not_require_future_record_artifacts(
+    asset_type, expected_product, expected_applicable,
+):
+    obligations, admission = _fully_product_admitted_full_domain(asset_type)
+    gate = reg.compile_full_domain_data_gate(obligations, admission)
+
+    assert gate["full_domain_accounted_pass"] is True
+    assert gate["full_domain_product_ready"] is True
+    assert gate["full_domain_all_obligations_ready"] is False
+    assert gate["applicable_object_count"] == expected_applicable
+    assert gate["current_product_applicable_object_count"] == expected_product
+    assert gate["product_admitted_count"] == expected_product
+    assert gate["current_product_admitted_count"] == expected_product
+    assert gate["unresolved_product_dataset_ids"] == ()
+    assert set(gate["unresolved_record_dataset_ids"]) == {
+        "L_LEDGER", "L_OUTCOME", "L_PIT_MANIFEST", "L_IMMUTABLE_BYTES",
+    }
+    assert admission["learning_admitted_count"] == 0
+
+
+def test_full_domain_product_ready_requires_object_ready_not_only_product_rights():
+    obligations, admission = _fully_product_admitted_full_domain("stock")
+    partial = next(
+        row for row in obligations
+        if row["domain"] == "STOCK" and row["dataset_id"] == "P_CASH_FLOW"
+    )
+    partial["state"] = "PARTIAL"
+    partial["reason"] = "SYNTHETIC_PARTIAL_SOURCE_TEST_ONLY"
+
+    gate = reg.compile_full_domain_data_gate(obligations, admission)
+
+    assert gate["product_admitted_count"] == 60
+    assert gate["current_product_admitted_count"] == 60
+    assert gate["current_product_ready_count"] == 59
+    assert gate["full_domain_product_ready"] is False
+    assert "P_CASH_FLOW" in gate["unresolved_product_dataset_ids"]
+    assert gate["policy"][
+        "product_admission_without_object_ready_is_partial_not_full_domain"
+    ] is True
+
+
+def test_full_domain_data_gate_all_obligations_ready_remains_a_separate_later_state():
+    obligations, admission = _fully_product_admitted_full_domain(
+        "stock", include_record=True,
+    )
+    gate = reg.compile_full_domain_data_gate(obligations, admission)
+
+    assert gate["full_domain_product_ready"] is True
+    assert gate["full_domain_all_obligations_ready"] is True
+    assert gate["unresolved_product_dataset_ids"] == ()
+    assert gate["unresolved_record_dataset_ids"] == ()
+
+
+def test_full_domain_data_gate_rejects_cross_asset_admission_scope():
+    stock_obligations, _stock_admission = _fully_product_admitted_full_domain(
+        "stock"
+    )
+    _etf_obligations, etf_admission = _fully_product_admitted_full_domain("etf")
+
+    with pytest.raises(
+        reg.TraceabilityError,
+        match="FULL_DOMAIN_DATA_ADMISSION_APPLICABILITY_MISMATCH",
+    ):
+        reg.compile_full_domain_data_gate(stock_obligations, etf_admission)
+
+
+def test_full_domain_data_gate_rejects_admission_from_other_runtime_bytes():
+    obligations, admission = _fully_product_admitted_full_domain("stock")
+    changed = deepcopy(obligations)
+    next(
+        row for row in changed if row["state"] != "NOT_APPLICABLE"
+    )["source_content_sha256"] = "f" * 64
+
+    with pytest.raises(
+        reg.TraceabilityError,
+        match="FULL_DOMAIN_DATA_ADMISSION_RUNTIME_BINDING_MISMATCH",
+    ):
+        reg.compile_full_domain_data_gate(changed, admission)
+
+
+def _closed_typed_stock_source_factor(*, source_version_known: bool = False):
     """Original DSA price identity + ten completed XSHG sessions + real MTF receipt."""
     from datetime import datetime, date, timezone
     from data_provider.daily_data_identity import (
@@ -576,6 +1085,8 @@ def _closed_typed_stock_source_factor():
         requested_start="2025-01-01", requested_end="2026-09-25",
         currency="CNY", volume_unit="share", amount_unit="CNY",
         identity_state="OBSERVED", observed_at=observed,
+        revision=("SYNTHETIC_FIXTURE_REVISION_1" if source_version_known else None),
+        vintage=(observed.isoformat() if source_version_known else None),
     )
     attach_daily_data_identity(frame, identity)
     target = dates[-1]
@@ -753,10 +1264,122 @@ def test_accepted_p_daily_and_p_5m_real_source_receipt_progress_is_scoped_not_fu
     assert data["P_5M"]["independent_source_value_admitted"] is False
     assert data["P_5M"]["strategy_upgrade_authority"] is False
     assert "UNITS" in data["P_5M"]["reason"]
+    assert data["P_DAILY"]["revision"] == "UNKNOWN"
+    assert data["P_DAILY"]["vintage"] == "UNKNOWN"
+    assert data["P_5M"]["revision"] == "UNKNOWN"
+    assert data["P_5M"]["vintage"] == "UNKNOWN"
     assert data["G_VIX"]["state"] == "UNKNOWN"
     assert data["E_NAV_IOPV"]["state"] == "NOT_APPLICABLE"
     assert factor["multi_timeframe_structure_context"]["timeframes"]["5m"]["strategy_admitted"] is False
 
+
+def _p_daily_operation_admission(factor):
+    source_trace = reg.build_runtime_trace(factor)
+    source_row = next(
+        row for row in source_trace["complete_research_universe"]["data_objects"]
+        if row["dataset_id"] == "P_DAILY"
+    )
+    operation_id = "op-current-stock-nosend-20261002-r001"
+    rights = {
+        "product_use": "ALLOWED",
+        "storage": "FORBIDDEN",
+        "training": "FORBIDDEN",
+        "redistribution": "FORBIDDEN",
+    }
+    rights_evidence = seal_source_rights_evidence({
+        "schema_version": "source-rights-evidence-v2",
+        "operation_id": operation_id,
+        "intended_use": "NO_SEND_RESEARCH",
+        "provider_identity": source_row["provider_identity"],
+        "upstream_source_owner": "synthetic-licensed-upstream",
+        "upstream_rights_state": "VERIFIED",
+        "dataset_id": "P_DAILY",
+        "consumer_scope": source_row["product_consumer"],
+        "terms_uri": "https://example.invalid/terms/current-stock",
+        "terms_sha256": "c" * 64,
+        "terms_observed_at": "2026-10-01T00:00:00+00:00",
+        "terms_scope": "SYNTHETIC_TEST_CONTRACT",
+        "product_use_clause": "Synthetic fixture explicitly allows internal no-send research.",
+        "product_use_clause_sha256": "c2a9b98537611cb0c9e9cb165ab0a4a699d84f5a2644a5e1e23740d0af55c6e1",
+        "rights": rights,
+    })
+    receipt = seal_data_object_admission_receipt({
+        "schema_version": "data-object-admission-receipt-v1",
+        "dataset_id": "P_DAILY",
+        "provider_identity": source_row["provider_identity"],
+        "provider_route": source_row["provider_route"],
+        "native_frequency": source_row["native_frequency"],
+        "source_identity_hash": source_row["source_identity_hash"],
+        "content_sha256": source_row["source_content_sha256"],
+        "observed_at": source_row["source_observed_at"],
+        "available_at": source_row["source_available_at"],
+        "completed_through": source_row["completed_through"],
+        "units": source_row["units"],
+        "currency": source_row["currency"],
+        "adjustment_basis": source_row["adjustment_basis"],
+        "revision": source_row["revision"],
+        "vintage": source_row["vintage"],
+        "rights": rights,
+        "rights_evidence": rights_evidence,
+        "historical_pit_eligible": False,
+        "consumer_scope": source_row["product_consumer"],
+    })
+    admitted = deepcopy(factor)
+    admitted.update({
+        "research_as_of": "2026-10-02T01:00:00+00:00",
+        "research_operation_id": operation_id,
+        "research_intended_use": "NO_SEND_RESEARCH",
+        "data_object_admission_receipts": {"P_DAILY": receipt},
+    })
+    return source_row, receipt, admitted
+
+
+def test_operation_rights_receipt_must_bind_the_current_registry_source_bytes():
+    factor, _ = _closed_typed_stock_source_factor(source_version_known=True)
+    source_row, receipt, admitted = _p_daily_operation_admission(factor)
+    assert len(source_row["source_identity_hash"]) == 64
+    assert len(source_row["source_content_sha256"]) == 64
+    assert source_row["revision"] == "SYNTHETIC_FIXTURE_REVISION_1"
+
+    trace = reg.build_runtime_trace(admitted)
+    admission = trace["complete_research_universe"]["data_object_admission"]
+    row = next(item for item in admission["objects"] if item["dataset_id"] == "P_DAILY")
+    assert row["product_admitted"] is True
+    assert row["runtime_source_bound"] is True
+    assert admission["product_admitted_count"] == 1
+    assert admission["learning_admitted_count"] == 0
+
+    other_snapshot = deepcopy(receipt)
+    other_snapshot["source_identity_hash"] = "d" * 64
+    other_snapshot = seal_data_object_admission_receipt(other_snapshot)
+    mismatched = deepcopy(admitted)
+    mismatched["data_object_admission_receipts"] = {"P_DAILY": other_snapshot}
+    trace = reg.build_runtime_trace(mismatched)
+    admission = trace["complete_research_universe"]["data_object_admission"]
+    row = next(item for item in admission["objects"] if item["dataset_id"] == "P_DAILY")
+    assert row["product_admitted"] is False
+    assert "RUNTIME_SOURCE_IDENTITY_MISMATCH" in row["reasons"]
+    assert admission["product_admitted_count"] == 0
+
+
+def test_operation_receipt_cannot_invent_unknown_registry_revision_or_vintage():
+    factor, _ = _closed_typed_stock_source_factor()
+    source_row, receipt, admitted = _p_daily_operation_admission(factor)
+    assert source_row["revision"] == "UNKNOWN"
+    assert source_row["vintage"] == "UNKNOWN"
+    forged = deepcopy(receipt)
+    forged["revision"] = "INVENTED_PROVIDER_REVISION"
+    forged["vintage"] = source_row["source_observed_at"]
+    forged = seal_data_object_admission_receipt(forged)
+    admitted["data_object_admission_receipts"] = {"P_DAILY": forged}
+
+    trace = reg.build_runtime_trace(admitted)
+    admission = trace["complete_research_universe"]["data_object_admission"]
+    row = next(item for item in admission["objects"] if item["dataset_id"] == "P_DAILY")
+    assert row["product_admitted"] is False
+    assert "RUNTIME_SOURCE_REVISION_MISMATCH" in row["reasons"]
+    assert "RUNTIME_SOURCE_VINTAGE_MISMATCH" in row["reasons"]
+    assert admission["product_admitted_count"] == 0
 
 def test_accepted_source_p_daily_p_5m_fail_closed_without_invocation_or_with_wrong_clock():
     """Counterfeit state flags must not be treated as original machine-graph data facts."""
@@ -923,9 +1546,9 @@ def test_current_intraday_context_keeps_unconfirmed_structure_and_trigger_unadmi
         assert cells[(timeframe, "MOMENTUM")]["state"] == "PARTIAL"
         assert cells[(timeframe, "MTF")]["state"] == "PARTIAL"
         assert cells[(timeframe, "COST")]["state"] == "NOT_ADMITTED"
-        assert cells[(timeframe, "STRUCTURE")]["state"] == (
-            "MISSING" if timeframe in {"60m", "30m"} else "NOT_ADMITTED"
-        )
+        # Four descriptive pivot owners exist; absent confirmation is MISSING,
+        # not READY or a strategy trigger.
+        assert cells[(timeframe, "STRUCTURE")]["state"] == "MISSING"
         assert cells[(timeframe, "PATTERN")]["state"] == "NOT_ADMITTED"
         assert cells[(timeframe, "REGIME")]["state"] == "NOT_APPLICABLE"
     assert factor["strategy_eligibility"]["required_evidence"]["thirty_minute_trigger"] == "UNKNOWN"
@@ -1053,8 +1676,13 @@ def test_method_window_policy_keeps_asset_only_valuation_as_legal_nontrigger():
     profiles = reg.validate_method_window_profiles()
     valuation = next(profile for profile in profiles if profile.method_id == "VALUATION")
     assert valuation.target_timeframes == ("asset",)
-    assert valuation.current_execution_timeframes == ()
-    assert valuation.implementation_state == "DEFERRED_WITH_OWNER_AND_REENTRY"
+    assert valuation.current_execution_timeframes == ("asset",)
+    assert valuation.implementation_state == "EXISTING_REUSED"
+    assert valuation.consumer_scope == "ASSET_LAYER"
+    assert valuation.family_targets == ()
+    assert "VALUATION" in {
+        row["method_id"] for row in reg.compile_timeframe_family_matrix(native_summary())["non_matrix_methods"]
+    }
 
 
 def test_score_trace_addition_preserves_independent_main_preimage_when_receipt_absent():
@@ -1719,6 +2347,166 @@ def test_invalid_mtf_parent_receipt_blocks_dependent_product_and_learning():
             "value": None,
             "state": "MISSING_OR_UNADMITTED",
         }
+
+
+def test_typed_daily_identity_survives_all_price_owner_views_without_row_label():
+    from datetime import datetime, timezone
+    from data_provider.daily_data_identity import (
+        attach_daily_data_identity,
+        build_daily_data_identity,
+    )
+
+    frame = bars(320).drop(columns=["data_source"]).copy()
+    frame["amount"] = frame["close"] * frame["volume"]
+    target = frame["date"].iloc[-1]
+    observed = datetime(2026, 10, 25, tzinfo=timezone.utc)
+    identity = build_daily_data_identity(
+        frame,
+        provider_identity="BaostockFetcher",
+        provider_route="baostock.query_history_k_data_plus",
+        actual_response_branch="fixture:typed-no-row-source;adjustflag=2",
+        requested_adjustment_basis="qfq",
+        observed_adjustment_basis="qfq",
+        basis_evidence="independent_typed_fixture",
+        requested_start=str(frame["date"].iloc[0]),
+        requested_end=str(target),
+        currency="CNY",
+        volume_unit="share",
+        amount_unit="CNY",
+        identity_state="OBSERVED",
+        observed_at=observed,
+        instrument="600519",
+        revision="typed-fixture-r1",
+        vintage=observed.isoformat(),
+    )
+    attach_daily_data_identity(frame, identity)
+
+    factor = native_summary(frame=frame, target=target)
+    supply = factor["supply_demand_volume_price"]["completed_bar_context"]
+    cost = factor["cost_structure_evidence"]["context"]
+    structure = factor["price_structure_evidence"]["context"]
+    momentum = factor["volatility_momentum_evidence"]["context"]
+    pattern = factor["pattern_trigger_evidence"]["context"]
+
+    assert supply["status"] == "READY"
+    assert supply["data_quality"]["source_alignment"] == "SINGLE_SOURCE"
+    assert cost["status"] == "READY"
+    assert cost["bar_reference_cost"]["window_60"][
+        "source_alignment"
+    ] == "SINGLE_SOURCE"
+    assert structure["status"] == "READY"
+    assert structure["source_alignment"]["status"] == "SINGLE_SOURCE"
+    assert momentum["status"] == "READY"
+    assert momentum["source_alignment"]["status"] == "SINGLE_SOURCE"
+    assert pattern["status"] == "READY"
+    assert pattern["history_source_alignment"]["status"] == "SINGLE_SOURCE"
+    assert pattern["candlestick"]["status"] == "READY"
+    assert pattern["candlestick"]["reason"] in {
+        "NO_MATERIAL_CANDLE_EVENT",
+        "MATERIAL_CANDLE_EVENT_OBSERVED",
+    }
+
+    tampered = frame.copy()
+    tampered.loc[tampered.index[-1], "volume"] += 1.0
+    tampered_factor = native_summary(frame=tampered, target=target)
+    assert tampered_factor["price_structure_evidence"]["context"][
+        "source_alignment"
+    ]["status"] == "UNPROVEN"
+
+
+def test_ready_partial_technical_methods_prefer_bound_timeframe_carrier():
+    factor = native_summary_with_mtf()
+    trace = reg.build_runtime_trace(factor)
+    admitted = [
+        row
+        for cell in trace["timeframe_family_matrix"]["cells"]
+        if cell["runtime_binding"]["runtime_source_bound"] is True
+        for row in cell["method_coverage"]
+        if row["state"] in {"READY", "PARTIAL"}
+    ]
+
+    assert admitted
+    assert all(
+        row["runtime_source_binding"]["runtime_source_bound"] is True
+        for row in admitted
+    )
+    assert all(
+        row["runtime_source_binding"]["binding_scope"]
+        == "TIMEFRAME_CARRIER"
+        for row in admitted
+    )
+
+
+def test_etf_daily_ma_is_independent_from_missing_peer_rs_only():
+    factor = native_summary_with_mtf()
+    factor["asset_type"] = "etf"
+    factor["trend_relative_strength"]["relative_strength"] = {
+        "status": "MISSING",
+        "reason": "ETF_PEER_RS_INPUT_MISSING",
+    }
+    mtf = factor["multi_timeframe_structure_context"]
+    factor["method_execution_receipt_policy"] = "REQUIRED"
+    factor["method_execution_receipts"] = {
+        "TREND_RS": reg.build_method_execution_receipt(
+            "TREND_RS",
+            output=factor["trend_relative_strength"],
+            asset_route="ETF",
+            stock_code=mtf["stock_code"],
+            market="cn",
+            target_date=mtf["target_date"],
+            timeframe="daily",
+            input_identity=None,
+        ),
+    }
+
+    trace = reg.build_runtime_trace(factor)
+    cell = next(
+        row for row in trace["timeframe_family_matrix"]["cells"]
+        if row["timeframe"] == "daily" and row["family"] == "TREND_RS"
+    )
+    methods = {row["method_id"]: row for row in cell["method_coverage"]}
+    assert methods["RELATIVE_STRENGTH"]["state"] == "UNKNOWN"
+    assert methods["MA_LEVEL_ALIGNMENT_DAILY"]["state"] == "READY"
+    assert methods["MA_LEVEL_ALIGNMENT_DAILY"]["reason"] == (
+        "DAILY_MA_SOURCE_BOUND_RS_BENCHMARK_INDEPENDENT"
+    )
+    assert methods["MA_LEVEL_ALIGNMENT_DAILY"]["runtime_source_binding"][
+        "runtime_source_bound"
+    ] is True
+
+    forged = deepcopy(factor)
+    receipt = deepcopy(forged["method_execution_receipts"]["TREND_RS"])
+    receipt["output_hash"] = "0" * 64
+    forged["method_execution_receipts"]["TREND_RS"] = _rehash_receipt(
+        receipt
+    )
+    forged_trace = reg.build_runtime_trace(forged)
+    forged_cell = next(
+        row for row in forged_trace["timeframe_family_matrix"]["cells"]
+        if row["timeframe"] == "daily" and row["family"] == "TREND_RS"
+    )
+    forged_methods = {
+        row["method_id"]: row for row in forged_cell["method_coverage"]
+    }
+    assert forged_methods["MA_LEVEL_ALIGNMENT_DAILY"]["state"] not in {
+        "READY", "PARTIAL",
+    }
+
+    unbound = deepcopy(factor)
+    unbound["multi_timeframe_structure_context"]["timeframes"]["daily"][
+        "source_alignment"
+    ] = {"status": "UNKNOWN", "sources": []}
+    unbound_trace = reg.build_runtime_trace(unbound)
+    unbound_cell = next(
+        row for row in unbound_trace["timeframe_family_matrix"]["cells"]
+        if row["timeframe"] == "daily" and row["family"] == "TREND_RS"
+    )
+    unbound_methods = {
+        row["method_id"]: row for row in unbound_cell["method_coverage"]
+    }
+    assert unbound_methods["MA_LEVEL_ALIGNMENT_DAILY"]["state"] not in {
+        "READY", "PARTIAL",
+    }
 
 
 def test_noncanonical_legacy_call_does_not_trigger_new_product_or_learning():

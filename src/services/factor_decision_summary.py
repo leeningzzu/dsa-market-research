@@ -8,18 +8,23 @@ rate, or convert a heuristic score into a probability.
 
 from __future__ import annotations
 
+from copy import deepcopy
+
 import math
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from src.services.evidence_traceability_registry import (
     EVIDENCE_BINDINGS,
     build_method_execution_receipt,
     build_runtime_trace,
+    _compile_accepted_data_object_scope,
+    compile_atomic_subfield_obligations,
     build_strategy_eligibility,
     describe_macd_state,
     digest,
     json_wire_equal,
     method_observation,
+    compile_method_window_policy_view,
 )
 from src.services.research_state_projection import (
     STRATEGY_ELIGIBILITY_SCHEMA_VERSION,
@@ -27,6 +32,12 @@ from src.services.research_state_projection import (
     validate_canonical_decision_semantics,
 )
 from src.services.v2_5_evidence_coverage import compile_product_coverage
+from src.services.business_valuation_service import (
+    validate_business_valuation,
+    validate_index_sector_valuation,
+)
+from src.services.data_object_admission import compile_b1_runtime_admission_receipts
+from src.services.fundamental_quality_service import validate_fundamental_quality
 
 
 _STRONG_TRENDS = {"强势多头", "多头排列"}
@@ -45,6 +56,8 @@ _PRICE_STRUCTURE_VERSION = "price-structure-v1"
 _VOLATILITY_MOMENTUM_VERSION = "volatility-momentum-v2"
 _PATTERN_TRIGGER_VERSION = "pattern-trigger-v1"
 _CANONICAL_BINDING_VERSION = "canonical-decision-binding-v1"
+_GATE4_DECISION_PACKAGE_VERSION = "gate4-decision-package-v1"
+_GATE4_VETO_LANES = ("DATA", "RISK", "LIQUIDITY", "EXECUTION")
 
 
 def _enum_value(value: Any) -> str:
@@ -90,7 +103,96 @@ def _format_price(value: Optional[float]) -> str:
     return f"{value:.2f}" if value is not None and value > 0 else ""
 
 
-def _valuation_summary(fundamental_context: Any) -> str:
+def _validated_asset_material(
+    fundamental_context: Any,
+    *,
+    asset_type: str,
+    expected_asset_id: Optional[str] = None,
+) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    """Validate existing Quality/Valuation receipts before Product projection.
+
+    Pipeline owns both deterministic compilers.  This consumer only rejects
+    stale or forged READY material and carries the bounded Product facts into
+    the existing Factor/Brief/Email chain; it creates no score or action vote.
+    """
+    context = _mapping(fundamental_context)
+    quality: Optional[Dict[str, Any]] = None
+    valuation: Optional[Dict[str, Any]] = None
+
+    raw_quality = context.get("fundamental_quality")
+    if raw_quality is not None:
+        if not isinstance(raw_quality, dict):
+            raise ValueError("fundamental quality material has invalid type")
+        quality = validate_fundamental_quality(raw_quality)
+        if quality.get("status") == "READY" and quality.get("asset_type") != "stock":
+            raise ValueError("fundamental quality material has invalid asset type")
+        if quality.get("status") == "READY" and asset_type != "stock":
+            raise ValueError("fundamental quality material is not applicable to ETF")
+        if (
+            quality.get("status") == "READY"
+            and expected_asset_id
+            and str(quality.get("asset_id") or "").split(".")[-1]
+            != str(expected_asset_id).split(".")[-1]
+        ):
+            raise ValueError("fundamental quality material has invalid asset identity")
+
+    raw_valuation = context.get("business_valuation")
+    if raw_valuation is not None:
+        if not isinstance(raw_valuation, dict):
+            raise ValueError("business valuation material has invalid type")
+        valuation = validate_business_valuation(raw_valuation)
+        if valuation.get("status") == "READY" and valuation.get("asset_type") != asset_type:
+            raise ValueError("business valuation material has invalid asset type")
+        if (
+            valuation.get("status") == "READY"
+            and expected_asset_id
+            and str(valuation.get("asset_id") or "").split(".")[-1]
+            != str(expected_asset_id).split(".")[-1]
+        ):
+            raise ValueError("business valuation material has invalid asset identity")
+    return quality, valuation
+
+
+def _quality_summary(
+    quality: Optional[Dict[str, Any]],
+    *,
+    asset_type: str,
+) -> str:
+    if asset_type == "etf":
+        return "质量成长：ETF不适用单公司财务质量口径。"
+    if isinstance(quality, dict):
+        text = str(quality.get("summary_zh") or "").strip()
+        if text:
+            return text
+    return "质量成长：数据不足，暂不判断。"
+
+
+def _valuation_summary(
+    fundamental_context: Any,
+    *,
+    asset_type: str = "stock",
+    business_valuation: Optional[Dict[str, Any]] = None,
+    index_sector_valuations: Optional[List[Dict[str, Any]]] = None,
+) -> str:
+    business_text = ""
+    if isinstance(business_valuation, dict):
+        business_text = str(business_valuation.get("summary_zh") or "").strip()
+    shared_texts = []
+    for row in index_sector_valuations or ():
+        if not isinstance(row, dict) or row.get("status") != "READY":
+            continue
+        if asset_type == "etf" and row.get("scope") == "etf_underlying":
+            # The ETF business receipt already binds this same document.
+            continue
+        text = str(row.get("summary_zh") or "").strip()
+        if text and text not in shared_texts:
+            shared_texts.append(text)
+    if business_text:
+        return "；".join((business_text, *shared_texts))
+    if shared_texts:
+        return "；".join(shared_texts)
+    if asset_type == "etf":
+        return "交易价/NAV与底层估值：数据不足，暂不判断高低。"
     if not isinstance(fundamental_context, dict):
         return "估值：数据不足，暂不判断高低。"
 
@@ -124,7 +226,6 @@ def _valuation_summary(fundamental_context: Any) -> str:
         f"估值：已取得基础估值数据{suffix}；"
         "缺少可靠历史分位和同行比较，暂不判断偏低、合理或偏高。"
     )
-
 
 def _cost_structure_summary(chip_data: Any) -> str:
     if chip_data is None:
@@ -620,6 +721,11 @@ def _build_market_sector_regime_evidence(
         )
         if index_source:
             source_observations["M_INDEX_CURRENT"] = index_source
+        minute_source = _mapping(
+            getattr(daily_market_context, "cn_index_completed_5m_source", None)
+        )
+        if minute_source:
+            source_observations["M_INDEX_BARS"] = minute_source
 
     hard_veto = market_state == "RISK_OFF" and market_evidence_state == "READY"
     result = {
@@ -779,6 +885,287 @@ def _supply_demand_volume_price_summary(evidence: Dict[str, Any]) -> str:
     return "供需/量价：" + "；".join(parts) + "。"
 
 
+def _gate4_method_rollup(trace: Mapping[str, Any]) -> Dict[str, str]:
+    matrix = _mapping(trace.get("timeframe_family_matrix"))
+    observations: Dict[str, List[str]] = {}
+    for cell in matrix.get("cells") or []:
+        if not isinstance(cell, Mapping):
+            continue
+        for row in cell.get("method_coverage") or []:
+            if isinstance(row, Mapping):
+                observations.setdefault(str(row.get("method_id") or ""), []).append(
+                    str(row.get("state") or "UNKNOWN")
+                )
+    for row in matrix.get("non_matrix_methods") or []:
+        if isinstance(row, Mapping):
+            observations.setdefault(str(row.get("method_id") or ""), []).append(
+                str(row.get("state") or "UNKNOWN")
+            )
+
+    def roll(states: List[str]) -> str:
+        values = [str(item or "UNKNOWN") for item in states]
+        if not values:
+            return "UNKNOWN"
+        if all(item == "READY" for item in values):
+            return "READY"
+        if any(item in {"READY", "PARTIAL"} for item in values):
+            return "PARTIAL"
+        if all(item == "NOT_APPLICABLE" for item in values):
+            return "NOT_APPLICABLE"
+        if any(item == "MISSING" for item in values):
+            return "MISSING"
+        if any(item == "UNKNOWN" for item in values):
+            return "UNKNOWN"
+        return "NOT_ADMITTED"
+
+    return {
+        method_id: roll(states)
+        for method_id, states in observations.items()
+        if method_id
+    }
+
+
+def _compile_gate4_correlation_dedup(trace: Mapping[str, Any]) -> Dict[str, Any]:
+    method_states = _gate4_method_rollup(trace)
+    groups: Dict[str, List[str]] = {}
+    for row in compile_method_window_policy_view()["methods"]:
+        groups.setdefault(str(row["correlation_group"]), []).append(
+            str(row["method_id"])
+        )
+    group_rows = []
+    for group_id, method_ids in sorted(groups.items()):
+        admitted = [
+            method_id
+            for method_id in method_ids
+            if method_states.get(method_id) in {"READY", "PARTIAL"}
+        ]
+        representative = admitted[0] if admitted else None
+        group_rows.append({
+            "group_id": group_id,
+            "registered_method_ids": tuple(sorted(method_ids)),
+            "admitted_method_ids": tuple(sorted(admitted)),
+            "representative_method_id": representative,
+            "excluded_correlated_method_ids": tuple(
+                method_id
+                for method_id in sorted(admitted)
+                if method_id != representative
+            ),
+            "max_independent_contribution": 1,
+        })
+    document = {
+        "schema_version": "gate4-correlation-dedup-v1",
+        "status": "VERIFIED",
+        "group_count": len(group_rows),
+        "groups": group_rows,
+        "policy": {
+            "one_representative_per_correlation_group": True,
+            "missing_unknown_is_zero_vote": True,
+            "hard_veto_is_unweighted": True,
+            "no_numeric_probability_or_win_rate": True,
+        },
+    }
+    document["receipt_hash"] = digest(document)
+    return document
+
+
+def _gate4_object_domain_counts(
+    trace: Mapping[str, Any],
+) -> Dict[str, Dict[str, int]]:
+    universe = _mapping(trace.get("complete_research_universe"))
+    result: Dict[str, Dict[str, int]] = {}
+    for row in universe.get("data_objects") or []:
+        if not isinstance(row, Mapping) or row.get("state") == "NOT_APPLICABLE":
+            continue
+        domain = str(row.get("domain") or "UNKNOWN")
+        state = str(row.get("state") or "UNKNOWN")
+        bucket = result.setdefault(domain, {})
+        bucket[state] = bucket.get(state, 0) + 1
+    return result
+
+
+def _gate4_runtime_lane_context(value: Any) -> Dict[str, Any]:
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _validate_gate4_decision_package(value: Any) -> Dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ValueError("Gate4 decision package is invalid")
+    result = dict(value)
+    package_hash = result.pop("package_hash", None)
+    if (
+        result.get("schema_version") != _GATE4_DECISION_PACKAGE_VERSION
+        or result.get("state") not in {"READY", "VETOED", "UNKNOWN"}
+        or type(result.get("canonical_action_authority")) is not bool
+        or type(result.get("independent_action_authority")) is not bool
+        or type(result.get("score_or_probability_authority")) is not bool
+        or set(result.get("vetoes") or {}) != set(_GATE4_VETO_LANES)
+        or digest(result) != package_hash
+    ):
+        raise ValueError("Gate4 decision package hash or schema is invalid")
+    correlation = result.get("correlation_dedup")
+    if not isinstance(correlation, Mapping):
+        raise ValueError("Gate4 correlation de-dup receipt is invalid")
+    correlation_body = dict(correlation)
+    correlation_hash = correlation_body.pop("receipt_hash", None)
+    if (
+        correlation_body.get("status") != "VERIFIED"
+        or digest(correlation_body) != correlation_hash
+    ):
+        raise ValueError("Gate4 correlation de-dup receipt hash is invalid")
+    for lane in _GATE4_VETO_LANES:
+        row = result["vetoes"].get(lane)
+        if not isinstance(row, Mapping) or row.get("state") not in {"PASS", "VETO"}:
+            raise ValueError("Gate4 veto lane is invalid: " + lane)
+    result["package_hash"] = package_hash
+    return result
+
+
+def _compile_gate4_decision_package(
+    *,
+    trace: Mapping[str, Any],
+    asset_type: str,
+    base_canonical: Mapping[str, Any],
+    fundamental_quality: Optional[Mapping[str, Any]],
+    business_valuation: Optional[Mapping[str, Any]],
+    runtime_context: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Compile de-duplication and four independent fail-closed veto lanes."""
+    method_states = _gate4_method_rollup(trace)
+    domain_counts = _gate4_object_domain_counts(trace)
+    correlation = _compile_gate4_correlation_dedup(trace)
+    runtime = _gate4_runtime_lane_context(runtime_context)
+
+    data_reasons: List[str] = []
+    for domain in ("GLOBAL", "CN_MARKET", "SECTOR"):
+        counts = domain_counts.get(domain, {})
+        if not (counts.get("READY", 0) or counts.get("PARTIAL", 0)):
+            data_reasons.append(f"{domain}_FACTS_NOT_ADMITTED")
+    if asset_type == "stock":
+        if (
+            not isinstance(fundamental_quality, Mapping)
+            or fundamental_quality.get("status") != "READY"
+        ):
+            data_reasons.append("QUALITY_FACTS_NOT_ADMITTED")
+        if (
+            not isinstance(business_valuation, Mapping)
+            or business_valuation.get("status") != "READY"
+        ):
+            data_reasons.append("VALUATION_FACTS_NOT_ADMITTED")
+    else:
+        if method_states.get("RELATIVE_STRENGTH") not in {"READY", "PARTIAL"}:
+            data_reasons.append("ETF_PEER_RS_NOT_ADMITTED")
+        if (
+            not isinstance(business_valuation, Mapping)
+            or business_valuation.get("status") != "READY"
+        ):
+            data_reasons.append("ETF_VALUATION_NOT_ADMITTED")
+        etf_specific = _gate4_runtime_lane_context(runtime.get("etf_specific"))
+        if etf_specific.get("status") != "READY":
+            data_reasons.append("ETF_SPECIFIC_FACTS_NOT_ADMITTED")
+    data_lane = {
+        "state": "VETO" if data_reasons else "PASS",
+        "reason_codes": data_reasons or ["REQUIRED_DATA_FACTS_ADMITTED"],
+        "domain_state_counts": domain_counts,
+    }
+
+    risk_reasons = [str(item) for item in base_canonical.get("reason_codes") or []]
+    if base_canonical.get("hard_veto") is True:
+        risk_state = "VETO"
+    elif base_canonical.get("evidence_state") == "PROVEN":
+        risk_state = "PASS"
+        risk_reasons = ["DETERMINISTIC_RISK_CHECK_PASSED"]
+    else:
+        risk_state = "VETO"
+        risk_reasons = ["RISK_EVIDENCE_INCOMPLETE", *risk_reasons]
+    risk_lane = {
+        "state": risk_state,
+        "reason_codes": list(dict.fromkeys(risk_reasons)),
+    }
+
+    liquidity = _gate4_runtime_lane_context(runtime.get("liquidity"))
+    positive_liquidity = all(
+        (_safe_float(liquidity.get(key)) or 0.0) > 0
+        for key in ("price", "volume", "amount")
+    )
+    liquidity_source = str(liquidity.get("source") or "").strip()
+    liquidity_fresh = liquidity.get("stale") is not True
+    liquidity_pass = bool(positive_liquidity and liquidity_source and liquidity_fresh)
+    liquidity_lane = {
+        "state": "PASS" if liquidity_pass else "VETO",
+        "reason_codes": (
+            ["OBSERVED_LIQUIDITY_CHECK_PASSED"]
+            if liquidity_pass
+            else ["LIQUIDITY_PRICE_VOLUME_AMOUNT_OR_SOURCE_INCOMPLETE"]
+        ),
+        "observation": {
+            "source": liquidity_source or None,
+            "price": _safe_float(liquidity.get("price")),
+            "volume": _safe_float(liquidity.get("volume")),
+            "amount": _safe_float(liquidity.get("amount")),
+            "turnover_rate": _safe_float(liquidity.get("turnover_rate")),
+            "stale": liquidity.get("stale"),
+        },
+    }
+
+    execution = _gate4_runtime_lane_context(runtime.get("execution"))
+    execution_ready = bool(
+        execution.get("status") == "READY"
+        and execution.get("completed_bar_only") is True
+        and execution.get("source_alignment_state") == "SINGLE_SOURCE"
+        and (_safe_float(execution.get("observations")) or 0.0) > 0
+        and liquidity_lane["state"] == "PASS"
+    )
+    execution_lane = {
+        "state": "PASS" if execution_ready else "VETO",
+        "reason_codes": (
+            ["COMPLETED_SOURCE_BOUND_EXECUTION_WINDOW_PASSED"]
+            if execution_ready
+            else ["EXECUTION_WINDOW_OR_SOURCE_IDENTITY_INCOMPLETE"]
+        ),
+        "observation": {
+            "status": execution.get("status"),
+            "completed_bar_only": execution.get("completed_bar_only"),
+            "source_alignment_state": execution.get("source_alignment_state"),
+            "observations": execution.get("observations"),
+            "completed_through": execution.get("completed_through"),
+        },
+    }
+
+    vetoes = {
+        "DATA": data_lane,
+        "RISK": risk_lane,
+        "LIQUIDITY": liquidity_lane,
+        "EXECUTION": execution_lane,
+    }
+    all_evaluated = all(
+        vetoes[lane]["state"] in {"PASS", "VETO"}
+        for lane in _GATE4_VETO_LANES
+    )
+    vetoed = [
+        lane for lane in _GATE4_VETO_LANES
+        if vetoes[lane]["state"] == "VETO"
+    ]
+    state = "VETOED" if vetoed else "READY" if all_evaluated else "UNKNOWN"
+    document = {
+        "schema_version": _GATE4_DECISION_PACKAGE_VERSION,
+        "state": state,
+        "asset_type": asset_type,
+        "correlation_dedup": correlation,
+        "vetoes": vetoes,
+        "vetoed_lanes": vetoed,
+        "all_veto_lanes_evaluated": all_evaluated,
+        "canonical_action_authority": bool(
+            all_evaluated and correlation.get("status") == "VERIFIED"
+        ),
+        "independent_action_authority": False,
+        "score_or_probability_authority": False,
+        "storage_admitted": False,
+        "learning_admitted": False,
+    }
+    document["package_hash"] = digest(document)
+    return document
+
+
 def _canonical_decision(
     trend_result: Any,
     market_sector_regime: Optional[Dict[str, Any]] = None,
@@ -787,6 +1174,7 @@ def _canonical_decision(
     regime_admission_reason: Optional[str] = None,
     rejected_risk_methods: Optional[Dict[str, str]] = None,
     raw_score_admitted: bool = True,
+    gate4_package: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Produce the conservative WAIT/PASS decision from deterministic inputs."""
     reason_codes: List[str] = []
@@ -856,6 +1244,18 @@ def _canonical_decision(
             for code in (market_sector_regime.get("veto_codes") or [])
             if str(code).strip()
         )
+
+    if gate4_package is not None:
+        gate4_package = _validate_gate4_decision_package(gate4_package)
+        if (
+            gate4_package.get("canonical_action_authority") is not True
+            or gate4_package.get("state") not in {"READY", "VETOED"}
+        ):
+            reason_codes.append("GATE4_REQUIRED_EVIDENCE_INCOMPLETE")
+        for lane in gate4_package.get("vetoed_lanes") or []:
+            lane_name = str(lane or "").strip().upper()
+            if lane_name in _GATE4_VETO_LANES:
+                hard_veto_codes.append("GATE4_" + lane_name + "_VETO")
 
     # A separately proven veto remains sufficient to avoid new risk even when
     # another required input is missing.  Preserve both the veto and the gap.
@@ -943,10 +1343,62 @@ def _bound_risk_material(summary: Dict[str, Any], brief: Any = None) -> Dict[str
             raise ValueError("risk material list is not a valid source projection")
         return list(value)
 
+    def mapping_or_none(value: Any, label: str) -> Any:
+        if value is None:
+            return None
+        if not isinstance(value, dict):
+            raise ValueError(f"{label} has invalid type")
+        if "Gate4" in label:
+            return _validate_gate4_decision_package(value)
+        return value
+
     return {
         "factor_risk_notes": risk_list(summary.get("risk_notes")),
         "brief_risk_notes": risk_list(
             candidate.get("risk_notes") if isinstance(candidate, dict) else None
+        ),
+        "factor_gate4_decision_package": mapping_or_none(
+            summary.get("gate4_decision_package"),
+            "Gate4 decision package",
+        ),
+        "brief_gate4_decision_package": mapping_or_none(
+            candidate.get("gate4_decision_package")
+            if isinstance(candidate, dict)
+            else None,
+            "investor brief Gate4 decision package",
+        ),
+    }
+
+
+def _bound_asset_material(summary: Dict[str, Any], brief: Any = None) -> Dict[str, Any]:
+    """Bind visible Quality/Valuation atoms without creating action authority."""
+    candidate = summary.get("investor_brief") if brief is None else brief
+    if candidate is not None and not isinstance(candidate, dict):
+        raise ValueError("investor brief asset material has invalid type")
+
+    def mapping_or_none(value: Any, label: str) -> Any:
+        if value is None:
+            return None
+        if not isinstance(value, dict):
+            raise ValueError(f"{label} has invalid type")
+        return value
+
+    return {
+        "factor_quality_growth": summary.get("quality_growth"),
+        "factor_valuation_text": summary.get("valuation"),
+        "factor_quality_receipt": mapping_or_none(
+            summary.get("fundamental_quality"), "fundamental quality material",
+        ),
+        "factor_business_valuation_receipt": mapping_or_none(
+            summary.get("business_valuation"), "business valuation material",
+        ),
+        "brief_quality": mapping_or_none(
+            candidate.get("quality") if isinstance(candidate, dict) else None,
+            "investor brief quality material",
+        ),
+        "brief_valuation": mapping_or_none(
+            candidate.get("valuation") if isinstance(candidate, dict) else None,
+            "investor brief valuation material",
         ),
     }
 
@@ -983,6 +1435,8 @@ def canonical_factor_binding(summary: Any) -> Dict[str, Any]:
         # snapshots without this digest cannot pass a *current* Product gate.
         "risk_material_binding_version": "factor-brief-risk-atoms-v1",
         "risk_material_sha256": digest(_bound_risk_material(summary)),
+        "asset_material_binding_version": "factor-brief-quality-valuation-v1",
+        "asset_material_sha256": digest(_bound_asset_material(summary)),
     }
 
 
@@ -1012,6 +1466,8 @@ def validate_investor_brief_binding(
         raise ValueError("investor brief canonical binding is missing or stale")
     if digest(_bound_risk_material(summary, candidate)) != expected["risk_material_sha256"]:
         raise ValueError("investor brief risk material identity is stale")
+    if digest(_bound_asset_material(summary, candidate)) != expected["asset_material_sha256"]:
+        raise ValueError("investor brief quality/valuation material identity is stale")
     return candidate
 
 
@@ -1516,6 +1972,20 @@ def _build_asset_research_brief_v1(trend_result, summary, *, asset_type: str = "
         sections.get("valuation"),
         ("\u4f30\u503c\uff1a", "\u4f30\u503c:", "底层估值：", "底层估值:"),
     )
+    quality_growth = _asset_brief_v1_text(
+        sections.get("quality_growth"),
+        ("质量成长：", "质量成长:"),
+    )
+    quality_document = _mapping(summary.get("fundamental_quality"))
+    valuation_document = _mapping(summary.get("business_valuation"))
+    index_sector_valuations = tuple(
+        dict(row)
+        for row in summary.get("index_sector_valuations") or ()
+        if isinstance(row, Mapping)
+    )
+    underlying_valuation_document = _mapping(
+        valuation_document.get("underlying_valuation")
+    )
     cost = _asset_brief_v1_text(
         sections.get("cost_structure"),
         ("\u6210\u672c/\u7b79\u7801\uff1a", "\u6210\u672c/\u7b79\u7801:"),
@@ -1529,6 +1999,15 @@ def _build_asset_research_brief_v1(trend_result, summary, *, asset_type: str = "
     valuation_displayable = (
         _asset_brief_v1_usable(valuation)
         or "已取得基础估值数据" in str(valuation or "")
+    )
+    quality_displayable = (
+        asset_type == "stock"
+        and str(quality_document.get("status") or "").upper() == "READY"
+        and _asset_brief_v1_usable(quality_growth)
+    )
+    structured_valuation_ready = (
+        str(valuation_document.get("status") or "").upper() == "READY"
+        and valuation_document.get("product_admitted") is True
     )
 
     material_events = _material_event_sentences(summary)
@@ -1732,11 +2211,37 @@ def _build_asset_research_brief_v1(trend_result, summary, *, asset_type: str = "
         "trigger": trigger,
         "invalidation": invalidation,
         "risk_notes": risks,
+        "quality": (
+            {
+                "status": "READY" if quality_displayable else str(
+                    quality_document.get("status") or "MISSING"
+                ).upper(),
+                "label": "质量成长",
+                "summary": quality_growth if quality_displayable else "",
+                "uncertainty": str(quality_document.get("uncertainty_zh") or "").strip(),
+                "receipt_hash": quality_document.get("receipt_hash"),
+            }
+            if asset_type == "stock"
+            else {
+                "status": "NOT_APPLICABLE",
+                "label": "质量成长",
+                "summary": "",
+                "uncertainty": "ETF不适用单公司财务质量口径。",
+                "receipt_hash": None,
+            }
+        ),
         "valuation": {
-            "status": "PARTIAL_CURRENT" if valuation_displayable else "MISSING",
+            "status": (
+                "READY"
+                if structured_valuation_ready
+                else str(valuation_document.get("status") or "").upper()
+                if valuation_document
+                else "PARTIAL_CURRENT" if valuation_displayable else "MISSING"
+            ),
             "label": "底层估值" if asset_type == "etf" else "估值",
-            "summary": valuation if valuation_displayable else "",
-            "uncertainty": (
+            "summary": valuation if (valuation_displayable or valuation_document) else "",
+            "uncertainty": str(valuation_document.get("uncertainty_zh") or "").strip()
+            or (
                 ""
                 if valuation_displayable
                 else (
@@ -1745,16 +2250,55 @@ def _build_asset_research_brief_v1(trend_result, summary, *, asset_type: str = "
                     else "尚未绑定可靠合理价格区间、历史分位与同行比较。"
                 )
             ),
+            "route_id": valuation_document.get("route_id"),
+            "methods": valuation_document.get("methods") or (),
+            "fair_value": valuation_document.get("fair_value"),
+            "price_position": valuation_document.get("price_position"),
+            "receipt_hash": valuation_document.get("receipt_hash"),
         },
         "asset_specific": (
             {
-                "underlying_valuation": {"status": "MISSING"},
-                "premium_discount": {"status": "MISSING"},
+                "underlying_valuation": {
+                    "status": str(
+                        underlying_valuation_document.get("status") or "MISSING"
+                    ).upper(),
+                    "summary": str(
+                        underlying_valuation_document.get("summary_zh") or ""
+                    ).strip(),
+                    "scope": underlying_valuation_document.get("scope"),
+                    "asset_id": underlying_valuation_document.get("asset_id"),
+                    "receipt_hash": underlying_valuation_document.get("receipt_hash"),
+                },
+                "premium_discount": {
+                    "status": (
+                        "READY" if structured_valuation_ready else "MISSING"
+                    ),
+                    "summary": (
+                        str(
+                            valuation_document.get("primary_summary_zh")
+                            or valuation_document.get("summary_zh")
+                            or ""
+                        ).strip()
+                        if structured_valuation_ready else ""
+                    ),
+                    "methods": valuation_document.get("methods") or (),
+                    "fair_value": valuation_document.get("fair_value"),
+                    "price_position": valuation_document.get("price_position"),
+                    "receipt_hash": valuation_document.get("receipt_hash"),
+                },
                 "liquidity_spread": {"status": "MISSING"},
                 "tracking_quality": {"status": "MISSING"},
             }
             if asset_type == "etf"
-            else {}
+            else {
+                "shared_index_sector_valuation": tuple({
+                    "scope": row.get("scope"),
+                    "asset_id": row.get("asset_id"),
+                    "status": row.get("status"),
+                    "summary": row.get("summary_zh"),
+                    "receipt_hash": row.get("receipt_hash"),
+                } for row in index_sector_valuations)
+            }
         ),
         "historical_reference": {
             "available": False,
@@ -1767,7 +2311,12 @@ def _build_asset_research_brief_v1(trend_result, summary, *, asset_type: str = "
             "available": False,
             "reason": "\u5c1a\u672a\u5b8c\u6210\u72ec\u7acb\u6821\u51c6\u3002",
         },
-        "detail_refs": ["factor_decision.sections", "trend_result"],
+        "detail_refs": [
+            "factor_decision.sections",
+            "factor_decision.fundamental_quality",
+            "factor_decision.business_valuation",
+            "trend_result",
+        ],
     }
 
 
@@ -1786,8 +2335,10 @@ def build_stock_factor_decision_summary(
     pattern_trigger_context: Optional[Dict[str, Any]] = None,
     multi_timeframe_structure_context: Optional[Dict[str, Any]] = None,
     method_execution_receipts: Optional[Dict[str, Any]] = None,
+    gate4_context: Optional[Dict[str, Any]] = None,
     include_canonical: bool = False,
     asset_type: str = "stock",
+    b1_rights_context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build a deterministic, human-readable stock summary for report rendering.
 
@@ -1798,6 +2349,26 @@ def build_stock_factor_decision_summary(
     """
 
     asset_type = "etf" if str(asset_type or "").lower() == "etf" else "stock"
+    expected_asset_id = str(getattr(trend_result, "code", "") or "").strip()
+    fundamental_quality, business_valuation = _validated_asset_material(
+        fundamental_context,
+        asset_type=asset_type,
+        expected_asset_id=expected_asset_id or None,
+    )
+    index_sector_valuations: List[Dict[str, Any]] = []
+    if isinstance(fundamental_context, dict):
+        raw_index_valuations = fundamental_context.get("index_sector_valuations")
+        if isinstance(raw_index_valuations, list):
+            for raw in raw_index_valuations:
+                if not isinstance(raw, dict):
+                    raise ValueError("index/sector valuation material has invalid type")
+                document = validate_index_sector_valuation(raw)
+                if document.get("status") == "READY":
+                    index_sector_valuations.append(document)
+    quality_growth = _quality_summary(
+        fundamental_quality,
+        asset_type=asset_type,
+    )
     if trend_result is None and not include_canonical:
         raise ValueError("trend_result is required")
 
@@ -1971,6 +2542,53 @@ def build_stock_factor_decision_summary(
     qualified_legacy_score = not rejected_score_methods
 
     authority = _ETF_CANONICAL_AUTHORITY if asset_type == "etf" else _CANONICAL_AUTHORITY
+    base_canonical = _canonical_decision(
+        trend_result,
+        regime_for_canonical,
+        authority=authority,
+        regime_admission_reason=regime_admission_reason,
+        rejected_risk_methods=rejected_risk_methods,
+        raw_score_admitted=qualified_legacy_score,
+    )
+    gate4_package = None
+    if include_canonical and isinstance(gate4_context, Mapping):
+        gate4_draft = {
+            "strategy_id": authority,
+            "asset_type": asset_type,
+            "market_sector_regime": market_sector_regime,
+            "trend_relative_strength": trend_relative_strength,
+            "supply_demand_volume_price": supply_demand_volume_price,
+            "cost_structure_evidence": cost_structure_evidence,
+            "price_structure_evidence": price_structure_evidence,
+            "volatility_momentum_evidence": volatility_momentum_evidence,
+            "pattern_trigger_evidence": pattern_trigger_evidence,
+            "fundamental_quality": fundamental_quality,
+            "business_valuation": business_valuation,
+            "quality_evidence": fundamental_quality,
+            "valuation_evidence": business_valuation,
+            "index_sector_valuations": index_sector_valuations,
+            **(
+                {
+                    "method_execution_receipt_policy": "REQUIRED",
+                    "method_execution_receipts": receipts,
+                }
+                if strict_receipts
+                else {}
+            ),
+        }
+        if isinstance(multi_timeframe_structure_context, dict):
+            gate4_draft["multi_timeframe_structure_context"] = dict(
+                multi_timeframe_structure_context
+            )
+        gate4_trace = build_runtime_trace(gate4_draft)
+        gate4_package = _compile_gate4_decision_package(
+            trace=gate4_trace,
+            asset_type=asset_type,
+            base_canonical=base_canonical,
+            fundamental_quality=fundamental_quality,
+            business_valuation=business_valuation,
+            runtime_context=gate4_context,
+        )
     canonical_decision = (
         _canonical_decision(
             trend_result,
@@ -1979,6 +2597,7 @@ def build_stock_factor_decision_summary(
             regime_admission_reason=regime_admission_reason,
             rejected_risk_methods=rejected_risk_methods,
             raw_score_admitted=qualified_legacy_score,
+            gate4_package=gate4_package,
         )
         if include_canonical
         else None
@@ -2038,10 +2657,11 @@ def build_stock_factor_decision_summary(
     if "nearest_support" in structured_context:
         support = _price_structure_level(price_structure_evidence, "nearest_support")
 
-    valuation = (
-        "底层估值：数据不足，暂不判断高低。"
-        if asset_type == "etf"
-        else _valuation_summary(fundamental_context)
+    valuation = _valuation_summary(
+        fundamental_context,
+        asset_type=asset_type,
+        business_valuation=business_valuation,
+        index_sector_valuations=index_sector_valuations,
     )
     cost_structure = (
         "成本/筹码：ETF不适用个股筹码口径。"
@@ -2055,6 +2675,7 @@ def build_stock_factor_decision_summary(
         "momentum": _volatility_momentum_summary(volatility_momentum_evidence, trend_result),
         "pattern_trigger": _pattern_trigger_summary(pattern_trigger_evidence),
         "cost_structure": cost_structure,
+        "quality_growth": quality_growth,
         "valuation": valuation,
         "market_sector_regime": (
             "市场/板块：原始风险提示未通过本次方法执行身份准入，不据此作最终否决。"
@@ -2071,6 +2692,7 @@ def build_stock_factor_decision_summary(
         "trend_relative_strength",
         "supply_demand_volume_price",
         "price_structure",
+        "quality_growth",
         "valuation",
     ):
         text = sections[key]
@@ -2155,6 +2777,12 @@ def build_stock_factor_decision_summary(
         "action_condition": action_condition,
         "invalidation_condition": invalidation_condition,
         "valuation": valuation,
+        "quality_growth": quality_growth,
+        "fundamental_quality": fundamental_quality,
+        "business_valuation": business_valuation,
+        "quality_evidence": fundamental_quality,
+        "valuation_evidence": business_valuation,
+        "index_sector_valuations": index_sector_valuations,
         "cost_structure": cost_structure,
         "risk_notes": _risk_notes(trend_result),
         "sections": sections,
@@ -2166,6 +2794,11 @@ def build_stock_factor_decision_summary(
         "volatility_momentum_evidence": volatility_momentum_evidence,
         "pattern_trigger_evidence": pattern_trigger_evidence,
         **(
+            {"gate4_decision_package": gate4_package}
+            if gate4_package is not None
+            else {}
+        ),
+        **(
             {
                 "method_execution_receipt_policy": "REQUIRED",
                 "method_execution_receipts": receipts,
@@ -2176,8 +2809,73 @@ def build_stock_factor_decision_summary(
     }
     if isinstance(multi_timeframe_structure_context, dict):
         summary["multi_timeframe_structure_context"] = dict(multi_timeframe_structure_context)
+    data_object_source_observations = _mapping(
+        fundamental_context
+    ).get("data_object_source_observations")
+    if data_object_source_observations is not None:
+        if not isinstance(data_object_source_observations, Mapping):
+            raise ValueError("data object source observations must be a mapping")
+        summary["data_object_source_observations"] = deepcopy(
+            dict(data_object_source_observations)
+        )
     if canonical_decision is not None:
         summary["canonical_decision"] = canonical_decision
+    atomic_sources: Dict[str, Any] = {}
+    for context in (market_structure_context, fundamental_context):
+        candidate = _mapping(context).get("atomic_subfield_source_observations")
+        if candidate is None:
+            continue
+        if not isinstance(candidate, Mapping):
+            raise ValueError("atomic subfield source observations must be a mapping")
+        for identifier, observation in candidate.items():
+            key = str(identifier)
+            if key in atomic_sources and atomic_sources[key] != observation:
+                raise ValueError("atomic subfield source observation conflict")
+            atomic_sources[key] = deepcopy(observation)
+    if atomic_sources:
+        summary["atomic_subfield_source_observations"] = atomic_sources
+    if b1_rights_context is not None:
+        # Bind the existing operation and source rights to the same canonical
+        # Factor before its one Registry trace / Product coverage is sealed.
+        # Missing provider data is a lawful empty-receipt nontrigger.
+        summary["research_as_of"] = b1_rights_context.get("research_as_of")
+        summary["research_operation_id"] = b1_rights_context.get("operation_id")
+        summary["research_intended_use"] = b1_rights_context.get("intended_use")
+        data_obligations = _compile_accepted_data_object_scope(summary)
+        atomic_obligations = compile_atomic_subfield_obligations(summary)
+        supplied_metadata = b1_rights_context.get(
+            "source_metadata_by_dataset"
+        ) or {}
+        if not isinstance(supplied_metadata, Mapping):
+            raise ValueError("B1 source metadata must be a mapping")
+
+        def scoped_b1_context(obligations: List[Mapping[str, Any]]) -> Dict[str, Any]:
+            dataset_ids = {
+                str(row.get("dataset_id") or "")
+                for row in obligations
+                if row.get("state") != "NOT_APPLICABLE"
+            }
+            return {
+                **dict(b1_rights_context),
+                "source_metadata_by_dataset": {
+                    str(key): value
+                    for key, value in supplied_metadata.items()
+                    if str(key) in dataset_ids
+                },
+            }
+
+        summary["data_object_admission_receipts"] = (
+            compile_b1_runtime_admission_receipts(
+                data_obligations,
+                b1_context=scoped_b1_context(data_obligations),
+            )
+        )
+        summary["atomic_subfield_admission_receipts"] = (
+            compile_b1_runtime_admission_receipts(
+                atomic_obligations,
+                b1_context=scoped_b1_context(atomic_obligations),
+            )
+        )
     if include_canonical:
         # Actual producer: same accepted evidence and unchanged Registry.
         # A risk fact must be sealed only AFTER both Product layers exist.
@@ -2191,6 +2889,10 @@ def build_stock_factor_decision_summary(
         summary,
         asset_type=asset_type,
     )
+    if gate4_package is not None:
+        summary["investor_brief"]["gate4_decision_package"] = deepcopy(
+            gate4_package
+        )
     if include_canonical:
         binding = canonical_factor_binding(summary)
         summary["canonical_decision_identity"] = binding

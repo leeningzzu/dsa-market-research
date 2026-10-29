@@ -172,7 +172,7 @@ def _intraday_fixture(
     return frame
 
 
-def test_canonical_intraday_bars_fill_partial_trend_ma_slots_without_claiming_structure() -> None:
+def test_canonical_intraday_bars_fill_partial_context_without_claiming_action() -> None:
     history = _history()
     target_index = len(history) - 1
     target = history.iloc[target_index]["date"].date()
@@ -209,19 +209,14 @@ def test_canonical_intraday_bars_fill_partial_trend_ma_slots_without_claiming_st
         assert item["trend"]["status"] == "READY"
         assert item["ma_structure"]["status"] in {"READY", "PARTIAL"}
         assert item["price_structure"]["status"] == "MISSING"
-        assert item["price_structure"]["reason"] == (
-            "NO_CONFIRMED_PIVOTS" if key in {"60m", "30m"}
-            else "INTRADAY_PRICE_STRUCTURE_NOT_ADMITTED"
-        )
+        assert item["price_structure"]["reason"] == "NO_CONFIRMED_PIVOTS"
         assert item["pattern_trigger"]["status"] == "MISSING"
         assert item["independent_action_authority"] is False
         assert item["strategy_admitted"] is False
         assert item["learning_admitted"] is False
         assert item["historical_replay_eligible"] is False
-        assert (
-            f"{key}尚无已确认枢轴" if key in {"60m", "30m"}
-            else "分钟价格结构/形态尚未准入"
-        ) in item["summary"]
+        assert f"{key}尚无已确认枢轴" in item["summary"]
+        assert "形态和独立交易触发仍缺少可核依据" in item["summary"]
 
 
 
@@ -343,6 +338,78 @@ def test_30m_confirmed_pivot_reaches_registered_structure_without_action_authori
                 if cell["timeframe"] == "30m" and cell["family"] == "STRUCTURE")
     method = next(method for method in cell["method_coverage"]
                   if method["method_id"] == "MTF_PRICE_STRUCTURE")
+    assert method["state"] == "READY"
+    assert method["independent_action_authority"] is False
+    assert cell["state"] in {"READY", "PARTIAL"}
+
+@pytest.mark.parametrize("timeframe", ("15m", "5m"))
+def test_confirmed_lower_intraday_structure_reaches_matrix_without_action_authority(
+    timeframe: str,
+) -> None:
+    """Completed 15m/5m pivots are descriptive evidence, never strategy triggers."""
+    from src.services.evidence_traceability_registry import compile_timeframe_family_matrix
+
+    history = _history()
+    target = history.iloc[-1]["date"].date()
+    closes = [100.0 + index * 0.01 for index in range(40)]
+    closes[25] = 113.0
+    weekly_end = history.iloc[-5]["date"].date()
+    monthly_end = history.iloc[-21]["date"].date()
+
+    def completed(_market, _target, requested):
+        return weekly_end if requested == "1w" else monthly_end
+
+    with patch(
+        "src.services.multi_timeframe_structure_service.resolve_completed_timeframe_bar_date",
+        side_effect=completed,
+    ):
+        parent = build_multi_timeframe_structure_context(
+            stock_code="600519",
+            history=history,
+            target_date=target,
+            market="cn",
+            trend_analyzer=_FakeTrendAnalyzer(),
+            daily_trend_result=_daily_trend(history, len(history) - 1),
+            daily_price_structure_context={"historical_replay_eligible": True},
+            snapshot_observed_at=datetime.combine(
+                target, datetime.max.time(), tzinfo=timezone.utc,
+            ),
+            intraday_timeframes={
+                timeframe: _intraday_fixture(
+                    timeframe, target, periods=len(closes),
+                    closes=closes, volume_unit="share",
+                )
+            },
+        )
+
+    item = parent["timeframes"][timeframe]
+    structure = item["price_structure"]
+    assert structure["status"] == "READY"
+    assert structure["timeframe"] == timeframe
+    assert structure["intraday_identity_hash"] == item["intraday_identity_hash"]
+    assert structure["independent_action_authority"] is False
+    pivot = structure["pivots"][0]
+    assert pivot["provisional"] is False
+    assert pivot["origin_time"] < pivot["confirmed_at"]
+    assert pivot["confirmed_available_at"] >= pivot["confirmed_at"]
+    assert structure["historical_replay_eligible"] is False
+    assert item["strategy_admitted"] is False
+    assert item["learning_admitted"] is False
+    assert item["pattern_trigger"]["status"] == "MISSING"
+    assert item["pattern_trigger"]["reason"] == "INTRADAY_PATTERN_NOT_ADMITTED"
+    assert "PRICE_STRUCTURE" in item["admitted_methods"]
+
+    matrix = compile_timeframe_family_matrix({
+        "multi_timeframe_structure_context": parent,
+    })
+    cell = next(
+        row for row in matrix["cells"]
+        if (row["timeframe"], row["family"]) == (timeframe, "STRUCTURE")
+    )
+    method = next(
+        row for row in cell["method_coverage"]
+        if row["method_id"] == "MTF_PRICE_STRUCTURE"
+    )
     assert method["state"] == "READY"
     assert method["independent_action_authority"] is False
     assert cell["state"] in {"READY", "PARTIAL"}
@@ -1415,7 +1482,7 @@ def test_completed_history_identity_is_prefix_safe_and_changes_with_consumed_byt
     assert prefix_context["data_snapshot_identity"] != changed_context["data_snapshot_identity"]
     assert prefix_context["provider_identity"] == "AkshareFetcher"
     assert prefix_context["adjustment_basis"] == "qfq"
-    assert prefix_context["available_at_max"] == "2026-09-17T10:00:00"
+    assert prefix_context["available_at_max"] == "2026-09-17T10:00:00+00:00"
     assert prefix_context["cross_run_persistence_eligible"] is True
     assert prefix_context["cross_run_persistence_reason"] == "DAILY_DATA_IDENTITY_READY"
 
@@ -1491,7 +1558,7 @@ def test_completed_history_availability_never_backdates_typed_source_observation
     frame = _with_observed_identity(_history(periods=150), provider="AkshareFetcher")
     target = frame.iloc[-1]["date"].date()
     replay_time = datetime(2025, 9, 30, 12, 0, tzinfo=timezone.utc)
-    source_time = "2026-09-17T10:00:00"
+    source_time = "2026-09-17T10:00:00+00:00"
 
     earlier = build_completed_history_identity(
         frame, stock_code="600519", market="cn",
@@ -1507,7 +1574,7 @@ def test_completed_history_availability_never_backdates_typed_source_observation
         frame, stock_code="600519", market="cn", target_date=target,
         observed_at=datetime(2026, 9, 18, 8, 0, tzinfo=timezone.utc),
     )
-    assert later["available_at_max"] == "2026-09-18T08:00:00"
+    assert later["available_at_max"] == "2026-09-18T08:00:00+00:00"
     assert later["data_snapshot_identity"] == earlier["data_snapshot_identity"]
 
     # Prove the existing MTF consumer forwards the same fail-closed clock.

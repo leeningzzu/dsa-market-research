@@ -20,7 +20,7 @@ import time
 from threading import BoundedSemaphore, RLock, Thread
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
-from typing import Callable, Optional, List, Tuple, Dict, Any
+from typing import Callable, Optional, List, Tuple, Dict, Any, Collection
 
 import pandas as pd
 import numpy as np
@@ -1274,7 +1274,8 @@ class DataFetcherManager:
         stock_code: str,
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
-        days: int = 30
+        days: int = 30,
+        allowed_provider_names: Optional[Collection[str]] = None,
     ) -> Tuple[pd.DataFrame, str]:
         """
         获取日线数据（自动切换数据源）
@@ -1321,6 +1322,11 @@ class DataFetcherManager:
         if market != "cn":
             fetchers = self._filter_daily_fetchers_for_market(fetchers, market)
         fetchers = self._filter_fetchers_by_capability(fetchers, capability="daily_data")
+        # B1 point-of-use grant must prevent fallback to an unlicensed provider.
+        # None preserves legacy non-B1 routes; an empty explicit set is a veto.
+        if allowed_provider_names is not None:
+            permitted = frozenset(str(name) for name in allowed_provider_names)
+            fetchers = [item for item in fetchers if item.name in permitted]
         total_fetchers = len(fetchers)
 
         if total_fetchers == 0:

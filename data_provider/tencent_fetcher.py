@@ -107,6 +107,7 @@ class TencentFetcher(BaseFetcher):
             volume_unit="share",
             amount_unit="CNY",
             identity_state=identity_state,
+            instrument=stock_code,
         )
         attach_daily_data_identity(df, identity)
         return df

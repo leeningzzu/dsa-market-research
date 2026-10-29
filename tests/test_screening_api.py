@@ -66,6 +66,39 @@ def _make_screening_core(
     )
 
 
+def _completed_screening_execution_receipt(
+    run_id: str,
+    asset_type: str,
+    output_count: int,
+) -> Dict[str, Any]:
+    stage_names = (
+        "snapshot", "host_prefilter", "snapshot_filter", "daily_enrichment",
+        "daily_filter", "shortlist", "post_analysis", "selection",
+    )
+    return {
+        "schema_version": "screening-execution-receipt-v1",
+        "scope": "RUN_LOCAL_EXECUTION_METADATA_NOT_DATA_OR_STRATEGY_PROOF",
+        "run_id": run_id,
+        "asset_type": asset_type,
+        "terminal_reason": "SELECTION_COMPLETED",
+        "stages": [
+            {
+                "stage": name,
+                "status": (
+                    "COMPLETED"
+                    if name in {"snapshot", "snapshot_filter", "shortlist", "selection"}
+                    else "NOT_REQUESTED"
+                ),
+                "input_count": output_count,
+                "output_count": output_count,
+                "excluded_count": 0,
+                "elapsed_ms": 0.0,
+            }
+            for name in stage_names
+        ],
+    }
+
+
 @contextmanager
 def _patch_screening_core(core: SimpleNamespace):
     """Replace native screening entry points without recreating an adapter layer."""
@@ -2643,6 +2676,19 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
                 {"rank": 6, "code": "600519", "name": "主板股", "final_score": 89.0, "screen_score": 89.0, "industry": "白酒"},
             ]
             frame = pd.DataFrame(rows)
+            frame["screen_score_input_state"] = "OBSERVED_COMPLETE"
+            frame["screen_score_focus_eligible"] = True
+            frame["screen_score_missing_inputs"] = [
+                tuple() for _ in range(len(frame))
+            ]
+            frame["screen_score_imputed_factors"] = [
+                tuple() for _ in range(len(frame))
+            ]
+            frame["screen_score_readiness_scope"] = (
+                "INPUT_COMPLETENESS_ONLY_NOT_SOURCE_RIGHTS_OR_7TF"
+            )
+            frame["snapshot_source_state"] = "LIVE_OR_DIRECT"
+            frame["snapshot_source_focus_eligible"] = True
             diagnostics: Dict[str, Any] = {}
             candidate_prefilter = kwargs.get("candidate_prefilter")
             if candidate_prefilter is not None:
@@ -2664,6 +2710,10 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
                 "strategy_version": "1.2",
                 "market": "cn",
                 "run_id": "preferences-run",
+                "snapshot_source": "synthetic-admitted",
+                "execution_receipt": _completed_screening_execution_receipt(
+                    "preferences-run", "stock", len(frame)
+                ),
                 "llm_ranked": False,
                 "ranking_mode": "factor",
                 "post_analyzers": ["scorecard"],

@@ -38,7 +38,13 @@ def _frame(periods: int = 3) -> pd.DataFrame:
     )
 
 
-def _observed(frame: pd.DataFrame, *, basis: str = "qfq") -> dict:
+def _observed(
+    frame: pd.DataFrame,
+    *,
+    basis: str = "qfq",
+    revision: str | None = None,
+    vintage: str | None = None,
+) -> dict:
     return build_daily_data_identity(
         frame,
         provider_identity="TencentFetcher",
@@ -54,6 +60,8 @@ def _observed(frame: pd.DataFrame, *, basis: str = "qfq") -> dict:
         amount_unit="CNY",
         identity_state="OBSERVED",
         observed_at=datetime(2026, 1, 31, 9, 0, tzinfo=timezone.utc),
+        revision=revision,
+        vintage=vintage,
     )
 
 
@@ -131,6 +139,26 @@ def test_rebind_updates_returned_range_and_row_count() -> None:
     assert rebound["returned_start"] == "2026-01-05"
     assert rebound["returned_end"] == "2026-01-06"
     assert rebound["identity_hash"] != identity["identity_hash"]
+
+
+def test_explicit_revision_and_vintage_are_optional_but_hash_bound() -> None:
+    frame = _frame()
+    unversioned = _observed(frame)
+    versioned = _observed(
+        frame,
+        revision="SYNTHETIC_REVISION_1",
+        vintage="2026Q1_ORIGINAL_RELEASE",
+    )
+    assert "revision" not in unversioned
+    assert "vintage" not in unversioned
+    assert versioned["revision"] == "SYNTHETIC_REVISION_1"
+    assert versioned["vintage"] == "2026Q1_ORIGINAL_RELEASE"
+    assert versioned["identity_hash"] != unversioned["identity_hash"]
+
+    tampered = dict(versioned)
+    tampered["revision"] = "SYNTHETIC_REVISION_2"
+    with pytest.raises(DailyDataIdentityError, match="hash mismatch"):
+        validate_daily_data_identity(tampered)
 
 
 def test_tampered_or_mixed_persisted_identity_fails_closed() -> None:

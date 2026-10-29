@@ -8,14 +8,32 @@ providers, infer institutional intent, persist state, or own action authority.
 from __future__ import annotations
 
 from datetime import date
+from hashlib import sha256
+import json
 from typing import Any, Dict, Optional
 
 import pandas as pd
+
+from data_provider.daily_data_identity import bind_verified_daily_source_view
 
 
 SUPPLY_DEMAND_SCHEMA_VERSION = "supply-demand-volume-price-v1"
 WINDOW_SESSIONS = 20
 REQUIRED_OBSERVATIONS = WINDOW_SESSIONS + 1
+ALGORITHM_VERSION = "supply-demand-volume-price-v1"
+_CONFIG = {
+    "algorithm_version": ALGORITHM_VERSION,
+    "window_sessions": WINDOW_SESSIONS,
+    "required_observations": REQUIRED_OBSERVATIONS,
+    "relative_volume": "LATEST_OVER_PRIOR_20_MEAN",
+    "directional_volume": "UP_DOWN_VOLUME_BALANCE",
+    "close_location_flow": "CMF20",
+    "completed_bar_only": True,
+    "institutional_intent_inferred": False,
+}
+CONFIG_HASH = sha256(
+    json.dumps(_CONFIG, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+).hexdigest()
 
 
 def _status_payload(*, status: str, reason: str, stock_code: str, target_date: Optional[date]) -> Dict[str, Any]:
@@ -27,6 +45,10 @@ def _status_payload(*, status: str, reason: str, stock_code: str, target_date: O
         "stock_code": stock_code,
         "target_date": target_date.isoformat() if isinstance(target_date, date) else None,
         "window_sessions": WINDOW_SESSIONS,
+        "completed_bar_only": True,
+        "algorithm_version": ALGORITHM_VERSION,
+        "config_hash": CONFIG_HASH,
+        "effective_parameters": dict(_CONFIG),
         "state": "UNKNOWN",
         "relative_volume": {},
         "directional_volume": {},
@@ -51,7 +73,8 @@ def _normalize_history(history: Any, *, target_date: date) -> pd.DataFrame:
     frame = frame[frame["date"] <= target_date]
     frame = frame.sort_values("date").drop_duplicates(subset=["date"], keep="last")
     columns = required + (["data_source"] if "data_source" in frame.columns else [])
-    return frame[columns].reset_index(drop=True)
+    result = frame[columns].reset_index(drop=True)
+    return bind_verified_daily_source_view(history, result)
 
 
 def build_supply_demand_context(
@@ -151,6 +174,10 @@ def build_supply_demand_context(
         "target_date": target_date.isoformat(),
         "window_sessions": WINDOW_SESSIONS,
         "state": state,
+        "completed_bar_only": True,
+        "algorithm_version": ALGORITHM_VERSION,
+        "config_hash": CONFIG_HASH,
+        "effective_parameters": dict(_CONFIG),
         "relative_volume": {
             "volume_ratio_20d": round(volume_ratio_20d, 6) if volume_ratio_20d is not None else None,
             "recent_5d_avg": round(recent_5_avg, 6),
