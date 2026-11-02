@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [闭环] GitHub自然PR CI97（Run 41417008187）在exact Head `746e402e0fff0247fdf153347e66f326573db9ce` SUCCESS，关闭CI96截图的旧2015窗口、绕过生产XSHG扩展日历及Legacy Ledger v1哈希污染三根因。路线图/Stage机器状态同步为工程远端接受、Product仍0/72；后继转为23/72已有来源能力与49个完整typed来源链缺口，不再以指标数量替代真实数据或FACT_READY邮件。
+
 - [修复] CI96原生离线套件的三个失败按截图日志根修：旧名称预取不再硬编码2015-02-02而消费当前268个月动态窗口；resume正例不再自行构造有滚动边界的XSHG日历而复用生产会话Owner；新增DISTRIBUTION继续进入当前Manifest，但历史`stock-factor-evidence-v1`字段及`426d7f...`身份冻结，Prediction Ledger不被静默重定义。未改Golden掩盖错误。定点5/5、相关46模块1375/1375通过；自然纠正CI仍独立验收。
 
 - [审计] 新增真实数据/数据库/邮件机器审计：43方法=30现有+13延期，35明确数值叶=24算法准入+11未准入；72个当前Product对象仅23个具备typed适配器/真实探针/既有价格能力下限，49个仍无完整typed来源链，当前Product仍0/72。既有SQLite和表结构存在，但行情、财务、History、Ledger、Outcome、PIT关键表均0有效行；主缺口是合法current facts及storage rights，不是另建数据库。原V2.5消费者可承载单股60、ETF55、组合72及7原子叶，但当前FACT_READY=false、SMTP=0。

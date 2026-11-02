@@ -106,7 +106,7 @@ def test_stage_ladder_keeps_parent_product_and_blocking_order_explicit() -> None
         "P1_PROMOTION_RELEASE",
     ]
     assert baseline["route_decision"]["next_primary"] == (
-        "GITHUB_CORRECTIVE_COMMIT_PUSH_NATURAL_CI_THEN_B1_M2_49_SOURCE_CHAIN_REENTRY"
+        "B1_M2_49_SOURCE_CHAIN_REENTRY"
     )
     assert [stage["id"] for stage in stages if stage.get("next_primary")] == [
         "B1_SOURCE_RIGHTS"
@@ -129,13 +129,13 @@ def test_stage_ladder_keeps_parent_product_and_blocking_order_explicit() -> None
     ]
     acceptance = baseline["acceptance"]
     assert acceptance["state"] == (
-        "CI95_ACCEPTED_BASE_CI96_FAILED_CORRECTIVE_CANDIDATE_"
-        "RESOLVE_GIT_AND_CI_AT_RUNTIME"
+        "CI97_REMOTE_ACCEPTED_ENGINEERING_CURRENT_CONTINUITY_COMMIT_"
+        "RESOLVE_AT_RUNTIME"
     )
-    assert acceptance["candidate_head"] == "6651915ad2bc662fe45006639204a259bbce27c5"
-    assert acceptance["candidate_parent"] == "37e453f729b0f9ad1cec6d8b27457916b7982142"
+    assert acceptance["candidate_head"] == "746e402e0fff0247fdf153347e66f326573db9ce"
+    assert acceptance["candidate_parent"] == "6651915ad2bc662fe45006639204a259bbce27c5"
     assert acceptance["candidate_base_head"] == acceptance["candidate_head"]
-    assert acceptance["current_failed_ci"] == {
+    assert acceptance["last_failed_ci"] == {
         "run_number": 96,
         "run_id": 41402275878,
         "head": "6651915ad2bc662fe45006639204a259bbce27c5",
@@ -148,17 +148,19 @@ def test_stage_ladder_keeps_parent_product_and_blocking_order_explicit() -> None
     assert acceptance["candidate_commit_identity"] == (
         "RESOLVE_COMMIT_CONTAINING_THIS_FILE_FROM_GIT"
     )
-    assert acceptance["candidate_ci_state"] == "RECHECK_PR31_NATURAL_CI_AT_RUNTIME"
+    assert acceptance["candidate_ci_state"] == (
+        "RECHECK_CONTINUITY_COMMIT_NATURAL_CI_AT_RUNTIME"
+    )
     assert acceptance["candidate_head_scope"] == (
-        "CI96_FAILED_HEAD_IS_CORRECTIVE_PARENT; COMMIT_CONTAINING_THIS_FILE_IS_"
-        "CURRENT_CORRECTIVE_FEATURE_CANDIDATE_NOT_MAIN"
+        "CI97_ACCEPTED_ENGINEERING_HEAD; COMMIT_CONTAINING_THIS_FILE_IS_"
+        "CONTINUITY_PROJECTION_RUNTIME_RECHECK_NOT_MAIN"
     )
     assert acceptance["latest_required_ci"] == {
-        "run_number": 95,
-        "run_id": 40792809015,
+        "run_number": 97,
+        "run_id": 41417008187,
+        "head": "746e402e0fff0247fdf153347e66f326573db9ce",
         "conclusion": "success",
-    }
-    # CI94 is the direct failed predecessor; CI92 remains in Git/history.
+    }    # CI94 is the direct failed predecessor; CI92 remains in Git/history.
     assert acceptance["prior_failed_ci"] == {
         "run_number": 94,
         "run_id": 40677519496,
@@ -167,7 +169,7 @@ def test_stage_ladder_keeps_parent_product_and_blocking_order_explicit() -> None
     }
     assert acceptance["pull_request_state"] == "DRAFT_OPEN_NOT_MERGED"
     assert baseline["route_decision"]["next_primary"] == (
-        "GITHUB_CORRECTIVE_COMMIT_PUSH_NATURAL_CI_THEN_B1_M2_49_SOURCE_CHAIN_REENTRY"
+        "B1_M2_49_SOURCE_CHAIN_REENTRY"
     )
 
 
@@ -312,18 +314,19 @@ def test_current_control_rejects_historical_product_and_email_geometry_substitut
     assert current["schema_version"] == "stock-dsa-current-runtime-checkpoint-v2"
     assert current["source_pair"] == "01/05 v3.543 PHYSICAL_EXACT8_PASS"
     assert current["accepted_remote_base"] == {
-        "head": "37e453f729b0f9ad1cec6d8b27457916b7982142",
-        "ci_run_number": 95,
-        "ci_run_id": 40792809015,
+        "head": "746e402e0fff0247fdf153347e66f326573db9ce",
+        "ci_run_number": 97,
+        "ci_run_id": 41417008187,
         "conclusion": "success",
     }
     assert current["candidate_identity"] == "RESOLVE_COMMIT_CONTAINING_THIS_FILE_FROM_GIT"
     snapshot = current["candidate_precommit_snapshot"]
-    assert snapshot["status_path_count"] == 8
-    assert snapshot["tracked_modified_count"] == 8
+    assert snapshot["status_path_count"] == 4
+    assert snapshot["tracked_modified_count"] == 4
     assert snapshot["untracked_paths"] == []
     assert snapshot["staged_count"] == 0
     assert snapshot["post_commit_worktree_expected_clean"] is True
+    assert snapshot["scope"] == "CONTINUITY_DOCS_MACHINE_STATE_ONLY"
     assert current["local_regression"]["focused_passed"] == 61
     assert current["local_regression"]["focused_failed"] == 0
     assert current["local_regression"]["full_related"] == {
@@ -336,7 +339,7 @@ def test_current_control_rejects_historical_product_and_email_geometry_substitut
     assert current["local_regression"]["ci96_targeted_passed"] == 5
     assert current["local_regression"]["ci96_targeted_failed"] == 0
     assert current["local_regression"]["remote_ci"] == (
-        "CI96_FAILED_CORRECTIVE_LOCAL_PASS_PENDING_PUSH"
+        "CI97_SUCCESS_EXACT_HEAD_746E402E"
     )
     assert current["local_regression"]["litellm_local_cost_map_required_before_import"] is True
 
@@ -362,7 +365,7 @@ def test_current_control_rejects_historical_product_and_email_geometry_substitut
     assert current["email_reader_state"]["smtp_send"] == 0
 
     roadmap = (ROOT / "docs" / "stock-dsa-roadmap.md").read_text(encoding="utf-8")
-    assert "CONTROL_ID = STOCK_DSA_MASTER_ROUTE_20261102_CI96_CORRECTION_REAL_DATA_READINESS_AUDIT" in roadmap
+    assert "CONTROL_ID = STOCK_DSA_MASTER_ROUTE_20261102_CI97_ACCEPTED_REAL_DATA_EMAIL_GAP_AUDIT" in roadmap
     assert "行业分类→适用方法→所需数据" not in roadmap  # prose must not claim an unbound shortcut
     assert "只表示可观察候选" in roadmap
     assert "NOT_FULL_CZSC" in roadmap
@@ -580,12 +583,12 @@ def test_stage_baseline_records_installed_v3543_and_current_successor_boundaries
     assert source["duplicate_logical_owners"] == 0
     assert source["prepared_successor_pair"] is None
     assert source["prepared_successor_state"] == (
-        "NONE_UNTIL_CORRECTIVE_GITHUB_COMMIT_AND_CI_MATERIAL_CLOSURE"
+        "GITHUB_CI97_MATERIAL_CLOSURE_REQUIRES_EXTERNAL_PAIRED_01_05_CHECKPOINT"
     )
     assert source["ninth_source"] is False
 
     successor = baseline["current_local_foundation_successor"]
-    assert successor["state"] == "CI96_CORRECTIVE_CANDIDATE_PRECOMMIT_REMOTE_OPEN"
+    assert successor["state"] == "CI97_REMOTE_ACCEPTED_ENGINEERING_PRODUCT0_OF_72"
     assert successor["changed_paths"] == 8
     assert successor["method_profiles"] == 43
     assert successor["effective_execution_pairs"] == 154
@@ -648,7 +651,7 @@ def test_stage_baseline_locks_bounded_hierarchical_mtf_screening() -> None:
 def test_indicator_backlog_is_subordinate_to_the_current_product_route() -> None:
     decision = _baseline()["route_decision"]
     assert decision["next_primary"] == (
-        "GITHUB_CORRECTIVE_COMMIT_PUSH_NATURAL_CI_THEN_B1_M2_49_SOURCE_CHAIN_REENTRY"
+        "B1_M2_49_SOURCE_CHAIN_REENTRY"
     )
     assert decision["bounded_indicator_sub_lanes"] == [
         "MONTHLY_RSI_HISTORY_IF_LEGAL",
@@ -717,7 +720,13 @@ def test_current_real_data_readiness_audit_separates_capability_product_database
     assert correction["targeted_regression"] == {"passed": 5, "failed": 0}
     assert correction["related_regression"]["passed"] == 1375
     assert correction["related_regression"]["failed"] == 0
-    assert correction["remote_corrective_ci"] == "PENDING_ORDINARY_PUSH"
+    assert correction["state"] == "CLOSED_NO_REPLAY_BY_CI97"
+    assert correction["remote_corrective_ci"] == {
+        "run_number": 97,
+        "run_id": 41417008187,
+        "head": "746e402e0fff0247fdf153347e66f326573db9ce",
+        "conclusion": "success",
+    }
 
 
 def test_multi_level_goal_graph_capabilities_role_review_and_github_continuity_are_machine_readable() -> None:
@@ -748,6 +757,22 @@ def test_multi_level_goal_graph_capabilities_role_review_and_github_continuity_a
         "all_cells_executable": True,
     }
     assert closure["product_admission"] == "0_OF_72_UNCHANGED"
+    assert closure["focused_regression"]["remote_ci"] == "CI97_SUCCESS_EXACT_HEAD_746E402E"
+    accepted = baseline["ci97_remote_acceptance"]
+    assert accepted == {
+        "schema_version": "stock-dsa-ci97-remote-acceptance-v1",
+        "head": "746e402e0fff0247fdf153347e66f326573db9ce",
+        "parent": "6651915ad2bc662fe45006639204a259bbce27c5",
+        "tree": "03805ff67f5709a11bed93650c4826b074d72df9",
+        "run_number": 97,
+        "run_id": 41417008187,
+        "conclusion": "success",
+        "pr": 31,
+        "pr_state": "DRAFT_OPEN_NOT_MERGED",
+        "main_unchanged": True,
+        "product_admission": "0_OF_72_UNCHANGED",
+        "fact_ready": False,
+    }
     assert closure["original_v25_fact_ready"] is False
 
     review = baseline["role_review"]

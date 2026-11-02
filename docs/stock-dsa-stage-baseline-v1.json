@@ -41,17 +41,18 @@
     "storage_admitted": false
   },
   "acceptance": {
-    "state": "CI95_ACCEPTED_BASE_CI96_FAILED_CORRECTIVE_CANDIDATE_RESOLVE_GIT_AND_CI_AT_RUNTIME",
+    "state": "CI97_REMOTE_ACCEPTED_ENGINEERING_CURRENT_CONTINUITY_COMMIT_RESOLVE_AT_RUNTIME",
     "production_branch": "main",
     "candidate_branch": "feat/stock-dsa-m2-source-gates-v1",
-    "candidate_head": "6651915ad2bc662fe45006639204a259bbce27c5",
-    "candidate_parent": "37e453f729b0f9ad1cec6d8b27457916b7982142",
-    "candidate_head_scope": "CI96_FAILED_HEAD_IS_CORRECTIVE_PARENT; COMMIT_CONTAINING_THIS_FILE_IS_CURRENT_CORRECTIVE_FEATURE_CANDIDATE_NOT_MAIN",
+    "candidate_head": "746e402e0fff0247fdf153347e66f326573db9ce",
+    "candidate_parent": "6651915ad2bc662fe45006639204a259bbce27c5",
+    "candidate_head_scope": "CI97_ACCEPTED_ENGINEERING_HEAD; COMMIT_CONTAINING_THIS_FILE_IS_CONTINUITY_PROJECTION_RUNTIME_RECHECK_NOT_MAIN",
     "pull_request": 31,
     "pull_request_state": "DRAFT_OPEN_NOT_MERGED",
     "latest_required_ci": {
-      "run_number": 95,
-      "run_id": 40792809015,
+      "run_number": 97,
+      "run_id": 41417008187,
+      "head": "746e402e0fff0247fdf153347e66f326573db9ce",
       "conclusion": "success"
     },
     "prior_failed_ci": {
@@ -69,10 +70,10 @@
       "desktop-futu-package-windows"
     ],
     "direct_main_push": false,
-    "candidate_base_head": "6651915ad2bc662fe45006639204a259bbce27c5",
+    "candidate_base_head": "746e402e0fff0247fdf153347e66f326573db9ce",
     "candidate_commit_identity": "RESOLVE_COMMIT_CONTAINING_THIS_FILE_FROM_GIT",
-    "candidate_ci_state": "RECHECK_PR31_NATURAL_CI_AT_RUNTIME",
-    "current_failed_ci": {
+    "candidate_ci_state": "RECHECK_CONTINUITY_COMMIT_NATURAL_CI_AT_RUNTIME",
+    "last_failed_ci": {
       "run_number": 96,
       "run_id": 41402275878,
       "head": "6651915ad2bc662fe45006639204a259bbce27c5",
@@ -662,7 +663,7 @@
   },
   "current_local_foundation_successor": {
     "schema_version": "a1-foundation-local-successor-v1",
-    "state": "CI96_CORRECTIVE_CANDIDATE_PRECOMMIT_REMOTE_OPEN",
+    "state": "CI97_REMOTE_ACCEPTED_ENGINEERING_PRODUCT0_OF_72",
     "base_head": "37e453f729b0f9ad1cec6d8b27457916b7982142",
     "changed_paths": 8,
     "method_profiles": 43,
@@ -694,24 +695,25 @@
     "gate_b": "STOP_FULL_DOMAIN_PRODUCT_RIGHTS_AND_CURRENT_FACTS",
     "gate_c": "HOLD_ORIGINAL_V25_FACT_READY_AND_DELIVERY",
     "original_v25_unchanged": true,
-    "proof_ceiling": "LOCAL_TARGETED5_AND_RELATED1375_NOT_REMOTE_CI_CURRENT_PRODUCT_OR_DELIVERY"
+    "proof_ceiling": "REMOTE_CI97_ENGINEERING_NOT_CURRENT_PRODUCT_OR_DELIVERY"
   },
   "current_runtime_checkpoint": {
     "schema_version": "stock-dsa-current-runtime-checkpoint-v2",
     "source_pair": "01/05 v3.543 PHYSICAL_EXACT8_PASS",
     "accepted_remote_base": {
-      "head": "37e453f729b0f9ad1cec6d8b27457916b7982142",
-      "ci_run_number": 95,
-      "ci_run_id": 40792809015,
+      "head": "746e402e0fff0247fdf153347e66f326573db9ce",
+      "ci_run_number": 97,
+      "ci_run_id": 41417008187,
       "conclusion": "success"
     },
     "candidate_identity": "RESOLVE_COMMIT_CONTAINING_THIS_FILE_FROM_GIT",
     "candidate_precommit_snapshot": {
-      "status_path_count": 8,
-      "tracked_modified_count": 8,
+      "status_path_count": 4,
+      "tracked_modified_count": 4,
       "untracked_paths": [],
       "staged_count": 0,
-      "post_commit_worktree_expected_clean": true
+      "post_commit_worktree_expected_clean": true,
+      "scope": "CONTINUITY_DOCS_MACHINE_STATE_ONLY"
     },
     "local_regression": {
       "focused_passed": 61,
@@ -723,7 +725,7 @@
         "duration_seconds": 612.18,
         "warnings": 2
       },
-      "remote_ci": "CI96_FAILED_CORRECTIVE_LOCAL_PASS_PENDING_PUSH",
+      "remote_ci": "CI97_SUCCESS_EXACT_HEAD_746E402E",
       "process_only_environment_stubs": [
         "fake_useragent",
         "json_repair",
@@ -770,7 +772,7 @@
       "global_atomic_subfields_ready": 0,
       "global_atomic_subfields_total": 7
     },
-    "proof_ceiling": "LOCAL_CI96_ROOT_CORRECTION_AND_RELATED1375_PASS_NOT_REMOTE_CI_CURRENT_PRODUCT_DELIVERY_OR_LEARNING",
+    "proof_ceiling": "REMOTE_CI97_ENGINEERING_ACCEPTED_PRODUCT0_OF_72_NOT_FACT_READY_DELIVERY_OR_LEARNING",
     "failed_remote_parent": {
       "head": "6651915ad2bc662fe45006639204a259bbce27c5",
       "ci_run_number": 96,
@@ -780,8 +782,8 @@
     }
   },
   "route_decision": {
-    "next_primary": "GITHUB_CORRECTIVE_COMMIT_PUSH_NATURAL_CI_THEN_B1_M2_49_SOURCE_CHAIN_REENTRY",
-    "reason": "CI96 exact screenshot exposed three independent contract failures. Root corrections pass targeted5 and related1375. Product remains0/72; 23 objects have bounded source capability but49 lack a complete typed source chain. After natural corrective CI, the only Product route is B1/M2 lawful same-asof data, not more count-only indicator work.",
+    "next_primary": "B1_M2_49_SOURCE_CHAIN_REENTRY",
+    "reason": "CI97 accepts exact engineering Head746e after closing all three CI96 failures. Product remains0/72: 23 objects have bounded typed/real-source capability while49 lack a complete typed source chain. The only Product route is lawful same-asof data into original V2.5, not more count-only indicator work.",
     "bounded_indicator_sub_lanes": [
       "MONTHLY_RSI_HISTORY_IF_LEGAL",
       "15M_CONFIRMATION",
@@ -1007,7 +1009,7 @@
     "fresh_project_source_count": 8,
     "duplicate_logical_owners": 0,
     "prepared_successor_pair": null,
-    "prepared_successor_state": "NONE_UNTIL_CORRECTIVE_GITHUB_COMMIT_AND_CI_MATERIAL_CLOSURE",
+    "prepared_successor_state": "GITHUB_CI97_MATERIAL_CLOSURE_REQUIRES_EXTERNAL_PAIRED_01_05_CHECKPOINT",
     "other_six_owners": "KEEP",
     "ninth_source": false
   },
@@ -1091,7 +1093,7 @@
   "current_capability_closure": {
     "schema_version": "stock-dsa-current-capability-closure-v1",
     "industry_valuation_router": {
-      "state": "LOCAL_FOCUSED_PASS_REMOTE_OPEN",
+      "state": "REMOTE_CI97_ACCEPTED_ENGINEERING_PRODUCT_DATA_OPEN",
       "classification_datasets": [
         "P_INDUSTRY",
         "E_BASKET"
@@ -1113,7 +1115,7 @@
       "action_authority": false
     },
     "volume_price_phase": {
-      "state": "LOCAL_FOCUSED_PASS_REMOTE_OPEN",
+      "state": "REMOTE_CI97_ACCEPTED_ENGINEERING_PRODUCT_DATA_OPEN",
       "candidate_states": [
         "ACCUMULATION_CANDIDATE",
         "WASHOUT_CANDIDATE",
@@ -1130,7 +1132,7 @@
       "positive_candidate_upgrades_buy": false
     },
     "narrow_chan_adapter": {
-      "state": "LOCAL_FOCUSED_PASS_REMOTE_OPEN",
+      "state": "REMOTE_CI97_ACCEPTED_ENGINEERING_PRODUCT_DATA_OPEN",
       "source_owner": "price_structure_service confirmed pivots/swings",
       "outputs": [
         "CONFIRMED_FRACTALS",
@@ -1164,7 +1166,7 @@
       "ci96_targeted_failed": 0,
       "full_related_passed": 1375,
       "full_related_failed": 0,
-      "remote_ci": "CI96_FAILED_CORRECTIVE_LOCAL_PASS_PENDING_PUSH"
+      "remote_ci": "CI97_SUCCESS_EXACT_HEAD_746E402E"
     },
     "product_admission": "0_OF_72_UNCHANGED",
     "original_v25_fact_ready": false
@@ -1182,14 +1184,14 @@
       "route": "REUSE_IDENTITY_RIGHTS_V2_NO_FABRICATION"
     },
     "PROCESS_CONSUMER": {
-      "state": "CI96_THREE_ROOT_FAILURES_RED_GREEN_LEGACY_V1_CURRENT_MANIFEST_SPLIT",
+      "state": "CI96_THREE_ROOT_FAILURES_CLOSED_BY_CI97",
       "radius": "LANE_RECURRENT",
-      "route": "NATURAL_CI_REGRESSION"
+      "route": "CLOSED_NO_REPLAY"
     },
     "AUTHORITY_CURRENTNESS": {
-      "state": "SOURCE8_V3543_PASS_CI95_ACCEPTED_BASE_CI96_FAILED_CORRECTIVE_PRECOMMIT",
+      "state": "SOURCE8_V3543_PASS_ENGINEERING_HEAD746E_CI97_SUCCESS",
       "radius": "LANE",
-      "route": "EXACT_GIT_COMMIT_PUSH_NATURAL_CI"
+      "route": "RUNTIME_RECHECK_CONTINUITY_COMMIT_THEN_B1_M2"
     },
     "ENVIRONMENT": {
       "state": "WEBCODEX_PASS_ONE_INCIDENTAL_LITELLM_COST_MAP_TIMEOUT_GET",
@@ -1202,9 +1204,9 @@
       "route": "KEEP_WRAP"
     },
     "DEV_TOOLING": {
-      "state": "TARGETED5_AND_RELATED1375_PASS_REMOTE_CORRECTIVE_CI_OPEN",
+      "state": "REMOTE_CI97_SUCCESS",
       "radius": "LANE",
-      "route": "ATOMIC_COMMIT_PUSH_NATURAL_CI"
+      "route": "ENGINEERING_ACCEPTED_PRODUCT_GATE_OPEN"
     },
     "USER_BURDEN": {
       "state": "NO_MORE_PERMISSION_TOKEN_OR_LOG_UPLOAD",
@@ -1336,6 +1338,20 @@
     },
     "proof_ceiling": "CAPABILITY_AND_GAP_AUDIT_NOT_CURRENT_FACT_ADMISSION"
   },
+  "ci97_remote_acceptance": {
+    "schema_version": "stock-dsa-ci97-remote-acceptance-v1",
+    "head": "746e402e0fff0247fdf153347e66f326573db9ce",
+    "parent": "6651915ad2bc662fe45006639204a259bbce27c5",
+    "tree": "03805ff67f5709a11bed93650c4826b074d72df9",
+    "run_number": 97,
+    "run_id": 41417008187,
+    "conclusion": "success",
+    "pr": 31,
+    "pr_state": "DRAFT_OPEN_NOT_MERGED",
+    "main_unchanged": true,
+    "product_admission": "0_OF_72_UNCHANGED",
+    "fact_ready": false
+  },
   "ci96_corrective_closure": {
     "schema_version": "stock-dsa-ci96-corrective-closure-v1",
     "failed_head": "6651915ad2bc662fe45006639204a259bbce27c5",
@@ -1369,7 +1385,13 @@
       "duration_seconds": 612.18,
       "warnings": 2
     },
-    "remote_corrective_ci": "PENDING_ORDINARY_PUSH",
+    "remote_corrective_ci": {
+      "run_number": 97,
+      "run_id": 41417008187,
+      "head": "746e402e0fff0247fdf153347e66f326573db9ce",
+      "conclusion": "success"
+    },
+    "state": "CLOSED_NO_REPLAY_BY_CI97",
     "main_changed": false,
     "merge_authority": false
   }
