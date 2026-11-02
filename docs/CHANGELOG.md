@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [修复] CI96原生离线套件的三个失败按截图日志根修：旧名称预取不再硬编码2015-02-02而消费当前268个月动态窗口；resume正例不再自行构造有滚动边界的XSHG日历而复用生产会话Owner；新增DISTRIBUTION继续进入当前Manifest，但历史`stock-factor-evidence-v1`字段及`426d7f...`身份冻结，Prediction Ledger不被静默重定义。未改Golden掩盖错误。定点5/5、相关46模块1375/1375通过；自然纠正CI仍独立验收。
+
+- [审计] 新增真实数据/数据库/邮件机器审计：43方法=30现有+13延期，35明确数值叶=24算法准入+11未准入；72个当前Product对象仅23个具备typed适配器/真实探针/既有价格能力下限，49个仍无完整typed来源链，当前Product仍0/72。既有SQLite和表结构存在，但行情、财务、History、Ledger、Outcome、PIT关键表均0有效行；主缺口是合法current facts及storage rights，不是另建数据库。原V2.5消费者可承载单股60、ETF55、组合72及7原子叶，但当前FACT_READY=false、SMTP=0。
+
 - [修复] 新增量价阶段与窄Chan后，宽回归发现两条真实消费者遗漏：`_current_daily_window_plan`没有为`DISTRIBUTION/CHAN`绑定其已复用的Supply+Structure/Pivot warm-up，导致合法记录入口失败；通知完整研究范围仍把CHAN显示为延期。现已将两个方法绑定到现有父Owner的精确历史需求，并在报告中显示`证据不足；窄适配（NOT_FULL_CZSC）`而非“未准入”；不增加新窗口常量、不声称完整CZSC或Product READY。
 
 - [修复] 热点详情的一个总截止时间在Windows粗粒度单调时钟上可连续返回相同剩余值，使串行回退未表现为严格递减预算。保留唯一绝对deadline，用ContextVar记录上一可见预算并仅以`math.nextafter`做最小严格下降；30轮复现和原API负例通过，不延长用户等待、不增加线程/请求/重试或数据权限。

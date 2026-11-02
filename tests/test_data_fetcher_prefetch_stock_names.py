@@ -22,7 +22,7 @@ from data_provider.daily_data_identity import (
     attach_daily_data_identity,
 )
 from data_provider.pytdx_fetcher import PytdxFetcher
-from src.core.pipeline import StockAnalysisPipeline
+from src.core.pipeline import StockAnalysisPipeline, _current_daily_window_plan
 
 
 class _DummyFetcher:
@@ -172,9 +172,11 @@ class TestPrefetchStockNames(unittest.TestCase):
         pipeline.db = MagicMock()
         pipeline.fetcher_manager.get_stock_name.return_value = "贵州茅台"
         pipeline.db.has_today_data.return_value = False
-        pipeline._resolve_resume_target_date = MagicMock(
-            return_value=pd.Timestamp("2026-10-12").date()
-        )
+        target_date = pd.Timestamp("2026-10-12").date()
+        pipeline._resolve_resume_target_date = MagicMock(return_value=target_date)
+        planned_start = _current_daily_window_plan(
+            market="cn", target_date=target_date,
+        )["start_date"]
         # The name-lookup consumer must have typed OBSERVED source identity;
         # a raw DataFrame is correctly rejected upstream.
         frame = pd.DataFrame([{
@@ -188,7 +190,8 @@ class TestPrefetchStockNames(unittest.TestCase):
             actual_response_branch="synthetic:qfq",
             requested_adjustment_basis="qfq", observed_adjustment_basis="qfq",
             basis_evidence="synthetic test contract only",
-            requested_start="2015-02-02", requested_end="2026-10-12",
+            requested_start=planned_start.isoformat(),
+            requested_end=target_date.isoformat(),
             currency="CNY", volume_unit="share", amount_unit="CNY",
             identity_state="OBSERVED",
             observed_at=datetime(2026, 10, 12, 12, tzinfo=timezone.utc),
@@ -212,11 +215,11 @@ class TestPrefetchStockNames(unittest.TestCase):
         self.assertIn("end_date", fetch_args.kwargs)
         start = pd.Timestamp(fetch_args.kwargs["start_date"]).date()
         end = pd.Timestamp(fetch_args.kwargs["end_date"]).date()
-        self.assertEqual(end, pd.Timestamp("2026-10-12").date())
-        # B5 accepted independent method-window contract: 268 weekly bars
-        # and 140 monthly bars require the earlier completed XSHG history.
-        # The old 2023-06-01 name-prefetch fixture must not truncate MTF.
-        self.assertEqual(start, pd.Timestamp("2015-02-02").date())
+        self.assertEqual(end, target_date)
+        # The lightweight name path must consume the exact B5 method-window
+        # plan rather than a stale calendar date.  The independent XSHG 268-month
+        # test locks the current 2004-06-01 session boundary and holiday negatives.
+        self.assertEqual(start, planned_start)
         self.assertLess(start, pd.Timestamp("2023-06-01").date())
         self.assertNotEqual((end - start).days, 1100)
 

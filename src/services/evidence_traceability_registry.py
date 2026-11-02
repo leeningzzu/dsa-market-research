@@ -1688,9 +1688,21 @@ def strategy_contract_coverage() -> tuple:
 
 
 def ledger_evidence_keys() -> tuple[str, ...]:
-    # Existing v1 audit schema preserved; the registry owns this set from now on.
-    return ("strategy_id", "contract_version", "composite_score", "canonical_decision") + tuple(
-        b.path for b in EVIDENCE_BINDINGS if b.ledger)
+    """Return the immutable stock-factor-evidence-v1 audit field set."""
+    return (
+        "strategy_id", "contract_version", "composite_score", "canonical_decision",
+        "market_sector_regime", "trend_relative_strength",
+        "supply_demand_volume_price", "cost_structure_evidence",
+        "price_structure_evidence", "volatility_momentum_evidence",
+        "pattern_trigger_evidence", "multi_timeframe_structure_context",
+    )
+
+
+def current_manifest_evidence_keys() -> tuple[str, ...]:
+    """Return current traced evidence fields without redefining legacy v1."""
+    return (
+        "strategy_id", "contract_version", "composite_score", "canonical_decision",
+    ) + tuple(binding.path for binding in EVIDENCE_BINDINGS if binding.ledger)
 
 
 # Leaf identities are also the numeric/state learning allowlist. No paragraph is a feature.
@@ -1816,7 +1828,7 @@ def manifest_document() -> dict:
             "metrics": METRIC_BINDINGS, "product_slots": load_slot_map(),
             "method_contracts": {b.requirement_id: method_contract(b) for b in EVIDENCE_BINDINGS},
             "strategy": {"strategy_id": STOCK_STRATEGY, "bindings": [asdict(b) for b in STRATEGY_BINDINGS]},
-            "ledger_keys": ledger_evidence_keys(), "timeframes": TIMEFRAMES,
+            "ledger_keys": current_manifest_evidence_keys(), "timeframes": TIMEFRAMES,
             "data_policy": {"completed_only": True, "source_mixing": False, "units": "EXPLICIT_SOURCE_UNITS",
                             "price_basis": "EXPLICIT_RAW_QFQ_HFQ", "availability": "KNOWN_AT_DECISION"},
             "product_policy": "SEMANTIC_SIDECAR_ONLY_NOT_RENDERED", "learning_policy": "NO_PROSE_FEATURES"}

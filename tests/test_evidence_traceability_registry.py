@@ -228,10 +228,12 @@ def test_registry_owners_and_strategy_are_source_bound():
 def test_legacy_audit_membership_and_hash_are_not_redefined():
     expected = ("strategy_id", "contract_version", "composite_score", "canonical_decision",
                 "market_sector_regime", "trend_relative_strength", "supply_demand_volume_price",
-                "distribution_risk_evidence", "cost_structure_evidence", "price_structure_evidence", "volatility_momentum_evidence",
+                "cost_structure_evidence", "price_structure_evidence", "volatility_momentum_evidence",
                 "pattern_trigger_evidence", "multi_timeframe_structure_context")
     assert reg.ledger_evidence_keys() == expected
-    assert reg.digest({"schema_version": "stock-factor-evidence-v1", "fields": list(expected)}) == "a50e9f95e5fb1ada1a2597c1162c9c074f7c76540e656350eee5595c11f6f270"
+    assert reg.digest({"schema_version": "stock-factor-evidence-v1", "fields": list(expected)}) == "426d7f21de79ad26e12ea39b4c686b489b90dc24d88f0750bcb5aec421265647"
+    assert "distribution_risk_evidence" not in reg.ledger_evidence_keys()
+    assert "distribution_risk_evidence" in reg.current_manifest_evidence_keys()
 
 
 def test_orphan_strategy_and_duplicate_bindings_are_rejected():

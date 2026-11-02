@@ -3,12 +3,12 @@
 > 本文是现有DSA机器图、执行合同和运行证据的维护者视图，不是新的Source、策略、数据库、调度器或报告权威。机器可读不变量见 `docs/stock-dsa-stage-baseline-v1.json`；真实状态仍由GitHub代码、CI、运行回执和合法数据证据决定。
 
 <!-- CURRENT_MASTER_CONTROL_START -->
-## 当前控制页：GitHub连续性、五级目标与完整研究边界（2026-11-02）
+## 当前控制页：CI96根修、真实数据能力和完整邮件边界（2026-11-02）
 
-CONTROL_ID = STOCK_DSA_MASTER_ROUTE_20261102_GITHUB_CONSOLIDATION_INDUSTRY_VALUATION_VOLUME_PHASE_NARROW_CHAN
-SOURCE_AUTHORITY = Project Source恰好8个唯一Owner，01/05为v3.543；旧v3.542已删除。文件内“prepared”切点由三次最新物理清单覆盖。
-GIT_AUTHORITY = 唯一允许仓库 `https://github.com/leeningzzu/dsa-market-research.git`。远端已接受基线仍为 feature HEAD `37e453f729b0f9ad1cec6d8b27457916b7982142` / CI95；包含本文的候选提交必须从Git运行时解析，普通non-force推送到现有feature，PR #31保持Draft/Open/未merge，禁止main直推、force、rebase、squash、手动CI dispatch、Settings/Secrets及旧/private仓库复活。
-IMMUTABLES = 原机器图149628字节/775边/SHA256 `b4f69f76807ac44bc0fea1a03f9aa38484b6083ca574a3699220b0564ac55aed`；原V2.5 125919字节/SHA256 `039ca6394baf9cf39494cc29f512802b114c8227f8c965723197a8df4b9de823`。本文与Stage JSON仅为当前状态投影，不替代二者。
+CONTROL_ID = STOCK_DSA_MASTER_ROUTE_20261102_CI96_CORRECTION_REAL_DATA_READINESS_AUDIT
+SOURCE_AUTHORITY = Project Source恰好8个唯一Owner，01/05为v3.543；旧v3.542已删除。Source中的本地51/73切点是前驱，exact Git/CI和本页后继优先。
+GIT_AUTHORITY = 唯一允许仓库 `https://github.com/leeningzzu/dsa-market-research.git`。CI95接受基线为feature HEAD `37e453f729b0f9ad1cec6d8b27457916b7982142`；远端feature HEAD `6651915ad2bc662fe45006639204a259bbce27c5` 的自然CI96失败。包含本文的提交是6651915后的纠正候选，必须普通non-force推送现有feature并由新的自然CI判定；PR #31保持Draft/Open/未merge，禁止main直推、force、rebase、squash、手动CI dispatch、Settings/Secrets及旧/private仓库复活。
+IMMUTABLES = 原机器图149628字节/775边/SHA256 `b4f69f76807ac44bc0fea1a03f9aa38484b6083ca574a3699220b0564ac55aed`；原V2.5 125919字节/SHA256 `039ca6394baf9cf39494cc29f512802b114c8227f8c965723197a8df4b9de823`。历史`stock-factor-evidence-v1`字段及SHA256 `426d7f21de79ad26e12ea39b4c686b489b90dc24d88f0750bcb5aec421265647`保持冻结；当前Manifest可包含DISTRIBUTION，但不得静默改写v1 Ledger。
 PROOF_COLUMNS = Code/contract、Actual source/method execution、Product admission、Original V2.5 delivery、Ledger/PIT/model五列独立验收，禁止相互替代。
 
 ### 0.1 父目标和五级纵向对齐
@@ -16,8 +16,8 @@ PROOF_COLUMNS = Code/contract、Actual source/method execution、Product admissi
 - **Program**：合法known-at数据→白盒证据→相关性去重与Data/Risk/Liquidity/Execution veto→唯一canonical→完整Report/Email→合法Ledger/Outcome/PIT→独立OOT/校准/Shadow/Promotion；不自动交易、不保证收益。
 - **Product**：Global→A股市场/宽度/资金/信用/估值→行业分类/行业RS/行业估值→ETF专项与个股质量估值→月/周/日/60m/30m/15m/5m八族证据→同一canonical和不压缩V2.5。
 - **Lane**：G0 GitHub；B1来源/权利；B5方法/动态窗口；M2市场/行业/ETF；B8完整报告；L1合法记录/PIT；M3模型校准；P1显式Promotion。兄弟Lane不互相冒充。
-- **Milestone**：当前Milestone是把长期本地59路径候选（55个已跟踪修改＋4个新文件）整合为一个可审查GitHub feature提交，包含行业估值路由、量价阶段候选、窄Chan、此前7×8/数据准入/报告消费者及本轮跨消费者修复，并由自然CI决定远端接受；不等于Product72或邮件已完成。
-- **Atomic**：每个变更必须绑定现有Owner、实际消费者、独立RED、合法nontrigger、回滚路径和proof ceiling；禁止只登记方法名或只更新文档。
+- **Milestone**：当前Milestone是关闭CI96截图中的三个原生失败，并把方法、真实来源能力、数据库空表、Product和邮件缺口形成同一机器可读基线；不等于Product72或邮件已完成。
+- **Atomic**：旧固定2015窗口改为消费生产动态计划；resume测试改用生产交易日历Owner；Legacy Ledger v1与当前Manifest拆分冻结。每项保留负例和回滚路径。
 
 ```mermaid
 flowchart TD
@@ -39,62 +39,69 @@ flowchart TD
   CANONICAL --> B8
   G0 -. exact code authority .-> B5
   ATOMIC[Atomic Owner→consumer→RED/GREEN→rollback] --> G0
-  HORIZONTAL[Horizontal: rights/privacy/known-at/version/cost/user burden/stop-loss] -. governs .-> B1
-  HORIZONTAL -. governs .-> B5
-  HORIZONTAL -. governs .-> M2
-  HORIZONTAL -. governs .-> B8
 ```
 
 ### 0.2 当前实现与明确边界
 
 | 能力 | 当前实现 | 不得夸大的边界 |
 |---|---|---|
-| 7周期K线/均线/量价/成本/动量/形态 | 完成bar、XSHG会话、5m→15/30/60m、日→周/月、逐方法动态窗口和递归稳定；39日合法返回后缀不再被错误丢弃 | 共享抓取最长窗不等于所有方法READY；未完成bar、缺单位/来源/权利保持MISSING/UNKNOWN |
-| 八证据族 | 56/56格有Owner/回执/来源或missingness；REGIME共享一次；Stock benchmark RS与ETF peer RS按完整bar网格对齐 | 八族不是八票；同源同摆动去重；测试/结构完整不等于真实56 READY |
-| 行业估值 | `P_INDUSTRY/E_BASKET` dated classification→行业family→九条既有估值路线；成熟消费/工业、高成长科技、银行、保险、周期资源、公用事业、REIT、亏损早期成长、ETF各用不同primary method并保留cross-check | 禁止公司名猜行业、通用PE兜底、假定倍数、ETF套股票ROE/PE；分类、盈利状态、known-at或Product缺失即拒绝 |
-| 吸筹/洗盘/出货/派发 | 量价Supply与已确认Structure共同产生 `ACCUMULATION/WASHOUT/DISTRIBUTION/MARKUP/MARKDOWN_CANDIDATE`；仅严格回执的派发/下跌候选可形成去重风险veto | 只表示可观察候选，不识别“主力”、机构意图或操纵；吸筹/洗盘候选不能自动升级BUY，单一量价代理不能重复投票 |
-| Chan窄适配 | 复用已确认Pivot/Swing，生成confirmed fractals、strokes及三笔价格重叠候选；prefix replay冻结几何核心并允许合法失效生命周期更新 | 明确 `NOT_FULL_CZSC`；未实现包含处理/线段/完整中枢/背驰/买卖点交易器；无独立行动、strategy、learning或data-rights authority |
-| 全球/大盘/市场/行业 | Treasury源和部分沪深300/货币/行业分类已有source-observed证据；BLS权利合同有效但当前host曾403 | Global18/CNMarket18/Sector7未形成同一as-of完整Product；指数价格不能替代宽度/成分/资金/信用/估值 |
-| 个股质量与估值 | 九条估值公式、质量/财务输入合同和行业路由已接 | 当前600519财务revision、绝对债务/资产、正式估值假设及交叉核验仍非完整Product |
-| ETF专项 | 价格、peer RS与技术链已有；ETF路由强制独立 | NAV/IOPV、份额、折溢价、点差、跟踪、篮子与底层指数估值未全准入 |
-| V2.5 | 原件不变；逐方法/逐周期数值仅在Product+回执+来源同时通过后显示 | 旧84周期空数值邮件已撤销；结构数、HTML生成或Source-observed DETAIL不能冒充FACT_READY/实收 |
+| 7周期K线/均线/量价/成本/动量/形态 | 完成bar、XSHG会话、5m→15/30/60m、日→周/月、逐方法动态窗口和递归稳定；268个月规划可到2004-06-01 | 共享抓取最长窗不等于所有方法READY；未完成bar、缺单位/来源/权利保持MISSING/UNKNOWN |
+| 八证据族 | 56/56格有Owner/回执/来源或missingness；REGIME共享一次；Stock benchmark RS与ETF peer RS按完整bar网格对齐 | 八族不是八票；测试/结构完整不等于真实56 READY或Product-bound |
+| 方法与数值叶 | 43方法中30个EXISTING_REUSED、13个DEFERRED；35个显式数值叶中24个算法准入、11个METHOD_NOT_ADMITTED | 实现方法不等于当前真实值；ADX/DMI、BOLL、KDJ、OBV/ADL、MFI等仍不得显示为已计算 |
+| 行业估值 | `P_INDUSTRY/E_BASKET` dated classification→行业family→九条估值路线 | 禁止公司名猜行业、通用PE兜底、假定倍数、ETF套股票估值；分类/盈利/known-at/Product缺失即拒绝 |
+| 吸筹/洗盘/出货/派发 | Supply与已确认Structure产生可审计阶段候选；仅严格不利候选可形成去重风险veto | 只表示可观察候选，不识别“主力”、机构意图或操纵；正向候选不能自动升级BUY |
+| Chan窄适配 | confirmed fractals、strokes和三笔重叠候选；prefix replay冻结几何 | `NOT_FULL_CZSC`；无完整线段/中枢/背驰/买卖点/独立行动权限 |
+| 真实来源能力 | 72个当前Product对象中23个至少已有typed适配器、真实探针或既有价格生产能力；49个仍无完整typed来源链 | 23不是Product READY：本次运行的权利、单位、known-at、revision/vintage及回执未同时通过，当前仍0/72 |
+| 数据库 | `data/stock_analysis.db`及既有表结构存在 | stock_daily、fundamental_snapshot、screening/history、Prediction Ledger、Outcome、PIT等关键Product表当前均0行；不是缺DB框架，而是无合法可写事实 |
+| V2.5 | 原件不变；3封邮件/10卡/84周期/76对象/9估值路线/7原子叶已有消费者投影 | 当前FACT_READY=false、SMTP=0；结构和空状态不能冒充真实数值邮件 |
 
-### 0.3 方法与机器状态
+### 0.3 CI96根因与回归
 
-- 43个方法Profile当前为 **30个EXISTING_REUSED / 13个DEFERRED_WITH_OWNER_AND_REENTRY**；原始声明对34，有效执行对154。DISTRIBUTION与CHAN从延期目录进入daily实际Owner，但不新增相关指标投票。
-- 仍延期：RISK_REWARD、ADX_DMI、BOLLINGER、KDJ、OBV_ADL、MFI、VWAP、AVWAP_VOLUME_PROFILE、WAVE、ETF_SPECIFIC、GLOBAL、BREADTH、PROBABILITY等。延期不等于遗漏，也不能为提高完成率强行实现。
-- 本次新增焦点链61/61 PASS；43个相关模块完整回归1340/1340 PASS（580.56秒，2个第三方/收集警告）。测试使用忽略目录中的进程级可选依赖等价桩，不安装依赖、不改变生产代码或断言；自然PR CI仍是独立远端门禁。
-- Product仍为0/72。用户对内部研究运行的授权已经记录，不再要求重复上传许可；但软件/API说明、运行授权和上游数据Product/storage/training/redistribution权利是不同事实。当前GitHub整合不发起Provider读取，不改变Product计数。
+- CI96（Run `41402275878`，HEAD `6651915...`）实际为 **6812 passed / 3 failed / 30 deselected / 31 warnings**。失败均来自截图原生日志，不再依赖匿名API日志。
+- 失败1：旧名称预取测试硬编码2015-02-02，已改为消费当前动态窗口；当前268个月合法起点为2004-06-01。
+- 失败2：resume测试自行构造默认XSHG日历，绕过生产扩展日历Owner并触发DateOutOfBounds；已改为消费`resolve_session_range_fail_closed`。
+- 失败3：新增DISTRIBUTION静默改变`stock-factor-evidence-v1`哈希；已将Legacy v1字段冻结，同时让当前Manifest继续持有DISTRIBUTION，禁止改Golden掩盖破坏。
+- 定点兼容回归5/5 PASS；扩大股票相关46模块 **1375/1375 PASS（612.18秒，2 warning）**。本机缺少的lark-oapi/AkShare/python-multipart等仅用进程内等价接口桩，不安装、不改生产依赖或断言；新的自然PR CI仍是独立门禁。
 
-### 0.4 横向门禁与Role Review
+### 0.4 真实数据、数据库和邮件差额
+
+| 口径 | 已有 | 仍缺 | 结论 |
+|---|---:|---:|---|
+| 方法Profile | 30/43 | 13 | 代码可继续实现，但不能替代数据Product |
+| 明确数值叶 | 24/35 | 11 | 11项当前必须显示NOT_ADMITTED |
+| 当前Product数据对象 | 0/72 | 72 | 所有对象均未形成本次可交付Product |
+| typed/真实来源能力 | 23/72 | 49 | 23仅表示生产能力下限，不表示当前事实准入 |
+| 单股票邮件适用对象 | 0/60 | 60 | ETF对象不计入单股分母 |
+| 单ETF邮件适用对象 | 0/55 | 55 | 股票财务对象不计入ETF分母 |
+| Global Golden原子叶 | 0/7 | 7 | 3个BLS适配器受403/条款阻断，4个仍无生产者 |
+| Product关键数据库表 | 0有效行 | 全部当前事实/记录 | 当前报告可run-local；Ledger/PIT/Probability必须等合法存储与Outcome |
+
+49个无完整typed来源链分为：22个没有当前typed生产者、24个只有消费者/部分代码、3个只有直接快照调用但无typed/rights准入。其余23个包括4个价格、14个BaoStock非价格、1个指数来源、1个Treasury及3个新增SSE ETF披露能力；它们全部仍受当前权利/时点/版本门禁，因此Product计数不变。
+
+**能否最终生成全部基于真实数据的原V2.5邮件：架构上可以，当前不能。**不需要重画模板或第二套数据库；需要让单股60、单ETF55、组合72和7原子叶按各自适用性获得同一as-of的合法回执。MISSING可以真实显示，但不得以缺失文本冒充“所有指标已有真实值”。
+
+### 0.5 Role Review与连续性
 
 | Role | 当前结论 | 半径/处置 |
 |---|---|---|
-| PRODUCT | 7TF×8、行业估值、量价阶段、窄Chan工程消费者本地PASS；完整Global/Market/Sector/Quality/ETF事实与FACT_READY邮件STOP | CROSS_LANE；KEEP DSA、NARROW合法数据纵向切片 |
-| DATA_MODEL | 动态窗口/来源身份/known-at规则成熟；Product0/72、财报vintage与ETF专项仍缺 | CROSS_LANE；REUSE现有Identity/Rights-v2，禁止伪造 |
-| PROCESS_CONSUMER | 已修复39日后缀丢失、RS仅端点对齐、行业估值无路由、阶段证据无canonical consumer、Chan仅目录延期 | LANE_RECURRENT；RED→GREEN并扫描同族 |
-| AUTHORITY_CURRENTNESS | Source8 v3.543 PASS；公共origin/base HEAD明确；当前候选必须commit/push/natural CI后才是远端候选 | INSTANCE→LANE；exact Git永远优先本文 |
-| ENVIRONMENT | WebCodex Local可用；测试使用进程内可选依赖桩；一次诊断漏设LiteLLM本地成本表导致超时GET，未产生模型调用或事实消费 | INSTANCE_ONLY；所有后续入口预先设置本地cost map |
-| ADAPTER_INTERFACE | 继续用现有DSA Pipeline/Registry/Factor/V2.5；Chan为窄适配器 | KEEP/WRAP；不安装CZSC/LEAN/OpenBB/Freqtrade整栈 |
-| DEV_TOOLING | 焦点61/61与相关模块1340/1340 PASS；远端自然CI待执行 | LOCAL_PASS/REMOTE_OPEN；禁止改Golden、xfail或用进程桩冒充完整运行时安装 |
-| USER_BURDEN | Source旧542已由用户删除；后续确定性Git/测试机器执行 | SIMPLIFY；不再要求许可原文、Token或日志搬运 |
+| PRODUCT | 7TF×8、行业估值、阶段候选、窄Chan和邮件消费者工程PASS；Product0/72、FACT_READY STOP | CROSS_LANE；下一主线是合法数据，不再堆指标 |
+| DATA_MODEL | 动态窗口和来源身份成熟；23有能力/49来源链缺口、7原子叶、财报vintage与ETF专项仍缺 | CROSS_LANE；复用Identity/Rights-v2，禁止伪造 |
+| PROCESS_CONSUMER | CI96三个根因已RED→GREEN；Legacy Ledger和Current Manifest分离 | LANE_RECURRENT；保留自然CI回归 |
+| AUTHORITY_CURRENTNESS | Source8 v3.543 PASS；CI95为接受基线，CI96为失败证据；纠正提交需自然CI | LANE；exact Git/CI优先 |
+| ENVIRONMENT | WebCodex Local可用；可选依赖仅测试进程桩 | INSTANCE_ONLY；不安装、不把桩当生产能力 |
+| ADAPTER_INTERFACE | 单一DSA Pipeline/Registry/V2.5/DB；不建第二Shell | KEEP/WRAP |
+| DEV_TOOLING | 定点5/5、相关1375/1375 PASS；远端纠正CI待运行 | LOCAL_PASS/REMOTE_OPEN |
+| USER_BURDEN | 无需用户Token、日志搬运或重复授权文本 | SIMPLIFY |
 
 CURRENT_ROUTE_STILL_WORTH_CONTINUING = YES_KEEP_ONLY_DSA
 INSTRUCTIONS_UPDATE_DECISION = NO_DELTA_KEEP
-SOURCE_UPDATE_DECISION = v3.543保持当前；本次GitHub material closure完成后再按实际commit/CI生成一对新checkpoint，不机械更新八份Source。
+SOURCE_UPDATE_DECISION = v3.543保持当前；纠正提交及自然CI形成material closure后再生成01/05下一checkpoint。
 
-### 0.5 GitHub是跨模型连续性的唯一代码基线
+### 0.6 GitHub是跨模型连续性的唯一代码基线
 
-任何后续模型必须按以下顺序重入：
+任何后续模型必须读取`AGENTS.md`、本文和Stage JSON，实际核origin/HEAD/tree/status/PR/CI；不得用嵌入SHA替代运行时。每项新能力必须进入生产Owner、实际consumer、独立负例、合法nontrigger、机器JSON和自然CI。禁止main直推、force/rebase/squash、手动CI重跑、merge/release，除非有新的精确授权。
 
-1. 读取 `AGENTS.md`、本文、`docs/stock-dsa-stage-baseline-v1.json`；核对Project Source恰好8个Owner及01/05 IDs。
-2. 实际执行 `git remote get-url origin`、HEAD/tree、branch/worktree/staged/untracked；只接受公共 `leeningzzu/dsa-market-research.git`。本文中的SHA/CI只代表写入时观察，不能替代新鲜Git证据。
-3. 核对现有feature/PR #31/main与自然CI；禁止从目录名、旧私有display name或旧Chat选择权威。
-4. 先消费当前方法/数据/产品/交付/学习五列证明，再选择唯一下一步；CLOSED/SUPERSEDED不重跑。
-5. 任何新能力必须同时进入：生产Owner、实际consumer、负例、合法nontrigger、本文状态投影、机器JSON和自然CI。只更新聊天/Source/方法目录不算完成。
-6. 禁止main直推、force/rebase/squash、手动CI重跑、PR正文改写、Settings/Secrets、merge/release，除非有新的精确授权。
-
-UNIQUE_NEXT_STEP = 本地相关回归已PASS；把当前明确59路径allowlist作为一个英文原子commit普通推送现有feature，观察自然PR CI；不merge。CI结果成为GitHub当前候选证据。随后返回B1/M2同一as-of全域事实和原V2.5数值叶，不再机械增加指标或重做7×8。
+UNIQUE_NEXT_STEP = 把CI96三个根修、Legacy Ledger/Current Manifest分离和本真实数据审计作为一个英文原子纠正提交普通推送现有feature，观察自然PR CI；不merge。远端通过后返回B1/M2，以49个来源链缺口而不是13个指标公式作为唯一Product主线。
 <!-- CURRENT_MASTER_CONTROL_END -->
 
 ## 1. GitHub是后续工程基线

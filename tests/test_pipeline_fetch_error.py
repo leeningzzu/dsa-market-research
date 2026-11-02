@@ -91,15 +91,18 @@ class PipelineFetchErrorTestCase(unittest.TestCase):
         pipeline.fetcher_manager.get_stock_name.return_value = "贵州茅台"
         pipeline.db.has_today_data.return_value = True
         # A genuine resume nontrigger needs the complete *current method*
-        # history, not just a mocked latest-date flag.
-        import exchange_calendars as xcals
+        # history, not just a mocked latest-date flag.  Use the production
+        # calendar owner because the default exchange_calendars object has a
+        # moving ~20-year schedule boundary and cannot prove the 268-month plan.
         from src.core.pipeline import _current_daily_window_plan
+        from src.core.trading_calendar import resolve_session_range_fail_closed
 
         effective = date(2026, 3, 27)
         window = _current_daily_window_plan(market="cn", target_date=effective)
-        sessions = xcals.get_calendar("XSHG").sessions_in_range(
-            window["start_date"], effective,
+        sessions = resolve_session_range_fail_closed(
+            "cn", window["start_date"], effective,
         )
+        self.assertIsNotNone(sessions)
         current_time = datetime(2026, 3, 28, 1, 0, tzinfo=timezone.utc)
         pipeline.db.get_data_range.return_value = _typed_cache_rows(
             sessions,
