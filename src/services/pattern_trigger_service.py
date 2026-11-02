@@ -8,7 +8,7 @@ market data, and never creates independent action authority.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from hashlib import sha256
 import json
 from math import isfinite
@@ -18,7 +18,10 @@ import pandas as pd
 
 from data_provider.daily_data_identity import bind_verified_daily_source_view
 
-from src.services.candlestick_pattern_service import build_candlestick_pattern_context
+from src.services.candlestick_pattern_service import (
+    build_candlestick_pattern_context,
+    build_completed_timeframe_candlestick_context,
+)
 
 
 PATTERN_TRIGGER_SCHEMA_VERSION = "pattern-trigger-v1"
@@ -714,6 +717,491 @@ def _primary_pattern(patterns: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]
             _pattern_priority(item),
         ),
     )
+
+
+_COMPLETED_PATTERN_TIMEFRAMES = frozenset({
+    "monthly", "weekly", "60m", "30m", "15m", "5m",
+})
+_COMPLETED_PATTERN_TEMPORAL_KEYS = frozenset({
+    "origin_time", "geometry_confirmed_at", "confirmed_at",
+    "confirmed_available_at", "invalidated_at", "event_time",
+    "level_origin_time", "level_confirmed_at", "triggered_at",
+})
+
+
+def _completed_pattern_stamp(value: Any) -> Optional[pd.Timestamp]:
+    stamp = pd.to_datetime(value, errors="coerce", utc=True)
+    return None if pd.isna(stamp) else pd.Timestamp(stamp)
+
+
+def _completed_pattern_empty(
+    base: Dict[str, Any], *, status: str, reason: str,
+    observations: int = 0, candlestick: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    return {
+        **base,
+        "status": status,
+        "reason": reason,
+        "observations": observations,
+        "source_alignment": {
+            "status": "UNPROVEN", "sources": [], "rows_complete": False,
+            "observations": observations,
+        },
+        "candlestick": candlestick or {
+            # Preserve the exact parent blocker (typed identity, timestamp,
+            # source alignment, etc.) so Registry/V2.5 never hide the real
+            # fail-closed reason behind a generic nested placeholder.
+            "status": status, "reason": reason,
+            "events": [], "material": False,
+        },
+        "patterns": [],
+        "primary_pattern": None,
+        "pattern_count": 0,
+        "broad_patterns": {
+            "status": status,
+            "reason": reason,
+            "timeframe": base.get("timeframe"),
+            "source_identity_hash": base.get("source_identity_hash"),
+            "completed_bar_only": True,
+            "patterns": [],
+            "primary_pattern": None,
+            "pattern_count": 0,
+            "independent_action_authority": False,
+            "strategy_admitted": False,
+            "learning_admitted": False,
+            "data_rights_admitted": False,
+        },
+        "historical_replay_eligible": False,
+        "independent_action_authority": False,
+        "strategy_admitted": False,
+        "learning_admitted": False,
+        "data_rights_admitted": False,
+    }
+
+
+def _remap_completed_pattern(
+    value: Any, *, synthetic_to_actual: Dict[str, str], timeframe: str,
+) -> Any:
+    if isinstance(value, list):
+        return [
+            _remap_completed_pattern(
+                item, synthetic_to_actual=synthetic_to_actual, timeframe=timeframe,
+            )
+            for item in value
+        ]
+    if not isinstance(value, dict):
+        return value
+    result: Dict[str, Any] = {}
+    for key, item in value.items():
+        if key in _COMPLETED_PATTERN_TEMPORAL_KEYS and isinstance(item, str):
+            result[key] = synthetic_to_actual.get(item, item)
+        else:
+            result[key] = _remap_completed_pattern(
+                item, synthetic_to_actual=synthetic_to_actual, timeframe=timeframe,
+            )
+    if "duration_sessions" in result:
+        result["duration_completed_bars"] = result.pop("duration_sessions")
+    if "separation_sessions" in result:
+        result["separation_completed_bars"] = result.pop("separation_sessions")
+    if "window_sessions" in result:
+        result["window_completed_bars"] = result.pop("window_sessions")
+    if "start_date" in result and isinstance(result.get("start_date"), str):
+        result["start_bar_end"] = synthetic_to_actual.get(
+            result.pop("start_date"), result.get("start_date"),
+        )
+    if "end_date" in result and isinstance(result.get("end_date"), str):
+        result["end_bar_end"] = synthetic_to_actual.get(
+            result.pop("end_date"), result.get("end_date"),
+        )
+    if isinstance(result.get("effective_parameters"), dict):
+        parameters = dict(result["effective_parameters"])
+        converted = {}
+        for key, item in parameters.items():
+            converted[
+                key.replace("_sessions", "_completed_bars")
+            ] = item
+        converted["timeframe"] = timeframe
+        converted["window_unit"] = "COMPLETED_BARS"
+        result["effective_parameters"] = converted
+    pivots = result.get("ordered_pivots")
+    if isinstance(pivots, list):
+        pivot_ids = []
+        for pivot in pivots:
+            if not isinstance(pivot, dict):
+                continue
+            price = _safe_float(pivot.get("price"))
+            identity = (
+                f"{pivot.get('kind')}:{pivot.get('origin_time')}:"
+                f"{pivot.get('confirmed_at')}:"
+                f"{price:.6f}" if price is not None else
+                f"{pivot.get('kind')}:{pivot.get('origin_time')}:{pivot.get('confirmed_at')}"
+            )
+            pivot["pivot_id"] = identity
+            pivot_ids.append(identity)
+        if pivot_ids:
+            result["correlation_group"] = "same_swing:" + ":".join(pivot_ids)
+            identity_payload = {
+                "pattern_type": result.get("pattern_type"),
+                "subtype": result.get("subtype"),
+                "pivot_ids": pivot_ids,
+                "config_hash": CONFIG_HASH,
+            }
+            result["pattern_id"] = sha256(json.dumps(
+                identity_payload, sort_keys=True, separators=(",", ":"),
+            ).encode("utf-8")).hexdigest()[:20]
+    return result
+
+
+def build_completed_timeframe_pattern_context(
+    *,
+    stock_code: str,
+    history: Any,
+    timeframe: str,
+    target_bar_end: Any,
+    market: Optional[str] = None,
+    price_structure_context: Any = None,
+    supply_demand_context: Any = None,
+    source_identity_hash: Optional[str] = None,
+    evidence_available_at: Any = None,
+) -> Dict[str, Any]:
+    """Run existing classical-base geometry on one typed completed-bar frame.
+
+    Timestamp-to-ordinal mapping is internal only: all returned pivot, lifecycle,
+    confirmation and invalidation clocks are restored to the exact source bar
+    timestamps.  The existing daily formulas and thresholds remain the oracle.
+    """
+    target = _completed_pattern_stamp(target_bar_end)
+    available = _completed_pattern_stamp(
+        evidence_available_at if evidence_available_at is not None else target_bar_end
+    )
+    base = {
+        "schema_version": "completed-timeframe-pattern-trigger-v1",
+        "family": "pattern_trigger",
+        "stock_code": str(stock_code or "").strip(),
+        "market": str(market or "").strip().lower() or None,
+        "timeframe": timeframe,
+        "target_bar_end": target.isoformat() if target is not None else None,
+        "completed_bar_only": True,
+        "algorithm_version": ALGORITHM_VERSION,
+        "config_hash": CONFIG_HASH,
+        "source_identity_hash": source_identity_hash,
+        "effective_parameters": {
+            **{
+                key.replace("_sessions", "_completed_bars"): item
+                for key, item in _CONFIG.items()
+            },
+            "timeframe": timeframe,
+            "window_unit": "COMPLETED_BARS",
+        },
+        "hard_veto": False,
+        "independent_action_authority": False,
+        "strategy_admitted": False,
+        "learning_admitted": False,
+        "data_rights_admitted": False,
+        "automatic_strategy_switching": False,
+        "institutional_intent_inferred": False,
+        "same_swing_double_counting": "PROHIBITED",
+    }
+    if timeframe not in _COMPLETED_PATTERN_TIMEFRAMES:
+        return _completed_pattern_empty(
+            base, status="UNKNOWN", reason="TIMEFRAME_UNSUPPORTED",
+        )
+    if target is None or available is None:
+        return _completed_pattern_empty(
+            base, status="UNKNOWN", reason="TARGET_OR_AVAILABLE_AT_INVALID",
+        )
+    if not isinstance(source_identity_hash, str) or (
+        len(source_identity_hash) != 64
+        or any(char not in "0123456789abcdef" for char in source_identity_hash)
+    ):
+        return _completed_pattern_empty(
+            base, status="UNKNOWN", reason="TYPED_SOURCE_IDENTITY_MISSING",
+        )
+    required = ["date", "open", "high", "low", "close", "data_source"]
+    if not isinstance(history, pd.DataFrame) or history.empty or any(
+        column not in history.columns for column in required
+    ):
+        return _completed_pattern_empty(
+            base, status="MISSING", reason="COMPLETED_OHLC_MISSING",
+        )
+    frame = history.copy()
+    frame["date"] = pd.to_datetime(frame["date"], errors="coerce", utc=True)
+    if frame["date"].isna().any():
+        return _completed_pattern_empty(
+            base, status="UNKNOWN", reason="TIMEFRAME_BAR_TIMESTAMP_INVALID",
+            observations=int(len(frame)),
+        )
+    if frame["date"].duplicated().any():
+        return _completed_pattern_empty(
+            base, status="UNKNOWN", reason="TIMEFRAME_BAR_TIMESTAMP_DUPLICATE",
+            observations=int(len(frame)),
+        )
+    if not frame["date"].is_monotonic_increasing:
+        return _completed_pattern_empty(
+            base, status="UNKNOWN", reason="TIMEFRAME_BAR_ORDER_INVALID",
+            observations=int(len(frame)),
+        )
+    frame = frame[frame["date"] <= target].copy().reset_index(drop=True)
+    if frame.empty or frame.iloc[-1]["date"] != target:
+        return _completed_pattern_empty(
+            base, status="MISSING", reason="TARGET_COMPLETED_BAR_MISSING",
+            observations=int(len(frame)),
+        )
+    for column in ("open", "high", "low", "close"):
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    if frame[["open", "high", "low", "close"]].isna().any().any() or _invalid_ohlc(frame):
+        return _completed_pattern_empty(
+            base, status="UNKNOWN", reason="INVALID_OHLC",
+            observations=int(len(frame)),
+        )
+    source_values = frame["data_source"].map(lambda value: str(value or "").strip())
+    if not bool((source_values != "").all()) or source_values.nunique() != 1:
+        return _completed_pattern_empty(
+            base, status="PARTIAL", reason="SOURCE_ALIGNMENT_UNPROVEN",
+            observations=int(len(frame)),
+        )
+    alignment = {
+        "status": "SINGLE_SOURCE",
+        "sources": [source_values.iloc[0]],
+        "rows_complete": True,
+        "observations": int(len(frame)),
+        "start_bar_end": frame.iloc[0]["date"].isoformat(),
+        "end_bar_end": frame.iloc[-1]["date"].isoformat(),
+    }
+    candlestick = build_completed_timeframe_candlestick_context(
+        stock_code=stock_code,
+        history=frame,
+        timeframe=timeframe,
+        target_bar_end=target,
+        market=market,
+        price_structure_context=price_structure_context,
+        supply_demand_context=supply_demand_context,
+        source_identity_hash=source_identity_hash,
+        evidence_available_at=available,
+    )
+    if len(frame) < MIN_OBSERVATIONS:
+        result = _completed_pattern_empty(
+            base, status="MISSING", reason="WARMUP_INSUFFICIENT",
+            observations=int(len(frame)), candlestick=candlestick,
+        )
+        result["source_alignment"] = alignment
+        return result
+
+    structure = price_structure_context if isinstance(price_structure_context, dict) else {}
+    structure_identity_hash = (
+        structure.get("intraday_identity_hash")
+        if timeframe in {"60m", "30m", "15m", "5m"}
+        else structure.get("source_identity_hash")
+    )
+    structure_target = (
+        structure.get("target_bar_end")
+        if timeframe in {"60m", "30m", "15m", "5m"}
+        else structure.get("target_date")
+    )
+    if (
+        structure.get("schema_version") != "price-structure-v1"
+        or structure.get("status") != "READY"
+        or structure.get("timeframe") != timeframe
+        or structure.get("completed_bar_only") is not True
+        or structure_identity_hash != source_identity_hash
+        or _completed_pattern_stamp(structure_target) != target
+    ):
+        result = _completed_pattern_empty(
+            base, status="PARTIAL", reason="PRICE_STRUCTURE_NOT_READY",
+            observations=int(len(frame)), candlestick=candlestick,
+        )
+        result["source_alignment"] = alignment
+        return result
+
+    actual_times = [pd.Timestamp(value) for value in frame["date"]]
+    actual_keys = {stamp.isoformat(): index for index, stamp in enumerate(actual_times)}
+    synthetic_dates = [date(2000, 1, 1) + timedelta(days=index) for index in range(len(frame))]
+    actual_to_synthetic = {
+        stamp.isoformat(): synthetic_dates[index].isoformat()
+        for index, stamp in enumerate(actual_times)
+    }
+    synthetic_to_actual = {
+        value: key for key, value in actual_to_synthetic.items()
+    }
+
+    raw_pivots = structure.get("pivots")
+    if not isinstance(raw_pivots, list):
+        return _completed_pattern_empty(
+            base, status="UNKNOWN", reason="PRICE_STRUCTURE_PIVOT_PROVENANCE_INVALID",
+            observations=int(len(frame)), candlestick=candlestick,
+        )
+    pivots: List[Dict[str, Any]] = []
+    for raw in raw_pivots:
+        if not isinstance(raw, dict) or raw.get("provisional") is not False:
+            return _completed_pattern_empty(
+                base, status="UNKNOWN", reason="PRICE_STRUCTURE_PIVOT_PROVENANCE_INVALID",
+                observations=int(len(frame)), candlestick=candlestick,
+            )
+        origin = _completed_pattern_stamp(raw.get("origin_time"))
+        confirmed = _completed_pattern_stamp(raw.get("confirmed_at"))
+        confirmed_available = _completed_pattern_stamp(
+            raw.get("confirmed_available_at") or raw.get("confirmed_at")
+        )
+        price = _safe_float(raw.get("price"))
+        if (
+            origin is None or confirmed is None or confirmed_available is None
+            or price is None or price <= 0
+            or origin.isoformat() not in actual_keys
+            or confirmed.isoformat() not in actual_keys
+        ):
+            return _completed_pattern_empty(
+                base, status="UNKNOWN", reason="PRICE_STRUCTURE_PIVOT_PROVENANCE_INVALID",
+                observations=int(len(frame)), candlestick=candlestick,
+            )
+        if confirmed > target or confirmed_available > available:
+            return _completed_pattern_empty(
+                base, status="UNKNOWN", reason="PRICE_STRUCTURE_FUTURE_CONFIRMATION",
+                observations=int(len(frame)), candlestick=candlestick,
+            )
+        transformed = dict(raw)
+        transformed["origin_time"] = actual_to_synthetic[origin.isoformat()]
+        transformed["confirmed_at"] = actual_to_synthetic[confirmed.isoformat()]
+        transformed["confirmed_available_at"] = transformed["confirmed_at"]
+        pivots.append(transformed)
+
+    synthetic = frame.copy()
+    synthetic["date"] = synthetic_dates
+    synthetic_alignment = _source_alignment(synthetic)
+    event = dict(structure.get("structure_event") or {"state": "NONE", "provisional": False})
+    for key in ("event_time", "level_origin_time", "level_confirmed_at"):
+        if not event.get(key):
+            continue
+        stamp = _completed_pattern_stamp(event.get(key))
+        if stamp is None or stamp.isoformat() not in actual_to_synthetic:
+            return _completed_pattern_empty(
+                base, status="UNKNOWN", reason="PRICE_STRUCTURE_EVENT_PROVENANCE_INVALID",
+                observations=int(len(frame)), candlestick=candlestick,
+            )
+        if key == "event_time" and stamp > target:
+            return _completed_pattern_empty(
+                base, status="UNKNOWN", reason="PRICE_STRUCTURE_FUTURE_CONFIRMATION",
+                observations=int(len(frame)), candlestick=candlestick,
+            )
+        event[key] = actual_to_synthetic[stamp.isoformat()]
+    synthetic_context = {
+        "schema_version": "price-structure-v1",
+        "status": "READY",
+        "target_date": synthetic_dates[-1].isoformat(),
+        "historical_replay_eligible": True,
+        "source_alignment": synthetic_alignment,
+        "pivots": pivots,
+        "swings": [],
+        "structure_event": event,
+    }
+    checked_pivots, reason, _, checked_event = _validate_price_structure(
+        synthetic_context,
+        target_date=synthetic_dates[-1],
+        history_alignment=synthetic_alignment,
+    )
+    if checked_pivots is None:
+        return _completed_pattern_empty(
+            base, status="UNKNOWN", reason=reason,
+            observations=int(len(frame)), candlestick=candlestick,
+        )
+
+    relative = (
+        supply_demand_context.get("relative_volume")
+        if isinstance(supply_demand_context, dict)
+        and isinstance(supply_demand_context.get("relative_volume"), dict)
+        else {}
+    )
+    ratio = _safe_float(
+        relative.get("volume_ratio_20_completed_bars")
+        if isinstance(relative, dict) else None
+    )
+    if ratio is None and isinstance(relative, dict):
+        ratio = _safe_float(relative.get("volume_ratio_20d"))
+    synthetic_supply = {
+        "status": str((supply_demand_context or {}).get("status") or "MISSING"),
+        "target_date": synthetic_dates[-1].isoformat(),
+        "state": (supply_demand_context or {}).get("state"),
+        "relative_volume": {"volume_ratio_20d": ratio},
+    }
+    volume_ref = _volume_evidence_ref(
+        synthetic_supply, target_date=synthetic_dates[-1],
+    )
+    raw_patterns = [
+        *_detect_cups(synthetic, checked_pivots, volume_ref=volume_ref),
+        *_detect_double_bottoms(synthetic, checked_pivots, volume_ref=volume_ref),
+        *_detect_contraction(synthetic, checked_pivots, volume_ref=volume_ref),
+    ]
+    patterns = _dedupe_patterns(raw_patterns)
+    patterns = [
+        _apply_lifecycle(
+            item, structure_event=checked_event,
+            target_date=synthetic_dates[-1],
+        )
+        for item in patterns
+    ]
+    patterns = [
+        _remap_completed_pattern(
+            item, synthetic_to_actual=synthetic_to_actual, timeframe=timeframe,
+        )
+        for item in patterns
+    ]
+    actual_volume_ref = {
+        "family": "supply_demand_volume_price",
+        "status": str((supply_demand_context or {}).get("status") or "MISSING"),
+        "target_bar_end": target.isoformat(),
+        "state": (supply_demand_context or {}).get("state"),
+        "volume_ratio_20_completed_bars": ratio,
+        "confirmation": (
+            "CONFIRMED" if ratio is not None and ratio >= VOLUME_CONFIRMATION_RATIO
+            else "NOT_CONFIRMED" if ratio is not None else "MISSING"
+        ),
+        "confirmation_threshold": VOLUME_CONFIRMATION_RATIO,
+        "correlation_group": "relative_volume",
+    }
+    for pattern in patterns:
+        pattern["volume_evidence_ref"] = actual_volume_ref
+        pattern["independent_action_authority"] = False
+        pattern["strategy_admitted"] = False
+        pattern["learning_admitted"] = False
+        pattern["data_rights_admitted"] = False
+    patterns.sort(key=lambda item: (
+        str(item.get("geometry_confirmed_at") or ""),
+        _pattern_priority(item),
+    ))
+    patterns = patterns[-MAX_PATTERNS:]
+    primary = _primary_pattern(patterns)
+    return {
+        **base,
+        "status": "READY",
+        "reason": "PATTERN_TRIGGER_READY" if patterns else "NO_SUPPORTED_PATTERN",
+        "observations": int(len(frame)),
+        "start_bar_end": frame.iloc[0]["date"].isoformat(),
+        "end_bar_end": frame.iloc[-1]["date"].isoformat(),
+        "source_alignment": alignment,
+        "candlestick": candlestick,
+        "volume_evidence_ref": actual_volume_ref,
+        "patterns": patterns,
+        "primary_pattern": primary,
+        "pattern_count": len(patterns),
+        "broad_patterns": {
+            "status": "READY",
+            "reason": "PATTERN_TRIGGER_READY" if patterns else "NO_SUPPORTED_PATTERN",
+            "timeframe": timeframe,
+            "source_identity_hash": source_identity_hash,
+            "completed_bar_only": True,
+            "patterns": patterns,
+            "primary_pattern": primary,
+            "pattern_count": len(patterns),
+            "independent_action_authority": False,
+            "strategy_admitted": False,
+            "learning_admitted": False,
+            "data_rights_admitted": False,
+        },
+        "historical_replay_eligible": False,
+        "independent_action_authority": False,
+        "strategy_admitted": False,
+        "learning_admitted": False,
+        "data_rights_admitted": False,
+    }
 
 
 def build_pattern_trigger_context(

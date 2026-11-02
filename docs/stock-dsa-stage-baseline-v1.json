@@ -5,7 +5,7 @@
   "production_shell": "DSA/daily_stock_analysis",
   "continuity_entrypoints": {
     "agent_rules": "AGENTS.md#0-stock_dsa-连续实施入口",
-    "current_master_route": "docs/stock-dsa-roadmap.md#当前控制页总目标依赖图与退出条件2026-10-26",
+    "current_master_route": "docs/stock-dsa-roadmap.md#当前控制页github连续性五级目标与完整研究边界2026-11-02",
     "machine_guardrail": "docs/stock-dsa-stage-baseline-v1.json",
     "exact_git_and_ci_recheck_required": true,
     "feature_branch_plan_is_not_main_production": true
@@ -13,30 +13,65 @@
   "runtime_method_window_readiness": {
     "schema_version": "asset-timeframe-method-window-readiness-v1",
     "first_vertical_slice": "MTF_MOMENTUM_CONTEXT_MACD_RSI",
-    "asset_routes": ["MARKET", "SECTOR", "ETF", "STOCK"],
-    "timeframes": ["monthly", "weekly", "daily", "60m", "30m", "15m", "5m"],
-    "fields": ["required_bars", "requested_bars", "returned_bars", "status", "reason", "consumer_path"],
+    "asset_routes": [
+      "MARKET",
+      "SECTOR",
+      "ETF",
+      "STOCK"
+    ],
+    "timeframes": [
+      "monthly",
+      "weekly",
+      "daily",
+      "60m",
+      "30m",
+      "15m",
+      "5m"
+    ],
+    "fields": [
+      "required_bars",
+      "requested_bars",
+      "returned_bars",
+      "status",
+      "reason",
+      "consumer_path"
+    ],
     "strategy_admitted": false,
     "learning_admitted": false,
     "storage_admitted": false
   },
   "acceptance": {
-    "state": "A0_CI91_A1A2_CI93_REMOTE_ACCEPTED_SCOPED_STAGE1_LOCAL_CANDIDATE_PR31_DRAFT",
+    "state": "CI95_REMOTE_ACCEPTED_BASE_CURRENT_FEATURE_CONSOLIDATION_CANDIDATE_RESOLVE_GIT_AND_CI_AT_RUNTIME",
     "production_branch": "main",
     "candidate_branch": "feat/stock-dsa-m2-source-gates-v1",
-    "candidate_head": "d75c2969f72fa3f40017bb6ae16d9ca947709057",
-    "candidate_parent": "ded125634894bf2915db6a91e661ec6fc9280313",
-    "candidate_head_scope": "LATEST_ACCEPTED_FEATURE_CHECKPOINT_NOT_MAIN_PRODUCTION",
+    "candidate_head": "37e453f729b0f9ad1cec6d8b27457916b7982142",
+    "candidate_parent": "e10aa72c575071fd037971b58a5c75f18eb4c74a",
+    "candidate_head_scope": "CI95_IS_ACCEPTED_BASE; COMMIT_CONTAINING_THIS_FILE_IS_CURRENT_FEATURE_CANDIDATE_AFTER_PUSH_NOT_MAIN",
     "pull_request": 31,
     "pull_request_state": "DRAFT_OPEN_NOT_MERGED",
-    "latest_required_ci": {"run_number": 93, "run_id": 40480935427, "conclusion": "success"},
-    "prior_failed_ci": {"run_number": 92, "run_id": 40472704093, "head": "ded125634894bf2915db6a91e661ec6fc9280313", "conclusion": "failure"},
+    "latest_required_ci": {
+      "run_number": 95,
+      "run_id": 40792809015,
+      "conclusion": "success"
+    },
+    "prior_failed_ci": {
+      "run_number": 94,
+      "run_id": 40677519496,
+      "head": "e10aa72c575071fd037971b58a5c75f18eb4c74a",
+      "conclusion": "failure"
+    },
     "required_checks": [
       "ai-governance",
+      "Change Detection",
+      "docker-build",
       "backend-gate",
-      "docker-build"
+      "desktop-futu-package-macos",
+      "desktop-futu-package-windows"
     ],
-    "direct_main_push": false
+    "direct_main_push": false,
+    "candidate_base_head": "37e453f729b0f9ad1cec6d8b27457916b7982142",
+    "candidate_commit_identity": "RESOLVE_COMMIT_CONTAINING_THIS_FILE_FROM_GIT",
+    "candidate_ci_state": "RECHECK_PR31_NATURAL_CI_AT_RUNTIME"
   },
   "immutable_contracts": {
     "accepted_machine_graph_sha256": "b4f69f76807ac44bc0fea1a03f9aa38484b6083ca574a3699220b0564ac55aed",
@@ -46,8 +81,8 @@
     "v2_5_baseline_bytes": 125919,
     "requirements": 26,
     "method_profiles": 43,
-    "methods_existing_reused": 28,
-    "methods_deferred_with_owner": 15,
+    "methods_existing_reused": 30,
+    "methods_deferred_with_owner": 13,
     "strategy_bindings": 13,
     "technical_matrix_cells": 56,
     "data_obligations": 76,
@@ -55,9 +90,33 @@
     "product_slot_map_sha256": "ea0a935bf2b99056fa169ed8662a2a92b6c605a407dc12a1d7de134799d21f6d",
     "valuation_routes": 9,
     "known_atomic_subfield_obligations": 7,
-    "data_domain_counts": {"GLOBAL": 18, "CN_MARKET": 18, "SECTOR": 7, "ETF": 12, "STOCK": 17, "RECORD": 4},
-    "timeframes": ["monthly", "weekly", "daily", "60m", "30m", "15m", "5m"],
-    "evidence_families": ["REGIME", "TREND_RS", "SUPPLY", "COST", "STRUCTURE", "MOMENTUM", "PATTERN", "MTF"]
+    "data_domain_counts": {
+      "GLOBAL": 18,
+      "CN_MARKET": 18,
+      "SECTOR": 7,
+      "ETF": 12,
+      "STOCK": 17,
+      "RECORD": 4
+    },
+    "timeframes": [
+      "monthly",
+      "weekly",
+      "daily",
+      "60m",
+      "30m",
+      "15m",
+      "5m"
+    ],
+    "evidence_families": [
+      "REGIME",
+      "TREND_RS",
+      "SUPPLY",
+      "COST",
+      "STRUCTURE",
+      "MOMENTUM",
+      "PATTERN",
+      "MTF"
+    ]
   },
   "product_invariants": {
     "automatic_trading": false,
@@ -71,14 +130,28 @@
     "operation_specific_upstream_rights_required": true,
     "unknown_upstream_rights_admit_product": false,
     "no_send_product_rights_imply_redistribution": false,
-    "future_outcome_backfills_historical_evidence": false
+    "future_outcome_backfills_historical_evidence": false,
+    "industry_classification_route_required_before_business_valuation": true,
+    "universal_pe_fallback_allowed": false,
+    "volume_price_phase_infers_market_operator_identity": false,
+    "accumulation_or_washout_independently_upgrades_buy": false,
+    "narrow_chan_claims_full_czsc": false,
+    "chan_independent_action_authority": false
   },
   "screening_contract": {
     "stage": "BOUNDED_L3_AFTER_CHEAP_L1_L2",
-    "asset_routes": ["stock", "etf"],
+    "asset_routes": [
+      "stock",
+      "etf"
+    ],
     "strict_mtf_receipt_required": true,
     "canonical_binding_required": true,
-    "role_groups": ["context", "setup", "bridge_structure", "confirmation_timing"],
+    "role_groups": [
+      "context",
+      "setup",
+      "bridge_structure",
+      "confirmation_timing"
+    ],
     "delta_min": -6.0,
     "delta_max": 4.0,
     "low_timeframe_independent_upgrade": false,
@@ -101,17 +174,29 @@
     "learned_weights": "DEFERRED_UNTIL_LEGAL_PIT_OOT",
     "active_numeric_weights": {
       "mtf_role_deltas": {
-        "context": {"SUPPORTIVE": 1.25, "ADVERSE": -2.0},
-        "setup": {"SUPPORTIVE": 1.75, "ADVERSE": -2.5},
-        "bridge_structure": {"SUPPORTIVE": 0.75, "ADVERSE": -1.0},
+        "context": {
+          "SUPPORTIVE": 1.25,
+          "ADVERSE": -2.0
+        },
+        "setup": {
+          "SUPPORTIVE": 1.75,
+          "ADVERSE": -2.5
+        },
+        "bridge_structure": {
+          "SUPPORTIVE": 0.75,
+          "ADVERSE": -1.0
+        },
         "confirmation_timing": {
           "SUPPORTIVE_CONDITIONAL": 0.25,
           "ADVERSE": -0.5
         }
       },
-      "mtf_delta_bounds": [-6.0, 4.0]
+      "mtf_delta_bounds": [
+        -6.0,
+        4.0
+      ]
     },
-    "correlation_group_count": 15,
+    "correlation_group_count": 16,
     "email_section_order": [
       "canonical_conclusion",
       "market_sector_permission",
@@ -126,60 +211,79 @@
     "asset_routes": {
       "stock": {
         "coarse_filters": [
-          "source_currentness", "completed_daily_bar", "minimum_liquidity",
-          "market_permission", "sector_classification_if_available"
+          "source_currentness",
+          "completed_daily_bar",
+          "minimum_liquidity",
+          "market_permission",
+          "sector_classification_if_available"
         ],
         "fine_rank_priority": [
-          "sector_peer_relative_strength", "quality_growth", "valuation",
-          "daily_setup", "liquidity_execution"
+          "sector_peer_relative_strength",
+          "quality_growth",
+          "valuation",
+          "daily_setup",
+          "liquidity_execution"
         ],
         "deep_analysis": [
-          "eight_evidence_families", "seven_timeframes",
-          "risk_reward", "canonical"
+          "eight_evidence_families",
+          "seven_timeframes",
+          "risk_reward",
+          "canonical"
         ]
       },
       "etf": {
         "coarse_filters": [
-          "source_currentness", "completed_daily_bar", "minimum_liquidity",
-          "market_permission", "peer_universe"
+          "source_currentness",
+          "completed_daily_bar",
+          "minimum_liquidity",
+          "market_permission",
+          "peer_universe"
         ],
         "fine_rank_priority": [
-          "peer_relative_strength", "liquidity_spread", "nav_premium_tracking",
-          "shares_flow", "daily_setup"
+          "peer_relative_strength",
+          "liquidity_spread",
+          "nav_premium_tracking",
+          "shares_flow",
+          "daily_setup"
         ],
         "deep_analysis": [
-          "eight_evidence_families", "seven_timeframes",
-          "etf_specific", "canonical"
+          "eight_evidence_families",
+          "seven_timeframes",
+          "etf_specific",
+          "canonical"
         ]
       }
     }
   },
   "vertical_alignment": {
-    "program": "合法known-at数据到白盒证据、唯一canonical、完整交付、合法Outcome/PIT、独立校准和显式Promotion",
-    "product": "Global到A股市场和行业、ETF与股票、七周期全材料、风险和执行veto、FULL Report/Email",
-    "current_lane": "STAGE1_REAL_PRICE_AND_NONPRICE_SOURCE_PARTIAL_DAILY_COMPLETION_BRIDGE_LOCAL_PASS_PROVIDER_NETWORK_STOP_GATE6_HOLD",
-    "current_milestone": "CI91已远程接受A0，CI93已远程scoped接受A1/A2且不重跑；本地`source-rights-evidence-v2`阻断软件许可证替代数据权利。2026-10-28同一research_as_of真实NO_SEND使600519的P_DAILY/P_5M和510300的E_PRICE_1D/E_PRICE_5M共4对象Product准入，000300仅以2026-10-27完成bar形成M_INDEX_CURRENT源级PARTIAL；600519真实非价格探针另覆盖14对象且全部PARTIAL。针对BaoStock日线恰好滞后一完成会话，新增同源完整48根5m到run-local日线的窄补桥，聚焦41/41与自然相邻446/446通过；真实重跑因BaoStock网络接收错误及登录超时STOP，故V2.5仍因全域Product和七原子子字段未完整绑定保持HOLD，Gate6及学习不解锁",
-    "atomic_rule": "保持76对象/六域/原V2.5/唯一canonical不变；当前Product、完整义务、Recording、Outcome和PIT分别验收；部分准入只展示对应叶事实；合法WAIT/veto/未触发canonical可在独立存储许可下Recording，但不授予PIT、训练、概率或Promotion权限"
+    "program": "合法known-at数据→白盒证据→唯一canonical→完整交付→合法Outcome/PIT→独立校准→Shadow→显式Promotion，不自动交易",
+    "product": "Global→CN Market/Breadth→Sector→ETF/Stock→7TFx8+quality+industry-specific valuation+volume-price phase+narrow Chan→four veto→FULL V2.5",
+    "current_lane": "G0_GITHUB_CONSOLIDATION_WITH_B1_M2_PRODUCT_HOLD",
+    "current_milestone": "Source8 v3.543 physical PASS. Base remote accepted HEAD37e453f7/CI95. Current precommit candidate59 paths (55 tracked modified+4 untracked including existing SSE/Treasury and new Chan source/test) integrates prior local51 plus industry valuation routing, observable volume-price phase, narrow Chan adapter and cross-consumer root fixes. Focused61 and full related1340 PASS; ordinary feature push and natural PR CI remain required. Product remains0/72, original V2.5 FACT_READY false.",
+    "atomic_rule": "Existing Owner→actual consumer→strict receipt/source identity→independent RED/GREEN→legal nontrigger→rollback/proof ceiling; no directory-only or document-only completion."
   },
   "stage_ladder": [
     {
       "id": "G0_GITHUB_BASELINE",
       "scope": "准确origin/main、PR、required CI、可回滚commit身份",
       "exit": "PR所有阻断检查通过并经显式merge",
-      "proof_ceiling": "GitHub代码基线，不证明真实数据或产品外部交付"
+      "proof_ceiling": "GitHub代码基线，不证明真实数据或产品外部交付",
+      "local_state": "CURRENT_FEATURE_CONSOLIDATION_PRECOMMIT_AUTHORIZED_REMOTE_OPEN"
     },
     {
       "id": "B1_SOURCE_RIGHTS",
       "scope": "Product使用、存储、训练、再分发权利分别绑定当前operation、运行时source identity和精确上游条款",
       "exit": "同一as-of Stock+ETF取得可核上游条款证据与当前数据回执；未知权利保持SOURCE_IDENTITY_ONLY",
-      "proof_ceiling": "CI80/82及后续Gate1-4回执证明接线与fail-closed消费；当前全域记账PASS不授予供应商真实Product/storage/training/redistribution权利，不证明两资产合法完整Product、历史PIT、策略、邮件交付或模型晋升"
+      "proof_ceiling": "CI80/82及后续Gate1-4回执证明接线与fail-closed消费；当前全域记账PASS不授予供应商真实Product/storage/training/redistribution权利，不证明两资产合法完整Product、历史PIT、策略、邮件交付或模型晋升",
+      "local_state": "PARTIAL_SSE_NONPRICE_OPERATION_SCOPED_PRICE_RIGHTS_STOP",
+      "next_primary": true
     },
     {
       "id": "B5_7TF_METHOD_PRODUCT",
-      "scope": "七周期完成bar、动态窗口、来源身份、原生指标、方法回执、逐项展示和有界L3筛选偏好",
+      "scope": "Seven completed-bar timeframes, method-specific windows/receipts, 56-cell families, deterministic volume-price phase and narrow confirmed-structure Chan adapter",
       "exit": "现有准入方法对合法输入无损进入同一筛选、canonical和报告",
       "proof_ceiling": "A1本地回执只证明最终effective配置、实际56格与消费者绑定；不等于43方法全部READY或独立交易资格",
-      "local_state": "PASS_SCOPED_A1_EFFECTIVE_FOUNDATION_UNCOMMITTED_REMOTE_OPEN"
+      "local_state": "LOCAL_PASS_43_PROFILE_30_EXISTING_13_DEFERRED_EFFECTIVE154_REMOTE_OPEN"
     },
     {
       "id": "B8_FULL_DELIVERY_NO_SEND",
@@ -187,11 +291,11 @@
       "exit": "whole-scope逐项位置与内容哈希、完整动态槽投影、固定区零差异、样例清除和三envelope NO_SEND负例/合法nontrigger全部通过",
       "proof_ceiling": "CI91已接受A0；A1/A2本地消费者绑定不等于远程接受、SMTP、真实全部数据READY或模型晋升",
       "local_state": "PASS_SCOPED_A1A2_FOUNDATION_UNCOMMITTED_REMOTE_ACCEPTANCE_OPEN",
-      "next_primary": true
+      "blocked_by": "B1_UPSTREAM_DATA_RIGHTS_AND_FULL_DOMAIN_PRODUCT_DATA"
     },
     {
       "id": "M2_MULTI_ASSET_KNOWN_AT",
-      "scope": "A股市场、行业和ETF独立来源、known-at时点、资产适用性和veto",
+      "scope": "A股市场、行业分类/行业RS/行业适用估值、ETF独立来源、known-at、资产适用性和veto",
       "exit": "合法非股票证据与股票七周期共用同一canonical和完整报告",
       "proof_ceiling": "Global或市场绿灯不得独立升级BUY"
     },
@@ -271,7 +375,7 @@
   },
   "current_stage1_real_run_evidence": {
     "schema_version": "stock-dsa-stage1-current-real-run-evidence-v1",
-    "state": "PASS_SCOPED_REAL_READ_NO_SEND_STAGE1_HOLD",
+    "state": "INVALIDATED_HISTORICAL_PRICE_RIGHTS_FALSE_ADMISSION",
     "research_as_of": "2026-10-28T05:42:02.603395+00:00",
     "operation_id": "stock-dsa-nosend-20261028-baostock-v2-r001",
     "rights_schema_version": "source-rights-evidence-v2",
@@ -279,9 +383,15 @@
     "terms_scope": "OFFICIAL_PROVIDER_DATA_USE_STATEMENT",
     "product_use_clause_sha256": "3c5caa55117429ee1a56704be1c59e0b44178781658681e03f262ec16107e941",
     "storage_training_redistribution": "FORBIDDEN",
-    "product_admitted_dataset_ids": ["P_DAILY", "P_5M", "E_PRICE_1D", "E_PRICE_5M"],
-    "stock_product_admitted_count": 2,
-    "etf_product_admitted_count": 2,
+    "product_admitted_dataset_ids": [],
+    "prior_claimed_product_admitted_dataset_ids": [
+      "P_DAILY",
+      "P_5M",
+      "E_PRICE_1D",
+      "E_PRICE_5M"
+    ],
+    "stock_product_admitted_count": 0,
+    "etf_product_admitted_count": 0,
     "index_000300": {
       "dataset_id": "M_INDEX_CURRENT",
       "state": "SOURCE_IDENTITY_ONLY_PARTIAL",
@@ -298,6 +408,7 @@
       "baseline_sha256": "039ca6394baf9cf39494cc29f512802b114c8227f8c965723197a8df4b9de823",
       "stage1_state": "HOLD",
       "blocker_codes": [
+        "RIGHTS_TERMS_NOT_VERIFIED",
         "FULL_DOMAIN_PRODUCT_DATA_NOT_READY",
         "ATOMIC_SUBFIELD_V25_CONSUMER_BINDING_INCOMPLETE"
       ],
@@ -313,7 +424,9 @@
       "report_body_persisted": false
     },
     "receipt_sha256": "83fe88ab229f886da00d4af546bdb9ad9fcbbe16605066eee3db4162ab880ba3",
-    "proof_ceiling": "CURRENT_FOUR_PRICE_OBJECTS_PRODUCT_ADMITTED_AND_INDEX_SOURCE_PARTIAL_NOT_FULL_DOMAIN_DELIVERY_OR_LEARNING"
+    "proof_ceiling": "HISTORICAL_SOURCE_READ_ONLY_INVALIDATED_PRICE_PRODUCT_NOT_CURRENT_RUNTIME_OR_DELIVERY",
+    "historical_status": "INVALIDATED_BY_RIGHTS_V2_AND_NEVER_CURRENT_PRODUCT",
+    "successor_path": "current_local_successor.formal_stage1_run"
   },
   "current_stage1_nonprice_and_daily_bridge_evidence": {
     "schema_version": "stock-dsa-stage1-nonprice-daily-bridge-evidence-v1",
@@ -323,10 +436,20 @@
       "research_date": "2026-10-27",
       "dataset_count": 14,
       "dataset_ids": [
-        "M_ASOF_UNIVERSE", "M_PBOC_MONEY", "P_BALANCE_SHEET", "P_CASH_FLOW",
-        "P_CODE_IDENTITY", "P_DIVIDEND", "P_EARNINGS_GROWTH", "P_FIN_VINTAGE",
-        "P_INDUSTRY", "P_PRICE_FACTOR", "P_QUOTE_LIQUID", "P_SHARES_EVENTS",
-        "P_VAL_RATIO", "S_CLASSIFICATION"
+        "M_ASOF_UNIVERSE",
+        "M_PBOC_MONEY",
+        "P_BALANCE_SHEET",
+        "P_CASH_FLOW",
+        "P_CODE_IDENTITY",
+        "P_DIVIDEND",
+        "P_EARNINGS_GROWTH",
+        "P_FIN_VINTAGE",
+        "P_INDUSTRY",
+        "P_PRICE_FACTOR",
+        "P_QUOTE_LIQUID",
+        "P_SHARES_EVENTS",
+        "P_VAL_RATIO",
+        "S_CLASSIFICATION"
       ],
       "all_states": "PARTIAL",
       "bundle_hash": "cd86b466d3b62c0dec9046936dfbd6b61efc16e2a6d40e520371842c7891e8b7",
@@ -356,8 +479,11 @@
       "focused_tests_passed": 41,
       "natural_regression_tests_passed": 446,
       "negative_cases": [
-        "INCOMPLETE_5M_SESSION", "WRONG_PROVIDER", "WRONG_ADJUSTMENT_BASIS",
-        "WRONG_INSTRUMENT", "TWO_SESSION_LAG"
+        "INCOMPLETE_5M_SESSION",
+        "WRONG_PROVIDER",
+        "WRONG_ADJUSTMENT_BASIS",
+        "WRONG_INSTRUMENT",
+        "TWO_SESSION_LAG"
       ],
       "storage_admitted": false,
       "training_admitted": false,
@@ -378,7 +504,9 @@
       "raw_data_persisted": false,
       "report_body_persisted": false
     },
-    "proof_ceiling": "NONPRICE_SOURCE_CAPABILITY_AND_DAILY_BRIDGE_LOCAL_CONTRACT_NOT_INTEGRATED_CURRENT_FULL_DOMAIN_PRODUCT"
+    "proof_ceiling": "NONPRICE_SOURCE_CAPABILITY_AND_DAILY_BRIDGE_LOCAL_CONTRACT_NOT_INTEGRATED_CURRENT_FULL_DOMAIN_PRODUCT",
+    "historical_status": "SUPERSEDED_BY_CURRENT_LOCAL_SUCCESSOR_OFFICIAL_R003",
+    "successor_path": "current_local_successor.formal_stage1_run"
   },
   "current_stage1_alternative_producer_evidence": {
     "schema_version": "stock-dsa-stage1-alternative-producer-evidence-v1",
@@ -388,7 +516,7 @@
     "matrix_counts": {
       "data_objects": 76,
       "atomic_subfields": 7,
-      "current_product_admitted_data_objects": 4,
+      "current_product_admitted_data_objects": 0,
       "current_product_admitted_atomic_subfields": 0,
       "real_nonprice_partial_producers": 14,
       "direct_snapshot_callables_not_typed_or_rights_admitted": 3,
@@ -449,8 +577,11 @@
     "failure_class": "DONOR_REGISTERED_BUT_NOT_CONSUMER_ACTIVATED",
     "user_discovery": "TRUE_POSITIVE",
     "maturity_states": [
-      "DISCOVERED", "SOURCE_METHOD_REVIEWED", "CONTRACT_BOUND",
-      "CODE_TEST_CONSUMED", "NATIVE_PRODUCT_VALIDATED"
+      "DISCOVERED",
+      "SOURCE_METHOD_REVIEWED",
+      "CONTRACT_BOUND",
+      "CODE_TEST_CONSUMED",
+      "NATIVE_PRODUCT_VALIDATED"
     ],
     "cnequity": {
       "official_stable_release_observed": "0.16.0",
@@ -519,9 +650,112 @@
     },
     "proof_ceiling": "REMOTE_ACCEPTED_CI93_ENGINEERING_CONTRACT_AND_CONSUMER_ONLY_NOT_REAL_VALUATION_CURRENT_DATA_OR_ACTION"
   },
+  "current_local_foundation_successor": {
+    "schema_version": "a1-foundation-local-successor-v1",
+    "state": "CURRENT_GITHUB_CONSOLIDATION_CANDIDATE_PRECOMMIT_REMOTE_OPEN",
+    "base_head": "37e453f729b0f9ad1cec6d8b27457916b7982142",
+    "changed_paths": 59,
+    "method_profiles": 43,
+    "technical_existing_methods": 25,
+    "target_method_timeframe_pairs": 172,
+    "raw_declared_execution_pairs": 34,
+    "effective_execution_pairs": 154,
+    "effective_override_methods": 22,
+    "delta_from_ci93": {
+      "effective_execution_pairs": 24,
+      "override_methods": 4,
+      "method_ids": [
+        "SUPPLY_RELATIVE_VOLUME",
+        "SUPPLY_DIRECTIONAL_VOLUME",
+        "SUPPLY_CMF",
+        "COST_ROLLING_REFERENCE"
+      ],
+      "consumer_rule": "EXACT_TIMEFRAME_RUNTIME_SOURCE_CARRIER_REQUIRED"
+    },
+    "deterministic_typed_fixture_matrix": {
+      "READY": 10,
+      "PARTIAL": 22,
+      "MISSING": 11,
+      "NOT_ADMITTED": 6,
+      "NOT_APPLICABLE": 7,
+      "scope": "OFFLINE_SOURCE_BOUND_METHOD_CONSUMER_NOT_REAL_PRODUCT"
+    },
+    "current_product_admission": "UNCHANGED_0_OF_72",
+    "gate_b": "STOP_FULL_DOMAIN_PRODUCT_RIGHTS_AND_CURRENT_FACTS",
+    "gate_c": "HOLD_ORIGINAL_V25_FACT_READY_AND_DELIVERY",
+    "original_v25_unchanged": true,
+    "proof_ceiling": "LOCAL_FOCUSED61_AND_FULL_RELATED1340_ENGINEERING_PLUS_MACHINE_CONTINUITY_NOT_REMOTE_CI_CURRENT_PRODUCT_OR_DELIVERY"
+  },
+  "current_runtime_checkpoint": {
+    "schema_version": "stock-dsa-current-runtime-checkpoint-v2",
+    "source_pair": "01/05 v3.543 PHYSICAL_EXACT8_PASS",
+    "accepted_remote_base": {
+      "head": "37e453f729b0f9ad1cec6d8b27457916b7982142",
+      "ci_run_number": 95,
+      "ci_run_id": 40792809015,
+      "conclusion": "success"
+    },
+    "candidate_identity": "RESOLVE_COMMIT_CONTAINING_THIS_FILE_FROM_GIT",
+    "candidate_precommit_snapshot": {
+      "status_path_count": 59,
+      "tracked_modified_count": 55,
+      "untracked_paths": [
+        "data_provider/sse_public_disclosure_source.py",
+        "data_provider/treasury_yield_curve_source.py",
+        "src/services/chan_feature_adapter.py",
+        "tests/test_chan_feature_adapter.py"
+      ],
+      "staged_count": 0,
+      "post_commit_worktree_expected_clean": true
+    },
+    "local_regression": {
+      "focused_passed": 61,
+      "focused_failed": 0,
+      "full_related": {
+        "selected_modules": 43,
+        "passed": 1340,
+        "failed": 0,
+        "duration_seconds": 580.56,
+        "warnings": 2
+      },
+      "remote_ci": "PENDING_PUSH",
+      "process_only_environment_stubs": [
+        "fake_useragent",
+        "json_repair",
+        "markdown2",
+        "newspaper"
+      ],
+      "litellm_local_cost_map_required_before_import": true
+    },
+    "seven_timeframe_eight_family": {
+      "timeframe_carriers_implemented": true,
+      "technical_matrix_cell_count": 56,
+      "method_profile_count": 43,
+      "methods_existing_reused": 30,
+      "methods_deferred_with_owner": 13,
+      "technical_method_timeframe_targets": 154,
+      "all_56_cells_executable": true,
+      "regime_cross_timeframe_vote_counting": false,
+      "relative_strength_full_bar_grid_required": true,
+      "current_real_product_bound_56_cells_complete": false
+    },
+    "product_state": {
+      "current_reconstructible_product_ids": [],
+      "denominator": 72,
+      "full_domain_product_ready": false,
+      "global_market_sector_quality_valuation_etf_specific_complete": false
+    },
+    "email_reader_state": {
+      "old_empty_numeric_email_revoked": true,
+      "current_fact_ready": false,
+      "original_v25_immutable": true,
+      "smtp_send": 0
+    },
+    "proof_ceiling": "LOCAL_FOCUSED_ENGINEERING_AND_GITHUB_CANDIDATE_NOT_CURRENT_FULL_PRODUCT_DELIVERY_OR_LEARNING"
+  },
   "route_decision": {
-    "next_primary": "STAGE1_CURRENT_V25_REAL_PRODUCT_VERTICAL",
-    "reason": "A0 CI91与A1/A2 CI93均已远程scoped关闭且不重跑。Stage1纵向回执与`source-rights-evidence-v2`已实际执行：600519/510300四价格对象Product准入，000300完成bar保持源级PARTIAL；600519非价格实源探针覆盖14对象但均PARTIAL。BaoStock日线滞后一会话的同源5m补桥已完成41/41聚焦与446/446自然相邻验证，但真实整链重跑因Provider网络接收错误和登录超时STOP。原V2.5 NO_SEND仍因全域数据和七原子子字段未完整绑定而HOLD并阻断Gate6；Provider恢复后仅重跑一次exact operation，再按现有producer补Global/CNMarket/Sector、股票质量估值及ETF专项，不补白盒阈值或模型",
+    "next_primary": "GITHUB_FEATURE_COMMIT_PUSH_NATURAL_CI_THEN_B1_M2_FULL_DOMAIN_REENTRY",
+    "reason": "Source8 v3.543 physical PASS. Current local59 candidate closes industry valuation routing, deterministic volume-price phase, narrow Chan and downstream window/report/screening deadline gaps on top of the existing 7TFx8 foundation. Focused61 and full related1340 PASS. User authorized exactly one ordinary feature commit/push and natural CI, no merge. Product remains0/72 and full numeric V2.5 HOLD; Git engineering acceptance cannot substitute upstream data rights/current facts.",
     "bounded_indicator_sub_lanes": [
       "MONTHLY_RSI_HISTORY_IF_LEGAL",
       "15M_CONFIRMATION",
@@ -529,13 +763,18 @@
       "MINUTE_VOLUME_AMOUNT_UNITS"
     ],
     "deferred_until_product_trigger": [
+      "RISK_REWARD",
       "ADX_DMI",
       "BOLLINGER",
       "KDJ",
       "OBV_ADL",
       "MFI",
       "VWAP_AVWAP_VOLUME_PROFILE",
-      "CHAN_WAVE"
+      "WAVE",
+      "ETF_SPECIFIC",
+      "GLOBAL",
+      "BREADTH",
+      "PROBABILITY"
     ]
   },
   "mature_reuse_route": [
@@ -563,21 +802,417 @@
     "unadmitted_leaf_values_remain_hidden": true,
     "record_outcome_and_pit_clocks_are_later_than_current_product": true,
     "lawful_missingness_wait_veto_and_nontrigger_can_be_recorded_before_full_fact_readiness": true,
-    "recording_does_not_grant_pit_training_probability_or_promotion": true
-    ,"final_effective_method_profiles_override_raw_constructor_scope": true
-    ,"foundation_receipt_binds_runtime_matrix_product_admission_canonical_and_v25": true
-    ,"historical_method_execution_never_backfills_current_product": true
-    ,"stock_index_sector_and_etf_valuation_layers_are_separate": true
-    ,"etf_premium_discount_does_not_use_underlying_valuation_dataset": true
-    ,"index_sector_valuation_has_no_fair_value_action_or_veto_authority": true
-    ,"stage1_vertical_requires_actual_invocation_product_admission_and_v25_leaf_consumption": true
-    ,"empty_materials_never_fact_ready": true
-    ,"nonprice_objects_use_same_b1_closed_world_compiler": true
-    ,"software_package_license_cannot_substitute_upstream_data_terms": true
-    ,"official_data_use_statement_cannot_grant_storage_training_or_redistribution": true
-    ,"research_date_never_backfills_uncompleted_index_bar": true
-    ,"daily_provider_lag_bridge_requires_same_provider_complete_48_bar_session": true
-    ,"daily_provider_lag_bridge_only_fills_exact_one_completed_session": true
-    ,"daily_provider_lag_bridge_never_persists_or_grants_strategy_authority": true
+    "recording_does_not_grant_pit_training_probability_or_promotion": true,
+    "final_effective_method_profiles_override_raw_constructor_scope": true,
+    "foundation_receipt_binds_runtime_matrix_product_admission_canonical_and_v25": true,
+    "historical_method_execution_never_backfills_current_product": true,
+    "stock_index_sector_and_etf_valuation_layers_are_separate": true,
+    "etf_premium_discount_does_not_use_underlying_valuation_dataset": true,
+    "index_sector_valuation_has_no_fair_value_action_or_veto_authority": true,
+    "stage1_vertical_requires_actual_invocation_product_admission_and_v25_leaf_consumption": true,
+    "empty_materials_never_fact_ready": true,
+    "nonprice_objects_use_same_b1_closed_world_compiler": true,
+    "software_package_license_cannot_substitute_upstream_data_terms": true,
+    "official_data_use_statement_cannot_grant_storage_training_or_redistribution": true,
+    "research_date_never_backfills_uncompleted_index_bar": true,
+    "daily_provider_lag_bridge_requires_same_provider_complete_48_bar_session": true,
+    "daily_provider_lag_bridge_only_fills_exact_one_completed_session": true,
+    "historical_operation_admission_never_backfills_current_runtime": true,
+    "html_geometry_never_proves_reader_visible_numeric_leaves": true,
+    "reader_numeric_leaf_audit_required": true,
+    "source_checkpoint_path_count_must_match_worktree": true,
+    "daily_provider_lag_bridge_never_persists_or_grants_strategy_authority": true,
+    "industry_route_plan_required_before_business_valuation": true,
+    "distribution_or_markdown_veto_requires_strict_method_receipt": true,
+    "accumulation_or_washout_never_independently_upgrades_action": true,
+    "chan_prefix_replay_freezes_confirmed_geometry_not_later_invalidation_lifecycle": true,
+    "chan_narrow_adapter_never_claims_full_czsc": true
+  },
+  "current_local_successor": {
+    "state": "HISTORICAL_INVALIDATED_LOCAL_SUCCESSOR_NOT_CURRENT",
+    "historical_only": true,
+    "base_head": "37e453f729b0f9ad1cec6d8b27457916b7982142",
+    "base_tree": "6b54b197327501e2673b5c499eed4a1628ac95f9",
+    "modified_paths": [
+      "data_provider/baostock_fetcher.py",
+      "docs/CHANGELOG.md",
+      "docs/b1-source-rights.md",
+      "docs/stock-dsa-roadmap.md",
+      "docs/stock-dsa-stage-baseline-v1.json",
+      "src/core/pipeline.py",
+      "src/core/trading_calendar.py",
+      "src/services/data_object_admission.py",
+      "src/services/evidence_traceability_registry.py",
+      "src/services/multi_timeframe_structure_service.py",
+      "tests/test_daily_acquisition_binding.py",
+      "tests/test_data_object_admission.py",
+      "tests/test_multi_timeframe_structure_service.py",
+      "tests/test_stock_dsa_stage_baseline.py",
+      "tests/test_trading_calendar.py"
+    ],
+    "staged_paths": 0,
+    "untracked_paths": 0,
+    "commit_push_merge": 0,
+    "scoped_regression": {
+      "trading_calendar": 57,
+      "daily_acquisition_binding": 34,
+      "multi_timeframe": 57,
+      "rights_admission": 35,
+      "total": 183
+    },
+    "official_baostock_rights": {
+      "operation_id": "stock-dsa-nosend-20261029-baostock-official-r003",
+      "grant_count": 19,
+      "package_bytes": 24662,
+      "package_sha256": "04d59e90952fafc015752d607f4033c2b9c3c4e2af85ec340e19d0be0038f691",
+      "rights_context_sha256": "ab2e68f6e78a8343095b0c6b007a07a0ebd766ab99a82fc204115a94a6ee72b4",
+      "terms_uri": "https://www.baostock.com/mainContent?file=stockKData.md",
+      "terms_sha256": "2a6db3b24ab21a199aa17bd949dfbe545d3279007bea1664854f9b7c20542aac",
+      "terms_classification": "OFFICIAL_TECHNICAL_API_DOCUMENTATION_NOT_DATA_TERMS",
+      "state": "INVALIDATED_TECHNICAL_DOCUMENTATION_NOT_TERMS",
+      "upstream_rights_state": "UNKNOWN",
+      "verified_grant_count": 0,
+      "product_admission_valid": false,
+      "storage": "FORBIDDEN",
+      "training": "FORBIDDEN",
+      "redistribution": "FORBIDDEN"
+    },
+    "official_terms_scope_review": {
+      "receipt_path": ".tmp/stock_dsa_b1/STOCK_DSA_B1_OFFICIAL_CONTRACT_SCOPE_INVALIDATION_R002.json",
+      "receipt_file_sha256": "f813f7e1d39dbcc3c5cc5ec3c57454da23a3cc13c25a4dd2bb6ac14adc53437e",
+      "receipt_payload_sha256": "41c9995eade91d5dd3869c5f732c31d33dd1a5dacc866e603121c2d5bff4c447",
+      "contracts": [
+        {
+          "contract_type": "1",
+          "contract_id": 7,
+          "bytes": 16505,
+          "sha256": "aa2bdbe7caeb4f264d327d1a4a64395fd171753209a6a2485046194fa0dfa609",
+          "scope": "商城用户服务协议"
+        },
+        {
+          "contract_type": "2",
+          "contract_id": 13,
+          "bytes": 20851,
+          "sha256": "67821f61e8eafac981c3421d2242596f8428bc6d8405bc461fc9eadd8610f94a",
+          "scope": "商城作者及知识产品销售协议"
+        },
+        {
+          "contract_type": "3",
+          "contract_id": 9,
+          "bytes": 18625,
+          "sha256": "edd9a71f46c68887f10c306166d8b97b29757452b4a7920ac5c2b5ef8ebed788",
+          "scope": "隐私政策"
+        }
+      ],
+      "api_market_data_use_terms_found": false,
+      "upstream_rights_state": "UNKNOWN",
+      "product_admission_valid": false,
+      "market_data_queries": 0,
+      "raw_market_data_persisted": false
+    },
+    "formal_stage1_run": {
+      "state": "INVALIDATED_FOR_RIGHTS_EVIDENCE_SOURCE_OBSERVED_ONLY",
+      "research_as_of": "2026-10-29T05:52:54.898874+00:00",
+      "receipt_file": "stage1-current-v25-official-r003-diagnostic.json",
+      "receipt_file_sha256": "e08984f6f64affd8f331cf65e4cdf397e062aab6e7c8975b8a659b7a3ac101ea",
+      "receipt_hash": "22fdcda9c46930735799ff9a70b6eba36824ec1ee50c4ffabb23805cde21b6ed",
+      "prior_reported_data_objects": {
+        "READY": 18,
+        "UNKNOWN": 58
+      },
+      "current_product_admission": {
+        "PRODUCT_ADMITTED": 0,
+        "RIGHTS_UNKNOWN": 72,
+        "future_record_unknown": 4
+      },
+      "atomic_subfields": {
+        "UNRESOLVED_MISSINGNESS": 7
+      },
+      "valuation_routes": {
+        "ACCOUNTED_NOT_AUTOMATICALLY_APPLICABLE": 9
+      },
+      "stock_600519_matrix": {
+        "READY": 14,
+        "PARTIAL": 23,
+        "NOT_ADMITTED": 12,
+        "NOT_APPLICABLE": 7
+      },
+      "etf_510300_matrix": {
+        "READY": 14,
+        "PARTIAL": 22,
+        "NOT_ADMITTED": 12,
+        "MISSING": 1,
+        "NOT_APPLICABLE": 7
+      },
+      "stock_canonical_hash": "687235855b5b73dc78a9671da93825195d5b2310ee4afc73cda3017dac5f269d",
+      "etf_canonical_hash": "4f74f1c1bbda23ab538b1bb9a2abd4956ec1f6b5f348768a5b2b803ea80d56d9",
+      "matrix_scope": "SOURCE_OBSERVED_METHOD_MATRIX_NOT_PRODUCT_ADMISSION",
+      "canonical_scope": "FAIL_CLOSED_OUTPUT_NOT_PRODUCT_ADMISSION",
+      "v2_5": {
+        "bytes": 107186,
+        "sha256": "187a99d58b2b8bf26b5c6fb89a40c315f1b13ab8775c0afd0ea63f3d617199d5",
+        "persisted": false,
+        "no_send": true,
+        "stage1_state": "HOLD",
+        "projection_scope": "HISTORICAL_PARTIAL_NO_SEND_NOT_CURRENT_PRODUCT",
+        "blocker_codes": [
+          "RIGHTS_TERMS_NOT_VERIFIED",
+          "FULL_DOMAIN_PRODUCT_DATA_NOT_READY",
+          "ATOMIC_SUBFIELD_V25_CONSUMER_BINDING_INCOMPLETE"
+        ]
+      },
+      "effects": {
+        "database_writes": 0,
+        "raw_data_persisted": false,
+        "report_body_persisted": false,
+        "notifications": 0,
+        "model_calls": 0,
+        "training": 0,
+        "promotion": 0
+      }
+    },
+    "gate_b": "STOP_RIGHTS_TERMS_NOT_VERIFIED_OFFICIAL_TERMS_SCOPE_MISMATCH",
+    "gate_c": "HOLD_RIGHTS_TERMS_NOT_VERIFIED_AND_FULL_DOMAIN_PRODUCT_DATA_NOT_READY",
+    "proof_ceiling": "SOURCE_OBSERVED_METHOD_MATRIX_AND_FAIL_CLOSED_CANONICAL_ONLY_NOT_CURRENT_PRODUCT_OR_FULL_V25"
+  },
+  "source_checkpoint": {
+    "installed_pair": "01/05 v3.543",
+    "installed_pair_state": "INSTALLED_AND_THREE_FRESH_EIGHT_OWNER_INVENTORIES_PASS",
+    "fresh_project_source_count": 8,
+    "duplicate_logical_owners": 0,
+    "prepared_successor_pair": null,
+    "prepared_successor_state": "NONE_UNTIL_GITHUB_COMMIT_AND_CI_MATERIAL_CLOSURE",
+    "other_six_owners": "KEEP",
+    "ninth_source": false
+  },
+  "multi_level_goal_graph": {
+    "schema_version": "stock-dsa-program-product-lane-milestone-atomic-v1",
+    "levels": [
+      "PROGRAM",
+      "PRODUCT",
+      "LANE",
+      "MILESTONE",
+      "ATOMIC"
+    ],
+    "nodes": {
+      "PROGRAM": "Lawful explainable verifiable rollback-safe research and calibrated evidence, no auto trading",
+      "PRODUCT": "Global/CN Market/Sector/ETF/Stock/7TFx8/quality/valuation/veto/canonical/full V2.5",
+      "LANES": [
+        "G0_GITHUB",
+        "B1_SOURCE_RIGHTS",
+        "B5_METHOD_WINDOWS",
+        "M2_MULTI_ASSET",
+        "B8_FULL_REPORT",
+        "L1_LEDGER_PIT",
+        "M3_CALIBRATION",
+        "P1_PROMOTION"
+      ],
+      "CURRENT_MILESTONE": "GITHUB_CONSOLIDATE_LOCAL57_INDUSTRY_VALUATION_VOLUME_PHASE_NARROW_CHAN",
+      "ATOMIC_RULE": "EXISTING_OWNER_AND_CONSUMER_PLUS_RED_GREEN_NONTRIGGER_ROLLBACK_PROOF_CEILING"
+    },
+    "edges": [
+      [
+        "PROGRAM",
+        "PRODUCT"
+      ],
+      [
+        "PRODUCT",
+        "G0_GITHUB"
+      ],
+      [
+        "PRODUCT",
+        "B1_SOURCE_RIGHTS"
+      ],
+      [
+        "PRODUCT",
+        "B5_METHOD_WINDOWS"
+      ],
+      [
+        "PRODUCT",
+        "M2_MULTI_ASSET"
+      ],
+      [
+        "PRODUCT",
+        "B8_FULL_REPORT"
+      ],
+      [
+        "B8_FULL_REPORT",
+        "L1_LEDGER_PIT"
+      ],
+      [
+        "L1_LEDGER_PIT",
+        "M3_CALIBRATION"
+      ],
+      [
+        "M3_CALIBRATION",
+        "P1_PROMOTION"
+      ]
+    ],
+    "horizontal_gates": [
+      "DATA",
+      "RISK",
+      "LIQUIDITY",
+      "EXECUTION",
+      "KNOWN_AT",
+      "RIGHTS_PRIVACY",
+      "VERSION_IDENTITY",
+      "COST",
+      "USER_BURDEN",
+      "STOP_LOSS"
+    ],
+    "sibling_lane_success_never_overrides_required_gate": true
+  },
+  "current_capability_closure": {
+    "schema_version": "stock-dsa-current-capability-closure-v1",
+    "industry_valuation_router": {
+      "state": "LOCAL_FOCUSED_PASS_REMOTE_OPEN",
+      "classification_datasets": [
+        "P_INDUSTRY",
+        "E_BASKET"
+      ],
+      "route_count": 9,
+      "industry_families": [
+        "MATURE_CONSUMER",
+        "INDUSTRIAL_MANUFACTURING",
+        "HIGH_GROWTH_TECH",
+        "BANKING",
+        "INSURANCE",
+        "CYCLICAL_RESOURCE",
+        "UTILITY_INFRASTRUCTURE",
+        "REIT",
+        "EARLY_GROWTH",
+        "ETF"
+      ],
+      "universal_default_route": false,
+      "action_authority": false
+    },
+    "volume_price_phase": {
+      "state": "LOCAL_FOCUSED_PASS_REMOTE_OPEN",
+      "candidate_states": [
+        "ACCUMULATION_CANDIDATE",
+        "WASHOUT_CANDIDATE",
+        "DISTRIBUTION_CANDIDATE",
+        "MARKUP_CANDIDATE",
+        "MARKDOWN_CANDIDATE",
+        "INDETERMINATE"
+      ],
+      "institutional_intent_inferred": false,
+      "hard_veto_only": [
+        "DISTRIBUTION_CANDIDATE_WITH_CONFIRMED_FAILED_BREAKOUT",
+        "MARKDOWN_CANDIDATE_WITH_CONFIRMED_BREAKDOWN"
+      ],
+      "positive_candidate_upgrades_buy": false
+    },
+    "narrow_chan_adapter": {
+      "state": "LOCAL_FOCUSED_PASS_REMOTE_OPEN",
+      "source_owner": "price_structure_service confirmed pivots/swings",
+      "outputs": [
+        "CONFIRMED_FRACTALS",
+        "CONFIRMED_STROKES",
+        "THREE_STROKE_OVERLAP_CANDIDATES"
+      ],
+      "prefix_replay": true,
+      "full_czsc_claim": false,
+      "independent_action_authority": false,
+      "deferred": [
+        "INCLUSION_RELATION",
+        "SEGMENTS",
+        "FULL_ZS",
+        "DIVERGENCE",
+        "BUY_SELL_POINTS",
+        "TRADER_RUNTIME"
+      ]
+    },
+    "seven_timeframe_eight_family": {
+      "matrix_cells": 56,
+      "method_profiles": 43,
+      "existing_reused": 30,
+      "deferred": 13,
+      "effective_execution_pairs": 154,
+      "all_cells_executable": true
+    },
+    "focused_regression": {
+      "focused_passed": 61,
+      "focused_failed": 0,
+      "full_related_passed": 1340,
+      "full_related_failed": 0,
+      "remote_ci": "PENDING_PUSH"
+    },
+    "product_admission": "0_OF_72_UNCHANGED",
+    "original_v25_fact_ready": false
+  },
+  "role_review": {
+    "schema_version": "stock-dsa-role-review-v1",
+    "PRODUCT": {
+      "state": "LOCAL_ENGINEERING_PASS_FULL_PRODUCT_STOP",
+      "radius": "CROSS_LANE",
+      "route": "KEEP_DSA_NARROW_LAWFUL_VERTICAL"
+    },
+    "DATA_MODEL": {
+      "state": "IDENTITY_WINDOWS_READY_PRODUCT_RIGHTS_FULL_DOMAIN_OPEN",
+      "radius": "CROSS_LANE",
+      "route": "REUSE_IDENTITY_RIGHTS_V2_NO_FABRICATION"
+    },
+    "PROCESS_CONSUMER": {
+      "state": "FIVE_RECURRENT_ROOT_DEFECTS_RED_GREEN",
+      "radius": "LANE_RECURRENT",
+      "route": "NARROW_FIX_AND_SIBLING_SCAN"
+    },
+    "AUTHORITY_CURRENTNESS": {
+      "state": "SOURCE8_V3543_PASS_GITHUB_CANDIDATE_PRECOMMIT",
+      "radius": "LANE",
+      "route": "EXACT_GIT_COMMIT_PUSH_NATURAL_CI"
+    },
+    "ENVIRONMENT": {
+      "state": "WEBCODEX_PASS_ONE_INCIDENTAL_LITELLM_COST_MAP_TIMEOUT_GET",
+      "radius": "INSTANCE_ONLY",
+      "route": "FORCE_LOCAL_COST_MAP_BEFORE_IMPORT"
+    },
+    "ADAPTER_INTERFACE": {
+      "state": "ONE_DSA_NARROW_CHAN_NO_PARALLEL_RUNTIME",
+      "radius": "INSTANCE_ONLY",
+      "route": "KEEP_WRAP"
+    },
+    "DEV_TOOLING": {
+      "state": "FOCUSED61_AND_FULL_RELATED1340_PASS_REMOTE_CI_OPEN",
+      "radius": "LANE",
+      "route": "ATOMIC_COMMIT_PUSH_NATURAL_CI"
+    },
+    "USER_BURDEN": {
+      "state": "NO_MORE_PERMISSION_TOKEN_OR_LOG_UPLOAD",
+      "radius": "CROSS_LANE",
+      "route": "MACHINE_EXECUTES_DETERMINISTIC_STEPS"
+    },
+    "current_route_still_worth_continuing": "YES_KEEP_ONLY_DSA"
+  },
+  "github_continuity_contract": {
+    "schema_version": "stock-dsa-github-continuity-v1",
+    "canonical_origin": "https://github.com/leeningzzu/dsa-market-research.git",
+    "feature_branch": "feat/stock-dsa-m2-source-gates-v1",
+    "pull_request": 31,
+    "direct_main_push": false,
+    "force_push": false,
+    "merge_authority": false,
+    "manual_ci_dispatch": false,
+    "future_model_entry_order": [
+      "AGENTS.md",
+      "docs/stock-dsa-roadmap.md",
+      "docs/stock-dsa-stage-baseline-v1.json",
+      "PROJECT_SOURCE_8_OWNER_GATE",
+      "ACTUAL_GIT_ORIGIN_HEAD_TREE_STATUS_PR_CI",
+      "FIVE_PROOF_COLUMNS",
+      "UNIQUE_NEXT_STEP"
+    ],
+    "runtime_git_evidence_overrides_embedded_sha": true,
+    "method_directory_or_documentation_alone_never_proves_consumption": true,
+    "every_material_capability_requires": [
+      "PRODUCTION_OWNER",
+      "ACTUAL_CONSUMER",
+      "INDEPENDENT_NEGATIVE",
+      "LAWFUL_NONTRIGGER",
+      "ROADMAP_PROJECTION",
+      "MACHINE_JSON",
+      "NATURAL_CI"
+    ]
   }
 }

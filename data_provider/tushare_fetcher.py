@@ -18,7 +18,7 @@ import json as _json
 import logging
 import re
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple, List, Dict, Any
 
 import pandas as pd
@@ -33,6 +33,17 @@ from tenacity import (
 
 from .base import BaseFetcher, DataFetchError, RateLimitError, STANDARD_COLUMNS,is_bse_code, is_st_stock, is_kc_cy_stock, normalize_stock_code, _is_hk_market
 from .realtime_types import UnifiedRealtimeQuote, ChipDistribution
+from .daily_data_identity import (
+    attach_daily_data_identity,
+    build_daily_data_identity,
+    sha256_payload,
+)
+from .intraday_data_identity import (
+    attach_intraday_data_identity,
+    build_intraday_data_identity,
+)
+from src.services.intraday_bar_service import normalize_cn_completed_5m_bars
+
 from src.config import get_config
 import os
 from zoneinfo import ZoneInfo
@@ -73,34 +84,29 @@ def _is_us_code(stock_code: str) -> bool:
 
 
 def _resolve_tushare_http_url() -> Optional[str]:
-    """读取 ``TUSHARE_HTTP_URL`` 环境变量并做基本校验。
+    """Use only an explicitly configured, canonical HTTPS Tushare endpoint.
 
-    - 留空 / 仅空白 / 未设置 → 返回 ``None``，调用方继续走官方默认地址。
-    - 设置则去掉首尾空白后返回，并校验必须是 ``http://`` 或 ``https://`` 前缀，
-      避免有人误填成纯主机名（如 ``api.tushare.pro``）导致 ``requests`` 把它
-      当成相对路径请求失败。
+    No Token is sent under the historical insecure HTTP default or to a
+    third-party mirror. Official REST HTTPS compatibility and account rights
+    still require separate evidence before an actual provider operation.
     """
     raw = os.getenv("TUSHARE_HTTP_URL")
-    if not raw:
+    if not raw or not raw.strip():
         return None
     url = raw.strip()
-    if not url:
-        return None
-    if not (url.startswith("http://") or url.startswith("https://")):
-        raise ValueError(
-            "TUSHARE_HTTP_URL 必须以 http:// 或 https:// 开头，"
-            f"当前值为 {url!r}"
-        )
-    return url
-
+    if url not in {"https://api.tushare.pro", "https://api.tushare.pro/"}:
+        raise ValueError("TUSHARE_TLS_OFFICIAL_ENDPOINT_REQUIRED")
+    return "https://api.tushare.pro"
 
 class _TushareHttpClient:
     """Lightweight Tushare Pro client that does not require the tushare SDK."""
 
-    def __init__(self, token: str, timeout: int = 30, api_url: str = "http://api.tushare.pro") -> None:
+    def __init__(self, token: str, timeout: int = 30, api_url: Optional[str] = None) -> None:
+        if api_url not in {"https://api.tushare.pro", "https://api.tushare.pro/"}:
+            raise ValueError("TUSHARE_TOKEN_TLS_ENDPOINT_NOT_ADMITTED")
         self._token = token
         self._timeout = timeout
-        self._api_url = api_url
+        self._api_url = "https://api.tushare.pro"
 
     def query(self, api_name: str, fields: str = "", **kwargs) -> pd.DataFrame:
         req_params = {
@@ -109,7 +115,10 @@ class _TushareHttpClient:
             "params": kwargs,
             "fields": fields,
         }
-        res = requests.post(self._api_url, json=req_params, timeout=self._timeout)
+        res = requests.post(
+            self._api_url, json=req_params, timeout=self._timeout,
+            allow_redirects=False,
+        )
         if res.status_code != 200:
             raise Exception(f"Tushare API HTTP {res.status_code}")
 
@@ -165,6 +174,8 @@ class TushareFetcher(BaseFetcher):
         self._api: Optional[object] = None  # Tushare API 实例
         self.date_list: Optional[List[str]] = None  # 交易日列表缓存（倒序，最新日期在前）
         self._date_list_end: Optional[str] = None  # 缓存对应的截止日期，用于跨日刷新
+        self._last_daily_source_context: Optional[Dict[str, Any]] = None
+
 
         # 尝试初始化 API
         self._init_api()
@@ -194,23 +205,16 @@ class TushareFetcher(BaseFetcher):
             self._api = None
 
     def _build_api_client(self, token: str) -> _TushareHttpClient:
-        """
-        Build a lightweight Tushare Pro client over direct HTTP requests.
+        """Fail closed: no Token client without explicit official HTTPS URL.
 
-        The project already normalizes all Pro calls through the same request
-        contract, so we do not need the official tushare SDK during runtime.
-
-        支持通过 ``TUSHARE_HTTP_URL`` 环境变量将请求指向自建或第三方兼容
-        端点，便于在网络无法直达 ``api.tushare.pro`` 时切换镜像/网关。
-        留空或不设置则保持官方默认地址，行为与历史版本完全一致。
+        A configured URL does not establish live endpoint availability,
+        paid minute entitlements or dataset usage/storage rights.
         """
         api_url = _resolve_tushare_http_url()
-        if api_url:
-            logger.info("Tushare 使用自定义接入地址: %s", api_url)
-            client = _TushareHttpClient(token=token, api_url=api_url)
-        else:
-            client = _TushareHttpClient(token=token)
-        logger.debug("Tushare API client configured for direct HTTP calls")
+        if not api_url:
+            raise ValueError("TUSHARE_TLS_OFFICIAL_ENDPOINT_NOT_CONFIGURED")
+        client = _TushareHttpClient(token=token, api_url=api_url)
+        logger.debug("Tushare API client configured for HTTPS-only calls")
         return client
 
     def _determine_priority(self) -> int:
@@ -533,6 +537,20 @@ class TushareFetcher(BaseFetcher):
                     end_date=ts_end,
                 )
             
+            if not isinstance(df, pd.DataFrame) or df.empty:
+                return df
+            if "ts_code" not in df.columns:
+                raise DataFetchError("Tushare daily response missing ts_code")
+            if set(df["ts_code"].astype(str)) != {ts_code}:
+                raise DataFetchError("Tushare daily response instrument mismatch")
+            observed_at = datetime.now(timezone.utc)
+            self._last_daily_source_context = {
+                "api_name": api_name,
+                "requested_start": start_date,
+                "requested_end": end_date,
+                "observed_at": observed_at,
+                "raw_response_sha256": sha256_payload(df.astype(str).to_dict("records")),
+            }
             return df
             
         except Exception as e:
@@ -545,6 +563,135 @@ class TushareFetcher(BaseFetcher):
             
             raise DataFetchError(f"Tushare 获取数据失败: {e}") from e
     
+    def get_daily_data(
+        self,
+        stock_code: str,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        days: int = 30,
+    ) -> pd.DataFrame:
+        """Return typed raw-basis CN stock/ETF daily observations.
+
+        The base implementation intentionally creates UNCLASSIFIED identity for
+        providers without a native receipt. Tushare exposes exact source units
+        and an unadjusted daily endpoint, so this override upgrades only the
+        current received response; it does not grant historical PIT or rights.
+        """
+        self._last_daily_source_context = None
+        frame = super().get_daily_data(
+            stock_code, start_date=start_date, end_date=end_date, days=days,
+        )
+        context = self._last_daily_source_context
+        if not isinstance(context, dict) or _is_hk_market(stock_code):
+            return frame
+        identity = build_daily_data_identity(
+            frame,
+            provider_identity=self.name,
+            provider_route=f"tushare.{context['api_name']}",
+            actual_response_branch=f"api={context['api_name']};basis=raw",
+            requested_adjustment_basis="raw",
+            observed_adjustment_basis="raw",
+            basis_evidence="official_tushare_unadjusted_daily_endpoint",
+            requested_start=context["requested_start"],
+            requested_end=context["requested_end"],
+            currency="CNY",
+            volume_unit="share",
+            amount_unit="CNY",
+            identity_state="OBSERVED",
+            instrument=normalize_stock_code(stock_code),
+            observed_at=context["observed_at"],
+            # Content identity and observation time prove this response only.
+            # They are not an upstream correction sequence or historical
+            # publication vintage, so leave both semantic fields unclaimed.
+            raw_response_sha256=context["raw_response_sha256"],
+        )
+        attach_daily_data_identity(frame, identity)
+        return frame
+
+    def get_intraday_data(
+        self,
+        stock_code: str,
+        *,
+        start_date: str,
+        end_date: str,
+        frequency: str = "5",
+        observed_at: Optional[datetime] = None,
+    ) -> pd.DataFrame:
+        """Fetch one exact raw-basis CN stock/ETF historical 5m source.
+
+        This method does not imply that a token has the separately purchased
+        minute permission. Permission/API failures remain fail-closed. The
+        caller's Rights-v2 grant still controls Product admission.
+        """
+        if self._api is None:
+            raise DataFetchError("Tushare API 未初始化，请检查 Token 配置")
+        if str(frequency).strip() != "5":
+            raise DataFetchError("Tushare canonical 5m source only supports frequency=5")
+        if _is_us_code(stock_code) or _is_hk_market(stock_code) or is_bse_code(stock_code):
+            raise DataFetchError("Tushare canonical 5m source supports admitted SH/SZ stock or ETF only")
+        code = normalize_stock_code(stock_code)
+        ts_code = self._convert_stock_code(stock_code)
+        is_etf = _is_etf_code(code)
+        api_name = "etf_mins" if is_etf else "stk_mins"
+        query = {
+            "ts_code": ts_code,
+            "freq": "5min",
+            "start_date": f"{start_date} 00:00:00",
+            "end_date": f"{end_date} 23:59:59",
+        }
+        try:
+            raw = self._call_api_with_rate_limit(api_name, **query)
+        except Exception as exc:
+            reason = str(exc).lower()
+            if any(word in reason for word in ("quota", "配额", "limit", "权限")):
+                raise RateLimitError(f"Tushare 分钟权限或配额不足: {exc}") from exc
+            raise DataFetchError(f"Tushare 分钟数据失败: {exc}") from exc
+        required = {"ts_code", "trade_time", "open", "high", "low", "close", "vol", "amount"}
+        if not isinstance(raw, pd.DataFrame) or raw.empty or not required.issubset(raw.columns):
+            raise DataFetchError("Tushare 5m response missing required fields")
+        if set(raw["ts_code"].astype(str)) != {ts_code}:
+            raise DataFetchError("Tushare 5m response instrument mismatch")
+        source_rows_sha256 = sha256_payload(raw.astype(str).to_dict("records"))
+        working = raw.rename(columns={"trade_time": "time", "vol": "volume"}).copy()
+        parsed = pd.to_datetime(working["time"], errors="coerce")
+        if parsed.isna().any():
+            raise DataFetchError("Tushare 5m response contains invalid trade_time")
+        working["date"] = parsed.dt.strftime("%Y-%m-%d")
+        working["time"] = parsed.dt.strftime("%Y%m%d%H%M%S") + "000"
+        observed = observed_at or datetime.now(timezone.utc)
+        canonical = normalize_cn_completed_5m_bars(
+            working,
+            stock_code=code,
+            data_source=self.name,
+            observed_at=observed,
+        )
+        identity = build_intraday_data_identity(
+            canonical,
+            provider_identity=self.name,
+            provider_route=f"tushare.{api_name}",
+            package_version="direct-http-pro-v1",
+            query_identity={"api_name": api_name, **query},
+            requested_adjustment_basis="raw",
+            observed_adjustment_basis="raw",
+            basis_evidence="official_tushare_historical_minute_unadjusted",
+            timeframe="5m",
+            timezone_name="Asia/Shanghai",
+            session_calendar="XSHG",
+            currency="CNY",
+            volume_unit="share",
+            amount_unit="CNY",
+            requested_start=start_date,
+            requested_end=end_date,
+            identity_state="OBSERVED",
+            observed_at=observed,
+            # source_rows_sha256/observed_at bind the same-run response; they
+            # never substitute for a provider revision chain or PIT vintage.
+            source_rows_sha256=source_rows_sha256,
+        )
+        attach_intraday_data_identity(canonical, identity)
+        canonical["intraday_data_identity_hash"] = identity["identity_hash"]
+        return canonical
+
     def _normalize_data(self, df: pd.DataFrame, stock_code: str) -> pd.DataFrame:
         """
         标准化 Tushare 数据

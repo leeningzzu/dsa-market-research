@@ -8,6 +8,7 @@ import pandas as pd
 
 from src.services.pattern_trigger_service import (
     _dedupe_patterns,
+    build_completed_timeframe_pattern_context,
     build_pattern_trigger_context,
 )
 
@@ -94,6 +95,179 @@ def _pattern(context: dict, pattern_type: str, subtype: str | None = None) -> di
         for item in context["patterns"]
         if item["pattern_type"] == pattern_type and (subtype is None or item.get("subtype") == subtype)
     )
+
+
+def _completed_30m_history_from_daily(history: pd.DataFrame) -> pd.DataFrame:
+    result = history.copy()
+    result["date"] = pd.date_range(
+        "2026-01-02 09:30", periods=len(result), freq="30min",
+        tz="Asia/Shanghai",
+    )
+    return result
+
+
+def _completed_30m_pivot(
+    history: pd.DataFrame, index: int, kind: str, price: float,
+    *, confirm_lag: int = 2,
+) -> dict:
+    origin = pd.Timestamp(history.iloc[index]["date"]).tz_convert("UTC")
+    confirmed = pd.Timestamp(history.iloc[index + confirm_lag]["date"]).tz_convert("UTC")
+    return {
+        "kind": kind, "price": price,
+        "origin_time": origin.isoformat(),
+        "confirmed_at": confirmed.isoformat(),
+        "confirmed_available_at": confirmed.isoformat(),
+        "provisional": False,
+        "algorithm_version": "confirmed-pivot-v2",
+        "config_hash": "price-structure-config",
+        "invalidation": {"state": "ACTIVE", "triggered_at": None},
+    }
+
+
+def _completed_30m_price_context(
+    history: pd.DataFrame, pivots: list[dict], *, target_index: int = -1,
+    event: dict | None = None,
+) -> dict:
+    target = pd.Timestamp(history.iloc[target_index]["date"]).tz_convert("UTC")
+    return {
+        "schema_version": "price-structure-v1",
+        "status": "READY",
+        "timeframe": "30m",
+        "target_bar_end": target.isoformat(),
+        "completed_bar_only": True,
+        "intraday_identity_hash": "a" * 64,
+        "historical_replay_eligible": False,
+        "source_alignment": {
+            "status": "SINGLE_SOURCE", "sources": ["Fetcher"],
+            "rows_complete": True, "observations": len(history),
+        },
+        "pivots": pivots,
+        "swings": [],
+        "structure_event": event or {"state": "NONE", "provisional": False},
+    }
+
+
+def _completed_30m_pattern(
+    history: pd.DataFrame, pivots: list[dict], *, target_index: int = -1,
+    event: dict | None = None,
+) -> dict:
+    target = pd.Timestamp(history.iloc[target_index]["date"]).tz_convert("UTC")
+    return build_completed_timeframe_pattern_context(
+        stock_code="600519", history=history, timeframe="30m",
+        target_bar_end=target, market="cn",
+        price_structure_context=_completed_30m_price_context(
+            history, pivots, target_index=target_index, event=event,
+        ),
+        supply_demand_context={
+            "status": "READY", "target_date": target.date().isoformat(),
+            "state": "DEMAND_PRESSURE",
+            "relative_volume": {"volume_ratio_20_completed_bars": 1.4},
+        },
+        source_identity_hash="a" * 64,
+        evidence_available_at=target + pd.Timedelta(hours=1),
+    )
+
+
+def test_completed_30m_double_bottom_reuses_daily_geometry_and_lifecycle():
+    daily = _history()
+    daily_pivots = [
+        _pivot(daily, 35, "LOW", 80.0),
+        _pivot(daily, 43, "HIGH", 94.0),
+        _pivot(daily, 52, "LOW", 78.5),
+    ]
+    daily_result = _build(daily, _price_context(daily, daily_pivots))
+    daily_pattern = _pattern(daily_result, "DOUBLE_BOTTOM_BASE")
+
+    intraday = _completed_30m_history_from_daily(daily)
+    pivots = [
+        _completed_30m_pivot(intraday, 35, "LOW", 80.0),
+        _completed_30m_pivot(intraday, 43, "HIGH", 94.0),
+        _completed_30m_pivot(intraday, 52, "LOW", 78.5),
+    ]
+    result = _completed_30m_pattern(intraday, pivots)
+    pattern = _pattern(result, "DOUBLE_BOTTOM_BASE")
+    assert result["status"] == "READY"
+    assert result["timeframe"] == "30m"
+    assert pattern["lifecycle"] == daily_pattern["lifecycle"] == "FORMING"
+    assert pattern["metrics"]["low_difference_pct"] == daily_pattern["metrics"]["low_difference_pct"]
+    assert pattern["metrics"]["separation_completed_bars"] == daily_pattern["metrics"]["separation_sessions"]
+    assert pattern["origin_time"].endswith("+00:00")
+    assert pattern["geometry_confirmed_at"].endswith("+00:00")
+    assert result["independent_action_authority"] is False
+    assert result["strategy_admitted"] is False
+    assert result["learning_admitted"] is False
+    assert result["data_rights_admitted"] is False
+    assert result["historical_replay_eligible"] is False
+
+    event_time = pd.Timestamp(intraday.iloc[65]["date"]).tz_convert("UTC")
+    breakout = {
+        "state": "UP_BREAKOUT", "level": 94.0, "level_kind": "HIGH",
+        "level_origin_time": pivots[1]["origin_time"],
+        "level_confirmed_at": pivots[1]["confirmed_at"],
+        "event_time": event_time.isoformat(), "provisional": False,
+        "invalidation": "COMPLETED_CLOSE_BELOW_BROKEN_RESISTANCE",
+        "algorithm_version": "confirmed-pivot-v2",
+        "config_hash": "price-structure-config",
+    }
+    confirmed = _completed_30m_pattern(intraday, pivots, event=breakout)
+    confirmed_pattern = _pattern(confirmed, "DOUBLE_BOTTOM_BASE")
+    assert confirmed_pattern["lifecycle"] == "CONFIRMED"
+    assert confirmed_pattern["confirmed_at"] == event_time.isoformat()
+
+
+def test_completed_30m_vcp_matches_daily_bar_geometry_and_legal_nontrigger():
+    daily = _history()
+    daily_pivots = [
+        _pivot(daily, 30, "HIGH", 120.0), _pivot(daily, 35, "LOW", 90.0),
+        _pivot(daily, 42, "HIGH", 110.0), _pivot(daily, 48, "LOW", 100.0),
+        _pivot(daily, 54, "HIGH", 107.0), _pivot(daily, 60, "LOW", 103.0),
+    ]
+    daily_vcp = _pattern(_build(daily, _price_context(daily, daily_pivots)), "CONTRACTION_BASE", "VCP")
+    intraday = _completed_30m_history_from_daily(daily)
+    pivots = [
+        _completed_30m_pivot(intraday, 30, "HIGH", 120.0),
+        _completed_30m_pivot(intraday, 35, "LOW", 90.0),
+        _completed_30m_pivot(intraday, 42, "HIGH", 110.0),
+        _completed_30m_pivot(intraday, 48, "LOW", 100.0),
+        _completed_30m_pivot(intraday, 54, "HIGH", 107.0),
+        _completed_30m_pivot(intraday, 60, "LOW", 103.0),
+    ]
+    result = _completed_30m_pattern(intraday, pivots)
+    vcp = _pattern(result, "CONTRACTION_BASE", "VCP")
+    assert vcp["metrics"]["swing_contraction_pct"] == daily_vcp["metrics"]["swing_contraction_pct"]
+    assert vcp["lifecycle"] == "FORMING"
+    assert result["reason"] == "PATTERN_TRIGGER_READY"
+    assert result["strategy_admitted"] is False
+
+
+def test_completed_30m_pattern_rejects_duplicate_provisional_and_future_confirmation():
+    daily = _history()
+    intraday = _completed_30m_history_from_daily(daily)
+    pivots = [
+        _completed_30m_pivot(intraday, 35, "LOW", 80.0),
+        _completed_30m_pivot(intraday, 43, "HIGH", 94.0),
+        _completed_30m_pivot(intraday, 52, "LOW", 78.5),
+    ]
+    duplicate = intraday.copy()
+    duplicate.loc[duplicate.index[-1], "date"] = duplicate.iloc[-2]["date"]
+    rejected = _completed_30m_pattern(duplicate, pivots)
+    assert rejected["status"] == "UNKNOWN"
+    assert rejected["reason"] == "TIMEFRAME_BAR_TIMESTAMP_DUPLICATE"
+
+    provisional = [dict(item) for item in pivots]
+    provisional[0]["provisional"] = True
+    rejected = _completed_30m_pattern(intraday, provisional)
+    assert rejected["status"] == "UNKNOWN"
+    assert rejected["reason"] == "PRICE_STRUCTURE_PIVOT_PROVENANCE_INVALID"
+
+    future = [dict(item) for item in pivots]
+    future[-1]["confirmed_available_at"] = (
+        pd.Timestamp(intraday.iloc[-1]["date"]).tz_convert("UTC")
+        + pd.Timedelta(hours=2)
+    ).isoformat()
+    rejected = _completed_30m_pattern(intraday, future)
+    assert rejected["status"] == "UNKNOWN"
+    assert rejected["reason"] == "PRICE_STRUCTURE_FUTURE_CONFIRMATION"
 
 
 def test_double_bottom_forming_confirmed_and_failed_reuse_price_structure_event_owner():

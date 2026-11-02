@@ -119,6 +119,24 @@ def test_actual_dsa_cap_statuses_count_before_final_trim(monkeypatch):
     assert result.execution_receipt["provider_http_request_count"] is None
 
 
+def test_daily_enrichment_window_is_method_compiled_and_audited(monkeypatch):
+    result, _ = _run(monkeypatch, daily=True, cap=2)
+    stage = next(
+        row for row in result.execution_receipt["stages"]
+        if row["stage"] == "daily_enrichment"
+    )
+    assert stage["window_policy"] == "CURRENT_DAILY_FEATURE_METHOD_MINIMUM"
+    assert stage["required_bars"] == 61
+    assert stage["requested_bars"] == 61
+    assert stage["candidate_window_policy"] == (
+        "FILTERED_POOL_BOUNDED_BY_CONFIGURED_CAP"
+    )
+    assert stage["candidate_window_input"] == 4
+    assert stage["candidate_window_attempted"] == 2
+    assert stage["budget_deferred_count"] == 2
+    assert result.execution_receipt["full_universe_equivalence_proven"] is False
+
+
 def test_daily_filter_empty_keeps_budget_deferral_and_rejection_separate(monkeypatch):
     result, _ = _run(monkeypatch, daily=True, cap=2, reject_daily=True)
     receipt = result.execution_receipt

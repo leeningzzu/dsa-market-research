@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import math
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pandas as pd
 import pytest
+
+from src.services import multi_timeframe_structure_service as mtf_owner
+from src.services.evidence_traceability_registry import (
+    compile_method_window_policy_view,
+)
 
 from data_provider.daily_data_identity import (
     attach_daily_data_identity,
@@ -35,6 +41,32 @@ from src.services.pit_identity import (
     build_completed_history_identity,
     proven_adjustment_basis,
 )
+
+
+def test_intraday_evidence_config_matches_all_current_minute_consumers() -> None:
+    """Config identity must describe computed evidence, not stale v1 scope."""
+    rows = compile_method_window_policy_view()["methods"]
+    expected = {
+        str(row["method_id"])
+        for row in rows
+        if row.get("leaf_implementation_state") == "EXISTING_REUSED"
+        and row.get("consumer_scope") == "TECHNICAL_MATRIX"
+        and any(
+            timeframe in {"5m", "15m", "30m", "60m"}
+            for timeframe in tuple(row.get("current_execution_timeframes") or ())
+        )
+    }
+    config = mtf_owner._INTRADAY_EVIDENCE_CONFIG
+    assert set(config["current_method_ids"]) == expected
+    assert config["technical_families"] == [
+        "TREND_RS", "SUPPLY", "COST", "STRUCTURE",
+        "MOMENTUM", "PATTERN", "MTF",
+    ]
+    assert config["pattern_evidence"] == (
+        "SOURCE_BOUND_TECHNICAL_CONTEXT_NO_INDEPENDENT_TRIGGER"
+    )
+    assert config["trigger_authority"] == "NOT_ADMITTED"
+    assert config["independent_action_authority"] is False
 
 
 def _history(periods: int = 150, *, future: int = 0) -> pd.DataFrame:
@@ -111,6 +143,66 @@ def _trend_result(label: str = "多头排列"):
     )
 
 
+def test_all_seven_carriers_publish_explicit_relative_strength_input_seam():
+    history = _with_observed_identity(_history(periods=280))
+    target_date = pd.to_datetime(history.iloc[-1]["date"]).date()
+    daily_rs = {
+        "schema_version": "relative-strength-v1",
+        "status": "READY",
+        "reason": "EXACT_SHARED_ENDPOINTS_SOURCE_ALIGNED",
+        "timeframe": "daily",
+        "stock_code": "600519",
+        "benchmark": {"code": "510300"},
+        "relative": {"relative_ratio_change_pct": 1.25},
+        "data_quality": {"source_alignment": "MATCHED"},
+        "input_identity": {
+            "stock": {"data_snapshot_identity": "a" * 64},
+            "benchmark": {"data_snapshot_identity": "b" * 64},
+        },
+        "independent_action_authority": False,
+        "strategy_admitted": False,
+        "learning_admitted": False,
+    }
+    weekly_rs = {
+        "schema_version": "timeframe-relative-strength-v1",
+        "status": "READY",
+        "reason": "EXACT_SHARED_COMPLETED_BAR_ENDPOINTS_SOURCE_ALIGNED",
+        "timeframe": "weekly",
+        "target_code": "600519",
+        "benchmark": {"code": "510300"},
+        "relative": {"relative_ratio_change_pct": 2.5},
+        "data_quality": {"source_alignment": "MATCHED"},
+        "input_identity": {
+            "target": {"identity_hash": "a" * 64},
+            "benchmark": {"identity_hash": "b" * 64},
+        },
+        "independent_action_authority": False,
+        "strategy_admitted": False,
+        "learning_admitted": False,
+    }
+    context = build_multi_timeframe_structure_context(
+        stock_code="600519",
+        history=history,
+        target_date=target_date,
+        market="cn",
+        trend_analyzer=_FakeTrendAnalyzer(),
+        daily_trend_result=_trend_result(),
+        daily_relative_strength_context=daily_rs,
+        timeframe_relative_strength_contexts={"weekly": weekly_rs},
+    )
+    assert set(context["timeframes"]) == {
+        "monthly", "weekly", "daily", "60m", "30m", "15m", "5m",
+    }
+    assert context["timeframes"]["daily"]["relative_strength"]["status"] == "READY"
+    assert context["timeframes"]["weekly"]["relative_strength"]["status"] == "READY"
+    for timeframe in ("monthly", "60m", "30m", "15m", "5m"):
+        missing = context["timeframes"][timeframe]["relative_strength"]
+        assert missing["status"] == "MISSING"
+        assert missing["reason"] == "TIMEFRAME_RELATIVE_STRENGTH_CONTEXT_MISSING"
+        assert missing["timeframe"] == timeframe
+        assert missing["independent_action_authority"] is False
+
+
 class _FakeTrendAnalyzer:
     def analyze(self, _frame, _code):
         return _trend_result()
@@ -172,6 +264,85 @@ def _intraday_fixture(
     return frame
 
 
+
+def _twenty_exchange_sessions_for_source_fixture() -> list:
+    from datetime import date
+    from src.core.trading_calendar import resolve_forward_sessions_fail_closed
+
+    sessions = resolve_forward_sessions_fail_closed("cn", date(2026, 8, 31), 20)
+    assert sessions is not None and len(sessions) == 20
+    assert date(2026, 9, 25) not in sessions
+    assert date(2026, 9, 28) in sessions
+    return sessions
+
+
+def test_derived_minute_supply_and_cost_promote_only_from_proven_parent_sessions():
+    """20 complete parent 5m sessions permit exactly source-bound derived method facts."""
+    from tests.test_intraday_bar_service import _canonical_session_set
+    from src.services.intraday_bar_service import aggregate_completed_intraday_bars
+    from src.services.multi_timeframe_structure_service import _build_intraday_timeframe
+
+    sessions = _twenty_exchange_sessions_for_source_fixture()
+    source = _canonical_session_set(sessions, volume_unit="share")
+    target = sessions[-1]
+    observed = datetime(2026, 10, 1, 8, tzinfo=timezone.utc)
+    for timeframe in ("15m", "30m", "60m"):
+        bars = aggregate_completed_intraday_bars(source, target_timeframe=timeframe)
+        result = _build_intraday_timeframe(
+            key=timeframe, stock_code="600519", target_date=target,
+            bars=bars, trend_analyzer=StockTrendAnalyzer(),
+            snapshot_observed_at=observed, daily_adjustment_basis="qfq",
+        )
+        assert result["supply_demand"]["status"] == "READY"
+        assert result["cost_bar_reference"]["status"] == "READY"
+        assert result["completed_source_session_receipt"]["session_count"] == 20
+        # Evidence completeness is orthogonal to trigger/Execution authority:
+        # even a verified 5m parent cannot independently authorize trading.
+        assert result["status"] == "PARTIAL"
+        assert result["evidence_state"] == "READY"
+        assert result["trigger_authority_state"] == "NOT_ADMITTED"
+        from src.services.evidence_traceability_registry import compile_timeframe_family_matrix
+        matrix = compile_timeframe_family_matrix({
+            "multi_timeframe_structure_context": {
+                "status": "PARTIAL",
+                "timeframes": {timeframe: result},
+            },
+        })
+        cell = next(c for c in matrix["cells"]
+                    if c["timeframe"] == timeframe and c["family"] == "MTF")
+        assert cell["state"] == "READY"
+        assert cell["independent_action_authority"] is False
+
+        assert result["independent_action_authority"] is False
+        assert result["strategy_admitted"] is False
+        assert result["learning_admitted"] is False
+        assert result["historical_replay_eligible"] is False
+
+
+def test_derived_minute_methods_reject_missing_parent_even_with_valid_numeric_windows():
+    from tests.test_intraday_bar_service import _canonical_session_set, _attach_test_identity
+    from src.services.intraday_bar_service import aggregate_completed_intraday_bars
+    from src.services.multi_timeframe_structure_service import _build_intraday_timeframe
+
+    sessions = _twenty_exchange_sessions_for_source_fixture()
+    source = _canonical_session_set(sessions, volume_unit="share")
+    incomplete = source.drop(index=[100]).drop(columns=["intraday_data_identity_hash"])
+    incomplete = _attach_test_identity(
+        incomplete.reset_index(drop=True), sessions,
+        source_rows_sha256="8" * 64, volume_unit="share",
+    )
+    bars = aggregate_completed_intraday_bars(incomplete, target_timeframe="15m")
+    result = _build_intraday_timeframe(
+        key="15m", stock_code="600519", target_date=sessions[-1],
+        bars=bars, trend_analyzer=StockTrendAnalyzer(),
+        snapshot_observed_at=datetime(2026, 10, 1, 8, tzinfo=timezone.utc),
+        daily_adjustment_basis="qfq",
+    )
+    assert result["supply_demand"]["status"] != "READY"
+    assert result["cost_bar_reference"]["status"] != "READY"
+    assert "completed_source_session_receipt" not in result
+    assert result["independent_action_authority"] is False
+
 def test_canonical_intraday_bars_fill_partial_context_without_claiming_action() -> None:
     history = _history()
     target_index = len(history) - 1
@@ -210,7 +381,8 @@ def test_canonical_intraday_bars_fill_partial_context_without_claiming_action() 
         assert item["ma_structure"]["status"] in {"READY", "PARTIAL"}
         assert item["price_structure"]["status"] == "MISSING"
         assert item["price_structure"]["reason"] == "NO_CONFIRMED_PIVOTS"
-        assert item["pattern_trigger"]["status"] == "MISSING"
+        assert item["pattern_trigger"]["status"] == "PARTIAL"
+        assert item["pattern_trigger"]["reason"] == "PRICE_STRUCTURE_NOT_READY"
         assert item["independent_action_authority"] is False
         assert item["strategy_admitted"] is False
         assert item["learning_admitted"] is False
@@ -395,8 +567,12 @@ def test_confirmed_lower_intraday_structure_reaches_matrix_without_action_author
     assert structure["historical_replay_eligible"] is False
     assert item["strategy_admitted"] is False
     assert item["learning_admitted"] is False
-    assert item["pattern_trigger"]["status"] == "MISSING"
-    assert item["pattern_trigger"]["reason"] == "INTRADAY_PATTERN_NOT_ADMITTED"
+    assert item["pattern_trigger"]["status"] == "READY"
+    assert item["pattern_trigger"]["reason"] in {
+        "PATTERN_TRIGGER_READY", "NO_SUPPORTED_PATTERN",
+    }
+    assert item["pattern_trigger"]["independent_action_authority"] is False
+    assert item["pattern_trigger"]["strategy_admitted"] is False
     assert "PRICE_STRUCTURE" in item["admitted_methods"]
 
     matrix = compile_timeframe_family_matrix({
@@ -546,9 +722,32 @@ def test_long_intraday_macd_prefix_agreement_keeps_only_descriptive_nontrigger()
     assert item["rsi_startup_stability"]["status"] == "MISSING"
     assert "VOLUME" not in item["admitted_methods"]
     assert item["price_structure"]["status"] == "MISSING"
-    assert item["pattern_trigger"]["status"] == "MISSING"
+    assert item["pattern_trigger"]["status"] == "PARTIAL"
+    assert item["pattern_trigger"]["reason"] == "PRICE_STRUCTURE_NOT_READY"
     assert item["strategy_admitted"] is False
     assert item["learning_admitted"] is False
+
+
+def test_intraday_full_momentum_methods_use_their_own_completed_bar_windows():
+    item = _volume_unit_intraday_context(
+        "share", analyzer=StockTrendAnalyzer(), periods=320,
+    )
+    momentum = item["volatility_momentum"]
+
+    assert momentum["status"] == "READY"
+    assert momentum["timeframe"] == "30m"
+    assert momentum["momentum"]["roc_20_completed_bars_pct"] is not None
+    assert momentum["momentum"]["roc_60_completed_bars_pct"] is not None
+    assert momentum["volatility"]["true_range_sma_20_completed_bars_pct"] is not None
+    assert momentum["volatility"]["atr_wilder_admission"]["status"] == "READY"
+    assert momentum["volatility"]["atr_wilder_14"] is not None
+    assert momentum["momentum"]["macd"]["admission"]["status"] == "READY"
+    assert momentum["momentum"]["rsi"]["admission"]["status"] == "READY"
+    assert {"ROC", "VOLATILITY_TR_SMA", "ATR_WILDER"} <= set(item["admitted_methods"])
+    assert momentum["independent_action_authority"] is False
+    assert momentum["strategy_admitted"] is False
+    assert momentum["learning_admitted"] is False
+    assert momentum["data_rights_admitted"] is False
 
 
 def test_weekly_native_recursive_macd_rsi_not_promoted_without_own_completed_history() -> None:
@@ -900,6 +1099,128 @@ def test_mtfs_reject_cross_adjustment_basis_without_dropping_valid_daily(timefra
             rejected["timeframes"][timeframe]["admission_rule_version"]
             == "intraday-price-basis-admission-v1"
         )
+
+
+
+
+def test_seven_timeframe_carrier_consumes_existing_supply_and_cost_bar_methods():
+    source = _with_observed_identity(_history(350))
+    target = source.iloc[-1]["date"].date()
+    context = build_multi_timeframe_structure_context(
+        stock_code="600519",
+        history=source,
+        target_date=target,
+        market="cn",
+        trend_analyzer=_FakeTrendAnalyzer(),
+        daily_trend_result=_trend_result(),
+        snapshot_observed_at=datetime(2026, 9, 17, 10, tzinfo=timezone.utc),
+    )
+    for key in ("daily", "weekly"):
+        frame = context["timeframes"][key]
+        supply = frame["supply_demand"]
+        cost = frame["cost_bar_reference"]
+        assert supply["status"] == "READY"
+        assert cost["status"] == "READY"
+        assert cost["window_20"]["window_completed_bars"] == 20
+        assert cost["window_60"]["window_completed_bars"] == 60
+        assert cost["data_rights_admitted"] is False
+        assert cost["independent_action_authority"] is False
+
+    month = context["timeframes"]["monthly"]
+    assert month["supply_demand"]["status"] == "MISSING"
+    assert month["cost_bar_reference"]["status"] == "MISSING"
+    assert context["independent_action_authority"] is False
+
+
+def test_cost_method_does_not_promote_legacy_untyped_daily_history():
+    source = _history(350)
+    target = source.iloc[-1]["date"].date()
+    context = build_multi_timeframe_structure_context(
+        stock_code="600519", history=source, target_date=target, market="cn",
+        trend_analyzer=_FakeTrendAnalyzer(), daily_trend_result=_trend_result(),
+    )
+    daily = context["timeframes"]["daily"]
+    assert daily["cost_bar_reference"]["status"] == "UNKNOWN"
+    assert daily["cost_bar_reference"]["reason"] == "VOLUME_UNIT_NOT_ADMITTED"
+    assert daily["cost_bar_reference"]["data_rights_admitted"] is False
+
+@pytest.mark.parametrize(
+    ("case", "expected_state", "expected_origin", "expected_confirmed",
+     "expected_provisional", "expected_persistence", "expected_density"),
+    (
+        ("trend_80", "WIDE_TREND", "2024-02-09", "2024-03-20", False, 6, 0.0),
+        ("flat_80", "COMPRESSED", "2024-02-15", "2024-02-15", False, 17, 0.0),
+        ("wave_180", "WIDE_TREND", "2024-06-27", "2024-06-28", False, 0, 0.05),
+        ("cross_240", "COMPRESSING", "2024-08-25", None, True, 2, 0.075),
+        ("long_420", "RELEASING_DOWN", "2025-02-13", None, True, 0, 0.05),
+    ),
+)
+def test_ma_lifecycle_fast_path_retains_accepted_preimage_state_and_clocks(
+    case, expected_state, expected_origin, expected_confirmed,
+    expected_provisional, expected_persistence, expected_density,
+):
+    """Frozen observations from the accepted 37e453f7 slow MA implementation.
+
+    Check the complete lifecycle semantics, not just threshold labels.
+    The exact accepted implementation was separately compared on the same
+    five inputs, with whole-payload equality and matching SHA256 outputs.
+    """
+    sizes = {
+        "trend_80": 80, "flat_80": 80, "wave_180": 180,
+        "cross_240": 240, "long_420": 420,
+    }
+    n = sizes[case]
+    if case == "trend_80":
+        values = [50.0 + i * 0.5 for i in range(n)]
+    elif case == "flat_80":
+        values = [50.0 + i * 0.5 for i in range(45)] + [72.0] * 35
+    elif case == "wave_180":
+        values = [75.0 + math.sin(i * 0.131) * 3.0 + i * 0.035 for i in range(n)]
+    elif case == "cross_240":
+        values = [
+            100.0 + math.sin(i * 0.21) * 7.0 + math.cos(i * 0.071) * 2.7
+            for i in range(n)
+        ]
+    else:
+        values = [
+            90.0 + math.sin(i * 0.13) * 3.5 + math.cos(i * 0.033) * 8.0 + i * 0.011
+            for i in range(n)
+        ]
+    frame = pd.DataFrame({
+        "date": pd.date_range("2024-01-01", periods=n, freq="D"),
+        "close": values,
+    })
+    evidence = build_ma_structure_evidence(frame, timeframe="daily")
+    assert evidence["status"] == "READY"
+    assert evidence["state"] == expected_state
+    assert evidence["origin_time"] == expected_origin
+    assert evidence["confirmed_at"] == expected_confirmed
+    assert evidence["provisional"] is expected_provisional
+    assert evidence["compression_persistence"] == expected_persistence
+    assert evidence["crossing_density"] == pytest.approx(expected_density, abs=1e-14)
+    assert evidence["algorithm_version"] == MA_STRUCTURE_ALGORITHM_VERSION
+    assert evidence["config_hash"] == MA_STRUCTURE_CONFIG_HASH
+    assert evidence["independent_action_authority"] is False
+    assert evidence["strategy_admitted"] is False
+    assert evidence["learning_admitted"] is False
+    assert evidence["completed_bar_identity"]["completed_bar_only"] is True
+
+
+def test_ma_lifecycle_invalid_or_insufficient_bars_do_not_fake_ready():
+    invalid = pd.DataFrame({
+        "date": pd.date_range("2024-01-01", periods=80, freq="D"),
+        "close": [50.0 + i * 0.1 for i in range(79)] + [0.0],
+    })
+    unknown = build_ma_structure_evidence(invalid, timeframe="5m")
+    assert unknown["status"] == "UNKNOWN"
+    assert unknown["reason"] == "DENOMINATOR_INVALID"
+    assert unknown["independent_action_authority"] is False
+
+    insufficient = invalid.iloc[:19].copy()
+    missing = build_ma_structure_evidence(insufficient, timeframe="monthly")
+    assert missing["status"] == "MISSING"
+    assert missing["reason"] == "LEVEL_WARMUP_INSUFFICIENT"
+    assert missing["readiness"]["compression_context"]["status"] == "MISSING"
 
 
 def _startup_evidence(values, lengths=(40, 60, 80, 120)):

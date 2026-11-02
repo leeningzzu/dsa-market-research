@@ -15,6 +15,7 @@ from pathlib import Path
 from datetime import date, datetime, time, timezone
 import math
 from typing import Any
+from urllib.parse import urlsplit
 
 from src.services.pit_identity import sha256_payload
 
@@ -35,6 +36,25 @@ RIGHTS_TERMS_SCOPES = frozenset({
     "SIGNED_PROVIDER_CONTRACT",
     "SYNTHETIC_TEST_CONTRACT",
 })
+_SOFTWARE_PACKAGE_METADATA_HOSTS = frozenset({
+    "pypi.org",
+    "files.pythonhosted.org",
+    "pypi.python.org",
+    "registry.npmjs.org",
+    "npmjs.com",
+    "rubygems.org",
+    "crates.io",
+    "repo.maven.apache.org",
+    "central.sonatype.com",
+    "nuget.org",
+    "api.nuget.org",
+})
+# These are provider technical/API documentation routes, not data-use terms.
+# Keep this narrow and explicit: a technical example that demonstrates local
+# calculation/storage must not be promoted into a general rights grant.
+_NON_TERMS_TECHNICAL_PATH_PREFIXES = (
+    "/helpdocs/api/markdown/",
+)
 RIGHTS_VALUES = frozenset({"ALLOWED", "FORBIDDEN", "UNKNOWN", "NOT_APPLICABLE"})
 ADMISSION_STATES = frozenset({
     "NOT_APPLICABLE",
@@ -261,6 +281,38 @@ def validate_source_rights_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
     ):
         if not _text(result.get(key)):
             raise DataObjectAdmissionError("SOURCE_RIGHTS_EVIDENCE_FIELD_MISSING:" + key)
+    try:
+        terms_parts = urlsplit(_text(result.get("terms_uri")))
+        terms_host = (terms_parts.hostname or "").lower().rstrip(".")
+        terms_path = (terms_parts.path or "").lower()
+    except ValueError as exc:
+        raise DataObjectAdmissionError("SOURCE_RIGHTS_EVIDENCE_TERMS_URI_INVALID") from exc
+    if any(
+        terms_host == host or terms_host.endswith("." + host)
+        for host in _SOFTWARE_PACKAGE_METADATA_HOSTS
+    ):
+        raise DataObjectAdmissionError(
+            "SOURCE_RIGHTS_EVIDENCE_SOFTWARE_PACKAGE_METADATA_IS_NOT_DATA_TERMS"
+        )
+    claimed_terms_scope = _text(result.get("terms_scope")).upper()
+    provider_technical_doc = any(
+        terms_path.startswith(prefix) for prefix in _NON_TERMS_TECHNICAL_PATH_PREFIXES
+    )
+    # The official website's legacy mainContent route serves the same Markdown
+    # API-document files as /helpdocs/api/markdown/*.md. It is a technical-doc
+    # route, not a terms route, even though the query URL looks like a page.
+    legacy_markdown_doc = (
+        terms_path.rstrip("/") == "/maincontent"
+        and "file=" in terms_parts.query.lower()
+        and ".md" in terms_parts.query.lower()
+    )
+    if (
+        claimed_terms_scope == "OFFICIAL_PROVIDER_DATA_USE_STATEMENT"
+        and (provider_technical_doc or legacy_markdown_doc)
+    ):
+        raise DataObjectAdmissionError(
+            "SOURCE_RIGHTS_EVIDENCE_TECHNICAL_DOCUMENTATION_IS_NOT_DATA_TERMS"
+        )
     for key in ("terms_sha256", "product_use_clause_sha256", "evidence_hash"):
         if not _is_sha256(result.get(key)):
             raise DataObjectAdmissionError("SOURCE_RIGHTS_EVIDENCE_HASH_INVALID:" + key)
@@ -454,10 +506,13 @@ def validate_b1_provider_preflight(
         ceiling = _as_of_ceiling(research_as_of)
         if ceiling is None:
             raise DataObjectAdmissionError("B1_RESEARCH_ASOF_MISSING")
-        if _parse_aware_datetime(rights["terms_observed_at"]) > ceiling:
-            raise DataObjectAdmissionError("B1_TERMS_AFTER_RESEARCH_ASOF")
+        terms_after_as_of = _parse_aware_datetime(rights["terms_observed_at"]) > ceiling
     except (ValueError, TypeError) as exc:
         raise DataObjectAdmissionError("B1_RESEARCH_ASOF_INVALID") from exc
+    # DataObjectAdmissionError subclasses ValueError; emitting this inside the
+    # parsing try/except would mask a precise license timing veto as bad input.
+    if terms_after_as_of:
+        raise DataObjectAdmissionError("B1_TERMS_AFTER_RESEARCH_ASOF")
     return rights
 
 

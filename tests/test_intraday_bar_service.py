@@ -176,6 +176,7 @@ def _attach_test_identity(
     session_dates: list[date],
     *,
     source_rows_sha256: str,
+    volume_unit: str = "UNKNOWN",
 ) -> pd.DataFrame:
     observed = datetime(2026, 10, 1, 8, 0, tzinfo=timezone.utc)
     identity = build_intraday_data_identity(
@@ -191,7 +192,7 @@ def _attach_test_identity(
         timezone_name="Asia/Shanghai",
         session_calendar="XSHG",
         currency="CNY",
-        volume_unit="UNKNOWN",
+        volume_unit=volume_unit,
         amount_unit="UNKNOWN",
         requested_start=session_dates[0].isoformat(),
         requested_end=session_dates[-1].isoformat(),
@@ -204,7 +205,7 @@ def _attach_test_identity(
     return frame
 
 
-def _canonical_session_set(session_dates: list[date]) -> pd.DataFrame:
+def _canonical_session_set(session_dates: list[date], *, volume_unit: str = "UNKNOWN") -> pd.DataFrame:
     observed = datetime(2026, 10, 1, 8, 0, tzinfo=timezone.utc)
     frames = []
     for session_date in session_dates:
@@ -249,6 +250,7 @@ def _canonical_session_set(session_dates: list[date]) -> pd.DataFrame:
         frame,
         session_dates,
         source_rows_sha256="9" * 64,
+        volume_unit=volume_unit,
     )
 
 
@@ -263,7 +265,7 @@ def test_complete_session_validator_accepts_exact_ten_sessions() -> None:
         date(2026, 9, 22),
         date(2026, 9, 23),
         date(2026, 9, 24),
-        date(2026, 9, 25),
+        date(2026, 9, 28),
     ]
     frame = _canonical_session_set(sessions)
     receipt = validate_complete_cn_5m_sessions(
@@ -276,6 +278,81 @@ def test_complete_session_validator_accepts_exact_ten_sessions() -> None:
     assert receipt["bars_per_session"] == 48
 
 
+def test_closed_xshg_holiday_does_not_gain_complete_parent_or_derived_authority() -> None:
+    from src.core.trading_calendar import resolve_session_range_fail_closed
+    from src.services.intraday_bar_service import validate_derived_complete_cn_sessions
+
+    # The exchange's independent 2026 closure calendar excludes Sep 25.
+    # Source timestamps plus self-declared expected dates must not certify it.
+    claimed_sessions = [
+        date(2026, 9, d) for d in (14, 15, 16, 17, 18, 21, 22, 23, 24, 25)
+    ]
+    exchange_sessions = resolve_session_range_fail_closed(
+        "cn", claimed_sessions[0], date(2026, 9, 28)
+    )
+    assert exchange_sessions is not None
+    assert date(2026, 9, 25) not in exchange_sessions
+    assert date(2026, 9, 28) in exchange_sessions
+    source = _canonical_session_set(claimed_sessions)
+    with pytest.raises(IntradayBarError, match="XSHG exchange calendar"):
+        validate_complete_cn_5m_sessions(
+            source, expected_session_dates=claimed_sessions,
+        )
+    for target in ("15m", "30m", "60m"):
+        derived = aggregate_completed_intraday_bars(
+            source, target_timeframe=target,
+        )
+        assert derived.attrs["intraday_aggregation_receipt"]["parent_complete_session_receipt"] is None
+        with pytest.raises(IntradayBarError):
+            validate_derived_complete_cn_sessions(derived, timeframe=target)
+
+
+
+
+@pytest.mark.parametrize(("target", "per_session"), [("15m", 16), ("30m", 8), ("60m", 4)])
+def test_derived_completed_sessions_require_exact_parent_proof_and_grid(target, per_session):
+    # The independent source oracle is ten exchange sessions, each 48
+    # completed five-minute bars. Method formula/window state is NOT a
+    # substitute for this proof.
+    sessions = [date(2026, 9, d) for d in (14, 15, 16, 17, 18, 21, 22, 23, 24, 28)]
+    source = _canonical_session_set(sessions)
+    derived = aggregate_completed_intraday_bars(source, target_timeframe=target)
+    from src.services.intraday_bar_service import validate_derived_complete_cn_sessions
+    result = validate_derived_complete_cn_sessions(derived, timeframe=target)
+    assert result["session_count"] == 10
+    assert result["parent_identity_hash"] == extract_intraday_data_identity(source, strict=True)["identity_hash"]
+    assert result["row_count"] == per_session * 10
+    assert result["bars_per_session"] == per_session
+
+    # Altering metadata, derivation or the source-bound child grid cannot
+    # manufacture a passing session certificate.
+    corrupt = derived.copy()
+    corrupt.attrs["intraday_aggregation_receipt"] = dict(
+        derived.attrs["intraday_aggregation_receipt"],
+        parent_identity_hash="f" * 64,
+    )
+    with pytest.raises(IntradayBarError):
+        validate_derived_complete_cn_sessions(corrupt, timeframe=target)
+    missing_child = derived.drop(index=[3]).reset_index(drop=True)
+    with pytest.raises(IntradayBarError):
+        validate_derived_complete_cn_sessions(missing_child, timeframe=target)
+
+
+@pytest.mark.parametrize("target", ("15m", "30m", "60m"))
+def test_incomplete_five_minute_parent_never_creates_derived_session_authority(target):
+    sessions = [date(2026, 9, d) for d in (14, 15, 16, 17, 18, 21, 22, 23, 24, 28)]
+    source = _canonical_session_set(sessions)
+    missing = source.drop(index=[100]).reset_index(drop=True)
+    missing = _attach_test_identity(
+        missing.drop(columns=["intraday_data_identity_hash"]),
+        sessions, source_rows_sha256="8" * 64,
+    )
+    derived = aggregate_completed_intraday_bars(missing, target_timeframe=target)
+    from src.services.intraday_bar_service import validate_derived_complete_cn_sessions
+    assert derived.attrs["intraday_aggregation_receipt"]["dropped_incomplete_windows"] >= 1
+    with pytest.raises(IntradayBarError):
+        validate_derived_complete_cn_sessions(derived, timeframe=target)
+
 def test_complete_session_validator_rejects_missing_bar_even_with_rebound_identity() -> None:
     sessions = [
         date(2026, 9, 14),
@@ -287,7 +364,7 @@ def test_complete_session_validator_rejects_missing_bar_even_with_rebound_identi
         date(2026, 9, 22),
         date(2026, 9, 23),
         date(2026, 9, 24),
-        date(2026, 9, 25),
+        date(2026, 9, 28),
     ]
     frame = _canonical_session_set(sessions).drop(index=[4]).reset_index(drop=True)
     frame = _attach_test_identity(

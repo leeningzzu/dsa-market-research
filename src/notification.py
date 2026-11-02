@@ -648,6 +648,8 @@ def _append_complete_research_universe_appendix(
                     state_text = state_labels.get(
                         str(item.get("state") or ""), "尚未证实"
                     )
+                if requirement_id == "CHAN" and contract_role != "DEFERRED":
+                    state_text += "；窄适配（NOT_FULL_CZSC）"
                 method_ids = tuple(
                     str(value) for value in item.get("method_ids", ()) if value
                 )

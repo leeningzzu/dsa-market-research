@@ -66,8 +66,8 @@ def test_stage_baseline_is_derived_from_the_existing_machine_graph() -> None:
     assert locked["accepted_machine_graph_sha256"] == ACCEPTED_DATA_OBJECT_GRAPH_SHA256
     assert locked["requirements"] == len(ACCEPTED_REQUIREMENT_ROLES) == 26
     assert locked["method_profiles"] == len(policy["methods"]) == 43
-    assert locked["methods_existing_reused"] == states["EXISTING_REUSED"] == 28
-    assert locked["methods_deferred_with_owner"] == states["DEFERRED_WITH_OWNER_AND_REENTRY"] == 15
+    assert locked["methods_existing_reused"] == states["EXISTING_REUSED"] == 30
+    assert locked["methods_deferred_with_owner"] == states["DEFERRED_WITH_OWNER_AND_REENTRY"] == 13
     assert locked["strategy_bindings"] == len(STRATEGY_BINDINGS) == 13
     assert locked["technical_matrix_cells"] == len(trace["timeframe_family_matrix"]["cells"]) == 56
     assert locked["data_obligations"] == len(trace["complete_research_universe"]["data_objects"]) == 76
@@ -106,47 +106,140 @@ def test_stage_ladder_keeps_parent_product_and_blocking_order_explicit() -> None
         "P1_PROMOTION_RELEASE",
     ]
     assert baseline["route_decision"]["next_primary"] == (
-        "STAGE1_CURRENT_V25_REAL_PRODUCT_VERTICAL"
+        "GITHUB_FEATURE_COMMIT_PUSH_NATURAL_CI_THEN_B1_M2_FULL_DOMAIN_REENTRY"
     )
     assert [stage["id"] for stage in stages if stage.get("next_primary")] == [
-        "B8_FULL_DELIVERY_NO_SEND"
+        "B1_SOURCE_RIGHTS"
     ]
+    assert stages[1]["local_state"] == "PARTIAL_SSE_NONPRICE_OPERATION_SCOPED_PRICE_RIGHTS_STOP"
+    assert stages[3]["blocked_by"] == "B1_UPSTREAM_DATA_RIGHTS_AND_FULL_DOMAIN_PRODUCT_DATA"
     assert stages[5]["blocked_by"] == (
         "CURRENT_PRODUCT_FACTS_READY_AND_RECORDING_STORAGE_RIGHTS"
     )
     assert stages[6]["blocked_by"] == "L1_LEGAL_LEDGER_OUTCOME_PIT"
     assert stages[7]["blocked_by"] == "M3_CALIBRATION_SHADOW"
     assert baseline["acceptance"]["direct_main_push"] is False
-    # CI91 closes A0 and CI93 closes A1/A2 engineering on the exact feature
-    # checkpoint. Neither state implies actual complete data, valuation,
-    # delivery, learning, or Promotion authority.
+    # CI91 closes A0, CI93 closes A1/A2 engineering, and CI95 accepts the
+    # frozen-backend compatibility repair on the exact feature checkpoint.
+    # None of these states implies complete current Product data, delivery,
+    # learning, or Promotion authority.
     assert baseline["acceptance"]["required_checks"] == [
-        "ai-governance", "backend-gate", "docker-build",
+        "ai-governance", "Change Detection", "docker-build", "backend-gate",
+        "desktop-futu-package-macos", "desktop-futu-package-windows",
     ]
     acceptance = baseline["acceptance"]
     assert acceptance["state"] == (
-        "A0_CI91_A1A2_CI93_REMOTE_ACCEPTED_SCOPED_STAGE1_LOCAL_CANDIDATE_PR31_DRAFT"
+        "CI95_REMOTE_ACCEPTED_BASE_CURRENT_FEATURE_CONSOLIDATION_"
+        "CANDIDATE_RESOLVE_GIT_AND_CI_AT_RUNTIME"
     )
-    assert acceptance["candidate_head"] == "d75c2969f72fa3f40017bb6ae16d9ca947709057"
-    assert acceptance["candidate_parent"] == "ded125634894bf2915db6a91e661ec6fc9280313"
+    assert acceptance["candidate_head"] == "37e453f729b0f9ad1cec6d8b27457916b7982142"
+    assert acceptance["candidate_parent"] == "e10aa72c575071fd037971b58a5c75f18eb4c74a"
+    assert acceptance["candidate_base_head"] == acceptance["candidate_head"]
+    assert acceptance["candidate_commit_identity"] == (
+        "RESOLVE_COMMIT_CONTAINING_THIS_FILE_FROM_GIT"
+    )
+    assert acceptance["candidate_ci_state"] == "RECHECK_PR31_NATURAL_CI_AT_RUNTIME"
     assert acceptance["candidate_head_scope"] == (
-        "LATEST_ACCEPTED_FEATURE_CHECKPOINT_NOT_MAIN_PRODUCTION"
+        "CI95_IS_ACCEPTED_BASE; COMMIT_CONTAINING_THIS_FILE_IS_CURRENT_FEATURE_"
+        "CANDIDATE_AFTER_PUSH_NOT_MAIN"
     )
     assert acceptance["latest_required_ci"] == {
-        "run_number": 93,
-        "run_id": 40480935427,
+        "run_number": 95,
+        "run_id": 40792809015,
         "conclusion": "success",
     }
-    # CI92 remains the direct failed predecessor; older failures remain in Git/history.
+    # CI94 is the direct failed predecessor; CI92 remains in Git/history.
     assert acceptance["prior_failed_ci"] == {
-        "run_number": 92,
-        "run_id": 40472704093,
-        "head": "ded125634894bf2915db6a91e661ec6fc9280313",
+        "run_number": 94,
+        "run_id": 40677519496,
+        "head": "e10aa72c575071fd037971b58a5c75f18eb4c74a",
         "conclusion": "failure",
     }
     assert acceptance["pull_request_state"] == "DRAFT_OPEN_NOT_MERGED"
     assert baseline["route_decision"]["next_primary"] == (
-        "STAGE1_CURRENT_V25_REAL_PRODUCT_VERTICAL"
+        "GITHUB_FEATURE_COMMIT_PUSH_NATURAL_CI_THEN_B1_M2_FULL_DOMAIN_REENTRY"
+    )
+
+
+def test_current_local_successor_tracks_official_r003_without_product_inflation() -> None:
+    current = _baseline()["current_local_successor"]
+    assert current["state"] == "HISTORICAL_INVALIDATED_LOCAL_SUCCESSOR_NOT_CURRENT"
+    assert current["historical_only"] is True
+    assert current["base_head"] == "37e453f729b0f9ad1cec6d8b27457916b7982142"
+    assert current["base_tree"] == "6b54b197327501e2673b5c499eed4a1628ac95f9"
+    assert len(current["modified_paths"]) == 15
+    assert "docs/b1-source-rights.md" in current["modified_paths"]
+    assert current["staged_paths"] == current["untracked_paths"] == 0
+    assert current["commit_push_merge"] == 0
+    assert current["scoped_regression"] == {
+        "trading_calendar": 57,
+        "daily_acquisition_binding": 34,
+        "multi_timeframe": 57,
+        "rights_admission": 35,
+        "total": 183,
+    }
+
+    rights = current["official_baostock_rights"]
+    assert rights["operation_id"] == "stock-dsa-nosend-20261029-baostock-official-r003"
+    assert rights["grant_count"] == 19
+    assert rights["package_bytes"] == 24662
+    assert rights["package_sha256"] == (
+        "04d59e90952fafc015752d607f4033c2b9c3c4e2af85ec340e19d0be0038f691"
+    )
+    assert rights["terms_uri"] == "https://www.baostock.com/mainContent?file=stockKData.md"
+    assert rights["terms_classification"] == "OFFICIAL_TECHNICAL_API_DOCUMENTATION_NOT_DATA_TERMS"
+    assert rights["state"] == "INVALIDATED_TECHNICAL_DOCUMENTATION_NOT_TERMS"
+    assert rights["upstream_rights_state"] == "UNKNOWN"
+    assert rights["verified_grant_count"] == 0
+    assert rights["product_admission_valid"] is False
+    assert rights["storage"] == rights["training"] == rights["redistribution"] == "FORBIDDEN"
+
+    terms_review = current["official_terms_scope_review"]
+    assert terms_review["receipt_path"] == ".tmp/stock_dsa_b1/STOCK_DSA_B1_OFFICIAL_CONTRACT_SCOPE_INVALIDATION_R002.json"
+    assert terms_review["api_market_data_use_terms_found"] is False
+    assert terms_review["upstream_rights_state"] == "UNKNOWN"
+    assert terms_review["product_admission_valid"] is False
+    assert len(terms_review["contracts"]) == 3
+
+    run = current["formal_stage1_run"]
+    assert run["state"] == "INVALIDATED_FOR_RIGHTS_EVIDENCE_SOURCE_OBSERVED_ONLY"
+    assert run["prior_reported_data_objects"] == {"READY": 18, "UNKNOWN": 58}
+    assert run["current_product_admission"] == {
+        "PRODUCT_ADMITTED": 0, "RIGHTS_UNKNOWN": 72, "future_record_unknown": 4,
+    }
+    assert run["matrix_scope"] == "SOURCE_OBSERVED_METHOD_MATRIX_NOT_PRODUCT_ADMISSION"
+    assert run["canonical_scope"] == "FAIL_CLOSED_OUTPUT_NOT_PRODUCT_ADMISSION"
+    assert run["atomic_subfields"] == {"UNRESOLVED_MISSINGNESS": 7}
+    assert run["valuation_routes"] == {
+        "ACCOUNTED_NOT_AUTOMATICALLY_APPLICABLE": 9,
+    }
+    assert sum(run["stock_600519_matrix"].values()) == 56
+    assert sum(run["etf_510300_matrix"].values()) == 56
+    assert run["stock_canonical_hash"] == (
+        "687235855b5b73dc78a9671da93825195d5b2310ee4afc73cda3017dac5f269d"
+    )
+    assert run["etf_canonical_hash"] == (
+        "4f74f1c1bbda23ab538b1bb9a2abd4956ec1f6b5f348768a5b2b803ea80d56d9"
+    )
+    v25 = run["v2_5"]
+    assert v25 == {
+        "bytes": 107186,
+        "sha256": "187a99d58b2b8bf26b5c6fb89a40c315f1b13ab8775c0afd0ea63f3d617199d5",
+        "persisted": False,
+        "no_send": True,
+        "stage1_state": "HOLD",
+        "projection_scope": "HISTORICAL_PARTIAL_NO_SEND_NOT_CURRENT_PRODUCT",
+        "blocker_codes": [
+            "RIGHTS_TERMS_NOT_VERIFIED",
+            "FULL_DOMAIN_PRODUCT_DATA_NOT_READY",
+            "ATOMIC_SUBFIELD_V25_CONSUMER_BINDING_INCOMPLETE",
+        ],
+    }
+    assert all(value == 0 or value is False for value in run["effects"].values())
+    assert current["gate_b"] == "STOP_RIGHTS_TERMS_NOT_VERIFIED_OFFICIAL_TERMS_SCOPE_MISMATCH"
+    assert current["gate_c"] == "HOLD_RIGHTS_TERMS_NOT_VERIFIED_AND_FULL_DOMAIN_PRODUCT_DATA_NOT_READY"
+    assert current["proof_ceiling"] == (
+        "SOURCE_OBSERVED_METHOD_MATRIX_AND_FAIL_CLOSED_CANONICAL_ONLY_NOT_CURRENT_PRODUCT_OR_FULL_V25"
     )
 
 
@@ -202,15 +295,90 @@ def test_gate5_gate6_local_evidence_matches_current_fail_closed_runtime() -> Non
     assert gate6["model_training_runs"] == 0
 
 
+def test_current_control_rejects_historical_product_and_email_geometry_substitution() -> None:
+    baseline = _baseline()
+    current = baseline["current_runtime_checkpoint"]
+
+    assert current["schema_version"] == "stock-dsa-current-runtime-checkpoint-v2"
+    assert current["source_pair"] == "01/05 v3.543 PHYSICAL_EXACT8_PASS"
+    assert current["accepted_remote_base"] == {
+        "head": "37e453f729b0f9ad1cec6d8b27457916b7982142",
+        "ci_run_number": 95,
+        "ci_run_id": 40792809015,
+        "conclusion": "success",
+    }
+    assert current["candidate_identity"] == "RESOLVE_COMMIT_CONTAINING_THIS_FILE_FROM_GIT"
+    snapshot = current["candidate_precommit_snapshot"]
+    assert snapshot["status_path_count"] == 59
+    assert snapshot["tracked_modified_count"] == 55
+    assert snapshot["untracked_paths"] == [
+        "data_provider/sse_public_disclosure_source.py",
+        "data_provider/treasury_yield_curve_source.py",
+        "src/services/chan_feature_adapter.py",
+        "tests/test_chan_feature_adapter.py",
+    ]
+    assert snapshot["staged_count"] == 0
+    assert snapshot["post_commit_worktree_expected_clean"] is True
+    assert current["local_regression"]["focused_passed"] == 61
+    assert current["local_regression"]["focused_failed"] == 0
+    assert current["local_regression"]["full_related"] == {
+        "selected_modules": 43,
+        "passed": 1340,
+        "failed": 0,
+        "duration_seconds": 580.56,
+        "warnings": 2,
+    }
+    assert current["local_regression"]["remote_ci"] == "PENDING_PUSH"
+    assert current["local_regression"]["litellm_local_cost_map_required_before_import"] is True
+
+    matrix = current["seven_timeframe_eight_family"]
+    assert matrix == {
+        "timeframe_carriers_implemented": True,
+        "technical_matrix_cell_count": 56,
+        "method_profile_count": 43,
+        "methods_existing_reused": 30,
+        "methods_deferred_with_owner": 13,
+        "technical_method_timeframe_targets": 154,
+        "all_56_cells_executable": True,
+        "regime_cross_timeframe_vote_counting": False,
+        "relative_strength_full_bar_grid_required": True,
+        "current_real_product_bound_56_cells_complete": False,
+    }
+    assert current["product_state"]["current_reconstructible_product_ids"] == []
+    assert current["product_state"]["denominator"] == 72
+    assert current["product_state"]["full_domain_product_ready"] is False
+    assert current["email_reader_state"]["old_empty_numeric_email_revoked"] is True
+    assert current["email_reader_state"]["current_fact_ready"] is False
+    assert current["email_reader_state"]["original_v25_immutable"] is True
+    assert current["email_reader_state"]["smtp_send"] == 0
+
+    roadmap = (ROOT / "docs" / "stock-dsa-roadmap.md").read_text(encoding="utf-8")
+    assert "CONTROL_ID = STOCK_DSA_MASTER_ROUTE_20261102_GITHUB_CONSOLIDATION" in roadmap
+    assert "行业分类→适用方法→所需数据" not in roadmap  # prose must not claim an unbound shortcut
+    assert "只表示可观察候选" in roadmap
+    assert "NOT_FULL_CZSC" in roadmap
+    assert "GitHub是跨模型连续性的唯一代码基线" in roadmap
+
+    regression = baseline["regression_policy"]
+    assert regression["historical_operation_admission_never_backfills_current_runtime"] is True
+    assert regression["html_geometry_never_proves_reader_visible_numeric_leaves"] is True
+    assert regression["reader_numeric_leaf_audit_required"] is True
+    assert regression["industry_route_plan_required_before_business_valuation"] is True
+    assert regression["distribution_or_markdown_veto_requires_strict_method_receipt"] is True
+    assert regression["accumulation_or_washout_never_independently_upgrades_action"] is True
+    assert regression["chan_narrow_adapter_never_claims_full_czsc"] is True
+
+
 def test_current_stage1_real_run_is_scoped_partial_and_fail_closed() -> None:
     evidence = _baseline()["current_stage1_real_run_evidence"]
-    assert evidence["state"] == "PASS_SCOPED_REAL_READ_NO_SEND_STAGE1_HOLD"
+    assert evidence["state"] == "INVALIDATED_HISTORICAL_PRICE_RIGHTS_FALSE_ADMISSION"
     assert evidence["rights_schema_version"] == "source-rights-evidence-v2"
-    assert evidence["product_admitted_dataset_ids"] == [
+    assert evidence["product_admitted_dataset_ids"] == []
+    assert evidence["prior_claimed_product_admitted_dataset_ids"] == [
         "P_DAILY", "P_5M", "E_PRICE_1D", "E_PRICE_5M",
     ]
-    assert evidence["stock_product_admitted_count"] == 2
-    assert evidence["etf_product_admitted_count"] == 2
+    assert evidence["stock_product_admitted_count"] == 0
+    assert evidence["etf_product_admitted_count"] == 0
     assert evidence["storage_training_redistribution"] == "FORBIDDEN"
     index = evidence["index_000300"]
     assert index["state"] == "SOURCE_IDENTITY_ONLY_PARTIAL"
@@ -225,6 +393,7 @@ def test_current_stage1_real_run_is_scoped_partial_and_fail_closed() -> None:
     )
     assert v25["stage1_state"] == "HOLD"
     assert v25["blocker_codes"] == [
+        "RIGHTS_TERMS_NOT_VERIFIED",
         "FULL_DOMAIN_PRODUCT_DATA_NOT_READY",
         "ATOMIC_SUBFIELD_V25_CONSUMER_BINDING_INCOMPLETE",
     ]
@@ -276,7 +445,7 @@ def test_alternative_producer_matrix_preserves_real_execution_and_rights_boundar
     counts = evidence["matrix_counts"]
     assert counts["data_objects"] == 76
     assert counts["atomic_subfields"] == 7
-    assert counts["current_product_admitted_data_objects"] == 4
+    assert counts["current_product_admitted_data_objects"] == 0
     assert counts["current_product_admitted_atomic_subfields"] == 0
     assert counts["real_nonprice_partial_producers"] == 14
     contract = evidence["atomic_fact_contract"]
@@ -393,6 +562,31 @@ def test_stage_baseline_preserves_formal_email_contract_and_no_auto_trade() -> N
     assert NotificationChannel.WECHAT not in service.get_channels_for_route("report")
 
 
+def test_stage_baseline_records_installed_v3543_and_current_successor_boundaries() -> None:
+    baseline = _baseline()
+    source = baseline["source_checkpoint"]
+    assert source["installed_pair"] == "01/05 v3.543"
+    assert source["installed_pair_state"] == "INSTALLED_AND_THREE_FRESH_EIGHT_OWNER_INVENTORIES_PASS"
+    assert source["fresh_project_source_count"] == 8
+    assert source["duplicate_logical_owners"] == 0
+    assert source["prepared_successor_pair"] is None
+    assert source["prepared_successor_state"] == (
+        "NONE_UNTIL_GITHUB_COMMIT_AND_CI_MATERIAL_CLOSURE"
+    )
+    assert source["ninth_source"] is False
+
+    successor = baseline["current_local_foundation_successor"]
+    assert successor["state"] == "CURRENT_GITHUB_CONSOLIDATION_CANDIDATE_PRECOMMIT_REMOTE_OPEN"
+    assert successor["changed_paths"] == 59
+    assert successor["method_profiles"] == 43
+    assert successor["effective_execution_pairs"] == 154
+    assert successor["effective_override_methods"] == 22
+    assert successor["current_product_admission"] == "UNCHANGED_0_OF_72"
+    assert successor["gate_b"] == "STOP_FULL_DOMAIN_PRODUCT_RIGHTS_AND_CURRENT_FACTS"
+    assert successor["gate_c"] == "HOLD_ORIGINAL_V25_FACT_READY_AND_DELIVERY"
+    assert successor["original_v25_unchanged"] is True
+
+
 def test_stage_baseline_locks_bounded_hierarchical_mtf_screening() -> None:
     contract = _baseline()["screening_contract"]
     assert contract["stage"] == "BOUNDED_L3_AFTER_CHEAP_L1_L2"
@@ -444,15 +638,68 @@ def test_stage_baseline_locks_bounded_hierarchical_mtf_screening() -> None:
 
 def test_indicator_backlog_is_subordinate_to_the_current_product_route() -> None:
     decision = _baseline()["route_decision"]
-    assert decision["next_primary"] == "STAGE1_CURRENT_V25_REAL_PRODUCT_VERTICAL"
+    assert decision["next_primary"] == (
+        "GITHUB_FEATURE_COMMIT_PUSH_NATURAL_CI_THEN_B1_M2_FULL_DOMAIN_REENTRY"
+    )
     assert decision["bounded_indicator_sub_lanes"] == [
         "MONTHLY_RSI_HISTORY_IF_LEGAL",
         "15M_CONFIRMATION",
         "5M_EXECUTION_TIMING",
         "MINUTE_VOLUME_AMOUNT_UNITS",
     ]
-    assert "CHAN_WAVE" in decision["deferred_until_product_trigger"]
+    assert "WAVE" in decision["deferred_until_product_trigger"]
+    assert "CHAN_WAVE" not in decision["deferred_until_product_trigger"]
     assert _baseline()["regression_policy"]["static_counts_never_prove_runtime_ready"] is True
+
+
+def test_multi_level_goal_graph_capabilities_role_review_and_github_continuity_are_machine_readable() -> None:
+    baseline = _baseline()
+    graph = baseline["multi_level_goal_graph"]
+    assert graph["levels"] == ["PROGRAM", "PRODUCT", "LANE", "MILESTONE", "ATOMIC"]
+    assert ["PROGRAM", "PRODUCT"] in graph["edges"]
+    assert ["B8_FULL_REPORT", "L1_LEDGER_PIT"] in graph["edges"]
+    assert set(graph["horizontal_gates"]) == {
+        "DATA", "RISK", "LIQUIDITY", "EXECUTION", "KNOWN_AT",
+        "RIGHTS_PRIVACY", "VERSION_IDENTITY", "COST", "USER_BURDEN", "STOP_LOSS",
+    }
+    assert graph["sibling_lane_success_never_overrides_required_gate"] is True
+
+    closure = baseline["current_capability_closure"]
+    assert closure["industry_valuation_router"]["route_count"] == 9
+    assert closure["industry_valuation_router"]["universal_default_route"] is False
+    assert closure["volume_price_phase"]["institutional_intent_inferred"] is False
+    assert closure["volume_price_phase"]["positive_candidate_upgrades_buy"] is False
+    assert closure["narrow_chan_adapter"]["full_czsc_claim"] is False
+    assert closure["narrow_chan_adapter"]["independent_action_authority"] is False
+    assert closure["seven_timeframe_eight_family"] == {
+        "matrix_cells": 56,
+        "method_profiles": 43,
+        "existing_reused": 30,
+        "deferred": 13,
+        "effective_execution_pairs": 154,
+        "all_cells_executable": True,
+    }
+    assert closure["product_admission"] == "0_OF_72_UNCHANGED"
+    assert closure["original_v25_fact_ready"] is False
+
+    review = baseline["role_review"]
+    assert set(review) >= {
+        "PRODUCT", "DATA_MODEL", "PROCESS_CONSUMER", "AUTHORITY_CURRENTNESS",
+        "ENVIRONMENT", "ADAPTER_INTERFACE", "DEV_TOOLING", "USER_BURDEN",
+    }
+    assert review["current_route_still_worth_continuing"] == "YES_KEEP_ONLY_DSA"
+
+    github = baseline["github_continuity_contract"]
+    assert github["canonical_origin"] == "https://github.com/leeningzzu/dsa-market-research.git"
+    assert github["feature_branch"] == "feat/stock-dsa-m2-source-gates-v1"
+    assert github["pull_request"] == 31
+    assert github["direct_main_push"] is github["force_push"] is False
+    assert github["merge_authority"] is github["manual_ci_dispatch"] is False
+    assert github["runtime_git_evidence_overrides_embedded_sha"] is True
+    assert github["every_material_capability_requires"] == [
+        "PRODUCTION_OWNER", "ACTUAL_CONSUMER", "INDEPENDENT_NEGATIVE",
+        "LAWFUL_NONTRIGGER", "ROADMAP_PROJECTION", "MACHINE_JSON", "NATURAL_CI",
+    ]
 
 
 def test_screening_funnel_contract_keeps_gates_caps_and_dedup_machine_readable() -> None:

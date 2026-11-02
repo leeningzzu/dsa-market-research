@@ -47,6 +47,8 @@ import os
 
 logger = logging.getLogger(__name__)
 
+CN_TRADING_CALENDAR_SOURCE_EARLIEST_DATE = "2001-01-01"
+
 
 def _is_us_code(stock_code: str) -> bool:
     """
@@ -326,6 +328,80 @@ class BaostockFetcher(BaseFetcher):
             except Exception as e:
                 logger.warning(f"Baostock 登出时发生错误: {e}")
     
+    def get_cn_trading_calendar_source(
+        self,
+        *,
+        end_date: str,
+        start_date: str = CN_TRADING_CALENDAR_SOURCE_EARLIEST_DATE,
+    ) -> dict:
+        """Observe one bounded BaoStock CN trading-session calendar in memory.
+
+        This source is used only to extend current method-window planning beyond
+        the installed exchange-calendars coverage.  It grants no historical PIT,
+        storage, strategy, learning, or notification authority.
+        """
+        from src.core.trading_calendar import build_observed_session_calendar_source
+
+        try:
+            start = date.fromisoformat(str(start_date))
+            end = date.fromisoformat(str(end_date))
+        except (TypeError, ValueError) as exc:
+            raise DataFetchError("CN trading calendar request date invalid") from exc
+        if start > end:
+            raise DataFetchError("CN trading calendar request date range reversed")
+
+        with self._baostock_session() as bs:
+            try:
+                response = bs.query_trade_dates(
+                    start_date=start.isoformat(), end_date=end.isoformat(),
+                )
+                if response.error_code != "0":
+                    raise DataFetchError(
+                        "CN trading calendar provider query failed: "
+                        + str(response.error_msg or "UNKNOWN")
+                    )
+                expected_fields = ["calendar_date", "is_trading_day"]
+                if list(response.fields) != expected_fields:
+                    raise DataFetchError("CN trading calendar provider field drift")
+                rows = []
+                while response.next():
+                    row = response.get_row_data()
+                    if not isinstance(row, (list, tuple)) or len(row) != 2:
+                        raise DataFetchError("CN trading calendar provider row drift")
+                    rows.append({
+                        "calendar_date": str(row[0]),
+                        "is_trading_day": str(row[1]),
+                    })
+                if not rows:
+                    raise DataFetchError("CN trading calendar provider response empty")
+                sessions = [
+                    row["calendar_date"] for row in rows
+                    if row["is_trading_day"] == "1"
+                ]
+                if not sessions:
+                    raise DataFetchError("CN trading calendar provider sessions empty")
+                observed_at = datetime.now(timezone.utc)
+                content_sha256 = sha256_payload(rows)
+                return build_observed_session_calendar_source(
+                    market="cn",
+                    provider_identity=self.name,
+                    provider_route="baostock.query_trade_dates",
+                    requested_start=start,
+                    requested_end=end,
+                    observed_at=observed_at,
+                    available_at=observed_at,
+                    source_content_sha256=content_sha256,
+                    revision="observed-response-sha256:" + content_sha256,
+                    vintage=observed_at.isoformat(),
+                    sessions=sessions,
+                )
+            except Exception as exc:
+                if isinstance(exc, DataFetchError):
+                    raise
+                raise DataFetchError(
+                    "CN trading calendar source failed: " + str(exc)
+                ) from exc
+
     def _convert_stock_code(self, stock_code: str) -> str:
         """
         转换股票代码为 Baostock 格式

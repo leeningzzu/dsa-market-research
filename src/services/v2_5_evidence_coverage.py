@@ -27,7 +27,8 @@ from src.services.evidence_traceability_registry import (
     ACCEPTED_VALUATION_ROUTE_IDS, ACCEPTED_WHOLE_PRODUCT_ATOMIC_SUBFIELDS,
     BASELINE_BYTES, BASELINE_SHA256, COMPLETE_RESEARCH_UNIVERSE_PLANES,
     DEFERRED_BINDINGS, EVIDENCE_BINDINGS,
-    MANIFEST_HASH, MANIFEST_VERSION, TIMEFRAMES, TraceabilityError, at,
+    MANIFEST_HASH, MANIFEST_VERSION, TECHNICAL_EVIDENCE_FAMILIES, TIMEFRAMES,
+    TraceabilityError, at,
     compile_complete_research_universe_view, compile_foundation_evidence_receipt,
     compile_full_domain_data_gate,
     digest, json_wire_equal, load_slot_map, timeframe_ready,
@@ -583,6 +584,53 @@ def _v25_material(result: Any) -> dict:
         str(item)
         for item in (gate.get("current_product_admitted_dataset_ids") or ())
     )
+    source_observations = factor.get("data_object_source_observations")
+    source_observations = (
+        source_observations if isinstance(source_observations, Mapping) else {}
+    )
+    universe_data_lookup = {
+        str(row.get("dataset_id") or ""): row
+        for row in universe.get("data_objects") or ()
+        if isinstance(row, Mapping)
+    }
+    universe_admission_lookup = {
+        str(row.get("dataset_id") or ""): row
+        for row in at(universe, "data_object_admission.objects") or ()
+        if isinstance(row, Mapping)
+    }
+    admitted_data_object_facts: dict[str, dict[str, Any]] = {}
+    for dataset_id in current_product_admitted_ids:
+        source = source_observations.get(dataset_id)
+        source_row = universe_data_lookup.get(dataset_id)
+        admission = universe_admission_lookup.get(dataset_id)
+        if not isinstance(source, Mapping):
+            continue
+        facts = source.get("facts")
+        source_fact_hash = str(
+            source_row.get("source_fact_hash") if isinstance(source_row, Mapping)
+            else ""
+        )
+        admission_hash = str(
+            admission.get("admission_hash") if isinstance(admission, Mapping)
+            else ""
+        )
+        if (
+            not isinstance(facts, Mapping)
+            or not facts
+            or len(source_fact_hash) != 64
+            or digest(facts) != source_fact_hash
+            or not isinstance(admission, Mapping)
+            or admission.get("product_admitted") is not True
+            or len(admission_hash) != 64
+        ):
+            raise TraceabilityError(
+                "V25_ADMITTED_DATA_OBJECT_FACT_BINDING_MISSING:" + dataset_id
+            )
+        admitted_data_object_facts[dataset_id] = {
+            "facts": dict(facts),
+            "source_fact_hash": source_fact_hash,
+            "admission_hash": admission_hash,
+        }
     fact_mode = (
         "SYNTHETIC_TEST"
         if synthetic
@@ -621,6 +669,7 @@ def _v25_material(result: Any) -> dict:
         "name": str(getattr(result, "name", "") or getattr(result, "code", "") or "未命名对象").strip(),
         "fact_mode": fact_mode,
         "product_ready": product_ready,
+        "admitted_data_object_facts": admitted_data_object_facts,
         "current_product_admitted_dataset_ids": current_product_admitted_ids,
     }
 
@@ -668,6 +717,74 @@ def _v25_assign(materials: list[dict]) -> dict:
     ):
         cards[card_id] = material
     return {**groups, "cards": cards, "materials": materials}
+
+
+def _v25_data_object_fact_summary(
+    dataset_id: str,
+    facts: Mapping[str, Any],
+) -> str:
+    """Render bounded admitted non-price facts without dumping source rows."""
+    if not isinstance(facts, Mapping) or not facts:
+        return ""
+    if dataset_id == "P_CODE_IDENTITY":
+        return (
+            f"证券身份：{_v25_plain(facts.get('stock_code'), '代码缺失')} "
+            f"{_v25_plain(facts.get('short_name'), '简称缺失')}｜"
+            f"全称 {_v25_plain(facts.get('full_name'), '全称缺失')}｜"
+            f"上市日 {_v25_plain(facts.get('listing_date'), '日期缺失')}｜"
+            f"状态 {_v25_plain(facts.get('listing_state'), '状态缺失')}｜"
+            f"板块 {_v25_plain(facts.get('listing_board'), '板块缺失')}"
+        )
+    if dataset_id == "P_SHARES_EVENTS":
+        return (
+            f"股本事件：{_v25_plain(facts.get('stock_code'), '代码缺失')}｜"
+            f"股本日 {_v25_plain(facts.get('capital_trade_date'), '日期缺失')}｜"
+            f"总股本 {_v25_plain(facts.get('current_total_domestic_shares'), '缺失')}股｜"
+            f"事件 {_v25_plain(facts.get('event_count'), '缺失')}条｜"
+            f"最近事件 {_v25_plain(facts.get('latest_event_date'), '缺失')}"
+        )
+    if dataset_id == "P_DIVIDEND":
+        return (
+            f"现金分红：{_v25_plain(facts.get('stock_code'), '代码缺失')}｜"
+            f"记录 {_v25_plain(facts.get('record_count'), '缺失')}条｜"
+            f"最近除息日 {_v25_plain(facts.get('latest_ex_dividend_date'), '缺失')}｜"
+            f"每股含税红利 "
+            f"{_v25_plain(facts.get('latest_cash_dividend_before_tax_cny_per_share'), '缺失')}元"
+        )
+    if dataset_id == "P_INDUSTRY":
+        return (
+            f"行业归属：{_v25_plain(facts.get('csrc_great_code'), '代码缺失')} "
+            f"{_v25_plain(facts.get('csrc_great_code_desc'), '行业缺失')}｜"
+            f"门类 { _v25_plain(facts.get('csrc_code_desc'), '门类缺失') }"
+        )
+    if dataset_id == "S_CLASSIFICATION":
+        return (
+            f"行业分类：{_v25_plain(facts.get('csrc_great_code'), '代码缺失')} "
+            f"{_v25_plain(facts.get('csrc_great_code_desc'), '分类缺失')}｜"
+            f"标准来源 {_v25_plain(facts.get('standard_owner'), '来源缺失')}"
+        )
+    if dataset_id == "E_NAV_IOPV":
+        return (
+            f"ETF净值：{_v25_plain(facts.get('fund_code'), '代码缺失')}｜"
+            f"交易日 {_v25_plain(facts.get('trading_day'), '日期缺失')}｜"
+            f"NAV {_v25_plain(facts.get('nav_cny_per_share'), '缺失')}元/份｜"
+            f"公布IOPV {_v25_plain(facts.get('publish_iopv'), '未知')}"
+        )
+    if dataset_id == "E_SHARES":
+        return (
+            f"ETF申赎份额：{_v25_plain(facts.get('fund_code'), '代码缺失')}｜"
+            f"申赎单位 {_v25_plain(facts.get('creation_redemption_unit_shares'), '缺失')}份｜"
+            f"状态 {_v25_plain(facts.get('creation_redemption_status'), '缺失')}"
+        )
+    if dataset_id == "E_BASKET":
+        return (
+            f"ETF申赎篮子：{_v25_plain(facts.get('fund_code'), '代码缺失')}｜"
+            f"交易日 {_v25_plain(facts.get('trading_day'), '日期缺失')}｜"
+            f"成分 {_v25_plain(facts.get('component_count'), '缺失')}只｜"
+            f"申赎单位 {_v25_plain(facts.get('creation_redemption_unit_shares'), '缺失')}份｜"
+            f"PCF文件 {_v25_plain(facts.get('file_id'), '缺失')}"
+        )
+    return ""
 
 
 def _v25_scope_universe(materials: list[dict]) -> dict:
@@ -796,6 +913,35 @@ def _v25_scope_universe(materials: list[dict]) -> dict:
                         "independent_source_value_admitted": True,
                         "product_admission_hash": admission_hash,
                     })
+                    fact_binding = (
+                        material.get("admitted_data_object_facts") or {}
+                    ).get(dataset_id)
+                    if isinstance(fact_binding, Mapping):
+                        facts = fact_binding.get("facts")
+                        source_fact_hash = str(
+                            fact_binding.get("source_fact_hash") or ""
+                        )
+                        if (
+                            not isinstance(facts, Mapping)
+                            or not facts
+                            or len(source_fact_hash) != 64
+                            or digest(facts) != source_fact_hash
+                            or str(fact_binding.get("admission_hash") or "")
+                            != admission_hash
+                            or str(row.get("source_fact_hash") or "")
+                            != source_fact_hash
+                        ):
+                            raise TraceabilityError(
+                                "V25_DYNAMIC_DATA_OBJECT_FACT_BINDING_MISMATCH:"
+                                + dataset_id
+                            )
+                        row.update({
+                            "facts": dict(facts),
+                            "source_fact_hash": source_fact_hash,
+                            "fact_summary": _v25_data_object_fact_summary(
+                                dataset_id, facts,
+                            ),
+                        })
                 observed_rows.append(row)
         return observed_rows
 
@@ -841,6 +987,32 @@ def _v25_scope_universe(materials: list[dict]) -> dict:
             for item in observed
             if len(str(item.get("product_admission_hash") or "")) == 64
         }))
+        fact_rows = [
+            item for item in observed
+            if (
+                isinstance(item.get("facts"), Mapping)
+                and item.get("facts")
+                and len(str(item.get("source_fact_hash") or "")) == 64
+                and str(item.get("fact_summary") or "").strip()
+            )
+        ]
+        fact_hashes = tuple(sorted({
+            str(item.get("source_fact_hash") or "") for item in fact_rows
+        }))
+        if len(fact_hashes) > 1 or any(
+            digest(item["facts"]) != fact_hashes[0] for item in fact_rows
+        ):
+            raise TraceabilityError(
+                "V25_DYNAMIC_DATA_OBJECT_FACT_DRIFT:" + dataset_id
+            )
+        if fact_rows:
+            row["facts"] = dict(fact_rows[0]["facts"])
+            row["source_fact_hash"] = fact_hashes[0]
+            row["fact_summary"] = str(fact_rows[0]["fact_summary"])
+        else:
+            row["facts"] = {}
+            row["source_fact_hash"] = None
+            row["fact_summary"] = None
         if (
             str(row.get("domain") or "") in {
                 "GLOBAL", "CN_MARKET", "SECTOR",
@@ -1044,6 +1216,13 @@ def _v25_scope_obligations(universe: Mapping) -> list[dict[str, Any]]:
                 for value in item.get("product_admission_hashes") or ()
                 if len(str(value)) == 64
             ),
+            "source_fact_hash": (
+                str(item.get("source_fact_hash"))
+                if len(str(item.get("source_fact_hash") or "")) == 64
+                else None
+            ),
+            "facts": dict(item.get("facts") or {}),
+            "fact_summary": str(item.get("fact_summary") or "").strip() or None,
             "text": (
                 f"数据对象 {identifier}｜{domain}｜{native_frequency}｜状态 {state}｜"
                 f"{fact}｜消费者 {consumer}"
@@ -1210,6 +1389,16 @@ def _v25_bind_scope_obligations(
         if (
             obligation.get("kind") == "atomic_subfield"
             and obligation.get("state") == "BOUND"
+            and str(obligation.get("fact_summary") or "").strip()
+            and len(str(obligation.get("source_fact_hash") or "")) == 64
+        ):
+            scope_text_by_block[block_index].append(
+                str(obligation["fact_summary"]).strip()
+            )
+        if (
+            obligation.get("kind") == "data_object"
+            and obligation.get("state") == "READY"
+            and obligation.get("product_admission_hashes")
             and str(obligation.get("fact_summary") or "").strip()
             and len(str(obligation.get("source_fact_hash") or "")) == 64
         ):
@@ -1449,10 +1638,44 @@ def _v25_timeframe_leaf_payload(
     family_verified = {
         family: _v25_family_execution_verified(material, timeframe, family)
         for family in (
-            "TREND_RS", "SUPPLY", "COST", "STRUCTURE",
+            "REGIME", "TREND_RS", "SUPPLY", "COST", "STRUCTURE",
             "MOMENTUM", "PATTERN", "MTF",
         )
     }
+    matrix_cells = at(material, "trace.timeframe_family_matrix.cells") or ()
+    period_cells = {
+        str(row.get("family") or ""): row
+        for row in matrix_cells
+        if isinstance(row, Mapping) and row.get("timeframe") == timeframe
+    }
+    family_states = {
+        family: str((period_cells.get(family) or {}).get("state") or "UNKNOWN")
+        for family in TECHNICAL_EVIDENCE_FAMILIES
+    }
+    family_reasons = {
+        family: str(
+            (period_cells.get(family) or {}).get("reason")
+            or "TIMEFRAME_FAMILY_CELL_MISSING"
+        )
+        for family in TECHNICAL_EVIDENCE_FAMILIES
+    }
+    family_method_states = {
+        family: tuple(
+            {
+                "method_id": str(row.get("method_id") or ""),
+                "state": str(row.get("state") or "UNKNOWN"),
+                "reason": str(row.get("reason") or "METHOD_REASON_MISSING"),
+            }
+            for row in ((period_cells.get(family) or {}).get("method_coverage") or ())
+            if isinstance(row, Mapping)
+        )
+        for family in TECHNICAL_EVIDENCE_FAMILIES
+    }
+    relative_strength = (
+        current.get("relative_strength")
+        if isinstance(current.get("relative_strength"), Mapping)
+        else {}
+    )
     trend = current.get("trend") if isinstance(current.get("trend"), Mapping) else {}
     ma = current.get("ma_structure") if isinstance(current.get("ma_structure"), Mapping) else {}
     structure = (
@@ -1472,6 +1695,41 @@ def _v25_timeframe_leaf_payload(
         "dataset_id": _v25_timeframe_dataset_id(material, timeframe),
         "product_admitted": leaf_admitted,
         "family_execution_verified": family_verified,
+        "family_states": family_states,
+        "family_reasons": family_reasons,
+        "family_method_states": family_method_states,
+        "regime_projection_scope": str(
+            (period_cells.get("REGIME") or {}).get("projection_scope")
+            or "SHARED_ASSET_CONTEXT"
+        ),
+        "regime_shared_parent_context": (
+            (period_cells.get("REGIME") or {}).get("shared_parent_context") is True
+        ),
+        "relative_strength_status": str(
+            relative_strength.get("status") or family_states.get("TREND_RS") or "UNKNOWN"
+        ),
+        "relative_strength_reason": str(
+            relative_strength.get("reason")
+            or family_reasons.get("TREND_RS")
+            or "TIMEFRAME_RELATIVE_STRENGTH_CONTEXT_MISSING"
+        ),
+        "relative_ratio_change_pct": at(
+            relative_strength, "relative.relative_ratio_change_pct"
+        ),
+        "relative_excess_return_pct_points": at(
+            relative_strength, "relative.excess_return_pct_points"
+        ),
+        "relative_strength_state": at(relative_strength, "relative.state"),
+        "relative_peer_rank": at(relative_strength, "relative.rank"),
+        "relative_peer_rank_denominator": at(
+            relative_strength, "relative.rank_denominator"
+        ),
+        "relative_peer_percentile": at(
+            relative_strength, "relative.percentile"
+        ),
+        "relative_excess_vs_peer_median_pct_points": at(
+            relative_strength, "relative.excess_vs_peer_median_pct_points"
+        ),
         "status": str(current.get("status") or "UNKNOWN"),
         "role": str(current.get("role") or "ROLE_UNAVAILABLE"),
         "summary": current.get("summary"),
@@ -1508,6 +1766,41 @@ def _v25_timeframe_leaf_payload(
         "pattern_status": at(current, "pattern_trigger.status"),
         "pattern_reason": at(current, "pattern_trigger.reason"),
     }
+    # The current period owns its own completed-bar evidence. A daily value
+    # must never be copied into a weekly/monthly or minute consumer slot.
+    # Each family still requires a product-admitted price object and exact
+    # method/source-bound receipt at the gate below.
+    period_supply = current.get("supply_demand") if isinstance(
+        current.get("supply_demand"), Mapping
+    ) else {}
+    period_cost = current.get("cost_bar_reference") if isinstance(
+        current.get("cost_bar_reference"), Mapping
+    ) else {}
+    period_vm = current.get("volatility_momentum") if isinstance(
+        current.get("volatility_momentum"), Mapping
+    ) else {}
+    period_pattern = current.get("pattern_trigger") if isinstance(
+        current.get("pattern_trigger"), Mapping
+    ) else {}
+    payload.update({
+        "relative_volume_20d": at(period_supply, "relative_volume.volume_ratio_20d"),
+        "directional_volume_balance": at(period_supply, "directional_volume.signed_volume_balance"),
+        "cmf_20": at(period_supply, "close_location_flow.cmf_20"),
+        "cost_reference_20": at(period_cost, "window_20.rolling_reference_price"),
+        "cost_reference_60": at(period_cost, "window_60.rolling_reference_price"),
+        "macd_dif": at(period_vm, "momentum.macd.dif"),
+        "macd_dea": at(period_vm, "momentum.macd.dea"),
+        "macd_bar": at(period_vm, "momentum.macd.bar"),
+        "rsi_6": at(period_vm, "momentum.rsi.rsi_6"),
+        "rsi_12": at(period_vm, "momentum.rsi.rsi_12"),
+        "rsi_24": at(period_vm, "momentum.rsi.rsi_24"),
+        "roc_20_pct": at(period_vm, "momentum.roc_20_completed_bars_pct"),
+        "atr_wilder_14": at(period_vm, "volatility.atr_wilder_14"),
+        "primary_pattern_type": at(period_pattern, "primary_pattern.pattern_type"),
+        "primary_pattern_lifecycle": at(period_pattern, "primary_pattern.lifecycle"),
+        "candlestick_state": at(period_pattern, "candlestick.status"),
+    })
+    period_leaf = dict(payload)
     if timeframe == "daily":
         payload.update({
             "relative_volume_20d": at(
@@ -1575,10 +1868,20 @@ def _v25_timeframe_leaf_payload(
                 "pattern_trigger_evidence.context.candlestick.status",
             ),
         })
+    if timeframe == "daily":
+        # Legacy daily Factor fields remain supported, but absent fields do
+        # not erase this period's verified native calculation.
+        for field, source_value in period_leaf.items():
+            if payload.get(field) is None:
+                payload[field] = source_value
     family_fields = {
         "TREND_RS": (
             "direction", "ma_alignment", "ma_values", "ma_slopes_pct",
             "ma_state", "ma_ordering", "ma_invalidation",
+            "relative_ratio_change_pct", "relative_excess_return_pct_points",
+            "relative_strength_state", "relative_peer_rank",
+            "relative_peer_rank_denominator", "relative_peer_percentile",
+            "relative_excess_vs_peer_median_pct_points",
         ),
         "SUPPLY": (
             "volume_status", "volume_ratio_5bar", "relative_volume_20d",
@@ -1605,6 +1908,69 @@ def _v25_timeframe_leaf_payload(
         if family_verified[family] is not True:
             for field in fields:
                 payload.pop(field, None)
+    # A PARTIAL family can contain both executed and unready submethods.
+    # Its source-bound parent receipt is not a license to publish every child
+    # number. Preserve individually READY methods; leave the unready siblings
+    # explicit in the matrix/missingness rather than inheriting their values.
+    partial_numeric_methods = {
+        "TREND_RS": {
+            "ma_values": ("MA_LEVEL_ALIGNMENT_DAILY", "MTF_MA_LEVEL_ALIGNMENT", "MA_SLOPE_CROSS"),
+            "ma_slopes_pct": ("MA_SLOPE_CROSS",),
+            "relative_ratio_change_pct": ("RELATIVE_STRENGTH",),
+            "relative_excess_return_pct_points": ("RELATIVE_STRENGTH",),
+            "relative_strength_state": ("RELATIVE_STRENGTH",),
+            "relative_peer_rank": ("RELATIVE_STRENGTH",),
+            "relative_peer_rank_denominator": ("RELATIVE_STRENGTH",),
+            "relative_peer_percentile": ("RELATIVE_STRENGTH",),
+            "relative_excess_vs_peer_median_pct_points": ("RELATIVE_STRENGTH",),
+        },
+        "SUPPLY": {
+            "relative_volume_20d": ("SUPPLY_RELATIVE_VOLUME",),
+            "volume_ratio_5bar": ("SUPPLY_RELATIVE_VOLUME",),
+            "directional_volume_balance": ("SUPPLY_DIRECTIONAL_VOLUME",),
+            "cmf_20": ("SUPPLY_CMF",),
+        },
+        "COST": {
+            "cost_reference_20": ("COST_ROLLING_REFERENCE",),
+            "cost_reference_60": ("COST_ROLLING_REFERENCE",),
+        },
+        "STRUCTURE": {
+            "nearest_support": ("PRICE_PIVOT_SWING",),
+            "nearest_resistance": ("PRICE_PIVOT_SWING",),
+        },
+        "MOMENTUM": {
+            "macd_values": ("MACD",),
+            "macd_dif": ("MACD",), "macd_dea": ("MACD",),
+            "macd_bar": ("MACD",),
+            "rsi_values": ("RSI",), "rsi_6": ("RSI",),
+            "rsi_12": ("RSI",), "rsi_24": ("RSI",),
+            "roc_20_pct": ("ROC",),
+            "atr_wilder_14": ("ATR_WILDER",),
+        },
+    }
+    matrix_cells = at(material, "trace.timeframe_family_matrix.cells") or ()
+    for family, fields in partial_numeric_methods.items():
+        cell = next(
+            (row for row in matrix_cells
+             if isinstance(row, Mapping)
+             and row.get("family") == family
+             and row.get("timeframe") == timeframe), None,
+        )
+        if not isinstance(cell, Mapping) or cell.get("state") != "PARTIAL":
+            continue
+        current_ids = set(cell.get("current_method_ids") or ())
+        ready_methods = {
+            row.get("method_id")
+            for row in (cell.get("method_coverage") or ())
+            if isinstance(row, Mapping)
+            and row.get("method_id") in current_ids
+            and row.get("state") == "READY"
+            and len(str(row.get("method_receipt_hash") or "")) == 64
+            and at(row, "runtime_source_binding.runtime_source_bound") is True
+        } if family_verified.get(family) else set()
+        for field, required_methods in fields.items():
+            if not ready_methods.intersection(required_methods):
+                payload.pop(field, None)
     if not all(
         family_verified[family]
         for family in ("TREND_RS", "SUPPLY", "STRUCTURE", "MOMENTUM")
@@ -1617,11 +1983,34 @@ def _v25_timeframe_leaf_text(payload: Mapping) -> str:
     if not payload:
         return "周期叶事实未绑定。"
     if payload.get("product_admitted") is not True:
+        family_states = payload.get("family_states") or {}
+        family_reasons = payload.get("family_reasons") or {}
+        execution = "/".join(
+            f"{family}={family_states.get(family, 'UNKNOWN')}"
+            f"({family_reasons.get(family, 'REASON_MISSING')})"
+            for family in TECHNICAL_EVIDENCE_FAMILIES
+        )
         return (
             f"{payload.get('timeframe')}｜{payload.get('status')}｜职责 "
-            f"{payload.get('role')}｜当前Product数值未准入。"
+            f"{payload.get('role')}｜当前Product数值未准入｜八族执行 {execution}｜"
+            "环境/行业=共享父上下文，不跨周期重复计票。"
         )
     parts = [
+        "八族执行 " + "/".join(
+            f"{family}={str((payload.get('family_states') or {}).get(family) or 'UNKNOWN')}"
+            f"({str((payload.get('family_reasons') or {}).get(family) or 'REASON_MISSING')})"
+            for family in TECHNICAL_EVIDENCE_FAMILIES
+        ),
+        "环境/行业=" + (
+            "共享父上下文，不跨周期重复计票"
+            if payload.get("regime_shared_parent_context") is True
+            or payload.get("regime_projection_scope") == "SHARED_ASSET_CONTEXT"
+            else "上下文绑定缺失"
+        ),
+        "相对强弱="
+        f"{payload.get('relative_strength_status') or 'UNKNOWN'}"
+        f"({payload.get('relative_strength_reason') or 'REASON_MISSING'})",
+
         f"状态 {payload.get('status')}",
         f"职责 {payload.get('role')}",
         "方法执行 " + (
@@ -1653,10 +2042,26 @@ def _v25_timeframe_leaf_text(payload: Mapping) -> str:
             f"{name.upper()}={_v25_number(value) or 'NA'}"
             for name, value in sorted(slopes.items())
         ))
+    rs_bits = []
+    for label, key in (
+        ("相对比率变化%", "relative_ratio_change_pct"),
+        ("超额收益百分点", "relative_excess_return_pct_points"),
+        ("Peer排名", "relative_peer_rank"),
+        ("Peer样本", "relative_peer_rank_denominator"),
+        ("Peer百分位", "relative_peer_percentile"),
+        ("超Peer中位收益百分点", "relative_excess_vs_peer_median_pct_points"),
+    ):
+        number = _v25_number(payload.get(key))
+        if number is not None:
+            rs_bits.append(f"{label}={number}")
+    if payload.get("relative_strength_state"):
+        rs_bits.insert(0, f"状态={payload.get('relative_strength_state')}")
+    if rs_bits:
+        parts.append("相对强弱数值 " + "；".join(rs_bits))
     volume_bits = []
     for label, key in (
         ("5bar量比", "volume_ratio_5bar"),
-        ("20日量比", "relative_volume_20d"),
+        ("20日量比" if payload.get("timeframe") == "daily" else "20根量比", "relative_volume_20d"),
         ("方向量", "directional_volume_balance"),
         ("CMF20", "cmf_20"),
     ):
@@ -1726,6 +2131,72 @@ def _v25_timeframe_leaf_text(payload: Mapping) -> str:
         f"observations={payload.get('observations') if payload.get('observations') is not None else 'UNKNOWN'}"
     )
     return "｜".join(parts)
+
+
+def _v25_reader_numeric_leaf_audit(payload: Mapping, rendered_text: str) -> dict:
+    """Independently check reader-visible period values, not DOM or slot counts."""
+    if not isinstance(rendered_text, str):
+        raise TraceabilityError("V25_READER_TEXT_INVALID")
+    families = payload.get("family_execution_verified") or {}
+    admitted = payload.get("product_admitted") is True
+    expected = []
+    def numeric(family: str, label: str, value: Any) -> None:
+        if families.get(family) is True:
+            number = _v25_number(value)
+            if number is not None:
+                expected.append((label, number))
+    for name, value in (payload.get("ma_values") or {}).items():
+        numeric("TREND_RS", str(name).upper(), value)
+    for name, value in (payload.get("ma_slopes_pct") or {}).items():
+        numeric("TREND_RS", str(name).upper(), value)
+    numeric("TREND_RS", "相对比率变化%", payload.get("relative_ratio_change_pct"))
+    numeric("TREND_RS", "超额收益百分点", payload.get("relative_excess_return_pct_points"))
+    numeric("TREND_RS", "Peer排名", payload.get("relative_peer_rank"))
+    numeric("TREND_RS", "Peer样本", payload.get("relative_peer_rank_denominator"))
+    numeric("TREND_RS", "Peer百分位", payload.get("relative_peer_percentile"))
+    numeric(
+        "TREND_RS", "超Peer中位收益百分点",
+        payload.get("relative_excess_vs_peer_median_pct_points"),
+    )
+    volume_label = "20日量比" if payload.get("timeframe") == "daily" else "20根量比"
+    numeric("SUPPLY", volume_label, payload.get("relative_volume_20d"))
+    numeric("SUPPLY", "方向量", payload.get("directional_volume_balance"))
+    numeric("SUPPLY", "CMF20", payload.get("cmf_20"))
+    numeric("COST", "成本20", payload.get("cost_reference_20"))
+    numeric("COST", "成本60", payload.get("cost_reference_60"))
+    for label, key in (("现价", "current_close"), ("支撑", "nearest_support"),
+                       ("压力", "nearest_resistance")):
+        numeric("STRUCTURE", label, payload.get(key))
+    for label, key in (
+        ("DIF", "macd_dif"), ("DEA", "macd_dea"), ("BAR", "macd_bar"),
+        ("RSI6", "rsi_6"), ("RSI12", "rsi_12"), ("RSI24", "rsi_24"),
+        ("ROC20%", "roc_20_pct"), ("ATR14", "atr_wilder_14"),
+    ):
+        numeric("MOMENTUM", label, payload.get(key))
+    if not admitted:
+        forbidden = (
+            "SMA ", "MA斜率% ", "相对比率变化%=", "超额收益百分点=",
+            "Peer排名=", "Peer样本=", "Peer百分位=", "超Peer中位收益百分点=",
+            "20日量比=", "20根量比=",
+                     "方向量=", "CMF20=", "成本20=", "成本60=", "现价=",
+                     "支撑=", "压力=", "DIF=", "DEA=", "BAR=", "RSI6=",
+                     "RSI12=", "RSI24=", "ROC20%=", "ATR14=")
+        if any(token in rendered_text for token in forbidden):
+            raise TraceabilityError("V25_READER_UNADMITTED_LEAF_VISIBLE")
+        return {"input_numeric_count": 0, "visible_numeric_count": 0,
+                "missing_numeric_labels": ()}
+    missing = [
+        label for label, value in expected
+        if re.search(re.escape(label) + "=" + re.escape(value) + r"(?![0-9.])",
+                     rendered_text) is None
+    ]
+    if missing:
+        raise TraceabilityError(
+            "V25_READER_NUMERIC_LEAF_NOT_VISIBLE:" + ",".join(sorted(set(missing)))
+        )
+    return {"input_numeric_count": len(expected),
+            "visible_numeric_count": len(expected),
+            "missing_numeric_labels": ()}
 
 
 def _v25_timeframe(material: Mapping | None, timeframe: str, detail_index: int) -> str:
@@ -1838,10 +2309,26 @@ def _v25_card_missing_line(
         )
         return rows[ordinal % len(rows)]
     unresolved = len(tuple(material["gate"].get("unresolved_product_dataset_ids") or ()))
-    return (
-        f"{material['name']}（{material['code']}）：全域Product尚未准入"
-        f"（{unresolved}项适用材料待核）；当前只呈现状态、缺失和WAIT。"
+    admitted = len(tuple(material["gate"].get("current_product_admitted_dataset_ids") or ()))
+    canonical = at(material, "brief.canonical") or {}
+    identity = f"{material['name']}（{material['code']}）"
+    product_state = (
+        f"部分Product已准入{admitted}项"
+        if admitted else "全域Product尚未准入"
     )
+    rows = (
+        f"{identity}：{product_state}（{unresolved}项适用材料待核）；"
+        "当前是证据诊断，不是已完成的研究数值与入场指令。",
+        f"{identity}：{_v25_audit_line(material)}；"
+        "周期载体READY仅表示方法/价格结构已观察，不能冒充Product指标已准入。",
+        f"{identity}：{_v25_plain(canonical.get('public_action'), 'WAIT')}；"
+        f"{'硬否决' if canonical.get('hard_veto') else '按Canonical等待'}；"
+        f"veto/原因={_v25_plain(canonical.get('reason_codes'), '证据待绑定')}；"
+        "没有持仓资料不假设仓位或买卖价格。",
+        f"{identity}：来源可用时间、单位、复权、修订/权利须逐对象核对；"
+        "资金、估值、确认触发、失效及风险分别保留缺失，不得由技术READY代填。",
+    )
+    return rows[ordinal % len(rows)]
 
 
 def _v25_quality_line(material: Mapping | None) -> str:
@@ -2250,12 +2737,34 @@ def _v25_project_block(
         if mail == 0:
             return f"【开盘前市场】全域状态与七周期职责｜{report_date}｜事实和缺失分开"
         if mail == 1:
+            if assignment["materials"] and not any(assignment[key] for key in (
+                "auto_etf_focus", "auto_etf_remaining",
+                "auto_stock_focus", "auto_stock_remaining",
+            )):
+                return "【晚间自动发现｜未执行AUTO_SCREEN】仅保留原版式空位；非真实零候选结论"
             return (
                 f"【晚间自动发现】ETF重点{len(assignment['auto_etf_focus'])}/3、观察{len(assignment['auto_etf_remaining'])}/7｜"
                 f"股票重点{len(assignment['auto_stock_focus'])}/3、观察{len(assignment['auto_stock_remaining'])}/7"
             )
         return f"【我的自选研究】本轮{len(assignment['watch'])}只｜完整证据与缺失"
     if semantic == "meta":
+        if assignment["materials"]:
+            modes = {item["fact_mode"] for item in assignment["materials"]}
+            if modes == {"MISSINGNESS_ONLY"}:
+                return (
+                    f"DSA非完整事实研究｜{report_date}｜NO_SEND｜"
+                    "仅来源/技术状态诊断；Product数值未准入；原V2.5版式未变"
+                )
+            if "SYNTHETIC_TEST" in modes:
+                return (
+                    f"DSA合成测试（非真实研究）｜{report_date}｜NO_SEND｜"
+                    "仅隔离测试当前消费者；原V2.5版式未变"
+                )
+            if modes != {"ADMITTED"}:
+                return (
+                    f"DSA部分事实研究｜{report_date}｜NO_SEND｜"
+                    "仅消费已逐项准入叶事实，其余数据保持缺失；原V2.5版式未变"
+                )
         return f"DSA完整研究｜{report_date}｜NO_SEND｜原V2.5固定框架"
     if semantic in {"lead", "mainline"}:
         if mail == 0:
@@ -2264,6 +2773,11 @@ def _v25_project_block(
                 "市场结论维持WAIT，只呈现可核状态、缺失和下一确认条件。"
             )
         if mail == 1:
+            if assignment["materials"] and not any(assignment[key] for key in (
+                "auto_etf_focus", "auto_etf_remaining",
+                "auto_stock_focus", "auto_stock_remaining",
+            )):
+                return "未执行AUTO_SCREEN或未绑定筛选执行回执；空位不是合格候选为零的证明。"
             return "AUTO允许零或部分候选；筛选排名不是买入权限，最终动作服从canonical和四类独立否决。"
         return "自选/指定代码只投影当前材料变化；无变化或缺失不制造新结论。"
     if semantic == "card-title":
@@ -2333,6 +2847,14 @@ def _v25_project_block(
                 else None,
                 "DATA_INSUFFICIENT",
             )
+            if material and not _v25_timeframe_leaf_admitted(material, timeframe):
+                technical = _v25_plain(
+                    at(material, f"mtf.timeframes.{timeframe}.status"), "UNKNOWN"
+                )
+                return (
+                    f"{_V25_TF_LABELS[timeframe]}｜"
+                    f"Product未准入｜技术载体={technical}｜不具有独立行动权限"
+                )
             return f"{_V25_TF_LABELS[timeframe]}｜{status}｜不具有独立行动权限"
         return _v25_timeframe(material, timeframe, ordinal)
     if semantic == "valuation" or any("valuation" in node["classes"] for node in chain):
@@ -2787,6 +3309,18 @@ def _stage1_data_object_consumer_row(
     scope_locations = scope_binding["locations"]
     scope_hashes = scope_binding["projection_hashes"]
     rendered_scope_matches = scope_binding["rendered_matches"]
+    source_fact_hash = str(scope_projection.get("source_fact_hash") or "")
+    fact_summary = str(scope_projection.get("fact_summary") or "").strip()
+    rendered_fact_hashes = tuple(sorted({
+        str(value)
+        for location_id in scope_locations
+        for value in (
+            rendered_lookup.get(location_id, {}).get(
+                "input_data_object_fact_hashes"
+            ) or ()
+        )
+        if len(str(value)) == 64
+    }))
     admission_bound = bool(
         product_admitted
         and admission.get("dataset_id") == dataset_id
@@ -2806,7 +3340,21 @@ def _stage1_data_object_consumer_row(
     direct_leaf_consumed = bool(
         admission_bound and dataset_id in direct_leaf_dataset_ids
     )
-    consumer_bound = direct_leaf_consumed or scope_consumed
+    visible_fact_required = bool(
+        product_admitted and len(source_fact_hash) == 64 and fact_summary
+    )
+    visible_fact_consumed = bool(
+        visible_fact_required
+        and scope_consumed
+        and source_fact_hash in rendered_fact_hashes
+    )
+    consumer_bound = bool(
+        direct_leaf_consumed
+        or (
+            scope_consumed
+            and (not visible_fact_required or visible_fact_consumed)
+        )
+    )
     consumer_state = (
         "NOT_APPLICABLE"
         if not current_applicable
@@ -2814,6 +3362,10 @@ def _stage1_data_object_consumer_row(
         if not product_admitted
         else "V25_PRICE_TIMEFRAME_LEAF_CONSUMED"
         if direct_leaf_consumed
+        else "V25_DATA_OBJECT_FACT_CONSUMED"
+        if visible_fact_consumed
+        else "V25_DATA_OBJECT_FACT_NOT_VISIBLE"
+        if visible_fact_required
         else "V25_MACHINE_SCOPE_CONSUMED"
         if scope_consumed
         else "V25_CONSUMER_BINDING_MISSING"
@@ -2833,6 +3385,10 @@ def _stage1_data_object_consumer_row(
         "v25_scope_audit_consumed": scope_consumed,
         "v25_consumer_bound": consumer_bound,
         "v25_consumer_state": consumer_state,
+        "source_fact_hash": source_fact_hash or None,
+        "fact_summary": fact_summary or None,
+        "rendered_data_object_fact_hashes": rendered_fact_hashes,
+        "v25_data_object_fact_consumed": visible_fact_consumed,
         "scope_projection_state": scope_projection.get("state"),
         "scope_consumer_projection": scope_projection.get(
             "consumer_projection"
@@ -3479,7 +4035,47 @@ def validate_stage1_vertical_product_receipt(value: Mapping) -> dict:
                 raise TraceabilityError(
                     "STAGE1_VERTICAL_FALSE_DATA_OBJECT_CONSUMPTION"
                 )
-            if consumer_bound != (direct_leaf or scope_audit):
+            source_fact_hash = str(
+                data_row.get("source_fact_hash") or ""
+            )
+            fact_summary = str(data_row.get("fact_summary") or "").strip()
+            rendered_fact_hashes = {
+                str(item)
+                for item in (
+                    data_row.get("rendered_data_object_fact_hashes") or ()
+                )
+            }
+            visible_fact_required = bool(
+                product_admitted
+                and len(source_fact_hash) == 64
+                and fact_summary
+            )
+            visible_fact_consumed = (
+                data_row.get("v25_data_object_fact_consumed") is True
+            )
+            if visible_fact_consumed and not (
+                visible_fact_required
+                and scope_audit
+                and source_fact_hash in rendered_fact_hashes
+            ):
+                raise TraceabilityError(
+                    "STAGE1_VERTICAL_FALSE_DATA_OBJECT_CONSUMPTION"
+                )
+            if visible_fact_required and not visible_fact_consumed:
+                raise TraceabilityError(
+                    "STAGE1_VERTICAL_FALSE_DATA_OBJECT_CONSUMPTION"
+                )
+            expected_bound = bool(
+                direct_leaf
+                or (
+                    scope_audit
+                    and (
+                        not visible_fact_required
+                        or visible_fact_consumed
+                    )
+                )
+            )
+            if consumer_bound != expected_bound:
                 raise TraceabilityError(
                     "STAGE1_VERTICAL_FALSE_DATA_OBJECT_CONSUMPTION"
                 )
@@ -3490,6 +4086,10 @@ def validate_stage1_vertical_product_receipt(value: Mapping) -> dict:
                 if not product_admitted
                 else "V25_PRICE_TIMEFRAME_LEAF_CONSUMED"
                 if direct_leaf
+                else "V25_DATA_OBJECT_FACT_CONSUMED"
+                if visible_fact_consumed
+                else "V25_DATA_OBJECT_FACT_NOT_VISIBLE"
+                if visible_fact_required
                 else "V25_MACHINE_SCOPE_CONSUMED"
                 if scope_audit
                 else "V25_CONSUMER_BINDING_MISSING"
@@ -3724,6 +4324,24 @@ def render_v2_5_dynamic_no_send(
             values.add(fact_hash)
             atomic_fact_hashes_by_block[str(location_id)] = tuple(sorted(values))
     assignment["scope_atomic_fact_hashes_by_block"] = atomic_fact_hashes_by_block
+    data_object_fact_hashes_by_block: dict[str, tuple[str, ...]] = {}
+    for row in scope_projection_rows:
+        if row.get("kind") != "data_object":
+            continue
+        fact_hash = str(row.get("source_fact_hash") or "")
+        if len(fact_hash) != 64 or not str(row.get("fact_summary") or "").strip():
+            continue
+        for location_id in row.get("location_ids") or ():
+            values = set(
+                data_object_fact_hashes_by_block.get(str(location_id), ())
+            )
+            values.add(fact_hash)
+            data_object_fact_hashes_by_block[str(location_id)] = tuple(
+                sorted(values)
+            )
+    assignment["scope_data_object_fact_hashes_by_block"] = (
+        data_object_fact_hashes_by_block
+    )
 
     replacements: list[tuple[int, int, str]] = []
     rendered_blocks = []
@@ -3802,6 +4420,13 @@ def render_v2_5_dynamic_no_send(
             ),
             None,
         )
+        reader_numeric_audit = (
+            _v25_reader_numeric_leaf_audit(leaf_payload, projected)
+            if leaf_payload and (
+                "方法执行 " in projected
+                or "当前Product数值未准入" in projected
+            ) else None
+        )
         rendered_blocks.append({
             "block_id": f"block-{block_index}",
             "mail": block["mail"],
@@ -3837,6 +4462,12 @@ def render_v2_5_dynamic_no_send(
                     f"block-{block_index}", ()
                 )
             ),
+            "input_data_object_fact_hashes": tuple(
+                assignment.get(
+                    "scope_data_object_fact_hashes_by_block", {}
+                ).get(f"block-{block_index}", ())
+            ),
+            "reader_numeric_leaf_audit": reader_numeric_audit,
             "projection_sha256": sha256(escaped.encode("utf-8")).hexdigest(),
         })
     replacements.sort(key=lambda row: row[0])
@@ -3998,6 +4629,39 @@ def render_v2_5_dynamic_no_send(
         "truthful_missingness_is_material": True,
     }
     whole_scope_projection["projection_hash"] = digest(whole_scope_projection)
+    audited_reader_cycles = tuple(
+        row for row in rendered_blocks
+        if isinstance(row.get("reader_numeric_leaf_audit"), Mapping)
+    )
+    input_numeric_count = sum(
+        row["reader_numeric_leaf_audit"]["input_numeric_count"]
+        for row in audited_reader_cycles
+    )
+    visible_numeric_count = sum(
+        row["reader_numeric_leaf_audit"]["visible_numeric_count"]
+        for row in audited_reader_cycles
+    )
+    if input_numeric_count != visible_numeric_count:
+        raise TraceabilityError("V25_READER_NUMERIC_TOTAL_MISMATCH")
+    auto_candidates_bound = any(assignment[key] for key in (
+        "auto_etf_focus", "auto_etf_remaining",
+        "auto_stock_focus", "auto_stock_remaining",
+    ))
+    reader_value_audit = {
+        "schema_version": "v25-reader-real-leaf-fidelity-v1",
+        "audited_cycle_text_count": len(audited_reader_cycles),
+        "actual_rendered_numeric_leaf_count": visible_numeric_count,
+        "full_readable_research_ready": False,
+        "mode": (
+            "VISIBLE_SCOPED_FACTS" if visible_numeric_count
+            else "STATUS_ONLY_DIAGNOSTIC"
+        ),
+        "auto_execution_state": (
+            "CANDIDATES_BOUND_EXECUTION_UNVERIFIED"
+            if auto_candidates_bound else "UNVERIFIED_NOT_RUN"
+        ),
+        "no_unadmitted_numeric_leaf_visible": True,
+    }
     receipt = {
         "schema_version": V25_DYNAMIC_PRODUCT_SCHEMA_VERSION,
         "authority": "ORIGINAL_GOLDEN_TEXT_NODE_PROJECTION_NO_SEND",
@@ -4009,6 +4673,7 @@ def render_v2_5_dynamic_no_send(
         "frame_contract": frame,
         "frame_contract_hash": digest(frame),
         "whole_scope_projection": whole_scope_projection,
+        "reader_value_audit": reader_value_audit,
         "email_consumer_quality": email_consumer_quality,
         "envelopes": {
             "MARKET": {"mail_index": 0, "cycle_ids": tuple(f"cycle-{i:02d}" for i in range(14))},
@@ -4110,6 +4775,11 @@ def render_v2_5_dynamic_no_send(
     )
     validate_stage1_vertical_product_receipt(
         receipt["stage1_vertical_product_receipt"]
+    )
+    reader_value_audit["full_readable_research_ready"] = bool(
+        receipt["all_input_facts_product_ready"] is True
+        and receipt["stage1_vertical_product_receipt"].get("state") == "FACT_READY"
+        and visible_numeric_count > 0
     )
     receipt["receipt_hash"] = digest(receipt)
     return {"html": output, "receipt": receipt}

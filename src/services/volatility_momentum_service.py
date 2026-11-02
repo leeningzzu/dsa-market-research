@@ -424,7 +424,12 @@ def _pivot_pair(price_structure_context: Any) -> Optional[Dict[str, Any]]:
     return max(candidates, key=lambda item: str(item["second"]["confirmed_at"]))
 
 
-def _confirmed_divergence(indicators: pd.DataFrame, price_structure_context: Any) -> Dict[str, Any]:
+def _confirmed_divergence(
+    indicators: pd.DataFrame,
+    price_structure_context: Any,
+    *,
+    timeframe: str = "daily",
+) -> Dict[str, Any]:
     pair = _pivot_pair(price_structure_context)
     if pair is None:
         return {
@@ -436,12 +441,18 @@ def _confirmed_divergence(indicators: pd.DataFrame, price_structure_context: Any
         }
     first = pair["first"]
     second = pair["second"]
-    first_date = pd.to_datetime(first["origin_time"], errors="coerce").date()
-    second_date = pd.to_datetime(second["origin_time"], errors="coerce").date()
+    intraday = timeframe in {"60m", "30m", "15m", "5m"}
     indexed = indicators.copy()
-    indexed["date"] = pd.to_datetime(indexed["date"], errors="coerce").dt.date
-    first_rows = indexed[indexed["date"] == first_date]
-    second_rows = indexed[indexed["date"] == second_date]
+    if intraday:
+        first_point = pd.to_datetime(first["origin_time"], errors="coerce", utc=True)
+        second_point = pd.to_datetime(second["origin_time"], errors="coerce", utc=True)
+        indexed["date"] = pd.to_datetime(indexed["date"], errors="coerce", utc=True)
+    else:
+        first_point = pd.to_datetime(first["origin_time"], errors="coerce").date()
+        second_point = pd.to_datetime(second["origin_time"], errors="coerce").date()
+        indexed["date"] = pd.to_datetime(indexed["date"], errors="coerce").dt.date
+    first_rows = indexed[indexed["date"] == first_point]
+    second_rows = indexed[indexed["date"] == second_point]
     if first_rows.empty or second_rows.empty:
         return {
             "status": "MISSING",
@@ -509,6 +520,190 @@ def _empty_payload(base: Dict[str, Any], *, status: str, reason: str, observatio
         "confirmed_divergence": {"status": "MISSING", "state": "NONE", "signals": []},
         "process_diagnostics": {"status": "MISSING", "classification_authority": "NONE"},
         "historical_replay_eligible": False,
+    }
+
+
+def build_completed_timeframe_volatility_momentum_context(
+    *,
+    stock_code: str,
+    bars: Any,
+    timeframe: str,
+    target_bar_end: Any,
+    source_identity_hash: Optional[str],
+    trend_result: Any,
+    price_structure_context: Any,
+    macd_startup: Any,
+    rsi_startup: Any,
+    market: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Reuse existing momentum owners on one typed completed-bar resolution.
+
+    This function is numerical evidence only.  Exchange-session completeness,
+    provider entitlement and cross-run PIT remain owned by the MTF parent.
+    """
+    supported = {"monthly", "weekly", "daily", "60m", "30m", "15m", "5m"}
+    base = {
+        "schema_version": "completed-timeframe-volatility-momentum-v1",
+        "family": "volatility_momentum",
+        "stock_code": str(stock_code or "").strip(),
+        "market": str(market or "").strip().lower() or None,
+        "timeframe": timeframe,
+        "completed_bar_only": True,
+        "algorithm_version": ALGORITHM_VERSION,
+        "config_hash": CONFIG_HASH,
+        "source_identity_hash": source_identity_hash,
+        "independent_action_authority": False,
+        "strategy_admitted": False,
+        "learning_admitted": False,
+        "data_rights_admitted": False,
+        "historical_replay_eligible": False,
+    }
+
+    def not_ready(status: str, reason: str, observations: int = 0) -> Dict[str, Any]:
+        return {
+            **base,
+            "status": status,
+            "reason": reason,
+            "observations": observations,
+            "volatility": {"status": "MISSING"},
+            "momentum": {"status": "MISSING"},
+            "confirmed_divergence": {
+                "status": "MISSING", "state": "NONE", "signals": [],
+            },
+            "process_diagnostics": {
+                "status": "MISSING", "classification_authority": "NONE",
+            },
+        }
+
+    if timeframe not in supported:
+        return not_ready("UNKNOWN", "TIMEFRAME_UNSUPPORTED")
+    if not isinstance(source_identity_hash, str) or (
+        len(source_identity_hash) != 64
+        or any(char not in "0123456789abcdef" for char in source_identity_hash)
+    ):
+        return not_ready("UNKNOWN", "TYPED_SOURCE_IDENTITY_MISSING")
+    required = ["date", "open", "high", "low", "close", "data_source"]
+    if not isinstance(bars, pd.DataFrame) or bars.empty or any(
+        column not in bars.columns for column in required
+    ):
+        return not_ready("MISSING", "COMPLETED_BAR_INPUT_MISSING")
+
+    frame = bars.copy()
+    intraday = timeframe in {"60m", "30m", "15m", "5m"}
+    if intraday:
+        frame["date"] = pd.to_datetime(frame["date"], errors="coerce", utc=True)
+        target = pd.to_datetime(target_bar_end, errors="coerce", utc=True)
+    else:
+        frame["date"] = pd.to_datetime(frame["date"], errors="coerce").dt.date
+        parsed_target = pd.to_datetime(target_bar_end, errors="coerce")
+        target = parsed_target.date() if not pd.isna(parsed_target) else None
+    if frame["date"].isna().any() or target is None or pd.isna(target):
+        return not_ready("UNKNOWN", "BAR_TIMESTAMP_INVALID", int(len(frame)))
+    if frame["date"].duplicated().any() or not frame["date"].is_monotonic_increasing:
+        return not_ready("UNKNOWN", "BAR_TIME_DUPLICATE_OR_OUT_OF_ORDER", int(len(frame)))
+    if frame.iloc[-1]["date"] != target:
+        return not_ready("MISSING", "TARGET_COMPLETED_BAR_MISSING", int(len(frame)))
+    for column in ("open", "high", "low", "close"):
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    if frame[["open", "high", "low", "close"]].isna().any().any() or _invalid_ohlc(frame):
+        return not_ready("UNKNOWN", "INVALID_OHLC", int(len(frame)))
+    source_values = frame["data_source"].map(lambda value: str(value or "").strip())
+    if not bool((source_values != "").all()) or source_values.nunique() != 1:
+        return not_ready("UNKNOWN", "SOURCE_ALIGNMENT_UNPROVEN", int(len(frame)))
+    if len(frame) < MIN_OBSERVATIONS:
+        return not_ready("MISSING", "WARMUP_INSUFFICIENT", int(len(frame)))
+
+    indicators = _indicator_frame(frame)
+    close = indicators["close"]
+    roc20 = _roc_pct(close, 20)
+    roc60 = _roc_pct(close, 60)
+    returns20 = pd.to_numeric(close, errors="coerce").pct_change().dropna().tail(20)
+    realized20 = (
+        float(returns20.std(ddof=1)) * 100.0 if len(returns20) >= 2 else None
+    )
+    tr_sma_pct = _true_range_sma_20_pct(indicators)
+    atr_wilder, atr_wilder_pct = _wilder_atr(indicators)
+    atr_receipt = _atr_startup_stability(indicators)
+    macd_receipt = dict(macd_startup) if isinstance(macd_startup, dict) else {"status": "UNKNOWN"}
+    rsi_receipt = dict(rsi_startup) if isinstance(rsi_startup, dict) else {"status": "UNKNOWN"}
+    macd_admitted = macd_receipt.get("status") == "READY"
+    rsi_admitted = rsi_receipt.get("status") == "READY"
+    atr_admitted = atr_receipt.get("status") == "READY"
+    latest = indicators.iloc[-1]
+    macd_status = getattr(getattr(trend_result, "macd_status", None), "value", None)
+    rsi_status = getattr(getattr(trend_result, "rsi_status", None), "value", None)
+
+    momentum = {
+        "status": "READY" if trend_result is not None and macd_admitted and rsi_admitted else "PARTIAL",
+        "roc_20_completed_bars_pct": roc20,
+        "roc_60_completed_bars_pct": roc60,
+        "macd": {
+            "dif": _safe_float(latest.get("MACD_DIF")) if macd_admitted else None,
+            "dea": _safe_float(latest.get("MACD_DEA")) if macd_admitted else None,
+            "bar": _safe_float(latest.get("MACD_BAR")) if macd_admitted else None,
+            "status": macd_status if macd_admitted else None,
+            "formula_owner": "StockTrendAnalyzer._calculate_macd",
+            "admission": macd_receipt,
+        },
+        "rsi": {
+            "rsi_6": _safe_float(latest.get("RSI_6")) if rsi_admitted else None,
+            "rsi_12": _safe_float(latest.get("RSI_12")) if rsi_admitted else None,
+            "rsi_24": _safe_float(latest.get("RSI_24")) if rsi_admitted else None,
+            "status": rsi_status if rsi_admitted else None,
+            "formula_owner": "StockTrendAnalyzer._calculate_rsi",
+            "admission": rsi_receipt,
+        },
+    }
+    volatility = {
+        "status": "READY" if atr_admitted and realized20 is not None and tr_sma_pct is not None else "PARTIAL",
+        "realized_volatility_20_completed_bars_pct": realized20,
+        "annualization": "NOT_APPLIED_TIMEFRAME_SPECIFIC_BAR_SERIES",
+        "true_range_sma_20_completed_bars_pct": tr_sma_pct,
+        "true_range_semantics": "SIMPLE_MEAN_TRUE_RANGE_20_COMPLETED_BARS_NOT_WILDER_ATR",
+        "atr_wilder_14": atr_wilder if atr_admitted else None,
+        "atr_wilder_14_pct": atr_wilder_pct if atr_admitted else None,
+        "atr_wilder_admission": atr_receipt,
+        "atr_wilder_raw_observation": {
+            "value": atr_wilder, "pct": atr_wilder_pct, "admitted": False,
+        } if not atr_admitted else None,
+    }
+    divergence = _confirmed_divergence(
+        indicators, price_structure_context, timeframe=timeframe,
+    )
+    process = _process_diagnostics(close)
+    process.update({
+        "timeframe": timeframe,
+        "window_unit": "COMPLETED_BARS",
+        "status": "READY" if len(frame) >= READY_OBSERVATIONS else "PARTIAL",
+    })
+    status = "READY" if (
+        len(frame) >= READY_OBSERVATIONS
+        and momentum["status"] == "READY"
+        and volatility["status"] == "READY"
+    ) else "PARTIAL"
+    return {
+        **base,
+        "status": status,
+        "reason": (
+            "TIMEFRAME_VOLATILITY_MOMENTUM_READY"
+            if status == "READY" else "TIMEFRAME_METHOD_ADMISSION_INCOMPLETE"
+        ),
+        "observations": int(len(frame)),
+        "start_bar_end": frame.iloc[0]["date"].isoformat(),
+        "end_bar_end": frame.iloc[-1]["date"].isoformat(),
+        "source_alignment": {
+            "status": "SINGLE_SOURCE", "sources": [source_values.iloc[0]],
+            "rows_complete": True,
+        },
+        "volatility": volatility,
+        "momentum": momentum,
+        "recursive_startup_admission": {
+            "macd": macd_receipt,
+            "rsi": rsi_receipt,
+            "atr_wilder": atr_receipt,
+        },
+        "confirmed_divergence": divergence,
+        "process_diagnostics": process,
     }
 
 

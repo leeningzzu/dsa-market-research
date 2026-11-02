@@ -885,6 +885,30 @@ def _supply_demand_volume_price_summary(evidence: Dict[str, Any]) -> str:
     return "供需/量价：" + "；".join(parts) + "。"
 
 
+def _volume_price_phase_summary(value: Any) -> str:
+    phase = _mapping(value)
+    if str(phase.get("status") or "").upper() not in {"READY", "PARTIAL"}:
+        return "量价阶段：证据不足。"
+    label = str(phase.get("phase_label_zh") or "量价阶段候选不明确").strip()
+    return (
+        f"量价阶段：{label}；仅表示可观察的量价/结构候选，"
+        "不推断参与者身份或意图。"
+    )
+
+
+def _chan_feature_summary(value: Any) -> str:
+    feature = _mapping(value)
+    if str(feature.get("status") or "").upper() not in {"READY", "PARTIAL"}:
+        return "缠论窄适配：已确认结构证据不足。"
+    return (
+        "缠论窄适配："
+        f"已确认分型 {len(feature.get('fractals') or [])}、"
+        f"笔 {len(feature.get('strokes') or [])}、"
+        f"三笔重叠候选 {len(feature.get('overlap_zones') or [])}；"
+        "仅复用已确认 Pivot/Swing，不声称完整 CZSC，也不产生独立交易权限。"
+    )
+
+
 def _gate4_method_rollup(trace: Mapping[str, Any]) -> Dict[str, str]:
     matrix = _mapping(trace.get("timeframe_family_matrix"))
     observations: Dict[str, List[str]] = {}
@@ -1175,6 +1199,7 @@ def _canonical_decision(
     rejected_risk_methods: Optional[Dict[str, str]] = None,
     raw_score_admitted: bool = True,
     gate4_package: Optional[Mapping[str, Any]] = None,
+    distribution_risk_evidence: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Produce the conservative WAIT/PASS decision from deterministic inputs."""
     reason_codes: List[str] = []
@@ -1237,6 +1262,16 @@ def _canonical_decision(
                 hard_veto_codes.append("NEGATIVE_TREND_SIGNAL")
             if hard_risk:
                 hard_veto_codes.append("DETERMINISTIC_HARD_RISK")
+
+    if isinstance(distribution_risk_evidence, Mapping) and distribution_risk_evidence.get("hard_veto"):
+        if "DISTRIBUTION" in rejected_risk_methods:
+            reason_codes.append(rejected_risk_methods["DISTRIBUTION"])
+        else:
+            hard_veto_codes.extend(
+                str(code)
+                for code in (distribution_risk_evidence.get("veto_codes") or [])
+                if str(code).strip()
+            )
 
     if isinstance(market_sector_regime, dict) and market_sector_regime.get("hard_veto"):
         hard_veto_codes.extend(
@@ -2329,8 +2364,10 @@ def build_stock_factor_decision_summary(
     market_structure_context: Optional[Dict[str, Any]] = None,
     relative_strength_context: Optional[Dict[str, Any]] = None,
     supply_demand_context: Optional[Dict[str, Any]] = None,
+    volume_price_phase_context: Optional[Dict[str, Any]] = None,
     cost_structure_context: Optional[Dict[str, Any]] = None,
     price_structure_context: Optional[Dict[str, Any]] = None,
+    chan_feature_context: Optional[Dict[str, Any]] = None,
     volatility_momentum_context: Optional[Dict[str, Any]] = None,
     pattern_trigger_context: Optional[Dict[str, Any]] = None,
     multi_timeframe_structure_context: Optional[Dict[str, Any]] = None,
@@ -2384,6 +2421,19 @@ def build_stock_factor_decision_summary(
         trend_result,
         supply_demand_context,
     )
+    distribution_risk_evidence = (
+        dict(volume_price_phase_context)
+        if isinstance(volume_price_phase_context, dict)
+        else {
+            "status": "MISSING",
+            "reason_codes": ("VOLUME_PRICE_PHASE_CONTEXT_MISSING",),
+            "phase": "INDETERMINATE",
+            "hard_veto": False,
+            "veto_codes": (),
+            "institutional_intent_claim": "NOT_INFERRED",
+            "independent_action_authority": False,
+        }
+    )
     cost_structure_evidence = _build_cost_structure_evidence(
         chip_data,
         cost_structure_context,
@@ -2391,6 +2441,17 @@ def build_stock_factor_decision_summary(
     price_structure_evidence = _build_price_structure_evidence(
         trend_result,
         price_structure_context,
+    )
+    chan_evidence = (
+        dict(chan_feature_context)
+        if isinstance(chan_feature_context, dict)
+        else {
+            "status": "MISSING",
+            "reason": "CHAN_CONTEXT_MISSING",
+            "semantics": "NARROW_CONFIRMED_PIVOT_SWING_OVERLAP_NOT_FULL_CZSC",
+            "full_chan_standard_claim": False,
+            "independent_action_authority": False,
+        }
     )
     volatility_momentum_evidence = _build_volatility_momentum_evidence(
         trend_result,
@@ -2486,6 +2547,7 @@ def build_stock_factor_decision_summary(
             "REGIME": market_sector_regime,
             "TREND_RS": trend_relative_strength,
             "SUPPLY": supply_demand_volume_price,
+            "DISTRIBUTION": distribution_risk_evidence,
         }
         for binding in EVIDENCE_BINDINGS:
             if binding.requirement_id not in risk_sources:
@@ -2549,6 +2611,7 @@ def build_stock_factor_decision_summary(
         regime_admission_reason=regime_admission_reason,
         rejected_risk_methods=rejected_risk_methods,
         raw_score_admitted=qualified_legacy_score,
+        distribution_risk_evidence=distribution_risk_evidence,
     )
     gate4_package = None
     if include_canonical and isinstance(gate4_context, Mapping):
@@ -2558,8 +2621,10 @@ def build_stock_factor_decision_summary(
             "market_sector_regime": market_sector_regime,
             "trend_relative_strength": trend_relative_strength,
             "supply_demand_volume_price": supply_demand_volume_price,
+            "distribution_risk_evidence": distribution_risk_evidence,
             "cost_structure_evidence": cost_structure_evidence,
             "price_structure_evidence": price_structure_evidence,
+            "chan_evidence": chan_evidence,
             "volatility_momentum_evidence": volatility_momentum_evidence,
             "pattern_trigger_evidence": pattern_trigger_evidence,
             "fundamental_quality": fundamental_quality,
@@ -2598,6 +2663,7 @@ def build_stock_factor_decision_summary(
             rejected_risk_methods=rejected_risk_methods,
             raw_score_admitted=qualified_legacy_score,
             gate4_package=gate4_package,
+            distribution_risk_evidence=distribution_risk_evidence,
         )
         if include_canonical
         else None
@@ -2684,6 +2750,8 @@ def build_stock_factor_decision_summary(
         ),
         "trend_relative_strength": _trend_relative_strength_summary(trend_relative_strength),
         "supply_demand_volume_price": _supply_demand_volume_price_summary(supply_demand_volume_price),
+        "volume_price_phase": _volume_price_phase_summary(distribution_risk_evidence),
+        "chan_structure": _chan_feature_summary(chan_evidence),
     }
 
     why: List[str] = []
@@ -2691,7 +2759,9 @@ def build_stock_factor_decision_summary(
         "market_sector_regime",
         "trend_relative_strength",
         "supply_demand_volume_price",
+        "volume_price_phase",
         "price_structure",
+        "chan_structure",
         "quality_growth",
         "valuation",
     ):
@@ -2789,8 +2859,10 @@ def build_stock_factor_decision_summary(
         "market_sector_regime": market_sector_regime,
         "trend_relative_strength": trend_relative_strength,
         "supply_demand_volume_price": supply_demand_volume_price,
+        "distribution_risk_evidence": distribution_risk_evidence,
         "cost_structure_evidence": cost_structure_evidence,
         "price_structure_evidence": price_structure_evidence,
+        "chan_evidence": chan_evidence,
         "volatility_momentum_evidence": volatility_momentum_evidence,
         "pattern_trigger_evidence": pattern_trigger_evidence,
         **(

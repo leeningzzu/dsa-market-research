@@ -8,12 +8,15 @@ import pytest
 from src.services.business_valuation_service import (
     BusinessValuationError,
     VALUATION_ROUTE_DATA_REQUIREMENTS,
+    INDUSTRY_FAMILY_ROUTE_SPECS,
     VALUATION_ROUTE_FIELD_SOURCES,
     VALUATION_ROUTE_IDS,
     compile_business_valuation,
     compile_index_sector_valuation,
+    compile_industry_valuation_route,
     validate_business_valuation,
     validate_index_sector_valuation,
+    validate_industry_valuation_route,
 )
 from src.services.data_object_admission import (
     compile_data_object_admission,
@@ -34,6 +37,7 @@ _DATASET_META = {
     "P_VAL_RATIO": ("daily+quarter", "ASSET_RESEARCH_BRIEF"),
     "P_DAILY": ("daily/completed", "ASSET_RESEARCH_BRIEF"),
     "P_QUOTE_LIQUID": ("intraday+daily", "ASSET_RESEARCH_BRIEF"),
+    "P_INDUSTRY": ("event/known_at", "ASSET_RESEARCH_BRIEF"),
     "M_CN_BOND": ("daily/released", "MARKET_REGIME_BRIEF"),
     "M_ERP_VAL": ("daily/period", "MARKET_REGIME_BRIEF"),
     "S_VALUATION": ("daily+quarter", "SECTOR_CONTEXT"),
@@ -41,6 +45,7 @@ _DATASET_META = {
     "E_PREMIUM": ("intraday+daily", "ETF_ASSET_BRIEF"),
     "E_UNDERLYING_VAL": ("quarter+daily", "ETF_ASSET_BRIEF"),
     "E_PRICE_1D": ("daily/close", "ETF_ASSET_BRIEF"),
+    "E_BASKET": ("daily/effective", "ETF_ASSET_BRIEF"),
 }
 
 
@@ -206,6 +211,37 @@ def _route_dataset_ids(route_id):
         *(group[0] for group in requirement["required_any"]),
     )))
 
+def _industry_route_plan(route_id: str, *, asset_type: str = "stock") -> dict:
+    family = next(
+        family for family, spec in INDUSTRY_FAMILY_ROUTE_SPECS.items()
+        if spec["route_id"] == route_id
+        and (family == "ETF" if asset_type == "etf" else family != "ETF")
+    )
+    profitability = (
+        "NOT_APPLICABLE" if asset_type == "etf"
+        else "LOSS_MAKING" if route_id == "LOSS_MAKING_EARLY_GROWTH"
+        else "PROFITABLE"
+    )
+    dataset_id = "E_BASKET" if asset_type == "etf" else "P_INDUSTRY"
+    result = compile_industry_valuation_route({
+        "asset_id": "510300" if asset_type == "etf" else "600519",
+        "asset_type": asset_type,
+        "classification_standard": "TEST_INDUSTRY_STANDARD",
+        "classification_version": "2026Q3",
+        "industry_code": "TEST-" + family,
+        "industry_name": family,
+        "industry_family": family,
+        "profitability_state": profitability,
+        "published_at": "2026-10-20T08:00:00+00:00",
+        "effective_from": "2026-09-30",
+        "as_of": "2026-10-21T10:00:00+00:00",
+        "classification_admission": _admission(dataset_id),
+    })
+    assert result["status"] == "READY"
+    assert validate_industry_valuation_route(result) == result
+    return result
+
+
 def _base(route_id, *, asset_type="stock", inputs=None, assumptions=None):
     inputs = dict(inputs or {})
     assumptions = dict(assumptions or {})
@@ -232,6 +268,7 @@ def _base(route_id, *, asset_type="stock", inputs=None, assumptions=None):
         "assumption_sources": {
             key: expected_lineage["assumptions"][key] for key in assumptions
         },
+        "industry_route_plan": _industry_route_plan(route_id, asset_type=asset_type),
     }
     if route_id == "MATURE_INDUSTRIAL_CONSUMER":
         payload["primary_method"] = "NORMALIZED_EARNINGS_PE"
@@ -243,6 +280,80 @@ def _base(route_id, *, asset_type="stock", inputs=None, assumptions=None):
             dataset_id="E_UNDERLYING_VAL",
         )
     return payload
+
+@pytest.mark.parametrize(
+    "industry_family,profitability_state,expected_route,expected_method",
+    [
+        ("MATURE_CONSUMER", "PROFITABLE", "MATURE_INDUSTRIAL_CONSUMER", "NORMALIZED_EARNINGS_PE"),
+        ("INDUSTRIAL_MANUFACTURING", "PROFITABLE", "MATURE_INDUSTRIAL_CONSUMER", "NORMALIZED_EARNINGS_PE"),
+        ("HIGH_GROWTH_TECH", "PROFITABLE", "HIGH_GROWTH_TECH", "FORWARD_EV_SALES"),
+        ("HIGH_GROWTH_TECH", "LOSS_MAKING", "LOSS_MAKING_EARLY_GROWTH", "REVENUE_UNIT_ECONOMICS_EV_SALES"),
+        ("BANKING", "PROFITABLE", "BANK", "PB_SUSTAINABLE_ROE_ROUTE"),
+        ("INSURANCE", "PROFITABLE", "INSURANCE", "PRICE_TO_EMBEDDED_VALUE"),
+        ("CYCLICAL_RESOURCE", "PROFITABLE", "CYCLICAL_RESOURCE", "MID_CYCLE_EV_EBITDA"),
+        ("UTILITY_INFRASTRUCTURE", "PROFITABLE", "UTILITY_INFRASTRUCTURE", "GORDON_DDM"),
+        ("REIT", "PROFITABLE", "REIT", "PRICE_TO_AFFO"),
+        ("EARLY_GROWTH", "LOSS_MAKING", "LOSS_MAKING_EARLY_GROWTH", "REVENUE_UNIT_ECONOMICS_EV_SALES"),
+        ("ETF", "NOT_APPLICABLE", "ETF", "NAV_PREMIUM_DISCOUNT_BAND"),
+    ],
+)
+def test_industry_classification_routes_to_method_without_universal_pe(
+    industry_family, profitability_state, expected_route, expected_method,
+):
+    asset_type = "etf" if industry_family == "ETF" else "stock"
+    dataset_id = "E_BASKET" if asset_type == "etf" else "P_INDUSTRY"
+    result = compile_industry_valuation_route({
+        "asset_id": "510300" if asset_type == "etf" else "600519",
+        "asset_type": asset_type,
+        "classification_standard": "TEST_INDUSTRY_STANDARD",
+        "classification_version": "2026Q3",
+        "industry_code": "TEST-" + industry_family,
+        "industry_name": industry_family,
+        "industry_family": industry_family,
+        "profitability_state": profitability_state,
+        "published_at": "2026-10-20T08:00:00+00:00",
+        "effective_from": "2026-09-30",
+        "as_of": "2026-10-21T10:00:00+00:00",
+        "classification_admission": _admission(dataset_id),
+    })
+    assert result["status"] == "READY"
+    assert result["route_id"] == expected_route
+    assert result["primary_method"] == expected_method
+    assert result["universal_default_route"] is False
+    assert result["independent_action_authority"] is False
+    assert len(result["route_plan_hash"]) == 64
+
+
+def test_industry_route_fails_closed_on_ambiguous_tech_future_or_route_tamper():
+    base = {
+        "asset_id": "600519", "asset_type": "stock",
+        "classification_standard": "TEST_INDUSTRY_STANDARD",
+        "classification_version": "2026Q3", "industry_code": "I65",
+        "industry_name": "Software", "industry_family": "HIGH_GROWTH_TECH",
+        "published_at": "2026-10-20T08:00:00+00:00",
+        "effective_from": "2026-09-30", "as_of": "2026-10-21T10:00:00+00:00",
+        "classification_admission": _admission("P_INDUSTRY"),
+    }
+    ambiguous = compile_industry_valuation_route({**base, "profitability_state": "UNKNOWN"})
+    assert ambiguous["status"] == "MISSING"
+    assert ambiguous["reason_codes"] == ("PROFITABILITY_STATE_REQUIRED_FOR_GROWTH_ROUTE",)
+
+    future = compile_industry_valuation_route({
+        **base, "profitability_state": "PROFITABLE",
+        "published_at": "2026-10-22T08:00:00+00:00",
+    })
+    assert future["status"] == "NOT_ADMITTED"
+    assert "INDUSTRY_CLASSIFICATION_NOT_KNOWN_AT_ASOF" in future["reason_codes"]
+
+    payload = _base(
+        "MATURE_INDUSTRIAL_CONSUMER",
+        inputs={"normalized_eps": 2.0}, assumptions={"pe_low": 8.0, "pe_high": 12.0},
+    )
+    payload["industry_route_plan"] = _industry_route_plan("BANK")
+    rejected = compile_business_valuation(payload)
+    assert rejected["status"] == "NOT_ADMITTED"
+    assert rejected["reason_codes"] == ("VALUATION_INDUSTRY_ROUTE_MISMATCH",)
+
 
 @pytest.mark.parametrize(
     "route_id,asset_type,inputs,assumptions,method",

@@ -106,12 +106,14 @@ from src.services.relative_strength_service import (
 from src.services.supply_demand_service import (
     REQUIRED_OBSERVATIONS as SUPPLY_REQUIRED_OBSERVATIONS,
     build_supply_demand_context,
+    compile_volume_price_phase_context,
 )
 from src.services.cost_structure_service import (
     REFERENCE_WINDOWS as COST_REFERENCE_WINDOWS,
     build_cost_structure_context,
 )
 from src.services.price_structure_service import build_price_structure_context
+from src.services.chan_feature_adapter import build_chan_feature_context
 from src.services.price_structure_service import (
     MIN_OBSERVATIONS as PRICE_STRUCTURE_MIN_OBSERVATIONS,
 )
@@ -126,6 +128,7 @@ from src.services.pattern_trigger_service import build_pattern_trigger_context
 from src.services.business_valuation_service import (
     compile_business_valuation,
     compile_index_sector_valuation,
+    compile_industry_valuation_route,
 )
 from src.services.data_object_admission import (
     DataObjectAdmissionError,
@@ -203,7 +206,9 @@ from src.core.trading_calendar import (
     resolve_forward_sessions_fail_closed,
     resolve_latest_completed_session_fail_closed,
     resolve_required_daily_history_start_fail_closed,
+    resolve_required_daily_history_start_from_observed_sessions_fail_closed,
     resolve_session_range_fail_closed,
+    resolve_session_range_from_observed_sessions_fail_closed,
     is_market_open,
 )
 from data_provider.us_index_mapping import is_us_stock_code
@@ -234,9 +239,18 @@ def _current_method_required_bars() -> Dict[str, Any]:
         "SUPPLY_RELATIVE_VOLUME": SUPPLY_REQUIRED_OBSERVATIONS,
         "SUPPLY_DIRECTIONAL_VOLUME": SUPPLY_REQUIRED_OBSERVATIONS,
         "SUPPLY_CMF": SUPPLY_REQUIRED_OBSERVATIONS,
+        # The phase resolver consumes the same completed-bar Supply and
+        # confirmed Structure parents; it owns no independent magic horizon.
+        "DISTRIBUTION": max(
+            SUPPLY_REQUIRED_OBSERVATIONS,
+            PRICE_STRUCTURE_MIN_OBSERVATIONS,
+        ),
         "COST_ROLLING_REFERENCE": max(COST_REFERENCE_WINDOWS),
         "PRICE_PIVOT_SWING": PRICE_STRUCTURE_MIN_OBSERVATIONS,
         "BREAKOUT_RETEST_FAILED": PRICE_STRUCTURE_MIN_OBSERVATIONS,
+        # Narrow Chan is a projection of the confirmed structure owner, so its
+        # acquisition need is exactly the parent Pivot/Swing warm-up.
+        "CHAN": PRICE_STRUCTURE_MIN_OBSERVATIONS,
         "MACD": macd_startup_comparison_required_bars(),
         "RSI": rsi_startup_comparison_required_bars(),
         "ROC": MOMENTUM_READY_OBSERVATIONS,
@@ -260,11 +274,31 @@ def _current_method_required_bars() -> Dict[str, Any]:
     }
 
 
+def _resolve_daily_history_calendar_plan(
+    *,
+    market: Optional[str],
+    target_date: date,
+    required_bars_by_timeframe: Mapping[str, int],
+    observed_calendar_source: Optional[Mapping[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    if observed_calendar_source is not None:
+        return resolve_required_daily_history_start_from_observed_sessions_fail_closed(
+            market,
+            target_date,
+            required_bars_by_timeframe,
+            observed_calendar_source,
+        )
+    return resolve_required_daily_history_start_fail_closed(
+        market, target_date, required_bars_by_timeframe,
+    )
+
+
 def _current_daily_window_plan(
     *,
     market: Optional[str],
     target_date: date,
     method_rows: Optional[Any] = None,
+    observed_calendar_source: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Compile exact D/W/M source history from admitted leaf-method owners."""
 
@@ -275,6 +309,9 @@ def _current_daily_window_plan(
     )
     requirements = _current_method_required_bars()
     method_required_bars: Dict[str, Dict[str, int]] = {
+        timeframe: {} for timeframe in _DAILY_SOURCE_TIMEFRAMES
+    }
+    declared_method_required_bars: Dict[str, Dict[str, int]] = {
         timeframe: {} for timeframe in _DAILY_SOURCE_TIMEFRAMES
     }
     method_window_classes: Dict[str, Dict[str, Tuple[str, ...]]] = {
@@ -289,7 +326,12 @@ def _current_daily_window_plan(
             timeframe for timeframe in timeframes
             if timeframe in _DAILY_SOURCE_TIMEFRAMES
         )
-        if not relevant:
+        declared_relevant = tuple(
+            timeframe
+            for timeframe in tuple(row.get("declared_execution_timeframes") or ())
+            if timeframe in _DAILY_SOURCE_TIMEFRAMES
+        )
+        if not relevant and not declared_relevant:
             continue
         method_id = str(row.get("method_id") or "").strip()
         requirement = requirements.get(method_id)
@@ -308,6 +350,25 @@ def _current_daily_window_plan(
                 continue
             method_required_bars[timeframe][method_id] = required
             method_window_classes[timeframe][method_id] = window_classes
+        for timeframe in declared_relevant:
+            if isinstance(requirement, Mapping):
+                declared_required = requirement.get(
+                    timeframe, requirement.get("*")
+                )
+            else:
+                declared_required = requirement
+            if (
+                isinstance(declared_required, bool)
+                or not isinstance(declared_required, int)
+                or declared_required <= 0
+            ):
+                unresolved.append(
+                    f"DECLARED:{method_id or 'UNKNOWN_METHOD'}@{timeframe}"
+                )
+                continue
+            declared_method_required_bars[timeframe][method_id] = (
+                declared_required
+            )
     if unresolved:
         raise RuntimeError(
             "DAILY_WINDOW_REQUIREMENT_MISSING:" + ",".join(sorted(set(unresolved)))
@@ -315,71 +376,128 @@ def _current_daily_window_plan(
 
     source_only_timeframe_required_bars = {
         timeframe: max(values.values(), default=0)
+        for timeframe, values in declared_method_required_bars.items()
+    }
+    # Effective non-recursive methods added to W/M must also expand the shared
+    # source request. Recursive owners are planned independently below so their
+    # longer starts do not rewrite the declared source-only baseline.
+    non_recursive_effective_required_bars = {
+        timeframe: max(
+            (
+                required
+                for method_id, required in values.items()
+                if "RECURSIVE_WARMUP"
+                not in method_window_classes[timeframe].get(method_id, ())
+                or len(method_window_classes[timeframe].get(method_id, ())) > 1
+            ),
+            default=source_only_timeframe_required_bars[timeframe],
+        )
         for timeframe, values in method_required_bars.items()
     }
-    # Preserve the legal MA/structure baseline even when a native recursive
-    # MACD/RSI comparison needs more completed W/M bars. These are SOURCE
-    # acquisition targets, not algorithm readiness, PIT or trading authority.
-    timeframe_required_bars = dict(source_only_timeframe_required_bars)
-    calendar_plan = resolve_required_daily_history_start_fail_closed(
-        market, target_date, timeframe_required_bars,
+    timeframe_required_bars = {
+        timeframe: max(
+            source_only_timeframe_required_bars[timeframe],
+            non_recursive_effective_required_bars[timeframe],
+        )
+        for timeframe in _DAILY_SOURCE_TIMEFRAMES
+    }
+    calendar_plan = _resolve_daily_history_calendar_plan(
+        market=market,
+        target_date=target_date,
+        required_bars_by_timeframe=timeframe_required_bars,
+        observed_calendar_source=observed_calendar_source,
     )
     if calendar_plan is None:
         raise RuntimeError("DAILY_HISTORY_CALENDAR_PLAN_UNAVAILABLE")
 
     mtf_recursive_comparison_required_bars: Dict[str, int] = {}
     mtf_recursive_calendar_status: Dict[str, Dict[str, str]] = {}
+    recursive_components = {
+        "MACD_STARTUP_COMPARISON": (
+            "MACD", macd_startup_comparison_required_bars()
+        ),
+        "RSI_STARTUP_COMPARISON": (
+            "RSI", rsi_startup_comparison_required_bars()
+        ),
+        "ATR_STARTUP_COMPARISON": (
+            "ATR_WILDER", atr_startup_comparison_required_bars()
+        ),
+    }
     routed_higher_timeframes = tuple(
         timeframe for timeframe in ("weekly", "monthly")
         if "MTF_MOMENTUM_CONTEXT" in method_required_bars[timeframe]
     )
-    if routed_higher_timeframes:
-        mtf_recursive_comparison_required_bars = {
-            "MACD_STARTUP_COMPARISON": macd_startup_comparison_required_bars(),
-            "RSI_STARTUP_COMPARISON": rsi_startup_comparison_required_bars(),
-        }
-        # Attempt longer native RSI then MACD. The installed exchange
-        # calendar may not reach 268 completed months; that must not erase
-        # a reachable 140-month MACD, 40-month MA or source-only evidence.
+    for component, (method_id, required) in recursive_components.items():
+        if any(
+            method_id in method_required_bars[timeframe]
+            for timeframe in routed_higher_timeframes
+        ):
+            mtf_recursive_comparison_required_bars[component] = required
+    if routed_higher_timeframes and mtf_recursive_comparison_required_bars:
+        # Attempt each routed recursive owner independently. A longer owner may
+        # be out of calendar range without erasing shorter recursive, fixed, or
+        # declared source-only evidence.
         for timeframe in routed_higher_timeframes:
             status_by_component: Dict[str, str] = {}
             for component, required in sorted(
                 mtf_recursive_comparison_required_bars.items(),
                 key=lambda item: (-item[1], item[0]),
             ):
-                candidate_required = max(timeframe_required_bars[timeframe], required)
+                method_id = recursive_components[component][0]
+                if method_id not in method_required_bars[timeframe]:
+                    continue
+                candidate_required = max(
+                    timeframe_required_bars[timeframe], required
+                )
                 if candidate_required == timeframe_required_bars[timeframe]:
                     status_by_component[component] = "ACQUISITION_PLANNED"
                     continue
                 tentative = dict(timeframe_required_bars)
                 tentative[timeframe] = candidate_required
-                planned = resolve_required_daily_history_start_fail_closed(
-                    market, target_date, tentative,
+                planned = _resolve_daily_history_calendar_plan(
+                    market=market,
+                    target_date=target_date,
+                    required_bars_by_timeframe=tentative,
+                    observed_calendar_source=observed_calendar_source,
                 )
                 if planned is None:
-                    status_by_component[component] = "CALENDAR_HISTORY_OUT_OF_RANGE"
+                    status_by_component[component] = (
+                        "CALENDAR_HISTORY_OUT_OF_RANGE"
+                    )
                     continue
                 timeframe_required_bars = tentative
                 calendar_plan = planned
                 status_by_component[component] = "ACQUISITION_PLANNED"
             mtf_recursive_calendar_status[timeframe] = status_by_component
-
     identity = {
         "version": DAILY_WINDOW_PLAN_VERSION,
         "market": str(market or "").strip().lower() or None,
         "target_date": target_date.isoformat(),
         "timeframe_required_bars": timeframe_required_bars,
         "source_only_timeframe_required_bars": source_only_timeframe_required_bars,
+        "declared_method_required_bars": declared_method_required_bars,
+        "non_recursive_effective_required_bars": (
+            non_recursive_effective_required_bars
+        ),
         "method_required_bars": method_required_bars,
         "method_window_classes": method_window_classes,
         "mtf_recursive_comparison_required_bars": mtf_recursive_comparison_required_bars,
         "mtf_recursive_calendar_status": mtf_recursive_calendar_status,
     }
-    return {
+    if observed_calendar_source is not None:
+        identity["calendar_source_identity"] = deepcopy(
+            calendar_plan.get("calendar_source_identity") or {}
+        )
+    result = {
         **calendar_plan,
         **identity,
         "plan_hash": sha256_payload(identity),
     }
+    if observed_calendar_source is not None:
+        result["observed_calendar_source"] = deepcopy(
+            dict(observed_calendar_source)
+        )
+    return result
 
 def _next_bounded_monthly_macd_window(
     *,
@@ -477,8 +595,16 @@ def _next_bounded_monthly_macd_window(
     next_count = attempts[-1] + increment
     proposed = dict(timeframe_rows)
     proposed["monthly"] = max(int(proposed["monthly"]), next_count)
-    calendar_plan = resolve_required_daily_history_start_fail_closed(
-        "cn", target_date, proposed,
+    observed_calendar_source = base_plan.get("observed_calendar_source")
+    calendar_plan = _resolve_daily_history_calendar_plan(
+        market="cn",
+        target_date=target_date,
+        required_bars_by_timeframe=proposed,
+        observed_calendar_source=(
+            observed_calendar_source
+            if isinstance(observed_calendar_source, Mapping)
+            else None
+        ),
     )
     if calendar_plan is None:
         return reject("EXCHANGE_CALENDAR_EXTENSION_UNAVAILABLE")
@@ -513,8 +639,16 @@ def _daily_plan_with_monthly_macd_bars(
     if not isinstance(current, int) or monthly_bars < current:
         raise RuntimeError("DAILY_MONTHLY_EXTENSION_BARS_INVALID")
     required["monthly"] = monthly_bars
-    calendar_plan = resolve_required_daily_history_start_fail_closed(
-        "cn", target_date, required,
+    observed_calendar_source = base_plan.get("observed_calendar_source")
+    calendar_plan = _resolve_daily_history_calendar_plan(
+        market="cn",
+        target_date=target_date,
+        required_bars_by_timeframe=required,
+        observed_calendar_source=(
+            observed_calendar_source
+            if isinstance(observed_calendar_source, Mapping)
+            else None
+        ),
     )
     if calendar_plan is None:
         raise RuntimeError("DAILY_MONTHLY_EXTENSION_CALENDAR_UNAVAILABLE")
@@ -526,6 +660,12 @@ def _daily_plan_with_monthly_macd_bars(
         "source_only_timeframe_required_bars": dict(
             base_plan.get("source_only_timeframe_required_bars") or {}
         ),
+        "declared_method_required_bars": deepcopy(
+            base_plan.get("declared_method_required_bars") or {}
+        ),
+        "non_recursive_effective_required_bars": dict(
+            base_plan.get("non_recursive_effective_required_bars") or {}
+        ),
         "method_required_bars": deepcopy(base_plan.get("method_required_bars") or {}),
         "method_window_classes": deepcopy(base_plan.get("method_window_classes") or {}),
         "mtf_recursive_comparison_required_bars": dict(
@@ -535,11 +675,20 @@ def _daily_plan_with_monthly_macd_bars(
             base_plan.get("mtf_recursive_calendar_status") or {}
         ),
     }
-    return {
+    if isinstance(observed_calendar_source, Mapping):
+        identity["calendar_source_identity"] = deepcopy(
+            calendar_plan.get("calendar_source_identity") or {}
+        )
+    result = {
         **calendar_plan,
         **identity,
         "plan_hash": sha256_payload(identity),
     }
+    if isinstance(observed_calendar_source, Mapping):
+        result["observed_calendar_source"] = deepcopy(
+            dict(observed_calendar_source)
+        )
+    return result
 
 
 def _monthly_macd_receipt_from_daily_history(
@@ -779,14 +928,69 @@ _INTRADAY_BARS_PER_SESSION = {
 
 
 def _current_intraday_window_plan() -> Dict[str, Any]:
-    """Compile the minimum current-minute acquisition horizon from owners.
+    """Compile progressive 5m acquisition horizons from all current consumers.
 
-    This is only the input/warm-up contract for methods already consumed by
-    ``_build_intraday_timeframe``.  It is not the evaluation window for every
-    future structure/pattern method and cannot admit those deferred methods.
+    The smallest window preserves the accepted Trend/MA carrier.  Additional
+    thresholds are derived from every EXISTING_REUSED TECHNICAL_MATRIX method
+    currently routed to 5m/15m/30m/60m.  A caller may therefore choose the
+    largest independently verified completed-session window actually available,
+    rather than treating either ten or sixty-seven sessions as a universal
+    all-or-nothing constant. Deferred methods remain absent by construction.
     """
 
-    method_required_bars = {
+    bars_per_session = dict(_INTRADAY_BARS_PER_SESSION)
+    minute_timeframes = tuple(bars_per_session)
+    requirements = _current_method_required_bars()
+    rows = tuple(compile_method_window_policy_view()["methods"])
+    current_method_required: Dict[str, Dict[str, int]] = {
+        timeframe: {} for timeframe in minute_timeframes
+    }
+    method_window_classes: Dict[str, Dict[str, Tuple[str, ...]]] = {
+        timeframe: {} for timeframe in minute_timeframes
+    }
+    unresolved: List[str] = []
+    for row in rows:
+        if (
+            row.get("leaf_implementation_state") != "EXISTING_REUSED"
+            or row.get("consumer_scope") != "TECHNICAL_MATRIX"
+        ):
+            continue
+        relevant = tuple(
+            timeframe
+            for timeframe in tuple(row.get("current_execution_timeframes") or ())
+            if timeframe in minute_timeframes
+        )
+        if not relevant:
+            continue
+        method_id = str(row.get("method_id") or "").strip()
+        requirement = requirements.get(method_id)
+        for timeframe in relevant:
+            required = (
+                requirement.get(timeframe, requirement.get("*"))
+                if isinstance(requirement, Mapping)
+                else requirement
+            )
+            if (
+                not method_id
+                or isinstance(required, bool)
+                or not isinstance(required, int)
+                or required <= 0
+            ):
+                unresolved.append(f"{method_id or 'UNKNOWN_METHOD'}@{timeframe}")
+                continue
+            current_method_required[timeframe][method_id] = required
+            method_window_classes[timeframe][method_id] = tuple(
+                row.get("window_classes") or ()
+            )
+    if unresolved:
+        raise RuntimeError(
+            "INTRADAY_WINDOW_REQUIREMENT_MISSING:"
+            + ",".join(sorted(set(unresolved)))
+        )
+
+    # Retain the accepted minimum carrier separately from complete current
+    # method coverage.  These aliases are diagnostics, not duplicate methods.
+    source_only_requirements = {
         "TREND": TREND_MIN_BARS,
         "MA_LEVEL_ALIGNMENT": MA_LEVEL_READY_BARS,
         "MA_SLOPE_CROSS": MA_SLOPE_CROSS_READY_BARS,
@@ -797,10 +1001,10 @@ def _current_intraday_window_plan() -> Dict[str, Any]:
         ),
         "RSI_FORMULA_MINIMUM": StockTrendAnalyzer.RSI_LONG,
     }
-    required_bars = max(method_required_bars.values())
+    required_bars = max(source_only_requirements.values())
     sessions_by_timeframe = {
-        timeframe: (required_bars + bars_per_session - 1) // bars_per_session
-        for timeframe, bars_per_session in _INTRADAY_BARS_PER_SESSION.items()
+        timeframe: (required_bars + count - 1) // count
+        for timeframe, count in bars_per_session.items()
     }
     required_sessions = max(sessions_by_timeframe.values())
     limiting_timeframes = tuple(
@@ -808,34 +1012,79 @@ def _current_intraday_window_plan() -> Dict[str, Any]:
         for timeframe, sessions in sessions_by_timeframe.items()
         if sessions == required_sessions
     )
-    # A source-only diagnostic can still use the historical 10-session minimum.
-    # Real evidence consumers prefer the independent recursive comparison target
-    # only when the completed XSHG sessions are actually available.
-    admission_requirements = {
-        **method_required_bars,
-        "MACD_STARTUP_COMPARISON": macd_startup_comparison_required_bars(),
-        "RSI_STARTUP_COMPARISON": rsi_startup_comparison_required_bars(),
-    }
-    admission_target_required_bars = max(admission_requirements.values())
+
+    method_required_bars_by_timeframe: Dict[str, Dict[str, int]] = {}
+    method_window_classes_by_timeframe: Dict[
+        str, Dict[str, Tuple[str, ...]]
+    ] = {}
+    method_sessions_by_timeframe: Dict[str, Dict[str, int]] = {}
+    for timeframe, count in bars_per_session.items():
+        aliases = {
+            **source_only_requirements,
+            "MACD_STARTUP_COMPARISON": macd_startup_comparison_required_bars(),
+            "RSI_STARTUP_COMPARISON": rsi_startup_comparison_required_bars(),
+        }
+        merged = {**aliases, **current_method_required[timeframe]}
+        method_required_bars_by_timeframe[timeframe] = merged
+        method_window_classes_by_timeframe[timeframe] = {
+            **{key: ("SOURCE_CARRIER",) for key in aliases},
+            **method_window_classes[timeframe],
+        }
+        method_sessions_by_timeframe[timeframe] = {
+            method_id: (bars + count - 1) // count
+            for method_id, bars in merged.items()
+        }
+
+    all_required_bars = [
+        bars
+        for methods in method_required_bars_by_timeframe.values()
+        for bars in methods.values()
+    ]
+    admission_target_required_bars = max(all_required_bars)
     admission_sessions_by_timeframe = {
-        timeframe: (admission_target_required_bars + bars - 1) // bars
-        for timeframe, bars in _INTRADAY_BARS_PER_SESSION.items()
+        timeframe: max(methods.values())
+        for timeframe, methods in method_sessions_by_timeframe.items()
     }
     admission_target_sessions = max(admission_sessions_by_timeframe.values())
+    candidate_session_windows = tuple(sorted({
+        required_sessions,
+        *(
+            max(required_sessions, sessions)
+            for methods in method_sessions_by_timeframe.values()
+            for sessions in methods.values()
+        ),
+    }, reverse=True))
+    limiting_methods = tuple(sorted(
+        f"{timeframe}:{method_id}"
+        for timeframe, methods in method_sessions_by_timeframe.items()
+        for method_id, sessions in methods.items()
+        if sessions == admission_target_sessions
+    ))
+    identity = {
+        "source_only_method_required_bars": source_only_requirements,
+        "method_required_bars_by_timeframe": method_required_bars_by_timeframe,
+        "method_window_classes_by_timeframe": method_window_classes_by_timeframe,
+        "method_sessions_by_timeframe": method_sessions_by_timeframe,
+        "candidate_session_windows": candidate_session_windows,
+        "bars_per_session": bars_per_session,
+    }
     return {
         "required_bars": required_bars,
         "required_sessions": required_sessions,
-        "method_required_bars": method_required_bars,
-        "method_required_bars_by_timeframe": {
-            timeframe: dict(admission_requirements)
-            for timeframe in _INTRADAY_BARS_PER_SESSION
-        },
+        "method_required_bars": source_only_requirements,
+        "method_required_bars_by_timeframe": method_required_bars_by_timeframe,
+        "method_window_classes_by_timeframe": method_window_classes_by_timeframe,
+        "method_sessions_by_timeframe": method_sessions_by_timeframe,
         "admission_target_required_bars": admission_target_required_bars,
         "admission_target_sessions": admission_target_sessions,
         "admission_sessions_by_timeframe": admission_sessions_by_timeframe,
-        "bars_per_session": dict(_INTRADAY_BARS_PER_SESSION),
+        "candidate_session_windows": candidate_session_windows,
+        "bars_per_session": bars_per_session,
         "sessions_by_timeframe": sessions_by_timeframe,
         "limiting_timeframes": limiting_timeframes,
+        "limiting_methods": limiting_methods,
+        "unresolved_current_minute_methods": [],
+        "plan_hash": sha256_payload(identity),
         "deferred_window_classes": (
             "VARIABLE_STRUCTURE",
             "EVENT_ANCHORED",
@@ -1121,6 +1370,13 @@ class StockAnalysisPipeline:
             Tuple[str, str], Dict[str, pd.DataFrame]
         ] = {}
         self._b1_nonprice_shared_observations: Dict[str, Dict[str, Any]] = {}
+        self._b1_treasury_global_observations: Dict[str, Dict[str, Any]] = {}
+        self._b1_sse_stock_disclosure_observations: Dict[
+            str, Dict[str, Dict[str, Any]]
+        ] = {}
+        self._b1_sse_etf_disclosure_observations: Dict[
+            str, Dict[str, Dict[str, Any]]
+        ] = {}
         self._b1_nonprice_stock_bundles: Dict[str, Dict[str, Any]] = {}
         self._b1_global_atomic_observations: Dict[str, Dict[str, Any]] = {}
         self._b1_global_atomic_failure: Optional[str] = None
@@ -1651,6 +1907,145 @@ class StockAnalysisPipeline:
             }
         }
 
+    def _ingest_b1_treasury_official_response(
+        self, *,
+        response_xml: bytes,
+        request_url: str,
+        observed_at: datetime,
+    ) -> Dict[str, Any]:
+        """Bind only an externally authorized same-run Treasury response in memory.
+
+        This consumer never makes an HTTP request.  Registry and Rights-v2
+        still decide Product admission; no storage, training or PIT authority.
+        """
+        context = self._bind_b1_run_context(persist=False)
+        if not isinstance(context, Mapping):
+            raise DataObjectAdmissionError("B1_TREASURY_OPERATION_NOT_BOUND")
+        from data_provider.treasury_yield_curve_source import (
+            build_treasury_yield_source_observation,
+        )
+        observation = build_treasury_yield_source_observation(
+            response_xml, request_url=request_url,
+            observed_at=observed_at, b1_context=context,
+        )
+        existing = getattr(self, "_b1_treasury_global_observations", {}) or {}
+        if existing:
+            raise DataObjectAdmissionError("B1_TREASURY_SOURCE_ALREADY_BOUND")
+        self._b1_treasury_global_observations = {
+            observation["dataset_id"]: deepcopy(observation),
+        }
+        return deepcopy(observation)
+
+    def _ingest_b1_sse_public_disclosure_responses(
+        self, *,
+        company_response_json: bytes,
+        etf_basic_response_json: bytes,
+        etf_basket_response_json: bytes,
+        company_request_url: str,
+        etf_basic_request_url: str,
+        etf_basket_request_url: str,
+        company_code: str,
+        fund_code: str,
+        observed_at: datetime,
+    ) -> Dict[str, Any]:
+        """Bind one authorized current SSE disclosure bundle in memory.
+
+        This is not a market-price fetcher.  It consumes caller-supplied
+        same-run public company/ETF disclosures and leaves all price, 5m,
+        storage, training, redistribution and historical-PIT gates separate.
+        """
+        context = self._bind_b1_run_context(persist=False)
+        if not isinstance(context, Mapping):
+            raise DataObjectAdmissionError("B1_SSE_DISCLOSURE_OPERATION_NOT_BOUND")
+        from data_provider.sse_public_disclosure_source import (
+            build_sse_public_disclosure_bundle,
+        )
+        bundle = build_sse_public_disclosure_bundle(
+            company_response_json,
+            etf_basic_response_json,
+            etf_basket_response_json,
+            company_request_url=company_request_url,
+            etf_basic_request_url=etf_basic_request_url,
+            etf_basket_request_url=etf_basket_request_url,
+            company_code=company_code,
+            fund_code=fund_code,
+            observed_at=observed_at,
+            b1_context=context,
+        )
+        stock_key = normalize_stock_code(company_code)
+        etf_key = normalize_stock_code(fund_code)
+        stock_store = getattr(
+            self, "_b1_sse_stock_disclosure_observations", {}
+        ) or {}
+        etf_store = getattr(
+            self, "_b1_sse_etf_disclosure_observations", {}
+        ) or {}
+        current_stock = stock_store.get(stock_key, {}) or {}
+        current_etf = etf_store.get(etf_key, {}) or {}
+        stock_rows = bundle["stock_observations"]
+        etf_rows = bundle["etf_observations"]
+        if (
+            set(current_stock) & set(stock_rows)
+            or set(current_etf) & set(etf_rows)
+        ):
+            raise DataObjectAdmissionError(
+                "B1_SSE_DISCLOSURE_SOURCE_ALREADY_BOUND"
+            )
+        self._b1_sse_stock_disclosure_observations = {
+            **stock_store,
+            stock_key: {**deepcopy(current_stock), **deepcopy(stock_rows)},
+        }
+        self._b1_sse_etf_disclosure_observations = {
+            **etf_store,
+            etf_key: {**deepcopy(current_etf), **deepcopy(etf_rows)},
+        }
+        return deepcopy(bundle)
+
+    def _ingest_b1_sse_stock_event_disclosure_responses(
+        self, *,
+        capital_response_json: bytes,
+        equity_change_response_json: bytes,
+        dividend_response_json: bytes,
+        capital_request_url: str,
+        equity_change_request_url: str,
+        dividend_request_url: str,
+        company_code: str,
+        observed_at: datetime,
+    ) -> Dict[str, Any]:
+        """Bind official current share-event/dividend disclosures in memory."""
+        context = self._bind_b1_run_context(persist=False)
+        if not isinstance(context, Mapping):
+            raise DataObjectAdmissionError("B1_SSE_DISCLOSURE_OPERATION_NOT_BOUND")
+        from data_provider.sse_public_disclosure_source import (
+            build_sse_stock_event_disclosure_bundle,
+        )
+        bundle = build_sse_stock_event_disclosure_bundle(
+            capital_response_json,
+            equity_change_response_json,
+            dividend_response_json,
+            capital_request_url=capital_request_url,
+            equity_change_request_url=equity_change_request_url,
+            dividend_request_url=dividend_request_url,
+            company_code=company_code,
+            observed_at=observed_at,
+            b1_context=context,
+        )
+        stock_key = normalize_stock_code(company_code)
+        stock_store = getattr(
+            self, "_b1_sse_stock_disclosure_observations", {}
+        ) or {}
+        current = stock_store.get(stock_key, {}) or {}
+        rows = bundle["stock_observations"]
+        if set(current) & set(rows):
+            raise DataObjectAdmissionError(
+                "B1_SSE_DISCLOSURE_SOURCE_ALREADY_BOUND"
+            )
+        self._b1_sse_stock_disclosure_observations = {
+            **stock_store,
+            stock_key: {**deepcopy(current), **deepcopy(rows)},
+        }
+        return deepcopy(bundle)
+
     def _b1_nonprice_fundamental_context(
         self,
         *,
@@ -1661,26 +2056,67 @@ class StockAnalysisPipeline:
         observations = deepcopy(
             getattr(self, "_b1_nonprice_shared_observations", {}) or {}
         )
+        treasury = deepcopy(
+            getattr(self, "_b1_treasury_global_observations", {}) or {}
+        )
+        if set(observations) & set(treasury):
+            raise DataObjectAdmissionError("B1_TREASURY_SOURCE_OWNER_CONFLICT")
+        observations.update(treasury)
         bundle = None
+        route_disclosures: Mapping[str, Any] = {}
+        normalized_code = normalize_stock_code(code)
         if asset_route == "STOCK":
             bundle = (
                 getattr(self, "_b1_nonprice_stock_bundles", {}) or {}
-            ).get(normalize_stock_code(code))
+            ).get(normalized_code)
             if isinstance(bundle, Mapping):
-                observations.update(deepcopy(
+                stock_observations = deepcopy(
                     bundle.get("data_object_source_observations") or {}
-                ))
+                )
+                if set(observations) & set(stock_observations):
+                    raise DataObjectAdmissionError(
+                        "B1_NONPRICE_SOURCE_OWNER_CONFLICT"
+                    )
+                observations.update(stock_observations)
+            route_disclosures = (
+                getattr(
+                    self, "_b1_sse_stock_disclosure_observations", {}
+                ) or {}
+            ).get(normalized_code, {})
+        elif asset_route == "ETF":
+            route_disclosures = (
+                getattr(
+                    self, "_b1_sse_etf_disclosure_observations", {}
+                ) or {}
+            ).get(normalized_code, {})
+        if route_disclosures:
+            if not isinstance(route_disclosures, Mapping):
+                raise DataObjectAdmissionError(
+                    "B1_SSE_DISCLOSURE_SOURCE_BUNDLE_INVALID"
+                )
+            if set(observations) & set(route_disclosures):
+                raise DataObjectAdmissionError(
+                    "B1_SSE_DISCLOSURE_SOURCE_OWNER_CONFLICT"
+                )
+            observations.update(deepcopy(route_disclosures))
         return {
             "market": market,
             "status": "PARTIAL" if observations else "NOT_ADMITTED",
             "reason": (
-                "B1_NONPRICE_SOURCES_PARTIALLY_ADMITTED"
+                "B1_SOURCE_OBSERVED_PRODUCT_NOT_ADMITTED"
                 if observations else "B1_NONPRICE_SOURCE_NOT_ADMITTED"
             ),
-            "source_chain": ["BaostockFetcher"] if observations else [],
+            "source_chain": sorted({
+                str(row.get("provider_identity"))
+                for row in observations.values()
+                if isinstance(row, Mapping) and row.get("provider_identity")
+            }),
             "coverage": {
                 "data_object_ids": tuple(sorted(observations)),
-                "product_fact_count": len(observations),
+                # Source observations are NOT Product facts until separately
+                # compiled against exact Rights-v2 and source semantics.
+                "source_observation_count": len(observations),
+                "product_fact_count": 0,
             },
             "belong_boards": [],
             "data_object_source_observations": observations,
@@ -1838,6 +2274,19 @@ class StockAnalysisPipeline:
             next_sessions = resolve_session_range_fail_closed(
                 market, next_plan["start_date"], target_date,
             )
+            if (
+                not next_sessions
+                and isinstance(
+                    next_plan.get("observed_calendar_source"), Mapping,
+                )
+            ):
+                next_sessions = (
+                    resolve_session_range_from_observed_sessions_fail_closed(
+                        next_plan["observed_calendar_source"],
+                        next_plan["start_date"],
+                        target_date,
+                    )
+                )
             if not next_sessions:
                 raise DailyDataIdentityError("daily extension exchange-session range unavailable")
             next_dates = [
@@ -1892,6 +2341,61 @@ class StockAnalysisPipeline:
             current_frame, current_identity, current_plan,
             current_requested, current_returned, extension,
         )
+
+    def _maybe_extend_b1_daily_window_plan_with_observed_calendar(
+        self,
+        *,
+        plan: Mapping[str, Any],
+        daily_grant: Mapping[str, Any],
+        target_date: date,
+    ) -> Dict[str, Any]:
+        """Use one admitted provider calendar only when native monthly RSI needs it."""
+        status = plan.get("mtf_recursive_calendar_status")
+        monthly = status.get("monthly") if isinstance(status, Mapping) else None
+        if (
+            not isinstance(monthly, Mapping)
+            or monthly.get("RSI_STARTUP_COMPARISON")
+            != "CALENDAR_HISTORY_OUT_OF_RANGE"
+            or daily_grant.get("provider_identity") != "BaostockFetcher"
+        ):
+            return dict(plan)
+        fetcher = self.fetcher_manager._get_fetcher_by_name(
+            "BaostockFetcher", capability="daily_data",
+        )
+        calendar_method = getattr(
+            fetcher, "get_cn_trading_calendar_source", None,
+        ) if fetcher is not None else None
+        if not callable(calendar_method):
+            return dict(plan)
+        try:
+            observed_calendar_source = calendar_method(
+                end_date=target_date.isoformat(),
+            )
+            if not isinstance(observed_calendar_source, Mapping):
+                return dict(plan)
+            extended = _current_daily_window_plan(
+                market="cn",
+                target_date=target_date,
+                observed_calendar_source=observed_calendar_source,
+            )
+        except Exception as exc:
+            logger.warning(
+                "B1 observed trading calendar extension unavailable; keep base plan: %s",
+                exc,
+            )
+            return dict(plan)
+        extended_status = extended.get("mtf_recursive_calendar_status")
+        extended_monthly = (
+            extended_status.get("monthly")
+            if isinstance(extended_status, Mapping) else None
+        )
+        if (
+            not isinstance(extended_monthly, Mapping)
+            or extended_monthly.get("RSI_STARTUP_COMPARISON")
+            != "ACQUISITION_PLANNED"
+        ):
+            return dict(plan)
+        return extended
 
     def _bind_b1_run_context(
         self, current_time: Optional[datetime] = None,
@@ -2335,6 +2839,14 @@ class StockAnalysisPipeline:
                 daily_window_plan = _current_daily_window_plan(
                     market=market, target_date=target_date,
                 )
+            if b1_daily_grant is not None:
+                daily_window_plan = (
+                    self._maybe_extend_b1_daily_window_plan_with_observed_calendar(
+                        plan=daily_window_plan,
+                        daily_grant=b1_daily_grant,
+                        target_date=target_date,
+                    )
+                )
             history_start = daily_window_plan["start_date"]
             df, source_name = self.fetcher_manager.get_daily_data(
                 code,
@@ -2387,6 +2899,19 @@ class StockAnalysisPipeline:
             requested_sessions = resolve_session_range_fail_closed(
                 market, history_start, target_date,
             )
+            if (
+                not requested_sessions
+                and isinstance(
+                    daily_window_plan.get("observed_calendar_source"), Mapping,
+                )
+            ):
+                requested_sessions = (
+                    resolve_session_range_from_observed_sessions_fail_closed(
+                        daily_window_plan["observed_calendar_source"],
+                        history_start,
+                        target_date,
+                    )
+                )
             if not requested_sessions:
                 raise DailyDataIdentityError(
                     "daily request exchange-session range is unavailable"
@@ -2662,9 +3187,16 @@ class StockAnalysisPipeline:
         # Pick the most informative *verified* completed window, once per
         # asset. Insufficient older bars only withhold MACD; valid MA/RSI are
         # not discarded and we never silently fill a missing XSHG session.
-        candidate_sizes = sorted({
-            base_sessions, int(window_plan["admission_target_sessions"]),
-        }, reverse=True)
+        candidate_sizes = tuple(
+            int(value)
+            for value in window_plan.get("candidate_session_windows", ())
+            if type(value) is int and value >= base_sessions
+        )
+        if not candidate_sizes:
+            candidate_sizes = (
+                int(window_plan["admission_target_sessions"]),
+                base_sessions,
+            )
         expected_sessions = None
         for count in candidate_sizes:
             if len(available_sessions) < count:
@@ -2691,6 +3223,7 @@ class StockAnalysisPipeline:
         # the accepted B5 source-identity/method-window path without inventing
         # a grant or treating its absence as a provider failure.
         minute_grant = None
+        selected_intraday_provider = "BaostockFetcher"
         if isinstance(getattr(self, "b1_rights_context", None), Mapping):
             b1 = self._bind_b1_run_context(
                 current_time,
@@ -2716,9 +3249,31 @@ class StockAnalysisPipeline:
                     dataset_id=minute_dataset, consumer_scope=minute_consumer,
                     research_as_of=b1.get("research_as_of"),
                 )
-                if minute_grant["provider_identity"] != "BaostockFetcher":
+                selected_intraday_provider = str(
+                    minute_grant.get("provider_identity") or ""
+                ).strip()
+                if selected_intraday_provider not in {
+                    "BaostockFetcher", "TushareFetcher",
+                }:
                     raise DataObjectAdmissionError("B1_INTRADAY_PROVIDER_MISMATCH")
             except (DataObjectAdmissionError, AttributeError, TypeError):
+                return {}
+        if minute_grant is not None and daily_identity is None:
+            try:
+                from data_provider.daily_data_identity import extract_daily_data_identity
+                daily_identity = extract_daily_data_identity(
+                    completed_daily_history, strict=True,
+                )
+                verify_observed_daily_frame_request(
+                    completed_daily_history,
+                    instrument=code,
+                    provider_identity=daily_identity["provider_identity"],
+                    requested_start=daily_identity["requested_start"],
+                    requested_end=daily_identity["requested_end"],
+                    target_date=target_date,
+                    observed_at_ceiling=_daily_observation_ceiling(current_time),
+                )
+            except (DailyDataIdentityError, KeyError, TypeError, ValueError):
                 return {}
         cached_timeframes = self._get_run_local_intraday_timeframes(
             code=code, target_date=target_date,
@@ -2742,7 +3297,7 @@ class StockAnalysisPipeline:
 
         try:
             fetcher = self.fetcher_manager._get_fetcher_by_name(
-                "BaostockFetcher",
+                selected_intraday_provider,
                 capability="intraday_5m",
             )
             if fetcher is None:
@@ -2764,30 +3319,67 @@ class StockAnalysisPipeline:
             if (
                 source_identity is None
                 or source_identity.get("timeframe") != "5m"
-                or source_identity.get("provider_identity") != "BaostockFetcher"
+                or source_identity.get("provider_identity")
+                != selected_intraday_provider
                 or source_identity.get("requested_start") != requested_sessions[0].isoformat()
                 or source_identity.get("requested_end") != requested_sessions[-1].isoformat()
                 or set(five_minute["code"].astype(str)) != {str(code).strip()}
             ):
                 raise ValueError("INTRADAY_RESPONSE_REQUEST_IDENTITY_MISMATCH")
-            if daily_identity is not None:
-                query = source_identity.get("query_identity") or {}
-                exchange = asset_admission["product_profile"]["listing_exchange"].lower()
-                if (
-                    str(query.get("code") or "").lower() != f"{exchange}.{code}"
-                    or str(query.get("frequency") or "") != "5"
-                    or str(query.get("adjustflag") or "") != {
+            query = source_identity.get("query_identity") or {}
+            profile = asset_admission.get("product_profile") or {}
+            exchange = str(profile.get("listing_exchange") or "").lower()
+            if not exchange:
+                if is_bse_code(code):
+                    exchange = "bj"
+                elif str(code).startswith(("5", "6", "9")):
+                    exchange = "sh"
+                else:
+                    exchange = "sz"
+            observed_basis = source_identity.get("observed_adjustment_basis")
+            if selected_intraday_provider == "BaostockFetcher":
+                provider_query_valid = (
+                    str(query.get("code") or "").lower() == f"{exchange}.{code}"
+                    and str(query.get("frequency") or "") == "5"
+                    and str(query.get("adjustflag") or "") == {
                         "qfq": "2", "hfq": "1", "raw": "3",
-                    }.get(source_identity.get("observed_adjustment_basis"))
-                    or source_identity.get("requested_adjustment_basis")
-                    != source_identity.get("observed_adjustment_basis")
-                ):
-                    raise ValueError("ETF_MINUTE_QUERY_ASSET_OR_BASIS_MISMATCH")
-                ceiling = pd.Timestamp(_daily_observation_ceiling(current_time))
-                for clock_key in ("observed_at", "available_at_max"):
-                    observed = pd.to_datetime(source_identity.get(clock_key), utc=True, errors="coerce")
-                    if pd.isna(observed) or observed > ceiling:
-                        raise ValueError("ETF_MINUTE_OBSERVATION_NOT_KNOWN_AT_EXECUTION")
+                    }.get(observed_basis)
+                )
+            else:
+                expected_api = (
+                    "etf_mins"
+                    if asset_admission["asset_route"] == "ETF"
+                    else "stk_mins"
+                )
+                provider_query_valid = (
+                    str(query.get("api_name") or "") == expected_api
+                    and str(query.get("ts_code") or "").upper()
+                    == f"{code}.{exchange.upper()}"
+                    and str(query.get("freq") or "") == "5min"
+                    and observed_basis == "raw"
+                )
+            provider_units_valid = True
+            if selected_intraday_provider == "TushareFetcher":
+                provider_units_valid = (
+                    str(source_identity.get("volume_unit") or "").lower()
+                    == "share"
+                    and str(source_identity.get("amount_unit") or "").upper()
+                    == "CNY"
+                )
+            if (
+                not provider_query_valid
+                or source_identity.get("requested_adjustment_basis")
+                != observed_basis
+                or not provider_units_valid
+            ):
+                raise ValueError("INTRADAY_QUERY_ASSET_UNIT_OR_BASIS_MISMATCH")
+            ceiling = pd.Timestamp(_daily_observation_ceiling(current_time))
+            for clock_key in ("observed_at", "available_at_max"):
+                observed = pd.to_datetime(
+                    source_identity.get(clock_key), utc=True, errors="coerce",
+                )
+                if pd.isna(observed) or observed > ceiling:
+                    raise ValueError("INTRADAY_OBSERVATION_NOT_KNOWN_AT_EXECUTION")
             if daily_identity is not None and any(
                 source_identity.get(minute_key) != daily_identity.get(daily_key)
                 for minute_key, daily_key in (
@@ -2796,23 +3388,30 @@ class StockAnalysisPipeline:
                     ("currency", "currency"),
                 )
             ):
-                raise ValueError("ETF_DAILY_MINUTE_SOURCE_BASIS_MISMATCH")
+                raise ValueError("DAILY_MINUTE_SOURCE_BASIS_MISMATCH")
             try:
                 validate_complete_cn_5m_sessions(
                     five_minute,
                     expected_session_dates=expected_sessions,
                 )
             except IntradayBarError:
-                # A provider can return only the latest fully completed source
-                # suffix even when the checked daily calendar supports more.
-                # Reuse that exact response once; never fabricate old 5m bars,
-                # request a second source or accept a partial/foreign session.
-                if len(expected_sessions) <= base_sessions:
+                # One verified provider call may return a complete suffix shorter
+                # than the requested dynamic method window. Its *actual* count
+                # is the candidate: keep every returned completed session, not
+                # only the old ten-session minimum. Never infer missing bars,
+                # trim a partial session, retry the provider or alter its query
+                # identity / Data Rights.
+                bars_per_day = _INTRADAY_BARS_PER_SESSION["5m"]
+                actual_rows = len(five_minute)
+                if actual_rows % bars_per_day:
                     raise
-                short_sessions = expected_sessions[-base_sessions:]
+                actual_sessions = actual_rows // bars_per_day
+                if not base_sessions <= actual_sessions < len(expected_sessions):
+                    raise
+                short_sessions = expected_sessions[-actual_sessions:]
                 if resolve_forward_sessions_fail_closed(
                     "cn", short_sessions[0] - timedelta(days=1),
-                    base_sessions,
+                    actual_sessions,
                 ) != short_sessions:
                     raise
                 validate_complete_cn_5m_sessions(
@@ -2820,10 +3419,10 @@ class StockAnalysisPipeline:
                     expected_session_dates=short_sessions,
                 )
                 logger.info(
-                    "%s(%s) minute source returned one verified short suffix: "
-                    "%s/%s XSHG sessions; recursive MACD readiness checked "
-                    "independently against actual received bars",
-                    stock_name, code, base_sessions, len(expected_sessions),
+                    "%s(%s) minute source returned independently verified suffix: "
+                    "%s/%s XSHG sessions; each method's actual completed-bar "
+                    "readiness remains separately evaluated",
+                    stock_name, code, actual_sessions, len(expected_sessions),
                 )
                 expected_sessions = short_sessions
             derived = {
@@ -3253,6 +3852,14 @@ class StockAnalysisPipeline:
                 target_date=daily_market_target_date,
                 market=market,
             )
+            volume_price_phase_context = compile_volume_price_phase_context(
+                supply_demand_context=supply_demand_context,
+                price_structure_context=price_structure_context,
+                timeframe="daily",
+            )
+            chan_feature_context = build_chan_feature_context(
+                price_structure_context,
+            )
             volatility_momentum_context = build_volatility_momentum_context(
                 stock_code=code,
                 history=completed_daily_history,
@@ -3279,6 +3886,7 @@ class StockAnalysisPipeline:
                 daily_price_structure_context=price_structure_context,
                 snapshot_observed_at=market_data_snapshot_observed_at,
                 intraday_timeframes=intraday_timeframes,
+                daily_relative_strength_context=relative_strength_context,
             )
             if market == "cn":
                 multi_timeframe_structure_context["asset_admission"] = asset_admission
@@ -3308,8 +3916,10 @@ class StockAnalysisPipeline:
                 chip_data=chip_data,
                 canonical_trend_result=canonical_trend_result,
                 supply_demand_context=supply_demand_context,
+                volume_price_phase_context=volume_price_phase_context,
                 cost_structure_context=cost_structure_context,
                 price_structure_context=price_structure_context,
+                chan_feature_context=chan_feature_context,
                 volatility_momentum_context=volatility_momentum_context,
                 pattern_trigger_context=pattern_trigger_context,
                 multi_timeframe_structure_context=multi_timeframe_structure_context,
@@ -3336,8 +3946,10 @@ class StockAnalysisPipeline:
                     canonical_trend_result=canonical_trend_result,
                     relative_strength_context=relative_strength_context,
                     supply_demand_context=supply_demand_context,
+                    volume_price_phase_context=volume_price_phase_context,
                     cost_structure_context=cost_structure_context,
                     price_structure_context=price_structure_context,
+                    chan_feature_context=chan_feature_context,
                     volatility_momentum_context=volatility_momentum_context,
                     pattern_trigger_context=pattern_trigger_context,
                     multi_timeframe_structure_context=multi_timeframe_structure_context,
@@ -3636,8 +4248,10 @@ class StockAnalysisPipeline:
                     market_structure_context=market_structure_context,
                     relative_strength_context=relative_strength_context,
                     supply_demand_context=supply_demand_context,
+                    volume_price_phase_context=volume_price_phase_context,
                     cost_structure_context=cost_structure_context,
                     price_structure_context=price_structure_context,
+                    chan_feature_context=chan_feature_context,
                     volatility_momentum_context=volatility_momentum_context,
                     pattern_trigger_context=pattern_trigger_context,
                     multi_timeframe_structure_context=multi_timeframe_structure_context,
@@ -4165,8 +4779,10 @@ class StockAnalysisPipeline:
         canonical_trend_result: Optional[TrendAnalysisResult] = None,
         relative_strength_context: Optional[Dict[str, Any]] = None,
         supply_demand_context: Optional[Dict[str, Any]] = None,
+        volume_price_phase_context: Optional[Dict[str, Any]] = None,
         cost_structure_context: Optional[Dict[str, Any]] = None,
         price_structure_context: Optional[Dict[str, Any]] = None,
+        chan_feature_context: Optional[Dict[str, Any]] = None,
         volatility_momentum_context: Optional[Dict[str, Any]] = None,
         pattern_trigger_context: Optional[Dict[str, Any]] = None,
         multi_timeframe_structure_context: Optional[Dict[str, Any]] = None,
@@ -4488,8 +5104,10 @@ class StockAnalysisPipeline:
                     market_structure_context=market_structure_context,
                     relative_strength_context=relative_strength_context,
                     supply_demand_context=supply_demand_context,
+                    volume_price_phase_context=volume_price_phase_context,
                     cost_structure_context=cost_structure_context,
                     price_structure_context=price_structure_context,
+                    chan_feature_context=chan_feature_context,
                     volatility_momentum_context=volatility_momentum_context,
                     pattern_trigger_context=pattern_trigger_context,
                     multi_timeframe_structure_context=multi_timeframe_structure_context,
@@ -5005,6 +5623,15 @@ class StockAnalysisPipeline:
         if not isinstance(fundamental_context, dict):
             return fundamental_context
         result = dict(fundamental_context)
+        industry_request = result.get("industry_valuation_route_input")
+        if (
+            isinstance(industry_request, dict)
+            and not isinstance(result.get("industry_valuation_route"), dict)
+        ):
+            result["industry_valuation_route"] = compile_industry_valuation_route(
+                industry_request,
+                as_of=target_date,
+            )
         quality_request = result.get("quality_growth_input")
         if (
             isinstance(quality_request, dict)
@@ -5034,6 +5661,11 @@ class StockAnalysisPipeline:
             # as_of for provenance, but it must never move valuation beyond the
             # completed research snapshot and silently admit future disclosures.
             bound_request = dict(request)
+            if (
+                not isinstance(bound_request.get("industry_route_plan"), dict)
+                and isinstance(result.get("industry_valuation_route"), dict)
+            ):
+                bound_request["industry_route_plan"] = result["industry_valuation_route"]
             if (
                 str(bound_request.get("route_id") or "").upper() == "ETF"
                 and not isinstance(bound_request.get("underlying_valuation"), dict)
@@ -5070,6 +5702,8 @@ class StockAnalysisPipeline:
         pattern_trigger_context: Optional[Dict[str, Any]],
         multi_timeframe_structure_context: Optional[Dict[str, Any]],
         fundamental_context: Optional[Dict[str, Any]] = None,
+        volume_price_phase_context: Optional[Dict[str, Any]] = None,
+        chan_feature_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Dict[str, Any]]:
         """Bind only producer outputs that actually returned from Pipeline calls."""
 
@@ -5110,6 +5744,23 @@ class StockAnalysisPipeline:
             receipts["SUPPLY"] = build_method_execution_receipt(
                 "SUPPLY", output=supply_demand_context, timeframe="daily", **common,
             )
+        if isinstance(volume_price_phase_context, dict):
+            receipts["DISTRIBUTION"] = build_method_execution_receipt(
+                "DISTRIBUTION",
+                output=volume_price_phase_context,
+                timeframe="daily",
+                upstream_hashes={
+                    **(
+                        {"supply_demand_context": supply_demand_hash}
+                        if supply_demand_hash else {}
+                    ),
+                    **(
+                        {"price_structure_context": price_structure_hash}
+                        if price_structure_hash else {}
+                    ),
+                },
+                **common,
+            )
         if isinstance(cost_structure_context, dict):
             receipts["COST"] = build_method_execution_receipt(
                 "COST",
@@ -5123,6 +5774,19 @@ class StockAnalysisPipeline:
         if isinstance(price_structure_context, dict):
             receipts["STRUCTURE"] = build_method_execution_receipt(
                 "STRUCTURE", output=price_structure_context, timeframe="daily", **common,
+            )
+        if isinstance(chan_feature_context, dict):
+            receipts["CHAN"] = build_method_execution_receipt(
+                "CHAN",
+                output=chan_feature_context,
+                timeframe="daily",
+                upstream_hashes={
+                    **(
+                        {"price_structure_context": price_structure_hash}
+                        if price_structure_hash else {}
+                    ),
+                },
+                **common,
             )
         if isinstance(volatility_momentum_context, dict):
             receipts["MOMENTUM"] = build_method_execution_receipt(
@@ -5310,8 +5974,10 @@ class StockAnalysisPipeline:
         market_structure_context: Optional[Dict[str, Any]] = None,
         relative_strength_context: Optional[Dict[str, Any]] = None,
         supply_demand_context: Optional[Dict[str, Any]] = None,
+        volume_price_phase_context: Optional[Dict[str, Any]] = None,
         cost_structure_context: Optional[Dict[str, Any]] = None,
         price_structure_context: Optional[Dict[str, Any]] = None,
+        chan_feature_context: Optional[Dict[str, Any]] = None,
         volatility_momentum_context: Optional[Dict[str, Any]] = None,
         pattern_trigger_context: Optional[Dict[str, Any]] = None,
         multi_timeframe_structure_context: Optional[Dict[str, Any]] = None,
@@ -5372,8 +6038,10 @@ class StockAnalysisPipeline:
                 market_structure_context=market_structure_context,
                 relative_strength_context=relative_strength_context,
                 supply_demand_context=supply_demand_context,
+                volume_price_phase_context=volume_price_phase_context,
                 cost_structure_context=cost_structure_context,
                 price_structure_context=price_structure_context,
+                chan_feature_context=chan_feature_context,
                 volatility_momentum_context=volatility_momentum_context,
                 pattern_trigger_context=pattern_trigger_context,
                 multi_timeframe_structure_context=multi_timeframe_structure_context,

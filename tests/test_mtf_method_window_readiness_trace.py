@@ -69,9 +69,47 @@ def _context(target="2026-10-12", instrument="600519"):
     }
 
 
+
+
+def _observed_fixture_daily_plan(*, market, target_date):
+    """Exercise the existing observed-calendar path without live-provider effects.
+
+    This explicitly synthetic business-day grid is a historical test *input*,
+    not an XSHG market fact, provider observation, Product right or PIT claim.
+    Production still rejects missing authentic early calendar provenance.
+    """
+    from datetime import datetime, timezone
+    from hashlib import sha256
+    import pandas as pd
+    from src.core.trading_calendar import build_observed_session_calendar_source
+
+    sessions = tuple(
+        stamp.date()
+        for stamp in pd.bdate_range("2001-01-02", target_date)
+    )
+    payload = "\n".join(date_.isoformat() for date_ in sessions).encode("ascii")
+    digest = sha256(payload).hexdigest()
+    source = build_observed_session_calendar_source(
+        market=market,
+        provider_identity="SYNTHETIC_TEST_CALENDAR_NOT_MARKET_DATA",
+        provider_route="tests.mtf_window_readiness.synthetic_calendar",
+        requested_start=date(2001, 1, 1),
+        requested_end=target_date,
+        observed_at=datetime(2026, 10, 12, 16, tzinfo=timezone.utc),
+        available_at=datetime(2026, 10, 12, 16, tzinfo=timezone.utc),
+        source_content_sha256=digest,
+        revision="TEST_GRID_SHA256:" + digest,
+        vintage="TEST_ONLY_NOT_PIT",
+        sessions=sessions,
+    )
+    return pipeline_owner._current_daily_window_plan(
+        market=market, target_date=target_date,
+        observed_calendar_source=source,
+    )
+
 def test_trace_joins_existing_plans_actual_bars_status_and_consumers():
     target = date(2026, 10, 12)
-    daily = pipeline_owner._current_daily_window_plan(market="cn", target_date=target)
+    daily = _observed_fixture_daily_plan(market="cn", target_date=target)
     minute = pipeline_owner._current_intraday_window_plan()
     trace = compile_mtf_method_window_readiness_trace(
         asset_route="STOCK",
@@ -110,7 +148,7 @@ def test_trace_downgrades_ready_claim_when_returned_bars_are_short():
         asset_route="ETF",
         instrument="510300",
         target_date=target,
-        daily_window_plan=pipeline_owner._current_daily_window_plan(
+        daily_window_plan=_observed_fixture_daily_plan(
             market="cn", target_date=target,
         ),
         intraday_window_plan=pipeline_owner._current_intraday_window_plan(),
@@ -130,7 +168,7 @@ def test_trace_rejects_tampered_daily_plan_identity():
     from copy import deepcopy
 
     target = date(2026, 10, 12)
-    plan = pipeline_owner._current_daily_window_plan(
+    plan = _observed_fixture_daily_plan(
         market="cn", target_date=target,
     )
     forged = deepcopy(plan)
@@ -163,7 +201,7 @@ def test_trace_rejects_method_receipt_count_or_authority_forgery():
             asset_route="ETF",
             instrument="510300",
             target_date=target,
-            daily_window_plan=pipeline_owner._current_daily_window_plan(
+            daily_window_plan=_observed_fixture_daily_plan(
                 market="cn", target_date=target,
             ),
             intraday_window_plan=pipeline_owner._current_intraday_window_plan(),
@@ -190,7 +228,7 @@ def test_trace_is_content_bound_by_existing_mtf_execution_receipt():
             asset_route="STOCK",
             instrument="600519",
             target_date=target,
-            daily_window_plan=pipeline_owner._current_daily_window_plan(
+            daily_window_plan=_observed_fixture_daily_plan(
                 market="cn", target_date=target,
             ),
             intraday_window_plan=pipeline_owner._current_intraday_window_plan(),
@@ -243,7 +281,7 @@ def test_trace_rejects_cross_asset_instrument_mismatch_before_method_rows():
         asset_route="ETF",
         instrument="510300",
         target_date=target,
-        daily_window_plan=pipeline_owner._current_daily_window_plan(
+        daily_window_plan=_observed_fixture_daily_plan(
             market="cn", target_date=target,
         ),
         intraday_window_plan=pipeline_owner._current_intraday_window_plan(),
@@ -261,7 +299,7 @@ def test_trace_never_invents_dispatch_from_an_acquisition_plan():
     target = date(2026, 10, 12)
     trace = compile_mtf_method_window_readiness_trace(
         asset_route="STOCK", instrument="600519", target_date=target,
-        daily_window_plan=pipeline_owner._current_daily_window_plan(
+        daily_window_plan=_observed_fixture_daily_plan(
             market="cn", target_date=target,
         ),
         intraday_window_plan=pipeline_owner._current_intraday_window_plan(),
@@ -280,6 +318,7 @@ def _actual_short_dispatch(*, wrong_instrument=False):
     from tests.test_pipeline_daily_market_context import (
         _intraday_pipeline_for_helper, _pipeline_canonical_5m,
     )
+    from tests.test_daily_acquisition_binding import _typed_frame
     calendar = xcals.get_calendar("XSHG")
     end = calendar.date_to_session(date(2026, 10, 8))
     sessions = [bar.date() for bar in calendar.sessions_window(end, -67)]
@@ -319,11 +358,21 @@ def _actual_short_dispatch(*, wrong_instrument=False):
         },
     }
     pipeline.fetcher_manager._call_fetcher_method.return_value = source
+    instrument = "600000" if wrong_instrument else "600519"
+    daily = _typed_frame(
+        sessions,
+        instrument=instrument,
+        provider="BaostockFetcher",
+        requested_start=sessions[0].isoformat(),
+        requested_end=sessions[-1].isoformat(),
+        requested_basis="qfq",
+        observed_basis="qfq",
+    )
     with patch.object(pipeline_owner, "resolve_latest_completed_session_fail_closed", return_value=sessions[-1]), patch.object(pipeline_owner.SearchService, "is_index_or_etf", return_value=False):
         frames = pipeline._load_current_stock_intraday_timeframes(
-            code="600000" if wrong_instrument else "600519", stock_name="SYNTHETIC",
+            code=instrument, stock_name="SYNTHETIC",
             market="cn", target_date=sessions[-1],
-            completed_daily_history=pd.DataFrame({"date": sessions}),
+            completed_daily_history=daily,
         )
     pipeline.fetcher_manager._call_fetcher_method.assert_called_once()
     return frames, sessions
@@ -344,7 +393,7 @@ def test_trace_joins_actual_shared_dispatch_and_short_return():
             item[name]["status"] = "MISSING" if len(frame) < item[name]["required_observations"] else "READY"
     trace = compile_mtf_method_window_readiness_trace(
         asset_route="STOCK", instrument="600519", target_date=sessions[-1],
-        daily_window_plan=pipeline_owner._current_daily_window_plan(market="cn", target_date=sessions[-1]),
+        daily_window_plan=_observed_fixture_daily_plan(market="cn", target_date=sessions[-1]),
         intraday_window_plan=pipeline_owner._current_intraday_window_plan(),
         multi_timeframe_structure_context=context, intraday_source_frames=frames,
     )
@@ -365,7 +414,7 @@ def test_actual_dispatch_rejects_mutation_and_keeps_unobserved_nontrigger():
     from data_provider.daily_data_identity import sha256_payload
 
     frames, sessions = _actual_short_dispatch()
-    daily = pipeline_owner._current_daily_window_plan(market="cn", target_date=sessions[-1])
+    daily = _observed_fixture_daily_plan(market="cn", target_date=sessions[-1])
     minute = pipeline_owner._current_intraday_window_plan()
 
     def compile_source(source):
@@ -410,7 +459,7 @@ def test_trace_target_mismatch_is_fail_closed_and_has_no_rows():
         asset_route="MARKET",
         instrument="sh.000001",
         target_date=target,
-        daily_window_plan=pipeline_owner._current_daily_window_plan(
+        daily_window_plan=_observed_fixture_daily_plan(
             market="cn", target_date=target,
         ),
         intraday_window_plan=pipeline_owner._current_intraday_window_plan(),

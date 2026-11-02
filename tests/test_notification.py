@@ -2041,7 +2041,7 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         required = (
             "QUALITY：证据不足", "VALUATION：证据不足",
             "GLOBAL：未准入", "BREADTH：未准入",
-            "CHAN：未准入", "WAVE：未准入",
+            "CHAN：证据不足；窄适配（NOT_FULL_CZSC）", "WAVE：未准入",
             "EXTRA_INDICATORS：未准入", "ATR_WILDER", "ADX_DMI",
             "BOLLINGER", "KDJ", "OBV_ADL", "MFI",
             "AVWAP_PROFILE：未准入", "VWAP", "AVWAP_VOLUME_PROFILE",
@@ -2057,6 +2057,8 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         }
         self.assertEqual(profiles["QUALITY"], "EXISTING_REUSED")
         self.assertEqual(profiles["VALUATION"], "EXISTING_REUSED")
+        self.assertEqual(profiles["CHAN"], "EXISTING_REUSED")
+        self.assertEqual(profiles["WAVE"], "DEFERRED_WITH_OWNER_AND_REENTRY")
 
         from html.parser import HTMLParser
         from src.formatters import markdown_to_html_document

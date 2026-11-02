@@ -588,3 +588,386 @@ def build_candlestick_pattern_context(
         "summary": summary,
         "historical_replay_eligible": True,
     }
+
+_COMPLETED_TIMEFRAME_LABELS = {
+    "monthly": "月线", "weekly": "周线", "60m": "60m", "30m": "30m",
+    "15m": "15m", "5m": "5m",
+}
+
+
+def _completed_timeframe_timestamp(value: Any) -> Optional[pd.Timestamp]:
+    stamp = pd.to_datetime(value, errors="coerce", utc=True)
+    return None if pd.isna(stamp) else pd.Timestamp(stamp)
+
+
+def _completed_timeframe_latest_confirmed(
+    items: List[Dict[str, Any]], *, origin: pd.Timestamp,
+    available_by: pd.Timestamp,
+) -> Optional[Dict[str, Any]]:
+    eligible = []
+    for item in items:
+        if not isinstance(item, dict) or bool(item.get("provisional")):
+            continue
+        confirmed = _completed_timeframe_timestamp(item.get("confirmed_at"))
+        available = _completed_timeframe_timestamp(
+            item.get("confirmed_available_at") or item.get("confirmed_at")
+        )
+        if confirmed is None or available is None:
+            continue
+        if confirmed <= origin and available <= available_by:
+            eligible.append(item)
+    if not eligible:
+        return None
+    return max(
+        eligible,
+        key=lambda item: (
+            str(item.get("confirmed_available_at") or item.get("confirmed_at") or ""),
+            str(item.get("confirmed_at") or ""),
+            str(item.get("origin_time") or ""),
+        ),
+    )
+
+
+def _completed_timeframe_context_for_direction(
+    structure: Dict[str, Any], *, origin: pd.Timestamp,
+    available_by: pd.Timestamp, row: pd.Series, direction: str,
+) -> Optional[Dict[str, Any]]:
+    swings = [item for item in (structure.get("swings") or []) if isinstance(item, dict)]
+    pivots = [item for item in (structure.get("pivots") or []) if isinstance(item, dict)]
+    prior_swing = _completed_timeframe_latest_confirmed(
+        swings, origin=origin, available_by=available_by,
+    )
+    if not isinstance(prior_swing, dict):
+        return None
+    required_swing = "DOWN" if direction == "BULLISH" else "UP"
+    if str(prior_swing.get("direction") or "") != required_swing:
+        return None
+    required_kind = "LOW" if direction == "BULLISH" else "HIGH"
+    location = _completed_timeframe_latest_confirmed(
+        [item for item in pivots if str(item.get("kind") or "") == required_kind],
+        origin=origin,
+        available_by=available_by,
+    )
+    if not isinstance(location, dict):
+        return None
+    level = _safe_float(location.get("price"))
+    if level is None or level <= 0:
+        return None
+    if direction == "BULLISH":
+        touches = float(row["low"]) <= level <= float(row["close"])
+        location_state = "AT_CONFIRMED_SUPPORT"
+    else:
+        touches = float(row["high"]) >= level >= float(row["close"])
+        location_state = "AT_CONFIRMED_RESISTANCE"
+    if not touches:
+        return None
+    return {
+        "prior_swing_ref": {
+            key: prior_swing.get(key)
+            for key in (
+                "direction", "origin_time", "confirmed_at", "confirmed_available_at",
+                "start_kind", "start_price", "end_kind", "end_price",
+            )
+        },
+        "location_ref": {
+            "state": location_state,
+            "kind": required_kind,
+            "price": round(level, 6),
+            "origin_time": location.get("origin_time"),
+            "confirmed_at": location.get("confirmed_at"),
+            "confirmed_available_at": location.get("confirmed_available_at"),
+        },
+        "correlation_group": (
+            f"confirmed_price_swing:{required_kind}:"
+            f"{location.get('origin_time')}:{location.get('confirmed_at')}"
+        ),
+    }
+
+
+def _completed_timeframe_lifecycle(
+    frame: pd.DataFrame, *, index: int, direction: str,
+) -> Dict[str, Any]:
+    origin = frame.iloc[index]
+    high = float(origin["high"])
+    low = float(origin["low"])
+    for future_index in range(index + 1, len(frame)):
+        row = frame.iloc[future_index]
+        close = float(row["close"])
+        when = pd.Timestamp(row["date"]).isoformat()
+        if direction == "BULLISH":
+            if close > high:
+                return {"lifecycle": "CONFIRMED", "confirmed_at": when,
+                        "invalidated_at": None, "provisional": False}
+            if close < low:
+                return {"lifecycle": "FAILED", "confirmed_at": None,
+                        "invalidated_at": when, "provisional": False}
+        else:
+            if close < low:
+                return {"lifecycle": "CONFIRMED", "confirmed_at": when,
+                        "invalidated_at": None, "provisional": False}
+            if close > high:
+                return {"lifecycle": "FAILED", "confirmed_at": None,
+                        "invalidated_at": when, "provisional": False}
+    return {"lifecycle": "FORMING", "confirmed_at": None,
+            "invalidated_at": None, "provisional": True}
+
+
+def _completed_timeframe_volume_ref(
+    context: Any, *, origin: pd.Timestamp,
+    target_bar_end: pd.Timestamp, direction: str,
+) -> Dict[str, Any]:
+    if origin != target_bar_end:
+        return {"status": "MISSING", "reason": "HISTORICAL_BAR_VOLUME_CONTEXT_NOT_BOUND",
+                "conflict": False}
+    if not isinstance(context, dict):
+        return {"status": "MISSING", "reason": "SUPPLY_DEMAND_CONTEXT_MISSING",
+                "conflict": False}
+    if str(context.get("target_date") or "") != target_bar_end.date().isoformat():
+        return {"status": "MISSING", "reason": "SUPPLY_DEMAND_TARGET_DATE_MISMATCH",
+                "conflict": False}
+    state = str(context.get("state") or "").upper()
+    conflict = bool(
+        (direction == "BULLISH" and state == "SUPPLY_PRESSURE")
+        or (direction == "BEARISH" and state == "DEMAND_PRESSURE")
+    )
+    return {
+        "status": str(context.get("status") or "MISSING").upper(),
+        "target_date": context.get("target_date"),
+        "state": state or None,
+        "conflict": conflict,
+        "reason": "DIRECTIONAL_VOLUME_CONTEXT_CONFLICT" if conflict
+                  else "TARGET_BAR_CONTEXT_ONLY",
+    }
+
+
+def build_completed_timeframe_candlestick_context(
+    *,
+    stock_code: str,
+    history: Any,
+    timeframe: str,
+    target_bar_end: Any,
+    market: Optional[str] = None,
+    price_structure_context: Any = None,
+    supply_demand_context: Any = None,
+    source_identity_hash: Optional[str] = None,
+    evidence_available_at: Any = None,
+) -> Dict[str, Any]:
+    """Evaluate existing candle geometry on one source-bound completed-bar frame.
+
+    This is descriptive current-run evidence only. It preserves full bar times,
+    requires already-confirmed source-bound pivots, and cannot grant strategy,
+    learning, data-rights, persistence, or independent action authority.
+    """
+    target = _completed_timeframe_timestamp(target_bar_end)
+    available_by = _completed_timeframe_timestamp(evidence_available_at) or target
+    base = {
+        "schema_version": CANDLESTICK_SCHEMA_VERSION,
+        "family": "pattern_trigger_leaf",
+        "method_id": "CANDLESTICK",
+        "stock_code": stock_code,
+        "market": str(market or "").lower() or None,
+        "timeframe": timeframe,
+        "target_bar_end": target.isoformat() if target is not None else None,
+        "evidence_available_at": (
+            available_by.isoformat() if available_by is not None else None
+        ),
+        "completed_bar_only": True,
+        "algorithm_version": ALGORITHM_VERSION,
+        "config_hash": CONFIG_HASH,
+        "effective_parameters": dict(_CONFIG),
+        "hard_veto": False,
+        "independent_action_authority": False,
+        "strategy_admitted": False,
+        "learning_admitted": False,
+        "data_rights_admitted": False,
+        "historical_replay_eligible": False,
+    }
+    if timeframe not in _COMPLETED_TIMEFRAME_LABELS:
+        return {**base, "status": "UNKNOWN", "reason": "TIMEFRAME_UNSUPPORTED",
+                "material": False, "events": [], "primary_event": None}
+    if target is None:
+        return {**base, "status": "UNKNOWN", "reason": "TARGET_BAR_END_INVALID",
+                "material": False, "events": [], "primary_event": None}
+    if not isinstance(source_identity_hash, str) or len(source_identity_hash) != 64:
+        return {**base, "status": "UNKNOWN", "reason": "TYPED_SOURCE_IDENTITY_MISSING",
+                "material": False, "events": [], "primary_event": None}
+    required = ["date", "open", "high", "low", "close"]
+    if not isinstance(history, pd.DataFrame) or history.empty:
+        return {**base, "status": "MISSING", "reason": "COMPLETED_OHLC_MISSING",
+                "material": False, "events": [], "primary_event": None}
+    frame = history.copy()
+    frame.columns = [str(column).lower() for column in frame.columns]
+    if any(column not in frame.columns for column in required):
+        return {**base, "status": "MISSING", "reason": "COMPLETED_OHLC_MISSING",
+                "material": False, "events": [], "primary_event": None}
+    stamps = pd.to_datetime(frame["date"], errors="coerce", utc=True)
+    if stamps.isna().any():
+        return {**base, "status": "UNKNOWN", "reason": "TIMEFRAME_BAR_TIMESTAMP_INVALID",
+                "material": False, "events": [], "primary_event": None}
+    if stamps.duplicated().any():
+        return {**base, "status": "UNKNOWN", "reason": "TIMEFRAME_BAR_TIMESTAMP_DUPLICATE",
+                "material": False, "events": [], "primary_event": None}
+    if not stamps.is_monotonic_increasing:
+        return {**base, "status": "UNKNOWN", "reason": "TIMEFRAME_BAR_ORDER_INVALID",
+                "material": False, "events": [], "primary_event": None}
+    frame["date"] = stamps
+    frame = frame[frame["date"] <= target].reset_index(drop=True)
+    if frame.empty or pd.Timestamp(frame.iloc[-1]["date"]) != target:
+        return {**base, "status": "MISSING", "reason": "TARGET_COMPLETED_BAR_MISSING",
+                "material": False, "events": [], "primary_event": None}
+    for column in ("open", "high", "low", "close"):
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    if frame[required].isna().any().any() or _invalid_ohlc(frame):
+        return {**base, "status": "UNKNOWN", "reason": "INVALID_OHLC",
+                "material": False, "events": [], "primary_event": None}
+    if len(frame) < MIN_OBSERVATIONS:
+        return {**base, "status": "MISSING", "reason": "WARMUP_INSUFFICIENT",
+                "observations": int(len(frame)), "material": False,
+                "events": [], "primary_event": None}
+    if "data_source" not in frame.columns:
+        return {**base, "status": "UNKNOWN", "reason": "SOURCE_ALIGNMENT_UNPROVEN",
+                "material": False, "events": [], "primary_event": None}
+    sources = frame["data_source"].map(lambda value: str(value or "").strip())
+    if not bool((sources != "").all()) or sources.nunique() != 1:
+        return {**base, "status": "UNKNOWN", "reason": "SOURCE_ALIGNMENT_UNPROVEN",
+                "material": False, "events": [], "primary_event": None}
+    structure = price_structure_context if isinstance(price_structure_context, dict) else {}
+    structure_state = str(structure.get("status") or "MISSING").upper()
+    if not structure or structure_state == "MISSING":
+        return {**base, "status": "MISSING", "reason": "CONFIRMED_STRUCTURE_CONTEXT_MISSING",
+                "observations": int(len(frame)), "material": False,
+                "events": [], "primary_event": None}
+    if (
+        structure.get("schema_version") != "price-structure-v1"
+        or structure_state != "READY"
+        or structure.get("completed_bar_only") is not True
+        or structure.get("timeframe") != timeframe
+    ):
+        return {**base, "status": "PARTIAL", "reason": "PRICE_STRUCTURE_PROVENANCE_UNPROVEN",
+                "observations": int(len(frame)), "material": False,
+                "events": [], "primary_event": None}
+    structure_hash = str(
+        structure.get("intraday_identity_hash")
+        or structure.get("source_identity_hash")
+        or ""
+    )
+    if structure_hash != source_identity_hash:
+        return {**base, "status": "UNKNOWN", "reason": "PRICE_STRUCTURE_SOURCE_IDENTITY_MISMATCH",
+                "observations": int(len(frame)), "material": False,
+                "events": [], "primary_event": None}
+    pivots = [item for item in (structure.get("pivots") or []) if isinstance(item, dict)]
+    swings = [item for item in (structure.get("swings") or []) if isinstance(item, dict)]
+    for item in pivots:
+        origin = _completed_timeframe_timestamp(item.get("origin_time"))
+        confirmed = _completed_timeframe_timestamp(item.get("confirmed_at"))
+        available = _completed_timeframe_timestamp(
+            item.get("confirmed_available_at") or item.get("confirmed_at")
+        )
+        if bool(item.get("provisional")) or origin is None or confirmed is None or available is None:
+            return {**base, "status": "UNKNOWN", "reason": "PRICE_STRUCTURE_PIVOT_PROVENANCE_INVALID",
+                    "observations": int(len(frame)), "material": False,
+                    "events": [], "primary_event": None}
+        if confirmed > target or available_by is None or available > available_by:
+            return {**base, "status": "UNKNOWN", "reason": "PRICE_STRUCTURE_FUTURE_CONFIRMATION",
+                    "observations": int(len(frame)), "material": False,
+                    "events": [], "primary_event": None}
+    if not pivots or not swings:
+        return {**base, "status": "MISSING", "reason": "CONFIRMED_STRUCTURE_CONTEXT_MISSING",
+                "observations": int(len(frame)), "material": False,
+                "events": [], "primary_event": None}
+
+    target_geometry = _geometry(frame.iloc[-1], frame.iloc[-2])
+    events_by_group: Dict[str, Dict[str, Any]] = {}
+    for index in range(1, len(frame)):
+        row = frame.iloc[index]
+        origin = pd.Timestamp(row["date"])
+        geometry = _geometry(row, frame.iloc[index - 1])
+        for candidate in geometry["directional_candidates"]:
+            direction = candidate["direction"]
+            context_ref = _completed_timeframe_context_for_direction(
+                structure, origin=origin, available_by=available_by,
+                row=row, direction=direction,
+            )
+            if context_ref is None:
+                continue
+            volume_ref = _completed_timeframe_volume_ref(
+                supply_demand_context, origin=origin,
+                target_bar_end=target, direction=direction,
+            )
+            lifecycle = _completed_timeframe_lifecycle(
+                frame, index=index, direction=direction,
+            )
+            current_transition = bool(
+                origin == target
+                or lifecycle.get("confirmed_at") == target.isoformat()
+                or lifecycle.get("invalidated_at") == target.isoformat()
+            )
+            event = {
+                "event_type": candidate["event_type"],
+                "direction": direction,
+                "origin_time": origin.isoformat(),
+                "geometry_confirmed_at": origin.isoformat(),
+                "evidence_available_at": available_by.isoformat(),
+                "origin_high": round(float(row["high"]), 6),
+                "origin_low": round(float(row["low"]), 6),
+                **context_ref,
+                **lifecycle,
+                "volume_evidence_ref": volume_ref,
+                "material": current_transition and not bool(volume_ref.get("conflict")),
+                "reason_codes": (
+                    ["STRUCTURE_CONTEXT_READY", "VOLUME_CONTEXT_CONFLICT"]
+                    if volume_ref.get("conflict")
+                    else ["STRUCTURE_CONTEXT_READY"]
+                ),
+                "algorithm_version": ALGORITHM_VERSION,
+                "config_hash": CONFIG_HASH,
+                "independent_action_authority": False,
+            }
+            group = f"{event['correlation_group']}:{origin.isoformat()}:{direction}"
+            existing = events_by_group.get(group)
+            if (
+                existing is None
+                or _DIRECTIONAL_PRIORITY[event["event_type"]]
+                > _DIRECTIONAL_PRIORITY[existing["event_type"]]
+            ):
+                events_by_group[group] = event
+    events = sorted(
+        events_by_group.values(),
+        key=lambda item: (
+            str(item.get("origin_time") or ""),
+            _DIRECTIONAL_PRIORITY.get(str(item.get("event_type") or ""), 0),
+        ),
+    )[-MAX_EVENTS:]
+    material_events = [item for item in events if item.get("material") is True]
+    primary = material_events[-1] if material_events else None
+    summary = None
+    if isinstance(primary, dict):
+        label = {
+            "LOWER_REJECTION": "下影拒绝", "UPPER_REJECTION": "上影拒绝",
+            "BULLISH_ENGULFING": "看涨吞没", "BEARISH_ENGULFING": "看跌吞没",
+        }.get(str(primary.get("event_type") or ""), "K线结构")
+        state = {"FORMING": "形成中", "CONFIRMED": "已确认", "FAILED": "已失败"}.get(
+            str(primary.get("lifecycle") or ""), "状态未知",
+        )
+        summary = (
+            f"{_COMPLETED_TIMEFRAME_LABELS[timeframe]}{label}在已确认结构位置{state}；"
+            "仅作结构上下文，不独立构成操作信号"
+        )
+    return {
+        **base,
+        "status": "READY",
+        "reason": "CANDLESTICK_CONTEXT_READY" if primary else "NO_MATERIAL_CANDLE_EVENT",
+        "observations": int(len(frame)),
+        "start_bar_end": pd.Timestamp(frame.iloc[0]["date"]).isoformat(),
+        "end_bar_end": pd.Timestamp(frame.iloc[-1]["date"]).isoformat(),
+        "source_identity_hash": source_identity_hash,
+        "source_alignment": {
+            "status": "SINGLE_SOURCE", "sources": [sources.iloc[0]],
+            "rows_complete": True, "observations": int(len(frame)),
+        },
+        "target_geometry": target_geometry,
+        "events": events,
+        "primary_event": primary,
+        "material": primary is not None,
+        "summary": summary,
+    }

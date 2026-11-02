@@ -110,6 +110,74 @@ def test_tencent_symbol_conversion_supports_a_share_markets() -> None:
     assert _to_tencent_symbol("920748") == "bj920748"
 
 
+
+def test_tencent_kline_volume_uses_symbol_specific_native_units():
+    """a-stock-data 2026-10-07 independent counterexample: 688/689 are shares."""
+    from data_provider.tencent_fetcher import _extract_kline_rows_with_branch
+    # The source says 科创板 688/689 returns shares, other A-shares return lots.
+    for symbol, expected in (
+        ("sh688001", 1234.0),
+        ("sh689009", 1234.0),
+        ("sh600519", 123400.0),
+        ("sz000001", 123400.0),
+    ):
+        payload = {"data": {symbol: {"qfqday": [
+            ["2026-10-29", "10.0", "10.2", "10.5", "9.9", "1234", "12586"]
+        ]}}}
+        rows, branch = _extract_kline_rows_with_branch(payload, symbol=symbol)
+        assert branch == "qfqday"
+        assert len(rows) == 1
+        assert rows[0]["volume"] == expected
+
+
+def test_tencent_screening_and_main_provider_agree_on_share_volume_without_network():
+    """Screening cannot silently reinterpret the same source volume as lots."""
+    from src.services.screening import daily as screening_daily
+
+    class Response:
+        def __init__(self, body):
+            self.body = body
+        def raise_for_status(self):
+            return None
+        def json(self):
+            return self.body
+
+    for code, symbol, expected in (
+        ("688001", "sh688001", 1234.0),
+        ("600519", "sh600519", 123400.0),
+    ):
+        payload = {"code": 0, "data": {symbol: {"qfqday": [
+            ["2026-10-29", "10.0", "10.2", "10.5", "9.9", "1234", "12586"]
+        ]}}}
+        with patch.object(
+            screening_daily.requests, "get", return_value=Response(payload)
+        ) as get:
+            frame = screening_daily._fetch_daily_tencent(
+                code, lookback_days=30
+            )
+        get.assert_called_once()
+        assert len(frame) == 1
+        assert float(frame.iloc[0]["volume"]) == expected
+
+
+def test_tencent_kline_non_stock_and_bond_lot_units_are_not_mislabeled_as_shares():
+    """Tencent convertible bonds use TEN certificates per lot, not 100 shares.
+
+    Indices and BSE need separately proven instrument-source contracts; this
+    stock/ETF-only normalizer must not silently infer their volume units.
+    """
+    import pytest
+    from data_provider.base import DataFetchError
+    from data_provider.tencent_fetcher import normalize_tencent_kline_volume
+
+    for symbol in ("sz123001", "sz127001", "sh110001", "sh113001",
+                   "sh000300", "sz399001", "bj920748"):
+        with pytest.raises(DataFetchError):
+            normalize_tencent_kline_volume("1234", symbol=symbol)
+
+    assert normalize_tencent_kline_volume("1234", symbol="sh588000") == 123400.0
+
+
 def test_tencent_fetcher_parses_qfq_daily_response() -> None:
     payload = {
         "data": {

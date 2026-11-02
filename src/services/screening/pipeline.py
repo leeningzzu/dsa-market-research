@@ -16,7 +16,10 @@ import pandas as pd
 from src.services.screening.config import Config
 from src.services.screening.candidate_context import collect_candidate_context
 from src.services.screening.context import build_llm_context
-from src.services.screening.daily import enrich_daily_features
+from src.services.screening.daily import (
+    compile_daily_feature_window,
+    enrich_daily_features,
+)
 from src.services.screening.dsa_provider import apply_dsa_provider_context
 from src.services.screening.filter import (
     apply_hard_filters,
@@ -183,6 +186,21 @@ def screen(
     daily_needed = requires_daily_features(screening.hard_filters)
     daily_requested = config.daily_enrich_enabled if daily_enrich is None else daily_enrich
     daily_limit = daily_enrich_max_candidates or config.daily_enrich_max_candidates
+    daily_window = compile_daily_feature_window(asset_type=asset_type)
+    daily_lookback_mode = str(
+        getattr(config, "daily_lookback_mode", "method") or "method"
+    ).strip().lower()
+    if daily_lookback_mode == "method":
+        daily_requested_bars = int(daily_window["required_bars"])
+    elif daily_lookback_mode == "configured_floor":
+        daily_requested_bars = max(
+            int(daily_window["required_bars"]),
+            int(config.daily_lookback_days),
+        )
+    else:
+        raise ValueError(
+            "Unsupported DAILY_LOOKBACK_MODE: " + daily_lookback_mode
+        )
     snapshot_filters = without_daily_filters(screening.hard_filters) if daily_needed else screening.hard_filters
 
     # 2. Fetch snapshot
@@ -342,13 +360,14 @@ def screen(
             enriched = enrich_daily_features(
                 daily_candidates,
                 max_rows=enrich_count,
-                lookback_days=config.daily_lookback_days,
+                lookback_days=daily_requested_bars,
                 source=config.daily_source,
                 fetch_retries=config.daily_fetch_retries,
                 cache_dir=config.daily_history_cache_dir,
                 cache_ttl_seconds=config.daily_history_cache_ttl_hours * 3600,
                 max_workers=config.daily_fetch_max_workers,
                 history_fetcher=daily_history_fetcher,
+                asset_type=asset_type,
             )
             daily_enriched = True
             daily_errors = [str(item) for item in enriched.attrs.get("daily_errors", [])]
@@ -358,6 +377,12 @@ def screen(
             daily_source_order_notes = [str(item) for item in enriched.attrs.get("daily_source_order_notes", [])]
             daily_source_health_notes = _daily_source_health_notes(
                 dict(enriched.attrs.get("daily_source_health", {}) or {})
+            )
+            etf_peer_rs_ready_count = int(
+                enriched.attrs.get("etf_peer_rs_ready_count", 0) or 0
+            )
+            etf_peer_rs_status_counts = dict(
+                enriched.attrs.get("etf_peer_rs_status_counts", {}) or {}
             )
             degradation.append(
                 f"Daily K-line enrichment attempted {enrich_count} candidates, "
@@ -377,6 +402,16 @@ def screen(
                 degradation.append("Daily K-line source ordering: " + " | ".join(daily_source_order_notes[:3]))
             if daily_source_health_notes:
                 degradation.append("Daily K-line source health: " + "; ".join(daily_source_health_notes))
+            if asset_type == "etf":
+                peer_summary = ", ".join(
+                    f"{name}={count}"
+                    for name, count in sorted(etf_peer_rs_status_counts.items())
+                ) or "no-result"
+                degradation.append(
+                    "ETF peer RS bounded enrichment: "
+                    f"READY={etf_peer_rs_ready_count}; {peer_summary}; "
+                    "tie-break only, no action/probability authority"
+                )
             if daily_errors:
                 sample = " | ".join(daily_errors[:5])
                 suffix = f" | +{len(daily_errors) - 5} more" if len(daily_errors) > 5 else ""
@@ -387,6 +422,20 @@ def screen(
                 attempted_count=enrich_count, success_count=daily_enrich_count,
                 failure_count=max(0, enrich_count - daily_enrich_count),
                 budget_deferred_count=max(0, daily_input_count - enrich_count),
+                window_policy="CURRENT_DAILY_FEATURE_METHOD_MINIMUM"
+                if daily_lookback_mode == "method"
+                else "CURRENT_DAILY_FEATURE_CONFIGURED_FLOOR",
+                required_bars=int(daily_window["required_bars"]),
+                requested_bars=daily_requested_bars,
+                window_hash=str(daily_window["window_hash"]),
+                candidate_window_policy=(
+                    "FILTERED_POOL_BOUNDED_BY_CONFIGURED_CAP"
+                ),
+                candidate_window_input=daily_input_count,
+                candidate_window_attempted=enrich_count,
+                etf_peer_rs_ready_count=(
+                    etf_peer_rs_ready_count if asset_type == "etf" else 0
+                ),
             )
             daily_filter_started = perf_counter()
             if daily_needed:
@@ -851,6 +900,9 @@ def _sort_screened_candidates(df: pd.DataFrame, screening=None) -> pd.DataFrame:
         if column in df.columns
     ]
     ascending = [False] * len(sort_columns)
+    if "etf_peer_rs_preference_rank" in df.columns:
+        sort_columns.append("etf_peer_rs_preference_rank")
+        ascending.append(True)
     if "selection_preference_rank" in df.columns:
         sort_columns.append("selection_preference_rank")
         ascending.append(True)

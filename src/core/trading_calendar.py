@@ -13,6 +13,8 @@
 依赖：exchange-calendars（可选，交易日判断不可用时 fail-open，阶段推断不可用时 unknown）
 """
 
+import hashlib
+import json
 import logging
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -49,6 +51,179 @@ MARKET_TIMEZONE = {
     "kr": "Asia/Seoul",
     "tw": "Asia/Taipei",
 }
+
+OBSERVED_SESSION_CALENDAR_SOURCE_VERSION = "observed-session-calendar-source-v1"
+_OBSERVED_SESSION_CALENDAR_FIELDS = frozenset({
+    "schema_version", "market", "provider_identity", "provider_route",
+    "requested_start", "requested_end", "observed_at", "available_at",
+    "source_content_sha256", "revision", "vintage", "sessions",
+    "session_count", "first_session", "last_session",
+    "historical_pit_eligible", "storage_admitted", "strategy_admitted",
+    "learning_admitted", "source_identity_hash",
+})
+
+
+def _calendar_digest(value: Mapping[str, Any]) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _strict_calendar_date(value: Any) -> Optional[date]:
+    if isinstance(value, datetime):
+        return None
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        try:
+            return date.fromisoformat(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def _aware_calendar_datetime(value: Any) -> Optional[datetime]:
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed
+
+
+def _is_sha256_text(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    return len(text) == 64 and all(character in "0123456789abcdef" for character in text)
+
+
+def build_observed_session_calendar_source(
+    *,
+    market: str,
+    provider_identity: str,
+    provider_route: str,
+    requested_start: date | str,
+    requested_end: date | str,
+    observed_at: datetime | str,
+    available_at: datetime | str,
+    source_content_sha256: str,
+    revision: str,
+    vintage: str,
+    sessions: List[date | str] | Tuple[date | str, ...],
+) -> Dict[str, Any]:
+    """Seal one current observation of provider trading sessions.
+
+    This is a run-local source identity for current research.  It is not a
+    historical PIT calendar, a storage grant, a strategy signal, or a label.
+    """
+    start = _strict_calendar_date(requested_start)
+    end = _strict_calendar_date(requested_end)
+    observed = _aware_calendar_datetime(observed_at)
+    available = _aware_calendar_datetime(available_at)
+    parsed_sessions = tuple(_strict_calendar_date(item) for item in sessions)
+    if (
+        start is None or end is None or start > end
+        or observed is None or available is None or available > observed
+        or any(item is None for item in parsed_sessions)
+        or not parsed_sessions
+    ):
+        raise ValueError("OBSERVED_SESSION_CALENDAR_SOURCE_INPUT_INVALID")
+    typed_sessions = tuple(item for item in parsed_sessions if item is not None)
+    if (
+        tuple(sorted(typed_sessions)) != typed_sessions
+        or len(set(typed_sessions)) != len(typed_sessions)
+        or typed_sessions[0] < start
+        or typed_sessions[-1] > end
+        or not _is_sha256_text(source_content_sha256)
+        or not str(provider_identity or "").strip()
+        or not str(provider_route or "").strip()
+        or not str(revision or "").strip()
+        or not str(vintage or "").strip()
+    ):
+        raise ValueError("OBSERVED_SESSION_CALENDAR_SOURCE_CONTENT_INVALID")
+    body: Dict[str, Any] = {
+        "schema_version": OBSERVED_SESSION_CALENDAR_SOURCE_VERSION,
+        "market": str(market or "").strip().lower(),
+        "provider_identity": str(provider_identity).strip(),
+        "provider_route": str(provider_route).strip(),
+        "requested_start": start.isoformat(),
+        "requested_end": end.isoformat(),
+        "observed_at": observed.isoformat(),
+        "available_at": available.isoformat(),
+        "source_content_sha256": str(source_content_sha256).strip().lower(),
+        "revision": str(revision).strip(),
+        "vintage": str(vintage).strip(),
+        "sessions": tuple(item.isoformat() for item in typed_sessions),
+        "session_count": len(typed_sessions),
+        "first_session": typed_sessions[0].isoformat(),
+        "last_session": typed_sessions[-1].isoformat(),
+        "historical_pit_eligible": False,
+        "storage_admitted": False,
+        "strategy_admitted": False,
+        "learning_admitted": False,
+    }
+    body["source_identity_hash"] = _calendar_digest(body)
+    return validate_observed_session_calendar_source(body)
+
+
+def validate_observed_session_calendar_source(value: Mapping[str, Any]) -> Dict[str, Any]:
+    if not isinstance(value, Mapping) or set(value) != _OBSERVED_SESSION_CALENDAR_FIELDS:
+        raise ValueError("OBSERVED_SESSION_CALENDAR_SOURCE_SCHEMA_MISMATCH")
+    result = dict(value)
+    if result.get("schema_version") != OBSERVED_SESSION_CALENDAR_SOURCE_VERSION:
+        raise ValueError("OBSERVED_SESSION_CALENDAR_SOURCE_VERSION_MISMATCH")
+    start = _strict_calendar_date(result.get("requested_start"))
+    end = _strict_calendar_date(result.get("requested_end"))
+    first = _strict_calendar_date(result.get("first_session"))
+    last = _strict_calendar_date(result.get("last_session"))
+    observed = _aware_calendar_datetime(result.get("observed_at"))
+    available = _aware_calendar_datetime(result.get("available_at"))
+    raw_sessions = result.get("sessions")
+    if not isinstance(raw_sessions, (list, tuple)):
+        raise ValueError("OBSERVED_SESSION_CALENDAR_SOURCE_SESSIONS_INVALID")
+    sessions = tuple(_strict_calendar_date(item) for item in raw_sessions)
+    if (
+        start is None or end is None or start > end
+        or first is None or last is None
+        or observed is None or available is None or available > observed
+        or any(item is None for item in sessions)
+        or not sessions
+    ):
+        raise ValueError("OBSERVED_SESSION_CALENDAR_SOURCE_FIELDS_INVALID")
+    typed_sessions = tuple(item for item in sessions if item is not None)
+    if (
+        tuple(sorted(typed_sessions)) != typed_sessions
+        or len(set(typed_sessions)) != len(typed_sessions)
+        or typed_sessions[0] != first
+        or typed_sessions[-1] != last
+        or first < start or last > end
+        or result.get("session_count") != len(typed_sessions)
+        or not _is_sha256_text(result.get("source_content_sha256"))
+        or not _is_sha256_text(result.get("source_identity_hash"))
+        or not str(result.get("market") or "").strip()
+        or not str(result.get("provider_identity") or "").strip()
+        or not str(result.get("provider_route") or "").strip()
+        or not str(result.get("revision") or "").strip()
+        or not str(result.get("vintage") or "").strip()
+        or any(result.get(key) is not False for key in (
+            "historical_pit_eligible", "storage_admitted",
+            "strategy_admitted", "learning_admitted",
+        ))
+    ):
+        raise ValueError("OBSERVED_SESSION_CALENDAR_SOURCE_CONTENT_INVALID")
+    body = {key: result[key] for key in result if key != "source_identity_hash"}
+    if result["source_identity_hash"] != _calendar_digest(body):
+        raise ValueError("OBSERVED_SESSION_CALENDAR_SOURCE_HASH_MISMATCH")
+    result["sessions"] = tuple(item.isoformat() for item in typed_sessions)
+    return result
 
 # P0 market phase baseline (Issue #1386). This is an intentionally small
 # regular-session inference layer; it does not change existing fail-open
@@ -300,7 +475,14 @@ def resolve_session_range_fail_closed(
     ):
         return None
     try:
-        cal = xcals.get_calendar(MARKET_EXCHANGE[market])
+        # Exchange-calendar's default moving window may start after a lawful
+        # older source's first session (e.g. 2004). Construction requires a
+        # preceding calendar-day margin for a non-trading range boundary.
+        # Actual sessions/holidays still come from the exchange schedule.
+        cal = xcals.get_calendar(
+            MARKET_EXCHANGE[market],
+            start=start_date - timedelta(days=31),
+        )
         if not bool(cal.is_session(start_date)) or not bool(cal.is_session(end_date)):
             return None
         return [value.date() for value in cal.sessions_in_range(start_date, end_date)]
@@ -439,6 +621,126 @@ def resolve_completed_timeframe_bar_date(
         return None
 
 
+def resolve_session_range_from_observed_sessions_fail_closed(
+    observed_calendar_source: Mapping[str, Any],
+    start_date: date,
+    end_date: date,
+) -> Optional[List[date]]:
+    """Resolve an exact source-observed inclusive session suffix, fail closed."""
+    if (
+        not isinstance(start_date, date) or isinstance(start_date, datetime)
+        or not isinstance(end_date, date) or isinstance(end_date, datetime)
+        or start_date > end_date
+    ):
+        return None
+    try:
+        source = validate_observed_session_calendar_source(observed_calendar_source)
+        sessions = [date.fromisoformat(item) for item in source["sessions"]]
+        if (
+            start_date < date.fromisoformat(source["requested_start"])
+            or end_date > date.fromisoformat(source["requested_end"])
+            or start_date not in sessions or end_date not in sessions
+        ):
+            return None
+        selected = [item for item in sessions if start_date <= item <= end_date]
+        return selected if selected and selected[0] == start_date and selected[-1] == end_date else None
+    except (TypeError, ValueError):
+        return None
+
+
+def resolve_required_daily_history_start_from_observed_sessions_fail_closed(
+    market: Optional[str],
+    target_date: date,
+    required_bars_by_timeframe: Mapping[str, int],
+    observed_calendar_source: Mapping[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Map method-owned D/W/M bars using a content-bound provider calendar.
+
+    Recent period completion is still proven by the installed exchange owner;
+    the provider source only extends older session coverage.  The current
+    observation is never promoted to historical PIT or learning authority.
+    """
+    if (
+        market not in MARKET_EXCHANGE
+        or not isinstance(target_date, date) or isinstance(target_date, datetime)
+        or not isinstance(required_bars_by_timeframe, Mapping)
+    ):
+        return None
+    allowed = {"daily", "weekly", "monthly"}
+    normalized: Dict[str, int] = {}
+    for timeframe, value in required_bars_by_timeframe.items():
+        key = str(timeframe or "").strip().lower()
+        if key not in allowed or isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            return None
+        normalized[key] = value
+    if not any(normalized.values()):
+        return None
+    try:
+        source = validate_observed_session_calendar_source(observed_calendar_source)
+        if (
+            source["market"] != market
+            or date.fromisoformat(source["requested_end"]) != target_date
+            or date.fromisoformat(source["last_session"]) != target_date
+        ):
+            return None
+        sessions = [date.fromisoformat(item) for item in source["sessions"]]
+        start_by_timeframe: Dict[str, date] = {}
+        daily_count = normalized.get("daily", 0)
+        if daily_count:
+            if len(sessions) < daily_count:
+                return None
+            start_by_timeframe["daily"] = sessions[-daily_count]
+
+        for timeframe, frequency in {"weekly": "W-FRI", "monthly": "M"}.items():
+            count = normalized.get(timeframe, 0)
+            if not count:
+                continue
+            completed_through = resolve_completed_timeframe_bar_date(
+                market, target_date, timeframe,
+            )
+            if completed_through is None:
+                return None
+            completed_sessions = [item for item in sessions if item <= completed_through]
+            if not completed_sessions or completed_sessions[-1] != completed_through:
+                return None
+            ordered_periods = []
+            first_session_by_period: Dict[Any, date] = {}
+            for session_date in completed_sessions:
+                period = pd.Timestamp(session_date).to_period(frequency)
+                if period not in first_session_by_period:
+                    ordered_periods.append(period)
+                    first_session_by_period[period] = session_date
+            if len(ordered_periods) < count:
+                return None
+            earliest_period = ordered_periods[-count]
+            start_by_timeframe[timeframe] = first_session_by_period[earliest_period]
+
+        if not start_by_timeframe:
+            return None
+        start_date = min(start_by_timeframe.values())
+        calendar_source_identity = {
+            key: source[key] for key in (
+                "schema_version", "market", "provider_identity", "provider_route",
+                "requested_start", "requested_end", "observed_at", "available_at",
+                "source_content_sha256", "source_identity_hash", "session_count",
+                "first_session", "last_session", "revision", "vintage",
+            )
+        }
+        return {
+            "target_date": target_date,
+            "required_bars_by_timeframe": dict(normalized),
+            "start_by_timeframe": start_by_timeframe,
+            "start_date": start_date,
+            "limiting_timeframes": tuple(
+                timeframe for timeframe, value in start_by_timeframe.items()
+                if value == start_date
+            ),
+            "calendar_source_identity": calendar_source_identity,
+        }
+    except (TypeError, ValueError):
+        return None
+
+
 def resolve_required_daily_history_start_fail_closed(
     market: Optional[str],
     target_date: date,
@@ -469,7 +771,34 @@ def resolve_required_daily_history_start_fail_closed(
         return None
 
     try:
-        cal = xcals.get_calendar(MARKET_EXCHANGE[market])
+        # The installed exchange_calendars default schedule starts at a moving
+        # ~20-year boundary. Method-owned 268-month RSI history can be older.
+        # Widen only the exchange calendar's schedule construction, never the
+        # provider's data request or method-specific number of completed bars.
+        calendar_start = target_date
+        daily_count = normalized.get("daily", 0)
+        if daily_count:
+            # Over-allocate exchange schedule days, then count ACTUAL sessions.
+            calendar_start = min(
+                calendar_start, target_date - timedelta(days=3 * daily_count)
+            )
+        for timeframe, frequency in (("weekly", "W-FRI"), ("monthly", "M")):
+            count = normalized.get(timeframe, 0)
+            if count:
+                # One preceding period also handles the unfinished W/M bar.
+                earliest_period = (
+                    pd.Timestamp(target_date).to_period(frequency) - count
+                )
+                calendar_start = min(
+                    calendar_start, earliest_period.start_time.date()
+                )
+        # A period's first calendar day may be a weekend/holiday: schedule
+        # must start before that date so date_to_session(direction="next")
+        # can prove its first session instead of raising DateOutOfBounds.
+        cal = xcals.get_calendar(
+            MARKET_EXCHANGE[market],
+            start=calendar_start - timedelta(days=31),
+        )
         if not bool(cal.is_session(target_date)):
             return None
         target_session = cal.date_to_session(target_date, direction="previous")

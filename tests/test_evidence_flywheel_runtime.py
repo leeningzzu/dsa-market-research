@@ -39,6 +39,8 @@ from src.services.evidence_flywheel_runtime import (
 )
 from src.services.pit_dataset_service import PITDatasetService
 from src.services.evidence_traceability_registry import MANIFEST_HASH, METRIC_BINDINGS, digest
+from src.services.supply_demand_service import compile_volume_price_phase_context
+from src.services.chan_feature_adapter import build_chan_feature_context
 from src.services.data_object_admission import seal_source_rights_evidence
 from src.services.prediction_ledger_service import (
     TRACE_FEATURE_SCHEMA_VERSION,
@@ -92,6 +94,68 @@ def test_pipeline_execution_receipts_exist_only_for_actual_returned_producers():
     assert set(receipts) == {"SUPPLY"}
     assert receipts["SUPPLY"]["output_hash"] == digest(supply)
     assert receipts["SUPPLY"]["input_identity"] == identity
+
+
+def test_pipeline_execution_receipts_bind_distribution_and_narrow_chan_upstreams():
+    target = date(2026, 9, 30)
+    supply = {
+        "schema_version": "supply-demand-volume-price-v1", "status": "READY",
+        "stock_code": "600519", "target_date": target.isoformat(),
+        "timeframe": "daily", "state": "SUPPLY_PRESSURE",
+        "completed_bar_only": True, "institutional_intent_claim": "NOT_INFERRED",
+        "data_quality": {"source_alignment": "SINGLE_SOURCE"},
+    }
+    structure = {
+        "schema_version": "price-structure-v1", "status": "READY",
+        "stock_code": "600519", "target_date": target.isoformat(),
+        "timeframe": "daily", "end_date": target.isoformat(),
+        "completed_bar_only": True,
+        "range_state": "FAILED_BREAKOUT_RETURNED_BELOW_LEVEL",
+        "structure_event": {"state": "FAILED_UP_BREAKOUT", "provisional": False},
+        "pivots": [
+            {"kind": "LOW", "price": 10.0, "origin_time": "2026-09-01",
+             "confirmed_at": "2026-09-03", "provisional": False,
+             "algorithm_version": "test", "config_hash": "a" * 64, "invalidation": {}},
+            {"kind": "HIGH", "price": 12.0, "origin_time": "2026-09-08",
+             "confirmed_at": "2026-09-10", "provisional": False,
+             "algorithm_version": "test", "config_hash": "a" * 64, "invalidation": {}},
+        ],
+        "swings": [
+            {"direction": "UP", "origin_time": "2026-09-01",
+             "confirmed_at": "2026-09-10", "start_kind": "LOW", "start_price": 10.0,
+             "end_kind": "HIGH", "end_price": 12.0, "price_change_pct": 20.0,
+             "provisional": False, "algorithm_version": "test", "config_hash": "a" * 64},
+        ],
+    }
+    phase = compile_volume_price_phase_context(
+        supply_demand_context=supply, price_structure_context=structure,
+        timeframe="daily",
+    )
+    chan = build_chan_feature_context(structure)
+    identity = {
+        "data_snapshot_identity": "f" * 64,
+        "provider_identity": "synthetic",
+        "adjustment_basis": "qfq",
+        "price_identity_reasons": [],
+        "stock_code": "600519", "market": "cn",
+        "target_date": target.isoformat(),
+    }
+    receipts = StockAnalysisPipeline._build_direct_method_execution_receipts(
+        code="600519", market="cn", asset_route="STOCK", target_date=target,
+        completed_history_identity=identity, chip_data=None, canonical_trend_result=None,
+        supply_demand_context=supply, cost_structure_context=None,
+        price_structure_context=structure, volatility_momentum_context=None,
+        pattern_trigger_context=None, multi_timeframe_structure_context=None,
+        volume_price_phase_context=phase, chan_feature_context=chan,
+    )
+    assert set(receipts) == {"SUPPLY", "DISTRIBUTION", "STRUCTURE", "CHAN"}
+    assert receipts["DISTRIBUTION"]["output_hash"] == digest(phase)
+    assert set(receipts["DISTRIBUTION"]["upstream_hashes"]) == {
+        "supply_demand_context", "price_structure_context",
+    }
+    assert receipts["CHAN"]["output_hash"] == digest(chan)
+    assert set(receipts["CHAN"]["upstream_hashes"]) == {"price_structure_context"}
+
 
 
 @pytest.fixture()
@@ -1586,7 +1650,7 @@ def test_native_zero_model_record_writes_only_the_admitted_temp_db_surfaces(
         assert gate4["state"] == "VETOED"
         assert gate4["canonical_action_authority"] is True
         assert gate4["correlation_dedup"]["status"] == "VERIFIED"
-        assert gate4["correlation_dedup"]["group_count"] == 15
+        assert gate4["correlation_dedup"]["group_count"] == 16
         assert set(gate4["vetoes"]) == {
             "DATA", "RISK", "LIQUIDITY", "EXECUTION",
         }

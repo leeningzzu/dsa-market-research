@@ -16,6 +16,9 @@ from src.config import Config
 
 from src.services import evidence_traceability_registry as reg
 from src.services.cost_structure_service import build_cost_structure_context
+from src.services.candlestick_pattern_service import (
+    build_completed_timeframe_candlestick_context,
+)
 from src.services.data_object_admission import (
     compile_data_object_admission_view,
     seal_data_object_admission_receipt,
@@ -170,8 +173,11 @@ def native_summary(frame=None, target=None):
     )
 
 
-def native_summary_with_mtf(*, intraday=False, volume_unit="UNKNOWN"):
+def native_summary_with_mtf(*, intraday=False, volume_unit="UNKNOWN", typed_daily=False):
     frame = bars(520)
+    if typed_daily:
+        from tests.test_multi_timeframe_structure_service import _with_observed_identity
+        frame = _with_observed_identity(frame, provider="synthetic")
     target = frame["date"].iloc[-1]
     completed = frame[frame["date"] <= target].copy()
     trend_analyzer = StockTrendAnalyzer()
@@ -222,10 +228,10 @@ def test_registry_owners_and_strategy_are_source_bound():
 def test_legacy_audit_membership_and_hash_are_not_redefined():
     expected = ("strategy_id", "contract_version", "composite_score", "canonical_decision",
                 "market_sector_regime", "trend_relative_strength", "supply_demand_volume_price",
-                "cost_structure_evidence", "price_structure_evidence", "volatility_momentum_evidence",
+                "distribution_risk_evidence", "cost_structure_evidence", "price_structure_evidence", "volatility_momentum_evidence",
                 "pattern_trigger_evidence", "multi_timeframe_structure_context")
     assert reg.ledger_evidence_keys() == expected
-    assert reg.digest({"schema_version": "stock-factor-evidence-v1", "fields": list(expected)}) == "426d7f21de79ad26e12ea39b4c686b489b90dc24d88f0750bcb5aec421265647"
+    assert reg.digest({"schema_version": "stock-factor-evidence-v1", "fields": list(expected)}) == "a50e9f95e5fb1ada1a2597c1162c9c074f7c76540e656350eee5595c11f6f270"
 
 
 def test_orphan_strategy_and_duplicate_bindings_are_rejected():
@@ -283,8 +289,19 @@ def test_method_window_policy_view_is_complete_manifest_bound_and_non_mutating()
     assert view["decision_authority"]["window_method"] is False
 
     assert methods["MACD"]["window_classes"] == ("RECURSIVE_WARMUP",)
-    assert methods["MACD"]["current_execution_timeframes"] == ("daily",)
+    # Preserve the independent accepted constructor as predecessor evidence.
+    assert next(p for p in reg.DECLARED_METHOD_WINDOW_PROFILES
+                if p.method_id == "MACD").current_execution_timeframes == ("daily",)
+    assert next(p for p in reg.DECLARED_METHOD_WINDOW_PROFILES
+                if p.method_id == "RSI").current_execution_timeframes == ("daily",)
+    assert methods["MACD"]["current_execution_timeframes"] == reg.TIMEFRAMES
+    assert methods["RSI"]["current_execution_timeframes"] == reg.TIMEFRAMES
     assert methods["MACD"]["target_timeframes"] == reg.TIMEFRAMES
+    for method_id in (
+        "SUPPLY_RELATIVE_VOLUME", "SUPPLY_DIRECTIONAL_VOLUME",
+        "SUPPLY_CMF", "COST_ROLLING_REFERENCE",
+    ):
+        assert methods[method_id]["current_execution_timeframes"] == reg.TIMEFRAMES
     assert methods["MA_SLOPE_CROSS"]["leaf_implementation_state"] == "EXISTING_REUSED"
     assert methods["MA_SLOPE_CROSS"]["current_execution_timeframes"] == reg.TIMEFRAMES
     assert methods["MA_COMPRESSION_RELEASE"]["leaf_implementation_state"] == "EXISTING_REUSED"
@@ -302,20 +319,32 @@ def test_method_window_policy_view_is_complete_manifest_bound_and_non_mutating()
     )
     assert methods["MTF_MA_LEVEL_ALIGNMENT"]["target_timeframes"] == reg.NON_DAILY_TECHNICAL_TIMEFRAMES
     assert methods["CUP_HANDLE"]["window_classes"] == ("VARIABLE_STRUCTURE",)
-    assert methods["CUP_HANDLE"]["current_execution_timeframes"] == ("daily",)
+    for method_id in (
+        "CUP_HANDLE", "DOUBLE_BOTTOM", "VCP", "FLAT_BASE",
+        "TIGHT_CONSOLIDATION", "CANDLESTICK",
+    ):
+        assert methods[method_id]["current_execution_timeframes"] == reg.TIMEFRAMES
     assert methods["CANDLESTICK"]["leaf_implementation_state"] == "EXISTING_REUSED"
     assert methods["CANDLESTICK"]["canonical_path"] == "pattern_trigger_evidence.context.candlestick"
-    assert methods["CANDLESTICK"]["current_execution_timeframes"] == ("daily",)
+    assert methods["CANDLESTICK"]["current_execution_timeframes"] == reg.TIMEFRAMES
     assert set(methods["CANDLESTICK"]["window_classes"]) == {"ADAPTIVE_CONTEXT", "EVENT_ANCHORED"}
     assert set(methods["ADX_DMI"]["window_classes"]) == {"FIXED_ROLLING", "RECURSIVE_WARMUP"}
     assert set(methods["KDJ"]["window_classes"]) == {"FIXED_ROLLING", "RECURSIVE_WARMUP"}
     assert methods["ATR_WILDER"]["window_classes"] == ("RECURSIVE_WARMUP",)
     assert methods["ATR_WILDER"]["requirement_id"] == "MOMENTUM"
     assert methods["ATR_WILDER"]["leaf_implementation_state"] == "EXISTING_REUSED"
-    assert methods["ATR_WILDER"]["current_execution_timeframes"] == ("daily",)
+    for method_id in (
+        "ROC", "VOLATILITY_TR_SMA", "ATR_WILDER", "CONFIRMED_DIVERGENCE",
+    ):
+        assert methods[method_id]["current_execution_timeframes"] == reg.TIMEFRAMES
     assert methods["ATR_WILDER"]["canonical_path"] == "volatility_momentum_evidence"
-    assert methods["CHAN"]["window_classes"] == ("INCREMENTAL_STATE_MACHINE",)
-    assert methods["CHAN"]["current_execution_timeframes"] == ()
+    assert methods["CHAN"]["window_classes"] == (
+        "VARIABLE_STRUCTURE", "INCREMENTAL_STATE_MACHINE",
+    )
+    assert methods["CHAN"]["current_execution_timeframes"] == ("daily",)
+    assert methods["CHAN"]["leaf_implementation_state"] == "EXISTING_REUSED"
+    assert methods["DISTRIBUTION"]["current_execution_timeframes"] == ("daily",)
+    assert methods["DISTRIBUTION"]["leaf_implementation_state"] == "EXISTING_REUSED"
     assert methods["VALUATION"]["target_timeframes"] == ("asset",)
     assert methods["VALUATION"]["window_classes"] == ("VINTAGE_ASOF", "CROSS_SECTIONAL_ASOF")
     assert methods["VALUATION"]["consumer_scope"] == "ASSET_LAYER"
@@ -348,7 +377,7 @@ def test_method_window_policy_view_is_complete_manifest_bound_and_non_mutating()
     assert current_manifest["method_contracts"]["MTF"] == {
         "version": "completed-daily-plus-intraday-context-v2",
         "warmup": 26,
-        "config_hash": "b6b2cfe28159ba691dcc6f7c42479210286d6cfb362c58b5b577bd772f735c25",
+        "config_hash": "6a06b13b33761fafcdeae55f1d560dd1334a9c57cc12ddfdb2db5e0d429f0acc",
     }
     pre_intraday_manifest = deepcopy(current_manifest)
     pre_intraday_manifest["method_contracts"]["MTF"] = {
@@ -358,8 +387,8 @@ def test_method_window_policy_view_is_complete_manifest_bound_and_non_mutating()
     }
     # Explicit manifest-version refreeze for accepted source-bound Quality/Valuation
     # owners; historical pre-admission digests remain in Git. V2.5 is unchanged.
-    assert reg.digest(pre_intraday_manifest) == "93755e701f5be6d2262ec5cdd8413fe4f232f9ae71e85778f86e4c6f672c338f"
-    assert reg.MANIFEST_HASH == "72626f853407bac7ac7a500707aa40b6c89b307f944c39a303b5601f15fbd64e"
+    assert reg.digest(pre_intraday_manifest) == "a27f1bd77baec12b37c62179d3a15db5f7047506a36dbe4c31f033a771155dd9"
+    assert reg.MANIFEST_HASH == "f0bbecdc5d5bad05e7a9e5268834c9b6ac0ebb57a6ea877112e7690b3b84e323"
     assert reg.MANIFEST_HASH == manifest_before == reg.digest(reg.manifest_document())
     assert reg.digest(reg.METRIC_BINDINGS) == metrics_before == "ac2e214238229453592464d99ed6341651f7d232c9339da66d2fec7fc4d6729a"
     assert not any(
@@ -439,8 +468,16 @@ def test_timeframe_family_matrix_is_exact_56_cells_and_keeps_deferred_methods_vi
     assert method_states["KDJ"] == "NOT_ADMITTED"
     weekly_momentum = cells[("weekly", "MOMENTUM")]
     weekly_states = {item["method_id"]: item["state"] for item in weekly_momentum["method_coverage"]}
-    assert weekly_states["ATR_WILDER"] == "NOT_ADMITTED"
-    assert cells[("daily", "REGIME")]["state"] == "NOT_APPLICABLE"
+    # The method is admitted on weekly bars, but this no-MTF fixture has no
+    # weekly carrier; the honest state is MISSING, never a fabricated value.
+    assert weekly_states["ATR_WILDER"] == "MISSING"
+    daily_regime = cells[("daily", "REGIME")]
+    assert daily_regime["state"] in {"READY", "PARTIAL", "MISSING", "UNKNOWN"}
+    assert daily_regime["projection_scope"] == "SHARED_ASSET_CONTEXT"
+    assert daily_regime["shared_parent_context"] is True
+    assert {row["method_id"] for row in daily_regime["method_coverage"]} == {
+        "MARKET_SECTOR_REGIME"
+    }
 
     matrix_method_ids = {
         item["method_id"]
@@ -449,11 +486,424 @@ def test_timeframe_family_matrix_is_exact_56_cells_and_keeps_deferred_methods_vi
     }
     non_matrix_ids = {item["method_id"] for item in matrix["non_matrix_methods"]}
     assert matrix_method_ids | non_matrix_ids == EXPECTED_METHOD_WINDOW_IDS
-    assert {item["method_id"] for item in matrix["non_matrix_methods"]} >= {
-        "MARKET_SECTOR_REGIME", "QUALITY", "VALUATION", "DISTRIBUTION", "RISK_REWARD",
+    assert matrix_method_ids.isdisjoint(non_matrix_ids)
+    assert "MARKET_SECTOR_REGIME" not in non_matrix_ids
+    assert non_matrix_ids >= {
+        "QUALITY", "VALUATION", "DISTRIBUTION", "RISK_REWARD",
         "CHAN", "WAVE", "ETF_SPECIFIC", "GLOBAL", "BREADTH", "PROBABILITY",
     }
     assert len(matrix["matrix_hash"]) == 64
+
+
+def test_all_56_cells_have_executable_contract_and_regime_is_shared_not_seven_votes():
+    factor = native_summary_with_mtf(
+        intraday=True, volume_unit="share", typed_daily=True,
+    )
+    matrix = reg.compile_timeframe_family_matrix(factor)
+    validated = reg.validate_timeframe_family_matrix(matrix)
+
+    assert validated["implementation_complete"] is True
+    assert validated["executable_cell_count"] == 56
+    assert validated["empty_method_cell_ids"] == ()
+    assert len(matrix["cells"]) == 56
+    for cell in matrix["cells"]:
+        assert cell["implementation_state"] == "EXECUTABLE"
+        assert cell["method_coverage"]
+        assert cell["reader_projection"]["missingness_visible"] is True
+        assert cell["reader_projection"]["numeric_requires_product_and_method_ready"] is True
+        assert cell["independent_action_authority"] is False
+        assert cell["cross_timeframe_vote_counting"] is False
+        for method in cell["method_coverage"]:
+            assert method["method_id"]
+            assert method["owner"]
+            assert method["canonical_path"]
+            assert method["reason"]
+            assert len(method["method_receipt_hash"]) == 64
+            assert method["independent_action_authority"] is False
+
+    regime_cells = [cell for cell in matrix["cells"] if cell["family"] == "REGIME"]
+    assert len(regime_cells) == 7
+    assert all(cell["state"] != "NOT_APPLICABLE" for cell in regime_cells)
+    assert {
+        method["method_id"]
+        for cell in regime_cells
+        for method in cell["method_coverage"]
+    } == {"MARKET_SECTOR_REGIME"}
+    assert all(
+        cell["projection_scope"] == "SHARED_ASSET_CONTEXT"
+        and cell["shared_parent_context"] is True
+        and cell["cross_timeframe_vote_counting"] is False
+        for cell in regime_cells
+    )
+    parent_hashes = {cell["shared_parent_hash"] for cell in regime_cells}
+    assert len(parent_hashes) == 1
+    assert len(next(iter(parent_hashes))) == 64
+
+    damaged = deepcopy(matrix)
+    damaged["cells"][0]["method_coverage"] = []
+    damaged["cells"][0]["applicable_method_ids"] = ()
+    with pytest.raises(reg.TraceabilityError, match="TIMEFRAME_FAMILY_CELL_METHOD_EMPTY"):
+        reg.validate_timeframe_family_matrix(damaged)
+
+
+def test_relative_strength_is_an_executable_method_on_all_seven_timeframes():
+    policy = reg.compile_method_window_policy_view()
+    methods = {row["method_id"]: row for row in policy["methods"]}
+    assert methods["RELATIVE_STRENGTH"]["current_execution_timeframes"] == reg.TIMEFRAMES
+
+    factor = native_summary_with_mtf(
+        intraday=True, volume_unit="share", typed_daily=True,
+    )
+    matrix = reg.compile_timeframe_family_matrix(factor)
+    cells = {
+        (row["timeframe"], row["family"]): row
+        for row in matrix["cells"]
+    }
+    for timeframe in reg.TIMEFRAMES:
+        methods = {
+            row["method_id"]: row
+            for row in cells[(timeframe, "TREND_RS")]["method_coverage"]
+        }
+        rs = methods["RELATIVE_STRENGTH"]
+        assert rs["state"] in reg.TIMEFRAME_FAMILY_MATRIX_STATES
+        assert rs["reason"]
+        assert len(rs["method_receipt_hash"]) == 64
+        if timeframe != "daily":
+            assert rs["state"] == "MISSING"
+            assert rs["reason"] == "TIMEFRAME_RELATIVE_STRENGTH_CONTEXT_MISSING"
+
+def test_timeframe_etf_peer_rs_reaches_exact_cell_and_peer_tamper_fails_closed():
+    factor = native_summary_with_mtf(
+        intraday=True, volume_unit="share", typed_daily=True,
+    )
+    frame = factor["multi_timeframe_structure_context"]["timeframes"]["30m"]
+    target_hash = frame["intraday_identity_hash"]
+    identity = {
+        "provider_identity": "synthetic",
+        "adjustment_basis": "qfq",
+        "timeframe": "30m",
+        "completed_bar_only": True,
+        "available_at_max": frame["latest_bar_end"],
+    }
+    frame["relative_strength"] = {
+        "schema_version": "timeframe-etf-peer-relative-strength-v1",
+        "status": "READY",
+        "reason": "TIMEFRAME_ETF_PEER_UNIVERSE_READY",
+        "timeframe": "30m",
+        "target_bar_end": frame["latest_bar_end"],
+        "horizon_bars": 20,
+        "input_identity": {
+            "target": {**identity, "identity_hash": target_hash},
+            "peers": [
+                {**identity, "identity_hash": char * 64}
+                for char in ("b", "c", "d")
+            ],
+        },
+        "data_quality": {
+            "source_alignment": "MATCHED",
+            "exact_shared_endpoints": True,
+        },
+        "peer_universe": {"universe_hash": "e" * 64},
+        "relative": {
+            "state": "OUTPERFORMING",
+            "rank": 1,
+            "rank_denominator": 4,
+            "percentile": 100.0,
+            "excess_vs_peer_median_pct_points": 2.75,
+        },
+        "independent_action_authority": False,
+    }
+    matrix = reg.compile_timeframe_family_matrix(factor)
+    cell = next(
+        row for row in matrix["cells"]
+        if row["timeframe"] == "30m" and row["family"] == "TREND_RS"
+    )
+    rs = next(
+        row for row in cell["method_coverage"]
+        if row["method_id"] == "RELATIVE_STRENGTH"
+    )
+    assert rs["state"] == "READY"
+    assert rs["reason"] == "TIMEFRAME_ETF_PEER_UNIVERSE_READY"
+    assert rs["runtime_source_binding"]["runtime_source_bound"] is True
+    assert rs["runtime_source_binding"]["identity_kind"] == (
+        "TIMEFRAME_ETF_PEER_UNIVERSE_INPUT"
+    )
+    assert len(rs["runtime_source_binding"]["comparison_identity_hashes"]) == 3
+    assert cell["state"] == "PARTIAL"
+    assert cell["independent_action_authority"] is False
+
+    tampered = deepcopy(factor)
+    tampered["multi_timeframe_structure_context"]["timeframes"]["30m"][
+        "relative_strength"
+    ]["input_identity"]["peers"][0]["identity_hash"] = "bad"
+    damaged = reg.compile_timeframe_family_matrix(tampered)
+    damaged_cell = next(
+        row for row in damaged["cells"]
+        if row["timeframe"] == "30m" and row["family"] == "TREND_RS"
+    )
+    damaged_rs = next(
+        row for row in damaged_cell["method_coverage"]
+        if row["method_id"] == "RELATIVE_STRENGTH"
+    )
+    assert damaged_rs["state"] == "UNKNOWN"
+    assert damaged_rs["reason"] == (
+        "TIMEFRAME_RELATIVE_STRENGTH_SOURCE_IDENTITY_UNPROVEN"
+    )
+
+
+def test_source_bound_supply_and_cost_follow_actual_seven_timeframe_carriers_without_authority():
+    factor = native_summary_with_mtf(
+        intraday=True, volume_unit="share", typed_daily=True,
+    )
+    matrix = reg.compile_timeframe_family_matrix(factor)
+    cells = {(row["timeframe"], row["family"]): row for row in matrix["cells"]}
+
+    weekly_supply = cells[("weekly", "SUPPLY")]
+    weekly_cost = cells[("weekly", "COST")]
+    assert weekly_supply["state"] == "READY"
+    assert weekly_cost["state"] == "READY"
+    assert {
+        row["method_id"] for row in weekly_supply["method_coverage"]
+        if row["state"] == "READY"
+    } >= {
+        "SUPPLY_RELATIVE_VOLUME", "SUPPLY_DIRECTIONAL_VOLUME", "SUPPLY_CMF",
+    }
+    assert next(
+        row for row in weekly_cost["method_coverage"]
+        if row["method_id"] == "COST_ROLLING_REFERENCE"
+    )["state"] == "READY"
+
+    # This deterministic fixture has fewer than the monthly method windows;
+    # execution is admitted but readiness remains honestly MISSING.
+    assert cells[("monthly", "SUPPLY")]["state"] == "MISSING"
+    assert cells[("monthly", "COST")]["state"] == "MISSING"
+    for timeframe in ("60m", "30m", "15m", "5m"):
+        assert cells[(timeframe, "SUPPLY")]["state"] == "PARTIAL"
+        assert cells[(timeframe, "COST")]["state"] == "PARTIAL"
+
+    for timeframe, family in (
+        ("weekly", "SUPPLY"), ("weekly", "COST"),
+        ("30m", "SUPPLY"), ("30m", "COST"),
+    ):
+        for method in cells[(timeframe, family)]["method_coverage"]:
+            if method["method_id"] in reg.SOURCE_BOUND_TIMEFRAME_METHOD_IDS:
+                binding = method["runtime_source_binding"]
+                assert binding["runtime_source_bound"] is True
+                assert binding["data_rights_admitted"] is False
+                assert binding["strategy_admitted"] is False
+                assert method["independent_action_authority"] is False
+
+
+def test_source_bound_momentum_methods_use_exact_timeframe_carrier_and_tamper_fails():
+    factor = native_summary_with_mtf(
+        intraday=True, volume_unit="share", typed_daily=True,
+    )
+    matrix = reg.compile_timeframe_family_matrix(factor)
+    cells = {(row["timeframe"], row["family"]): row for row in matrix["cells"]}
+
+    for timeframe in ("60m", "30m", "15m", "5m"):
+        methods = {
+            row["method_id"]: row
+            for row in cells[(timeframe, "MOMENTUM")]["method_coverage"]
+        }
+        for method_id in ("ROC", "VOLATILITY_TR_SMA", "ATR_WILDER"):
+            method = methods[method_id]
+            assert method["state"] == "READY"
+            assert method["runtime_source_binding"]["runtime_source_bound"] is True
+            assert method["runtime_source_binding"]["data_rights_admitted"] is False
+            assert method["independent_action_authority"] is False
+        divergence = methods["CONFIRMED_DIVERGENCE"]
+        assert divergence["state"] == "MISSING"
+        assert divergence["reason"] == "CONFIRMED_SAME_KIND_PIVOT_PAIR_MISSING"
+        assert divergence["independent_action_authority"] is False
+
+    forged = deepcopy(factor)
+    forged["multi_timeframe_structure_context"]["timeframes"]["30m"][
+        "volatility_momentum"
+    ]["source_identity_hash"] = "0" * 64
+    forged_matrix = reg.compile_timeframe_family_matrix(forged)
+    forged_cell = next(
+        row for row in forged_matrix["cells"]
+        if (row["timeframe"], row["family"]) == ("30m", "MOMENTUM")
+    )
+    forged_methods = {
+        row["method_id"]: row for row in forged_cell["method_coverage"]
+    }
+    for method_id in ("ROC", "VOLATILITY_TR_SMA", "ATR_WILDER", "CONFIRMED_DIVERGENCE"):
+        method = forged_methods[method_id]
+        assert method["state"] == "UNKNOWN"
+        assert method["reason"] == "TIMEFRAME_MOMENTUM_SOURCE_IDENTITY_MISMATCH"
+        assert method["runtime_source_binding"]["runtime_source_bound"] is False
+        assert method["independent_action_authority"] is False
+
+
+def test_source_bound_classical_patterns_use_weekly_carrier_and_tamper_fails():
+    factor = native_summary_with_mtf(
+        intraday=True, volume_unit="share", typed_daily=True,
+    )
+    matrix = reg.compile_timeframe_family_matrix(factor)
+    cell = next(
+        row for row in matrix["cells"]
+        if (row["timeframe"], row["family"]) == ("weekly", "PATTERN")
+    )
+    methods = {
+        row["method_id"]: row for row in cell["method_coverage"]
+    }
+    for method_id in (
+        "CUP_HANDLE", "DOUBLE_BOTTOM", "VCP", "FLAT_BASE",
+        "TIGHT_CONSOLIDATION",
+    ):
+        method = methods[method_id]
+        assert method["state"] == "READY"
+        assert method["reason"] in {
+            "TIMEFRAME_CLASSICAL_PATTERN_OBSERVED",
+            "TIMEFRAME_CLASSICAL_PATTERN_EVALUATED_NO_SIGNAL",
+        }
+        assert method["runtime_source_binding"]["runtime_source_bound"] is True
+        assert method["runtime_source_binding"]["data_rights_admitted"] is False
+        assert method["independent_action_authority"] is False
+
+    forged = deepcopy(factor)
+    forged["multi_timeframe_structure_context"]["timeframes"]["weekly"][
+        "pattern_trigger"
+    ]["broad_patterns"]["source_identity_hash"] = "0" * 64
+    forged_matrix = reg.compile_timeframe_family_matrix(forged)
+    forged_cell = next(
+        row for row in forged_matrix["cells"]
+        if (row["timeframe"], row["family"]) == ("weekly", "PATTERN")
+    )
+    forged_methods = {
+        row["method_id"]: row for row in forged_cell["method_coverage"]
+    }
+    for method_id in (
+        "CUP_HANDLE", "DOUBLE_BOTTOM", "VCP", "FLAT_BASE",
+        "TIGHT_CONSOLIDATION",
+    ):
+        method = forged_methods[method_id]
+        assert method["state"] == "UNKNOWN"
+        assert method["reason"] == "TIMEFRAME_CLASSICAL_PATTERN_RECEIPT_UNBOUND"
+        assert method["runtime_source_binding"]["runtime_source_bound"] is False
+        assert method["independent_action_authority"] is False
+
+
+def _factor_with_source_bound_30m_candlestick():
+    from tests.test_candlestick_pattern_service import (
+        _completed_30m_history,
+        _completed_30m_structure,
+    )
+
+    factor = native_summary_with_mtf(
+        intraday=True, volume_unit="share", typed_daily=True,
+    )
+    history = _completed_30m_history()
+    target = pd.Timestamp(history.iloc[-1]["date"]).tz_convert("UTC")
+    frame = factor["multi_timeframe_structure_context"]["timeframes"]["30m"]
+    source_identity_hash = frame["intraday_identity_hash"]
+    structure = _completed_30m_structure(history)
+    structure["intraday_identity_hash"] = source_identity_hash
+    evidence = build_completed_timeframe_candlestick_context(
+        stock_code="600519", history=history, timeframe="30m",
+        target_bar_end=target, market="cn",
+        price_structure_context=structure,
+        supply_demand_context={
+            "status": "READY", "target_date": target.date().isoformat(),
+            "state": "BALANCED",
+        },
+        source_identity_hash=source_identity_hash,
+        evidence_available_at=target + pd.Timedelta(hours=2),
+    )
+    assert evidence["status"] == "READY"
+    frame["pattern_trigger"] = {
+        "status": "READY",
+        "reason": evidence["reason"],
+        "timeframe": "30m",
+        "candlestick": evidence,
+        "broad_patterns": {
+            "status": "NOT_ADMITTED",
+            "reason": "NON_DAILY_CLASSICAL_BASE_GEOMETRY_NOT_YET_ADMITTED",
+        },
+        "independent_action_authority": False,
+        "strategy_admitted": False,
+        "learning_admitted": False,
+    }
+    factor["evidence_traceability"] = reg.build_runtime_trace(factor)
+    return factor
+
+
+def test_source_bound_30m_candlestick_reaches_pattern_matrix_without_authority():
+    factor = _factor_with_source_bound_30m_candlestick()
+    matrix = factor["evidence_traceability"]["timeframe_family_matrix"]
+    cell = next(
+        row for row in matrix["cells"]
+        if (row["timeframe"], row["family"]) == ("30m", "PATTERN")
+    )
+    method = next(
+        row for row in cell["method_coverage"]
+        if row["method_id"] == "CANDLESTICK"
+    )
+    # Candlestick is source-bound, but this hand-built fixture intentionally
+    # leaves the broad classical-pattern carrier unadmitted.
+    assert cell["state"] == "PARTIAL"
+    assert method["state"] == "READY"
+    assert method["reason"] == "TIMEFRAME_SOURCE_BOUND_CANDLESTICK_OBSERVED"
+    assert method["canonical_path"].endswith("30m.pattern_trigger.candlestick")
+    assert method["runtime_source_binding"]["runtime_source_bound"] is True
+    assert method["runtime_source_binding"]["data_rights_admitted"] is False
+    assert method["independent_action_authority"] is False
+    assert factor["strategy_eligibility"]["required_evidence"][
+        "thirty_minute_trigger"
+    ] == "UNKNOWN"
+
+
+def test_forged_30m_candlestick_without_timeframe_carrier_is_unknown():
+    factor = _factor_with_source_bound_30m_candlestick()
+    frame = factor["multi_timeframe_structure_context"]["timeframes"]["30m"]
+    frame["intraday_identity_hash"] = None
+    factor["evidence_traceability"] = reg.build_runtime_trace(factor)
+    cell = next(
+        row for row in factor["evidence_traceability"]["timeframe_family_matrix"]["cells"]
+        if (row["timeframe"], row["family"]) == ("30m", "PATTERN")
+    )
+    method = next(row for row in cell["method_coverage"] if row["method_id"] == "CANDLESTICK")
+    assert method["state"] == "UNKNOWN"
+    assert method["reason"] == "TIMEFRAME_CANDLESTICK_RECEIPT_UNBOUND"
+    assert method["runtime_source_binding"]["runtime_source_bound"] is False
+
+
+def test_forged_supply_and_cost_values_without_timeframe_source_carrier_remain_unknown():
+    frame = {
+        "status": "PARTIAL",
+        "completed_bar_only": True,
+        "observations": 80,
+        "source_alignment": {"status": "SINGLE_SOURCE", "sources": ["Fixture"]},
+        "supply_demand": {
+            "status": "READY",
+            "relative_volume": {"volume_ratio_20_completed_bars": 1.2},
+            "directional_volume": {"signed_volume_balance": 0.2},
+            "close_location_flow": {"cmf_20": 0.1},
+        },
+        "cost_bar_reference": {
+            "status": "READY",
+            "window_20": {"status": "READY"},
+            "window_60": {"status": "READY"},
+        },
+    }
+    matrix = reg.compile_timeframe_family_matrix({
+        "multi_timeframe_structure_context": {"timeframes": {"30m": frame}},
+    })
+    cells = {(row["timeframe"], row["family"]): row for row in matrix["cells"]}
+    for family in ("SUPPLY", "COST"):
+        methods = [
+            row for row in cells[("30m", family)]["method_coverage"]
+            if row["method_id"] in reg.SOURCE_BOUND_TIMEFRAME_METHOD_IDS
+        ]
+        assert methods
+        assert all(row["state"] == "UNKNOWN" for row in methods)
+        assert all(row["reason"] == "TIMEFRAME_SOURCE_CARRIER_UNBOUND" for row in methods)
+        assert all(
+            row["runtime_source_binding"]["runtime_source_bound"] is False
+            for row in methods
+        )
 
 
 def _minute_matrix_volume_context(*, volume_status=None, admitted_volume=False, price_momentum=True):
@@ -752,18 +1202,985 @@ def test_generic_nonprice_source_observation_is_partial_source_not_strategy_auth
         reg.compile_complete_research_universe_view(forged)
 
 
+def _sse_json_fixture(
+    sql_id, rows, *, pagination="false", page_help=None
+):
+    document = {
+        "actionErrors": [],
+        "fieldErrors": {},
+        "isPagination": pagination,
+        "queryDate": "",
+        "result": rows,
+        "sqlId": sql_id,
+    }
+    if page_help is not None:
+        document["pageHelp"] = page_help
+    return json.dumps(
+        document, ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")
+
+
+def _sse_disclosure_fixtures():
+    company = _sse_json_fixture(
+        "COMMON_SSE_CP_GPJCTPZ_GPLB_GPGK_GSGK_C",
+        [{
+            "A_LIST_DATE": "20010827",
+            "A_STOCK_CODE": "600519",
+            "COMPANY_CODE": "600519",
+            "FULL_NAME": "贵州茅台酒股份有限公司",
+            "SECURITY_ABBR_A_CN": "贵州茅台",
+            "STATE_CODE_A_DESC": "上市",
+            "LIST_BOARD": "1",
+            "SEC_TYPE": "主板A",
+            "CSRC_CODE": "C",
+            "CSRC_CODE_DESC": "制造业",
+            "CSRC_GREAT_CODE": "15",
+            "CSRC_GREAT_CODE_DESC": "酒、饮料和精制茶制造业",
+        }],
+    )
+    basic = _sse_json_fixture(
+        "COMMON_SSE_CP_JJLB_ETFJJGK_GGSGSHQD_JBXX_C",
+        [{
+            "NAV": "￥4.1176",
+            "CREATION_REDEMPTION_UNIT": "900000",
+            "FUND_NAME": "华泰柏瑞沪深300交易型开放式指数证券投资基金",
+            "FUND_COMP_NAME": "华泰柏瑞基金管理有限公司",
+            "CREATION_REDEMPTION": "申购和赎回皆允许",
+            "TRADING_DAY": "20261030",
+            "PRE_TRADING_DAY": "20261029",
+            "FILE_ID": "1508913",
+            "RECORD_NUM": "2",
+            "PUBLISH_IOPV": "是",
+            "TRADE_CODE": "510300",
+        }],
+    )
+    basket = _sse_json_fixture(
+        "COMMON_SSE_CP_JJLB_ETFJJGK_GGSGSHQD_COMPONENT_C",
+        [
+            {
+                "INSTRUMENT_ID": "000001",
+                "INSTRUMENT_NAME": "平安银行",
+                "QUANTITY": "1600",
+                "SUBSTITUTION_FLAG": "1",
+                "SUBSTITUTION_CASH_AMOUNT": "18464.000",
+                "CREATION_PREMIUM_RATE": "10%",
+                "REDEMPTION_DISCOUNT_RATE": "10%",
+                "UNDERLYION_SECURITY_ID": "102",
+            },
+            {
+                "INSTRUMENT_ID": "600519",
+                "INSTRUMENT_NAME": "贵州茅台",
+                "QUANTITY": "0",
+                "SUBSTITUTION_FLAG": "2",
+                "SUBSTITUTION_CASH_AMOUNT": "-",
+                "CREATION_PREMIUM_RATE": "10%",
+                "REDEMPTION_DISCOUNT_RATE": "10%",
+                "UNDERLYION_SECURITY_ID": "101",
+            },
+        ],
+    )
+    urls = {
+        "company": (
+            "https://query.sse.com.cn/commonQuery.do?isPagination=false"
+            "&sqlId=COMMON_SSE_CP_GPJCTPZ_GPLB_GPGK_GSGK_C"
+            "&COMPANY_CODE=600519"
+        ),
+        "etf_basic": (
+            "https://query.sse.com.cn/commonQuery.do?isPagination=false"
+            "&sqlId=COMMON_SSE_CP_JJLB_ETFJJGK_GGSGSHQD_JBXX_C"
+            "&FUNDID2=510300"
+        ),
+        "etf_basket": (
+            "https://query.sse.com.cn/commonQuery.do?isPagination=false"
+            "&sqlId=COMMON_SSE_CP_JJLB_ETFJJGK_GGSGSHQD_COMPONENT_C"
+            "&FUNDID2=510300"
+        ),
+    }
+    return company, basic, basket, urls
+
+
+def _sse_synthetic_rights(
+    dataset_id, consumer_scope, *, terms_observed_at="2026-10-31T03:00:00+00:00"
+):
+    from hashlib import sha256
+    clause = "SYNTHETIC ONLY - current SSE disclosure may be used in NO_SEND tests."
+    return seal_source_rights_evidence({
+        "schema_version": "source-rights-evidence-v2",
+        "operation_id": "fixture-sse-disclosure-nosend",
+        "intended_use": "NO_SEND_RESEARCH",
+        "provider_identity": "SSEOfficialPublicDisclosure",
+        "upstream_source_owner": "synthetic-unit-test-only",
+        "upstream_rights_state": "VERIFIED",
+        "dataset_id": dataset_id,
+        "consumer_scope": consumer_scope,
+        "terms_uri": "https://example.invalid/terms/sse-fixture",
+        "terms_sha256": "d" * 64,
+        "terms_observed_at": terms_observed_at,
+        "terms_scope": "SYNTHETIC_TEST_CONTRACT",
+        "product_use_clause": clause,
+        "product_use_clause_sha256": sha256(clause.encode("utf-8")).hexdigest(),
+        "rights": {
+            "product_use": "ALLOWED",
+            "storage": "FORBIDDEN",
+            "training": "FORBIDDEN",
+            "redistribution": "FORBIDDEN",
+        },
+    })
+
+
+def _sse_b1_context(*, terms_observed_at="2026-10-31T03:00:00+00:00"):
+    consumers = {
+        "P_CODE_IDENTITY": "ASSET_RESEARCH_BRIEF",
+        "P_INDUSTRY": "ASSET_RESEARCH_BRIEF",
+        "S_CLASSIFICATION": "MARKET_SECTOR_SECTION",
+        "E_NAV_IOPV": "ETF_ASSET_BRIEF",
+        "E_SHARES": "ETF_ASSET_BRIEF",
+        "E_BASKET": "ETF_ASSET_BRIEF",
+        "P_SHARES_EVENTS": "ASSET_RESEARCH_BRIEF",
+        "P_DIVIDEND": "ASSET_RESEARCH_BRIEF",
+    }
+    return {
+        "schema_version": "b1-operation-rights-context-v1",
+        "operation_id": "fixture-sse-disclosure-nosend",
+        "intended_use": "NO_SEND_RESEARCH",
+        "allowed_instruments": ["600519", "510300"],
+        "research_as_of": "2026-10-31T06:00:00+00:00",
+        "rights_by_dataset": {
+            dataset_id: _sse_synthetic_rights(
+                dataset_id,
+                consumer,
+                terms_observed_at=terms_observed_at,
+            )
+            for dataset_id, consumer in consumers.items()
+        },
+    }
+
+
+def _build_sse_fixture_bundle(*, b1=None, company=None, basic=None, basket=None, urls=None):
+    from datetime import datetime, timezone
+    from data_provider.sse_public_disclosure_source import (
+        build_sse_public_disclosure_bundle,
+    )
+    base_company, base_basic, base_basket, base_urls = _sse_disclosure_fixtures()
+    return build_sse_public_disclosure_bundle(
+        base_company if company is None else company,
+        base_basic if basic is None else basic,
+        base_basket if basket is None else basket,
+        company_request_url=(urls or base_urls)["company"],
+        etf_basic_request_url=(urls or base_urls)["etf_basic"],
+        etf_basket_request_url=(urls or base_urls)["etf_basket"],
+        company_code="600519",
+        fund_code="510300",
+        observed_at=datetime(2026, 10, 31, 5, 0, tzinfo=timezone.utc),
+        b1_context=b1 or _sse_b1_context(),
+    )
+
+
+def _sse_event_fixtures(*, reconciled=False):
+    capital_total = "125619.78" if reconciled else "125008.16"
+    capital = _sse_json_fixture(
+        "COMMON_SSE_CP_GPJCTPZ_GPLB_GPGK_GBJG_C",
+        [{
+            "TOTAL_DOMESTIC_VOL": capital_total,
+            "A_LIMIT_VOL": "0.00",
+            "TRADE_DATE": "20261030",
+            "B_VOL": "0.00",
+            "SPECIAL_VOL": "-",
+            "TOTAL_UNLIMIT_VOL": capital_total,
+            "A_UNLIMIT_VOL": capital_total,
+            "CDR_VOL": "0.00",
+        }],
+    )
+    event_rows = [
+        {
+            "AShares": 125619.78,
+            "BShares": 0,
+            "changeReason": "51",
+            "changeReasonDesc": "送股",
+            "realDate": "2015-07-20",
+            "seq": 6667628,
+            "totalShares": 125619.78,
+        },
+        {
+            "AShares": 7150,
+            "BShares": 0,
+            "changeReason": "31",
+            "changeReasonDesc": "A股新上市",
+            "realDate": "2001-08-27",
+            "seq": 330322,
+            "totalShares": 25000,
+        },
+    ]
+    events = json.dumps({
+        "companyCode": "600519",
+        "isPagination": "true",
+        "result": event_rows,
+        "pageHelp": {"total": len(event_rows), "data": event_rows},
+    }, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    dividend_rows = [
+        {
+            "A_BEFR_TAX_DIV": "28.02423",
+            "A_STOCK_CODE": "600519",
+            "A_DIV_DATE": "20260626",
+            "A_REG_DATE": "20260625",
+            "COMPANY_CODE": "600519",
+            "A_STOCK_VOL": "125008.16",
+        },
+        {
+            "A_BEFR_TAX_DIV": "23.957",
+            "A_STOCK_CODE": "600519",
+            "A_DIV_DATE": "20251219",
+            "A_REG_DATE": "20251218",
+            "COMPANY_CODE": "600519",
+            "A_STOCK_VOL": "125227.02",
+        },
+    ]
+    dividend = _sse_json_fixture(
+        "COMMON_SSE_CP_GPJCTPZ_GPLB_LRFP_FH_L",
+        dividend_rows,
+        pagination="true",
+        page_help={"total": len(dividend_rows), "data": dividend_rows},
+    )
+    urls = {
+        "capital": (
+            "https://query.sse.com.cn/commonQuery.do?isPagination=false"
+            "&sqlId=COMMON_SSE_CP_GPJCTPZ_GPLB_GPGK_GBJG_C"
+            "&COMPANY_CODE=600519"
+        ),
+        "events": (
+            "https://query.sse.com.cn/security/stock/"
+            "queryEquityChangeAndReason.do?isPagination=true"
+            "&pageHelp.pageSize=50&pageHelp.pageNo=1"
+            "&pageHelp.beginPage=1&pageHelp.cacheSize=1"
+            "&pageHelp.endPage=1&companyCode=600519"
+        ),
+        "dividend": (
+            "https://query.sse.com.cn/commonQuery.do?isPagination=true"
+            "&pageHelp.pageSize=20&pageHelp.pageNo=1"
+            "&pageHelp.beginPage=1&pageHelp.cacheSize=1"
+            "&pageHelp.endPage=1"
+            "&sqlId=COMMON_SSE_CP_GPJCTPZ_GPLB_LRFP_FH_L"
+            "&IS_STAR=0&CONDITION_ZBA=1&CONDITION_ZBB="
+            "&COMPANY_CODE=600519"
+        ),
+    }
+    return capital, events, dividend, urls
+
+
+def _build_sse_event_fixture_bundle(
+    *, b1=None, capital=None, events=None, dividend=None, urls=None,
+    reconciled=False,
+):
+    from datetime import datetime, timezone
+    from data_provider.sse_public_disclosure_source import (
+        build_sse_stock_event_disclosure_bundle,
+    )
+    values = _sse_event_fixtures(reconciled=reconciled)
+    base_capital, base_events, base_dividend, base_urls = values
+    return build_sse_stock_event_disclosure_bundle(
+        base_capital if capital is None else capital,
+        base_events if events is None else events,
+        base_dividend if dividend is None else dividend,
+        capital_request_url=(urls or base_urls)["capital"],
+        equity_change_request_url=(urls or base_urls)["events"],
+        dividend_request_url=(urls or base_urls)["dividend"],
+        company_code="600519",
+        observed_at=datetime(2026, 10, 31, 5, 0, tzinfo=timezone.utc),
+        b1_context=b1 or _sse_b1_context(),
+    )
+
+
+def test_sse_stock_events_keep_real_mismatch_partial_and_admit_dividend():
+    from src.services.data_object_admission import (
+        compile_b1_runtime_admission_receipts,
+    )
+
+    bundle = _build_sse_event_fixture_bundle(reconciled=False)
+    shares = bundle["stock_observations"]["P_SHARES_EVENTS"]
+    dividend = bundle["stock_observations"]["P_DIVIDEND"]
+    assert shares["state"] == "PARTIAL"
+    assert "LATEST_EQUITY_EVENT_DOES_NOT_RECONCILE_CURRENT_CAPITAL" in (
+        shares["reason_codes"]
+    )
+    assert dividend["state"] == "READY"
+    assert dividend["facts"]["record_count"] == 2
+    assert dividend["facts"][
+        "latest_cash_dividend_before_tax_cny_per_share"
+    ] == "28.02423"
+
+    factor = native_summary()
+    factor["data_object_source_observations"] = bundle["stock_observations"]
+    objects = reg._compile_accepted_data_object_scope(factor)
+    b1 = _sse_b1_context()
+    receipts = compile_b1_runtime_admission_receipts(objects, b1_context=b1)
+    view = compile_data_object_admission_view(
+        objects, receipts, as_of=b1["research_as_of"],
+        operation_id=b1["operation_id"],
+        intended_use=b1["intended_use"],
+    )
+    admitted = {
+        row["dataset_id"] for row in view["objects"]
+        if row["product_admitted"]
+    }
+    assert admitted == {"P_DIVIDEND"}
+    shares_row = next(
+        row for row in view["objects"]
+        if row["dataset_id"] == "P_SHARES_EVENTS"
+    )
+    assert shares_row["product_admitted"] is False
+    assert "UNITS_BASIS_REVISION_OR_VINTAGE_UNKNOWN" in (
+        shares_row["reasons"]
+    )
+
+
+def test_sse_stock_event_reconciled_positive_is_reachable_without_learning():
+    from src.services.data_object_admission import (
+        compile_b1_runtime_admission_receipts,
+    )
+
+    bundle = _build_sse_event_fixture_bundle(reconciled=True)
+    assert bundle["stock_observations"]["P_SHARES_EVENTS"]["state"] == "READY"
+    factor = native_summary()
+    factor["data_object_source_observations"] = bundle["stock_observations"]
+    objects = reg._compile_accepted_data_object_scope(factor)
+    b1 = _sse_b1_context()
+    receipts = compile_b1_runtime_admission_receipts(objects, b1_context=b1)
+    view = compile_data_object_admission_view(
+        objects, receipts, as_of=b1["research_as_of"],
+        operation_id=b1["operation_id"],
+        intended_use=b1["intended_use"],
+    )
+    admitted = {
+        row["dataset_id"] for row in view["objects"]
+        if row["product_admitted"]
+    }
+    assert admitted == {"P_DIVIDEND", "P_SHARES_EVENTS"}
+    assert not any(row["learning_admitted"] for row in view["objects"])
+
+
+def test_sse_event_bundle_merges_with_company_disclosures_in_pipeline():
+    from datetime import datetime, timezone
+    from src.core.pipeline import StockAnalysisPipeline
+
+    company, basic, basket, urls = _sse_disclosure_fixtures()
+    capital, events, dividend, event_urls = _sse_event_fixtures()
+    pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+    pipeline.b1_rights_context = _sse_b1_context()
+    pipeline._b1_nonprice_shared_observations = {}
+    pipeline._b1_treasury_global_observations = {}
+    pipeline._b1_nonprice_stock_bundles = {}
+    pipeline._b1_sse_stock_disclosure_observations = {}
+    pipeline._b1_sse_etf_disclosure_observations = {}
+    pipeline._ingest_b1_sse_public_disclosure_responses(
+        company_response_json=company,
+        etf_basic_response_json=basic,
+        etf_basket_response_json=basket,
+        company_request_url=urls["company"],
+        etf_basic_request_url=urls["etf_basic"],
+        etf_basket_request_url=urls["etf_basket"],
+        company_code="600519", fund_code="510300",
+        observed_at=datetime(2026, 10, 31, 5, 0, tzinfo=timezone.utc),
+    )
+    event_bundle = pipeline._ingest_b1_sse_stock_event_disclosure_responses(
+        capital_response_json=capital,
+        equity_change_response_json=events,
+        dividend_response_json=dividend,
+        capital_request_url=event_urls["capital"],
+        equity_change_request_url=event_urls["events"],
+        dividend_request_url=event_urls["dividend"],
+        company_code="600519",
+        observed_at=datetime(2026, 10, 31, 5, 1, tzinfo=timezone.utc),
+    )
+    stock = pipeline._b1_nonprice_fundamental_context(
+        code="600519", asset_route="STOCK", market="cn",
+    )
+    assert set(stock["data_object_source_observations"]) == {
+        "P_CODE_IDENTITY", "P_INDUSTRY", "S_CLASSIFICATION",
+        "P_SHARES_EVENTS", "P_DIVIDEND",
+    }
+    assert stock["data_object_source_observations"]["P_DIVIDEND"] == (
+        event_bundle["stock_observations"]["P_DIVIDEND"]
+    )
+    with pytest.raises(ValueError, match="B1_SSE_DISCLOSURE_SOURCE_ALREADY_BOUND"):
+        pipeline._ingest_b1_sse_stock_event_disclosure_responses(
+            capital_response_json=capital,
+            equity_change_response_json=events,
+            dividend_response_json=dividend,
+            capital_request_url=event_urls["capital"],
+            equity_change_request_url=event_urls["events"],
+            dividend_request_url=event_urls["dividend"],
+            company_code="600519",
+            observed_at=datetime(2026, 10, 31, 5, 2, tzinfo=timezone.utc),
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "wrong_host", "bad_capital_date", "duplicate_event",
+        "future_event", "dividend_future", "duplicate_dividend",
+        "bad_dividend", "missing_rights", "late_terms",
+    ],
+)
+def test_sse_stock_event_disclosure_rejects_bad_source_clock_and_schema(mutation):
+    from datetime import datetime, timezone
+    from data_provider.sse_public_disclosure_source import (
+        SSEPublicDisclosureSourceError,
+        build_sse_stock_event_disclosure_bundle,
+    )
+
+    capital, events, dividend, urls = _sse_event_fixtures()
+    capital_doc = json.loads(capital)
+    events_doc = json.loads(events)
+    dividend_doc = json.loads(dividend)
+    b1 = _sse_b1_context()
+    if mutation == "wrong_host":
+        urls["capital"] = urls["capital"].replace(
+            "query.sse.com.cn", "fake.sse.com.cn"
+        )
+    elif mutation == "bad_capital_date":
+        capital_doc["result"][0]["TRADE_DATE"] = "20261301"
+    elif mutation == "duplicate_event":
+        events_doc["result"][1]["seq"] = events_doc["result"][0]["seq"]
+        events_doc["pageHelp"]["data"] = events_doc["result"]
+    elif mutation == "future_event":
+        events_doc["result"][0]["realDate"] = "2026-11-01"
+        events_doc["pageHelp"]["data"] = events_doc["result"]
+    elif mutation == "dividend_future":
+        dividend_doc["result"][0]["A_DIV_DATE"] = "20261101"
+    elif mutation == "duplicate_dividend":
+        dividend_doc["result"][1]["A_REG_DATE"] = (
+            dividend_doc["result"][0]["A_REG_DATE"]
+        )
+        dividend_doc["result"][1]["A_DIV_DATE"] = (
+            dividend_doc["result"][0]["A_DIV_DATE"]
+        )
+    elif mutation == "bad_dividend":
+        dividend_doc["result"][0]["A_BEFR_TAX_DIV"] = "NaN"
+    elif mutation == "missing_rights":
+        b1["rights_by_dataset"].pop("P_DIVIDEND")
+    elif mutation == "late_terms":
+        b1 = _sse_b1_context(
+            terms_observed_at="2026-10-31T05:30:00+00:00"
+        )
+    capital = json.dumps(capital_doc, ensure_ascii=False).encode("utf-8")
+    events = json.dumps(events_doc, ensure_ascii=False).encode("utf-8")
+    dividend = json.dumps(dividend_doc, ensure_ascii=False).encode("utf-8")
+    with pytest.raises(
+        (SSEPublicDisclosureSourceError, ValueError),
+        match="SSE_DISCLOSURE_|B1_",
+    ):
+        build_sse_stock_event_disclosure_bundle(
+            capital,
+            events,
+            dividend,
+            capital_request_url=urls["capital"],
+            equity_change_request_url=urls["events"],
+            dividend_request_url=urls["dividend"],
+            company_code="600519",
+            observed_at=datetime(2026, 10, 31, 5, 0, tzinfo=timezone.utc),
+            b1_context=b1,
+        )
+
+
+def test_sse_public_disclosures_reach_registry_with_only_two_product_objects():
+    from src.services.data_object_admission import compile_b1_runtime_admission_receipts
+
+    bundle = _build_sse_fixture_bundle()
+    assert set(bundle["stock_observations"]) == {
+        "P_CODE_IDENTITY", "P_INDUSTRY", "S_CLASSIFICATION",
+    }
+    assert set(bundle["etf_observations"]) == {
+        "E_NAV_IOPV", "E_SHARES", "E_BASKET",
+    }
+    assert bundle["stock_observations"]["P_CODE_IDENTITY"]["state"] == "READY"
+    assert bundle["etf_observations"]["E_BASKET"]["facts"]["component_count"] == 2
+    assert bundle["storage_admitted"] is False
+    assert bundle["training_admitted"] is False
+
+    b1 = _sse_b1_context()
+    stock_factor = native_summary()
+    stock_factor["asset_type"] = "stock"
+    stock_factor["data_object_source_observations"] = bundle["stock_observations"]
+    stock_objects = reg._compile_accepted_data_object_scope(stock_factor)
+    stock_receipts = compile_b1_runtime_admission_receipts(
+        stock_objects, b1_context=b1,
+    )
+    stock_view = compile_data_object_admission_view(
+        stock_objects,
+        stock_receipts,
+        as_of=b1["research_as_of"],
+        operation_id=b1["operation_id"],
+        intended_use=b1["intended_use"],
+    )
+    stock_admitted = {
+        row["dataset_id"] for row in stock_view["objects"]
+        if row["product_admitted"]
+    }
+    assert stock_admitted == {"P_CODE_IDENTITY"}
+    for dataset_id in ("P_INDUSTRY", "S_CLASSIFICATION"):
+        row = next(
+            item for item in stock_view["objects"]
+            if item["dataset_id"] == dataset_id
+        )
+        assert row["product_admitted"] is False
+        assert "UNITS_BASIS_REVISION_OR_VINTAGE_UNKNOWN" in row["reasons"]
+
+    etf_factor = native_summary()
+    etf_factor["asset_type"] = "etf"
+    etf_factor["data_object_source_observations"] = bundle["etf_observations"]
+    etf_objects = reg._compile_accepted_data_object_scope(etf_factor)
+    etf_receipts = compile_b1_runtime_admission_receipts(
+        etf_objects, b1_context=b1,
+    )
+    etf_view = compile_data_object_admission_view(
+        etf_objects,
+        etf_receipts,
+        as_of=b1["research_as_of"],
+        operation_id=b1["operation_id"],
+        intended_use=b1["intended_use"],
+    )
+    etf_admitted = {
+        row["dataset_id"] for row in etf_view["objects"]
+        if row["product_admitted"]
+    }
+    assert etf_admitted == {"E_BASKET"}
+    for dataset_id in ("E_NAV_IOPV", "E_SHARES"):
+        row = next(
+            item for item in etf_view["objects"]
+            if item["dataset_id"] == dataset_id
+        )
+        assert row["product_admitted"] is False
+        assert "UNITS_BASIS_REVISION_OR_VINTAGE_UNKNOWN" in row["reasons"]
+    assert reg.compile_full_domain_data_gate(
+        stock_objects, stock_view,
+    )["full_domain_product_ready"] is False
+    assert reg.compile_full_domain_data_gate(
+        etf_objects, etf_view,
+    )["full_domain_product_ready"] is False
+
+
+def test_sse_public_disclosure_bundle_reaches_pipeline_routes_without_network():
+    from datetime import datetime, timezone
+    from src.core.pipeline import StockAnalysisPipeline
+
+    company, basic, basket, urls = _sse_disclosure_fixtures()
+    pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+    pipeline.b1_rights_context = _sse_b1_context()
+    pipeline._b1_nonprice_shared_observations = {}
+    pipeline._b1_treasury_global_observations = {}
+    pipeline._b1_nonprice_stock_bundles = {}
+    pipeline._b1_sse_stock_disclosure_observations = {}
+    pipeline._b1_sse_etf_disclosure_observations = {}
+    bundle = pipeline._ingest_b1_sse_public_disclosure_responses(
+        company_response_json=company,
+        etf_basic_response_json=basic,
+        etf_basket_response_json=basket,
+        company_request_url=urls["company"],
+        etf_basic_request_url=urls["etf_basic"],
+        etf_basket_request_url=urls["etf_basket"],
+        company_code="600519",
+        fund_code="510300",
+        observed_at=datetime(2026, 10, 31, 5, 0, tzinfo=timezone.utc),
+    )
+    stock = pipeline._b1_nonprice_fundamental_context(
+        code="600519", asset_route="STOCK", market="cn",
+    )
+    etf = pipeline._b1_nonprice_fundamental_context(
+        code="510300", asset_route="ETF", market="cn",
+    )
+    assert set(stock["data_object_source_observations"]) == set(
+        bundle["stock_observations"]
+    )
+    assert set(etf["data_object_source_observations"]) == set(
+        bundle["etf_observations"]
+    )
+    assert stock["coverage"]["product_fact_count"] == 0
+    assert etf["coverage"]["product_fact_count"] == 0
+    with pytest.raises(ValueError, match="B1_SSE_DISCLOSURE_SOURCE_ALREADY_BOUND"):
+        pipeline._ingest_b1_sse_public_disclosure_responses(
+            company_response_json=company,
+            etf_basic_response_json=basic,
+            etf_basket_response_json=basket,
+            company_request_url=urls["company"],
+            etf_basic_request_url=urls["etf_basic"],
+            etf_basket_request_url=urls["etf_basket"],
+            company_code="600519",
+            fund_code="510300",
+            observed_at=datetime(2026, 10, 31, 5, 1, tzinfo=timezone.utc),
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "wrong_host", "wrong_sql_id", "wrong_company_code", "wrong_fund_code",
+        "duplicate_component", "basket_count_mismatch", "future_trading_day",
+        "bad_nav", "missing_rights", "late_terms", "response_after_asof",
+        "reported_error",
+    ],
+)
+def test_sse_public_disclosure_rejects_source_rights_clock_and_schema(mutation):
+    from datetime import datetime, timezone
+    from data_provider.sse_public_disclosure_source import (
+        SSEPublicDisclosureSourceError,
+        build_sse_public_disclosure_bundle,
+    )
+    company, basic, basket, urls = _sse_disclosure_fixtures()
+    company_doc = json.loads(company)
+    basic_doc = json.loads(basic)
+    basket_doc = json.loads(basket)
+    b1 = _sse_b1_context()
+    observed = datetime(2026, 10, 31, 5, 0, tzinfo=timezone.utc)
+    if mutation == "wrong_host":
+        urls["company"] = urls["company"].replace(
+            "query.sse.com.cn", "fake.sse.com.cn"
+        )
+    elif mutation == "wrong_sql_id":
+        company_doc["sqlId"] = "WRONG_SQL"
+    elif mutation == "wrong_company_code":
+        company_doc["result"][0]["A_STOCK_CODE"] = "600000"
+    elif mutation == "wrong_fund_code":
+        basic_doc["result"][0]["TRADE_CODE"] = "510050"
+    elif mutation == "duplicate_component":
+        basket_doc["result"][1]["INSTRUMENT_ID"] = "000001"
+    elif mutation == "basket_count_mismatch":
+        basic_doc["result"][0]["RECORD_NUM"] = "3"
+    elif mutation == "future_trading_day":
+        basic_doc["result"][0]["TRADING_DAY"] = "20261102"
+    elif mutation == "bad_nav":
+        basic_doc["result"][0]["NAV"] = "NaN"
+    elif mutation == "missing_rights":
+        b1["rights_by_dataset"].pop("E_BASKET")
+    elif mutation == "late_terms":
+        b1 = _sse_b1_context(terms_observed_at="2026-10-31T05:30:00+00:00")
+    elif mutation == "response_after_asof":
+        observed = datetime(2026, 10, 31, 7, 0, tzinfo=timezone.utc)
+    elif mutation == "reported_error":
+        company_doc["actionErrors"] = ["failure"]
+    company = json.dumps(company_doc, ensure_ascii=False).encode("utf-8")
+    basic = json.dumps(basic_doc, ensure_ascii=False).encode("utf-8")
+    basket = json.dumps(basket_doc, ensure_ascii=False).encode("utf-8")
+    with pytest.raises(
+        (SSEPublicDisclosureSourceError, ValueError), match="SSE_DISCLOSURE_|B1_"
+    ):
+        build_sse_public_disclosure_bundle(
+            company,
+            basic,
+            basket,
+            company_request_url=urls["company"],
+            etf_basic_request_url=urls["etf_basic"],
+            etf_basket_request_url=urls["etf_basket"],
+            company_code="600519",
+            fund_code="510300",
+            observed_at=observed,
+            b1_context=b1,
+        )
+
+
+def test_sse_disclosure_observation_tamper_and_rights_only_are_nontriggers():
+    from src.services.data_object_admission import compile_b1_runtime_admission_receipts
+
+    bundle = _build_sse_fixture_bundle()
+    factor = native_summary()
+    factor["data_object_source_observations"] = bundle["stock_observations"]
+    forged = deepcopy(factor)
+    forged["data_object_source_observations"]["P_CODE_IDENTITY"]["facts"] = {
+        **bundle["stock_observations"]["P_CODE_IDENTITY"]["facts"],
+        "full_name": "forged",
+    }
+    with pytest.raises(
+        reg.TraceabilityError,
+        match="DATA_OBJECT_SOURCE_OBSERVATION_HASH_MISMATCH",
+    ):
+        reg.compile_complete_research_universe_view(forged)
+    empty = reg._compile_accepted_data_object_scope(native_summary())
+    assert compile_b1_runtime_admission_receipts(
+        empty, b1_context=_sse_b1_context(),
+    ) == {}
+
+
+def _treasury_xml_fixture():
+    # Independently documented Treasury Atom/OData hierarchy, not arbitrary XML.
+    return (
+        b'<?xml version="1.0" encoding="utf-8"?>'
+        b'<feed xmlns="http://www.w3.org/2005/Atom" '
+        b'xmlns:d="http://schemas.microsoft.com/ado/2007/08/dataservices" '
+        b'xmlns:m="http://schemas.microsoft.com/ado/2007/08/dataservices/metadata">'
+        b'<entry><updated>2026-10-29T19:07:07Z</updated>'
+        b'<content type="application/xml"><m:properties>'
+        b'<d:NEW_DATE>2026-10-28T00:00:00</d:NEW_DATE>'
+        b'<d:BC_3MONTH>4.20</d:BC_3MONTH><d:BC_2YEAR>4.64</d:BC_2YEAR>'
+        b'<d:BC_10YEAR>5.04</d:BC_10YEAR></m:properties></content></entry>'
+        b'<entry><updated>2026-10-29T19:07:07Z</updated>'
+        b'<content type="application/xml"><m:properties>'
+        b'<d:NEW_DATE>2026-10-29T00:00:00</d:NEW_DATE>'
+        b'<d:BC_3MONTH>4.18</d:BC_3MONTH><d:BC_2YEAR>4.61</d:BC_2YEAR>'
+        b'<d:BC_10YEAR>4.98</d:BC_10YEAR></m:properties></content></entry></feed>'
+    )
+
+
+def _treasury_synthetic_rights(*, terms_observed_at="2026-10-30T03:00:00+00:00"):
+    from hashlib import sha256
+    clause = "SYNTHETIC ONLY - source use is allowed for isolated unit testing."
+    return seal_source_rights_evidence({
+        "schema_version": "source-rights-evidence-v2",
+        "operation_id": "fixture-treasury-nosend-only",
+        "intended_use": "NO_SEND_RESEARCH",
+        "provider_identity": "USTreasuryYieldCurveOfficialXML",
+        "upstream_source_owner": "synthetic-unit-test-only",
+        "upstream_rights_state": "VERIFIED",
+        "dataset_id": "G_UST_NOMINAL",
+        "consumer_scope": "MARKET_GLOBAL_TRANSMISSION",
+        "terms_uri": "https://example.invalid/terms/fixture-only",
+        "terms_sha256": "a" * 64,
+        "terms_observed_at": terms_observed_at,
+        "terms_scope": "SYNTHETIC_TEST_CONTRACT",
+        "product_use_clause": clause,
+        "product_use_clause_sha256": sha256(clause.encode("utf-8")).hexdigest(),
+        "rights": {
+            "product_use": "ALLOWED", "storage": "FORBIDDEN",
+            "training": "FORBIDDEN", "redistribution": "FORBIDDEN",
+        },
+    })
+
+
+def test_treasury_official_xml_native_source_to_existing_registry_and_admission():
+    """Synthetic body/rights test the seam, NEVER a live Product grant or PIT."""
+    from datetime import datetime, timezone
+    from hashlib import sha256
+    from data_provider.treasury_yield_curve_source import (
+        build_treasury_yield_source_observation,
+    )
+    from src.services.data_object_admission import compile_b1_runtime_admission_receipts
+
+    body = _treasury_xml_fixture()
+    grant = _treasury_synthetic_rights()
+    asof = "2026-10-30T06:00:00+00:00"
+    b1 = {
+        "operation_id": "fixture-treasury-nosend-only",
+        "intended_use": "NO_SEND_RESEARCH",
+        "research_as_of": asof,
+        "rights_by_dataset": {"G_UST_NOMINAL": grant},
+    }
+    source = build_treasury_yield_source_observation(
+        body,
+        request_url="https://home.treasury.gov/resource-center/data-chart-center/interest-rates/pages/xml?data=daily_treasury_yield_curve&field_tdr_date_value_month=202610",
+        observed_at=datetime(2026, 10, 30, 5, 0, tzinfo=timezone.utc),
+        b1_context=b1,
+    )
+    assert source["dataset_id"] == "G_UST_NOMINAL"
+    assert source["facts"]["yield_10y_pct_per_year"] == "4.98"
+    assert source["facts"]["spread_10y_3m_percentage_points"] == "0.80"
+    assert source["source_content_sha256"] == sha256(body).hexdigest()
+    assert source["source_available_at"] == source["source_observed_at"]
+    assert source["historical_pit_eligible"] is False
+    assert source["strategy_upgrade_authority"] is False
+    factor = native_summary()
+    factor["data_object_source_observations"] = {"G_UST_NOMINAL": source}
+    obligations = reg._compile_accepted_data_object_scope(factor)
+    actual = next(row for row in obligations if row["dataset_id"] == "G_UST_NOMINAL")
+    assert actual["source_content_sha256"] == sha256(body).hexdigest()
+    receipts = compile_b1_runtime_admission_receipts(obligations, b1_context=b1)
+    view = compile_data_object_admission_view(
+        obligations, receipts, as_of=asof,
+        operation_id=b1["operation_id"], intended_use=b1["intended_use"],
+    )
+    assert view["product_admitted_count"] == 0  # even synthetic fixture lacks native vintage
+    admitted = next(row for row in view["objects"] if row["dataset_id"] == "G_UST_NOMINAL")
+    assert admitted["product_admitted"] is False
+    assert "UNITS_BASIS_REVISION_OR_VINTAGE_UNKNOWN" in admitted["reasons"]
+    assert admitted["learning_admitted"] is False
+    assert admitted["storage_admitted"] is False
+    assert admitted["strategy_upgrade_authority"] is False
+    assert reg.compile_full_domain_data_gate(obligations, view)["full_domain_product_ready"] is False
+    tampered = deepcopy(factor)
+    tampered["data_object_source_observations"]["G_UST_NOMINAL"]["facts"] = {
+        **source["facts"], "yield_10y_pct_per_year": "9.99",
+    }
+    with pytest.raises(reg.TraceabilityError, match="DATA_OBJECT_SOURCE_OBSERVATION_HASH_MISMATCH"):
+        reg.compile_complete_research_universe_view(tampered)
+    # A grant without raw response must remain a lawful nontrigger.
+    empty = reg._compile_accepted_data_object_scope(native_summary())
+    assert compile_b1_runtime_admission_receipts(empty, b1_context=b1) == {}
+
+
+@pytest.mark.parametrize("mutation", [
+    "wrong_host", "wrong_month", "future_observation",
+    "future_feed_date", "duplicate_date", "bad_rate", "missing_rights",
+    "late_terms", "unexpected_content", "wrong_field_namespace",
+    "wrong_property_container", "non_midnight_date",
+])
+def test_treasury_xml_native_producer_rejects_invalid_source_and_rights(mutation):
+    from datetime import datetime, timezone
+    from data_provider.treasury_yield_curve_source import (
+        TreasuryYieldSourceError, build_treasury_yield_source_observation,
+    )
+    body = _treasury_xml_fixture()
+    url = ("https://home.treasury.gov/resource-center/data-chart-center/"
+           "interest-rates/pages/xml?data=daily_treasury_yield_curve"
+           "&field_tdr_date_value_month=202610")
+    observed = datetime(2026, 10, 30, 5, 0, tzinfo=timezone.utc)
+    asof = "2026-10-30T06:00:00+00:00"
+    grant = _treasury_synthetic_rights()
+    if mutation == "wrong_host":
+        url = url.replace("home.treasury.gov", "fake.treasury.gov")
+    elif mutation == "wrong_month":
+        url = url.replace("202610", "202609")
+    elif mutation == "future_observation":
+        asof = "2026-10-29T07:00:00+00:00"
+    elif mutation == "future_feed_date":
+        body = body.replace(b"2026-10-29T00:00:00", b"2026-10-31T00:00:00")
+    elif mutation == "duplicate_date":
+        body = body.replace(b"2026-10-28T00:00:00", b"2026-10-29T00:00:00")
+    elif mutation == "bad_rate":
+        body = body.replace(b"<d:BC_10YEAR>4.98", b"<d:BC_10YEAR>NaN")
+    elif mutation == "missing_rights":
+        grant = None
+    elif mutation == "late_terms":
+        grant = _treasury_synthetic_rights(
+            terms_observed_at="2026-10-31T00:00:00+00:00"
+        )
+    elif mutation == "unexpected_content":
+        body = b"<html><body>not a Treasury Atom feed</body></html>"
+    elif mutation == "wrong_field_namespace":
+        body = body.replace(
+            b'xmlns:d="http://schemas.microsoft.com/ado/2007/08/dataservices"',
+            b'xmlns:d="urn:untrusted-local-name-spoof"',
+        )
+    elif mutation == "wrong_property_container":
+        body = body.replace(b"<m:properties>", b"<m:unrelated>").replace(
+            b"</m:properties>", b"</m:unrelated>"
+        )
+    elif mutation == "non_midnight_date":
+        body = body.replace(
+            b"2026-10-29T00:00:00", b"2026-10-29T08:30:00"
+        )
+    b1 = {
+        "operation_id": "fixture-treasury-nosend-only",
+        "intended_use": "NO_SEND_RESEARCH",
+        "research_as_of": asof,
+        "rights_by_dataset": {} if grant is None else {"G_UST_NOMINAL": grant},
+    }
+    with pytest.raises((TreasuryYieldSourceError, ValueError), match="TREASURY_|B1_"):
+        build_treasury_yield_source_observation(
+            body, request_url=url, observed_at=observed, b1_context=b1,
+        )
+
+
+def test_treasury_native_observation_reaches_existing_pipeline_factor_context_without_network():
+    """One run-local response, no automatic provider request or DB write."""
+    from datetime import datetime, timezone
+    from src.core.pipeline import StockAnalysisPipeline
+
+    pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+    pipeline.b1_rights_context = {
+        "schema_version": "b1-operation-rights-context-v1",
+        "operation_id": "fixture-treasury-nosend-only",
+        "intended_use": "NO_SEND_RESEARCH",
+        "allowed_instruments": ["600519"],
+        "rights_by_dataset": {"G_UST_NOMINAL": _treasury_synthetic_rights()},
+        "research_as_of": "2026-10-30T06:00:00+00:00",
+    }
+    pipeline._b1_nonprice_shared_observations = {}
+    pipeline._b1_nonprice_stock_bundles = {}
+    observation = pipeline._ingest_b1_treasury_official_response(
+        response_xml=_treasury_xml_fixture(),
+        request_url=(
+            "https://home.treasury.gov/resource-center/data-chart-center/"
+            "interest-rates/pages/xml?data=daily_treasury_yield_curve"
+            "&field_tdr_date_value_month=202610"
+        ),
+        observed_at=datetime(2026, 10, 30, 5, 0, tzinfo=timezone.utc),
+    )
+    fundamental = pipeline._b1_nonprice_fundamental_context(
+        code="600519", asset_route="STOCK", market="cn",
+    )
+    assert fundamental["source_chain"] == ["USTreasuryYieldCurveOfficialXML"]
+    # Source observation is not a Product-admitted fact; a count must never
+    # elevate it before exact operation-grant and revision/vintage admission.
+    assert fundamental["coverage"]["source_observation_count"] == 1
+    assert fundamental["coverage"]["product_fact_count"] == 0
+    assert fundamental["data_object_source_observations"]["G_UST_NOMINAL"] == observation
+    factor = native_summary()
+    factor["data_object_source_observations"] = fundamental["data_object_source_observations"]
+    actual = reg.compile_complete_research_universe_view(factor)
+    global_object = next(
+        row for row in actual["data_objects"]
+        if row["dataset_id"] == "G_UST_NOMINAL"
+    )
+    assert global_object["state"] == "PARTIAL"
+    assert global_object["source_content_sha256"] == observation["source_content_sha256"]
+    assert actual["full_domain_data_gate"]["full_domain_product_ready"] is False
+    with pytest.raises(ValueError, match="B1_TREASURY_SOURCE_ALREADY_BOUND"):
+        pipeline._ingest_b1_treasury_official_response(
+            response_xml=_treasury_xml_fixture(),
+            request_url=(
+                "https://home.treasury.gov/resource-center/data-chart-center/"
+                "interest-rates/pages/xml?data=daily_treasury_yield_curve"
+                "&field_tdr_date_value_month=202610"
+            ),
+            observed_at=datetime(2026, 10, 30, 5, 2, tzinfo=timezone.utc),
+        )
+
+
+def test_treasury_feed_observation_clock_never_impersonates_upstream_revision_or_vintage():
+    """Accepted B1 rules: response SHA and observation time are not upstream revisions."""
+    from datetime import datetime, timezone
+    from data_provider.treasury_yield_curve_source import build_treasury_yield_source_observation
+    from src.services.data_object_admission import compile_b1_runtime_admission_receipts
+    grant = _treasury_synthetic_rights()
+    b1 = {
+        "operation_id": "fixture-treasury-nosend-only",
+        "intended_use": "NO_SEND_RESEARCH",
+        "research_as_of": "2026-10-30T06:00:00+00:00",
+        "rights_by_dataset": {"G_UST_NOMINAL": grant},
+    }
+    source = build_treasury_yield_source_observation(
+        _treasury_xml_fixture(),
+        request_url=(
+            "https://home.treasury.gov/resource-center/data-chart-center/"
+            "interest-rates/pages/xml?data=daily_treasury_yield_curve"
+            "&field_tdr_date_value_month=202610"
+        ),
+        observed_at=datetime(2026, 10, 30, 5, 0, tzinfo=timezone.utc),
+        b1_context=b1,
+    )
+    # No per-row revision chain or provider-confirmed vintage was supplied.
+    assert source["revision"] == "UNKNOWN"
+    assert source["vintage"] == "UNKNOWN"
+    assert source["historical_pit_eligible"] is False
+    factor = native_summary()
+    factor["data_object_source_observations"] = {"G_UST_NOMINAL": source}
+    obligations = reg._compile_accepted_data_object_scope(factor)
+    receipts = compile_b1_runtime_admission_receipts(obligations, b1_context=b1)
+    view = compile_data_object_admission_view(
+        obligations, receipts, as_of=b1["research_as_of"],
+        operation_id=b1["operation_id"], intended_use=b1["intended_use"],
+    )
+    row = next(x for x in view["objects"] if x["dataset_id"] == "G_UST_NOMINAL")
+    assert row["product_admitted"] is False
+    assert "UNITS_BASIS_REVISION_OR_VINTAGE_UNKNOWN" in row["reasons"]
+
+
 def test_foundation_receipt_separates_raw_declared_effective_and_runtime_states():
     factor = native_summary()
     receipt = reg.compile_foundation_evidence_receipt(factor)
 
     assert receipt["method_profile_count"] == 43
-    assert receipt["existing_method_count"] == 28
-    assert receipt["deferred_method_count"] == 15
+    assert receipt["existing_method_count"] == 30
+    assert receipt["deferred_method_count"] == 13
     assert receipt["technical_existing_method_count"] == 25
     assert receipt["target_method_timeframe_pairs"] == 172
     assert receipt["declared_execution_pairs"] == 34
-    assert receipt["effective_execution_pairs"] == 52
-    assert len(receipt["effective_override_rows"]) == 5
+    # CI93->technical-foundation predecessor: 136 effective/19 overrides.
+    # MACD, RSI and Relative Strength gain six explicit non-daily seams each;
+    # missing benchmark inputs stay MISSING and never become Product facts.
+    assert receipt["effective_execution_pairs"] == 136 + 3 * 6 == 154
+    assert len(receipt["effective_override_rows"]) == 19 + 3 == 22
+    assert receipt["all_56_cells_executable"] is True
+    assert receipt["regime_shared_projection_count"] == 7
+    assert receipt["matrix_implementation_receipt"]["executable_cell_count"] == 56
     assert receipt["matrix_cell_count"] == 56
     assert sum(receipt["matrix_state_counts"].values()) == 56
     assert receipt["policy"]["declaration_is_not_runtime_ready"] is True
@@ -1052,6 +2469,15 @@ def test_full_domain_data_gate_rejects_admission_from_other_runtime_bytes():
         reg.compile_full_domain_data_gate(changed, admission)
 
 
+def _exchange_daily_test_window(end, count):
+    from datetime import date
+    from src.core.trading_calendar import resolve_session_range_fail_closed
+
+    sessions = resolve_session_range_fail_closed("cn", date(2025, 1, 2), end)
+    assert sessions is not None and len(sessions) >= count
+    return pd.DatetimeIndex(sessions[-count:])
+
+
 def _closed_typed_stock_source_factor(*, source_version_known: bool = False):
     """Original DSA price identity + ten completed XSHG sessions + real MTF receipt."""
     from datetime import datetime, date, timezone
@@ -1067,11 +2493,11 @@ def _closed_typed_stock_source_factor(*, source_version_known: bool = False):
         date(2026, 9, 14), date(2026, 9, 15), date(2026, 9, 16),
         date(2026, 9, 17), date(2026, 9, 18), date(2026, 9, 21),
         date(2026, 9, 22), date(2026, 9, 23), date(2026, 9, 24),
-        date(2026, 9, 25),
+        date(2026, 9, 28),
     ]
     minute = _canonical_session_set(dates)
     frame = _history(330)
-    frame["date"] = pd.bdate_range(end="2026-09-25", periods=len(frame))
+    frame["date"] = _exchange_daily_test_window(dates[-1], len(frame))
     frame["data_source"] = "BaostockFetcher"
     frame["amount"] = frame["close"] * frame["volume"]
     observed = datetime(2026, 10, 2, tzinfo=timezone.utc)
@@ -1082,7 +2508,7 @@ def _closed_typed_stock_source_factor(*, source_version_known: bool = False):
         requested_adjustment_basis="qfq",
         observed_adjustment_basis="qfq",
         basis_evidence="independent_fixture",
-        requested_start="2025-01-01", requested_end="2026-09-25",
+        requested_start="2025-01-01", requested_end="2026-09-28",
         currency="CNY", volume_unit="share", amount_unit="CNY",
         identity_state="OBSERVED", observed_at=observed,
         revision=("SYNTHETIC_FIXTURE_REVISION_1" if source_version_known else None),
@@ -1136,7 +2562,7 @@ def _closed_typed_etf_source_factor():
         date(2026, 9, 14), date(2026, 9, 15), date(2026, 9, 16),
         date(2026, 9, 17), date(2026, 9, 18), date(2026, 9, 21),
         date(2026, 9, 22), date(2026, 9, 23), date(2026, 9, 24),
-        date(2026, 9, 25),
+        date(2026, 9, 28),
     ]
     minute = _canonical_session_set(dates).copy()
     minute.attrs.clear()
@@ -1168,7 +2594,7 @@ def _closed_typed_etf_source_factor():
     minute["intraday_data_identity_hash"] = minute_identity["identity_hash"]
 
     frame = _history(330)
-    frame["date"] = pd.bdate_range(end="2026-09-25", periods=len(frame))
+    frame["date"] = _exchange_daily_test_window(dates[-1], len(frame))
     frame["data_source"] = "BaostockFetcher"
     frame["amount"] = frame["close"] * frame["volume"]
     identity = build_daily_data_identity(
@@ -1180,7 +2606,7 @@ def _closed_typed_etf_source_factor():
         observed_adjustment_basis="qfq",
         basis_evidence="independent_etf_fixture",
         requested_start="2025-01-01",
-        requested_end="2026-09-25",
+        requested_end="2026-09-28",
         currency="CNY",
         volume_unit="share",
         amount_unit="CNY",
@@ -1413,7 +2839,7 @@ def test_accepted_source_p_daily_p_5m_fail_closed_without_invocation_or_with_wro
     assert data["P_5M"]["state"] == "NOT_APPLICABLE"
 
 
-def test_mtf_execution_populates_only_its_admitted_family_context_and_not_supply_or_cost():
+def test_mtf_execution_exposes_source_bound_supply_and_fail_closed_untyped_cost():
     factor = native_summary_with_mtf()
     trace = factor["evidence_traceability"]
     matrix = trace["timeframe_family_matrix"]
@@ -1425,12 +2851,20 @@ def test_mtf_execution_populates_only_its_admitted_family_context_and_not_supply
     week = factor["multi_timeframe_structure_context"]["timeframes"]["weekly"]
     assert week["macd_startup_stability"]["status"] == "MISSING"
     assert week["rsi_startup_stability"]["status"] == "MISSING"
-    assert cells[("weekly", "MOMENTUM")]["state"] == "MISSING"
+    # The weekly method exists, but this fixture intentionally lacks a typed
+    # daily source identity. UNKNOWN is the correct fail-closed state.
+    assert cells[("weekly", "MOMENTUM")]["state"] == "UNKNOWN"
+    assert cells[("weekly", "MOMENTUM")]["reason"] == "CURRENT_METHOD_STATE_UNKNOWN"
     assert cells[("weekly", "TREND_RS")]["state"] == "PARTIAL"
     assert cells[("weekly", "MTF")]["state"] == "READY"
-    assert cells[("weekly", "SUPPLY")]["state"] == "PARTIAL"
-    assert cells[("weekly", "COST")]["state"] == "NOT_ADMITTED"
-    assert cells[("weekly", "PATTERN")]["state"] == "NOT_ADMITTED"
+    assert cells[("weekly", "SUPPLY")]["state"] == "READY"
+    assert cells[("weekly", "COST")]["state"] == "UNKNOWN"
+    assert cells[("weekly", "PATTERN")]["state"] == "UNKNOWN"
+    weekly_candle = next(
+        row for row in cells[("weekly", "PATTERN")]["method_coverage"]
+        if row["method_id"] == "CANDLESTICK"
+    )
+    assert weekly_candle["reason"] == "TYPED_SOURCE_IDENTITY_MISSING"
     assert cells[("60m", "MTF")]["state"] == "MISSING"
     assert trace["method_window_policy_hash"] == reg.compile_method_window_policy_view()["view_hash"]
     assert trace["timeframe_family_matrix_hash"] == matrix["matrix_hash"]
@@ -1545,12 +2979,16 @@ def test_current_intraday_context_keeps_unconfirmed_structure_and_trigger_unadmi
         assert cells[(timeframe, "SUPPLY")]["state"] == "PARTIAL"
         assert cells[(timeframe, "MOMENTUM")]["state"] == "PARTIAL"
         assert cells[(timeframe, "MTF")]["state"] == "PARTIAL"
-        assert cells[(timeframe, "COST")]["state"] == "NOT_ADMITTED"
+        assert cells[(timeframe, "COST")]["state"] == "PARTIAL"
         # Four descriptive pivot owners exist; absent confirmation is MISSING,
         # not READY or a strategy trigger.
         assert cells[(timeframe, "STRUCTURE")]["state"] == "MISSING"
-        assert cells[(timeframe, "PATTERN")]["state"] == "NOT_ADMITTED"
-        assert cells[(timeframe, "REGIME")]["state"] == "NOT_APPLICABLE"
+        assert cells[(timeframe, "PATTERN")]["state"] == "MISSING"
+        regime = cells[(timeframe, "REGIME")]
+        assert regime["state"] == "UNKNOWN"
+        assert regime["projection_scope"] == "SHARED_ASSET_CONTEXT"
+        assert regime["shared_parent_context"] is True
+        assert regime["cross_timeframe_vote_counting"] is False
     assert factor["strategy_eligibility"]["required_evidence"]["thirty_minute_trigger"] == "UNKNOWN"
 
 
@@ -1594,7 +3032,7 @@ def test_native_intraday_unknown_volume_keeps_momentum_but_supply_missing():
         assert frame["status"] == "PARTIAL"
         assert "VOLUME" not in frame["admitted_methods"]
         assert frame["trend"]["volume_status"] is None
-        assert cells[(timeframe, "SUPPLY")]["state"] == "MISSING"
+        assert cells[(timeframe, "SUPPLY")]["state"] == "UNKNOWN"
         assert cells[(timeframe, "MOMENTUM")]["state"] == "PARTIAL"
         assert cells[(timeframe, "MTF")]["state"] == "PARTIAL"
         assert frame["strategy_admitted"] is False
@@ -1647,15 +3085,31 @@ def test_method_window_policy_rejects_deletion_invalid_class_or_overclaim():
     with pytest.raises(reg.TraceabilityError, match="CURRENT_EXECUTION_MISSING"):
         reg.validate_method_window_profiles(missing_ma_execution)
 
-    forged_macd_all_timeframes = list(profiles)
-    index = next(i for i, profile in enumerate(forged_macd_all_timeframes) if profile.method_id == "MACD")
-    forged_macd_all_timeframes[index] = replace(
-        forged_macd_all_timeframes[index],
-        current_execution_timeframes=reg.TIMEFRAMES,
-    )
-    with pytest.raises(reg.TraceabilityError, match="CURRENT_EXECUTION_INTRADAY_GATE_DEFERRED"):
-        reg.validate_method_window_profiles(forged_macd_all_timeframes)
+    # MACD now has source-bound per-timeframe execution; this is a method
+    # capability, not a data-rights, readiness, or strategy grant.
+    macd = next(profile for profile in profiles if profile.method_id == "MACD")
+    assert macd.current_execution_timeframes == reg.TIMEFRAMES
+    assert "MACD" in reg.SOURCE_BOUND_TIMEFRAME_METHOD_IDS
 
+    # Relative Strength now has an explicit seven-timeframe execution seam.
+    # This admits only a deterministic consumer: without exact benchmark/peer
+    # identities each non-daily leaf remains MISSING, not fabricated READY.
+    relative_strength = next(
+        profile for profile in profiles if profile.method_id == "RELATIVE_STRENGTH"
+    )
+    assert relative_strength.current_execution_timeframes == reg.TIMEFRAMES
+    assert "RELATIVE_STRENGTH" in reg.SOURCE_BOUND_TIMEFRAME_METHOD_IDS
+    forged_rs_outside_target = list(profiles)
+    index = next(
+        i for i, profile in enumerate(forged_rs_outside_target)
+        if profile.method_id == "RELATIVE_STRENGTH"
+    )
+    forged_rs_outside_target[index] = replace(
+        forged_rs_outside_target[index],
+        current_execution_timeframes=(*reg.TIMEFRAMES, "asset"),
+    )
+    with pytest.raises(reg.TraceabilityError, match="CURRENT_EXECUTION_OUTSIDE_TARGET"):
+        reg.validate_method_window_profiles(forged_rs_outside_target)
 
 def test_runtime_trace_consumes_method_window_contract(monkeypatch):
     factor = native_summary()

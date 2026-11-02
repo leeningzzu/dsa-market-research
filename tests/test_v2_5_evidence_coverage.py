@@ -23,6 +23,11 @@ from src.services.v2_5_evidence_coverage import (
 )
 from tests.test_evidence_traceability_registry import (  # noqa: F401
     _closed_typed_stock_source_factor,
+    _closed_typed_etf_source_factor,
+    _build_sse_fixture_bundle,
+    _build_sse_event_fixture_bundle,
+    _sse_b1_context,
+    _factor_with_source_bound_30m_candlestick,
     _p_daily_operation_admission,
     explicit_native_config,
     native_summary,
@@ -286,15 +291,44 @@ def test_product_coverage_consumes_the_trace_matrix_for_actual_weekly_structure_
 def test_product_coverage_exposes_only_current_intraday_context_families():
     # The existing EVIDENCE_AVAILABLE assertions require a lawful synthetic share unit.
     factor = native_summary_with_mtf(intraday=True, volume_unit="share")
-    rows = {row["slot_id"]: row for row in compile_product_coverage(factor)["slots"]}
+    coverage = compile_product_coverage(factor)
+    rows = {row["slot_id"]: row for row in coverage["slots"]}
 
     for timeframe in ("60m", "30m", "15m", "5m"):
         assert rows["detail.timeframe.trend_ma"]["timeframe_states"][timeframe] == "EVIDENCE_AVAILABLE"
         assert rows["detail.timeframe.volume_price"]["timeframe_states"][timeframe] == "EVIDENCE_AVAILABLE"
         assert rows["detail.timeframe.momentum_divergence"]["timeframe_states"][timeframe] == "EVIDENCE_AVAILABLE"
-        assert rows["detail.timeframe.cost_structure"]["timeframe_states"][timeframe] == "DATA_INSUFFICIENT"
+        assert rows["detail.timeframe.cost_structure"]["timeframe_states"][timeframe] == "EVIDENCE_AVAILABLE"
+        cost = factor["multi_timeframe_structure_context"]["timeframes"][timeframe]["cost_bar_reference"]
+        assert cost["status"] == "PARTIAL"
+        assert cost["data_rights_admitted"] is False
+        assert cost["independent_action_authority"] is False
         assert rows["detail.timeframe.price_structure"]["timeframe_states"][timeframe] == "DATA_INSUFFICIENT"
+        # A typed minute carrier alone is not Pattern evidence. Without a
+        # confirmed source-bound pivot, Pattern remains DATA_INSUFFICIENT; the
+        # dedicated 30m candlestick positive below proves the legal trigger.
         assert rows["detail.timeframe.pattern_trigger"]["timeframe_states"][timeframe] == "DATA_INSUFFICIENT"
+    assert coverage["foundation_evidence_receipt"]["policy"]["independent_action_authority"] is False
+    assert all(row["projection_state"] == "NOT_RENDERED" for row in rows.values())
+
+
+def test_product_coverage_exposes_source_bound_30m_candlestick_as_nonrendered_nontrigger():
+    factor = _factor_with_source_bound_30m_candlestick()
+    coverage = compile_product_coverage(factor)
+    rows = {row["slot_id"]: row for row in coverage["slots"]}
+    pattern = rows["detail.timeframe.pattern_trigger"]
+    assert pattern["timeframe_states"]["30m"] == "EVIDENCE_AVAILABLE"
+    assert any(
+        path.endswith("30m.pattern_trigger.candlestick")
+        for path in pattern["timeframe_canonical_paths"]["30m"]
+    )
+    assert pattern["projection_state"] == "NOT_RENDERED"
+    frame = factor["multi_timeframe_structure_context"]["timeframes"]["30m"]
+    assert frame["pattern_trigger"]["candlestick"]["status"] == "READY"
+    assert frame["pattern_trigger"]["broad_patterns"]["status"] == "NOT_ADMITTED"
+    assert frame["pattern_trigger"]["independent_action_authority"] is False
+    assert frame["strategy_admitted"] is False
+    assert coverage["rendered"] is False
 
 
 def test_product_coverage_rejects_unknown_intraday_volume_without_erasing_price_momentum():
@@ -348,7 +382,9 @@ def test_product_coverage_binds_effective_7tf_eight_family_foundation_receipt():
 
     assert foundation["target_method_timeframe_pairs"] == 172
     assert foundation["declared_execution_pairs"] == 34
-    assert foundation["effective_execution_pairs"] == 52
+    assert foundation["effective_execution_pairs"] == 136 + 3 * 6 == 154
+    assert foundation["all_56_cells_executable"] is True
+    assert foundation["regime_shared_projection_count"] == 7
     assert foundation["matrix_cell_count"] == 56
     assert foundation["product_coverage_binding"]["slot_count"] == 27
     assert sum(
@@ -444,6 +480,320 @@ def test_partial_current_product_requires_method_execution_before_showing_leaf()
     assert "方法执行 METHOD_NOT_EXECUTED" in not_executed_5m
 
 
+def test_v25_all_seven_timeframes_consume_their_own_verified_numeric_family_leaves():
+    """Synthetic consumer oracle: different period values, not copied daily facts."""
+    timeframes = ("monthly", "weekly", "daily", "60m", "30m", "15m", "5m")
+    families = ("SUPPLY", "COST", "MOMENTUM", "PATTERN")
+    frames, cells = {}, []
+    for i, timeframe in enumerate(timeframes, 1):
+        frames[timeframe] = {
+            "status": "READY", "role": "SYNTHETIC_TIMEFRAME_" + timeframe,
+            "completed_through": "2026-10-30",
+            "supply_demand": {
+                "status": "READY",
+                "relative_volume": {"volume_ratio_20d": i + 0.125},
+                "directional_volume": {"signed_volume_balance": i + 0.25},
+                "close_location_flow": {"cmf_20": i / 100},
+            },
+            "cost_bar_reference": {
+                "status": "READY",
+                "window_20": {"rolling_reference_price": 120 + i},
+                "window_60": {"rolling_reference_price": 100 + i},
+            },
+            "volatility_momentum": {
+                "status": "READY",
+                "momentum": {
+                    "macd": {"dif": i / 10, "dea": i / 20, "bar": i / 30},
+                    "rsi": {"rsi_6": 50 + i, "rsi_12": 45 + i, "rsi_24": 40 + i},
+                    "roc_20_completed_bars_pct": i + 3.125,
+                },
+                "volatility": {"atr_wilder_14": i + 0.75},
+            },
+            "pattern_trigger": {
+                "status": "READY", "primary_pattern": {
+                    "pattern_type": "SYNTHETIC_" + timeframe,
+                    "lifecycle": "OBSERVATION",
+                }, "candlestick": {"status": "READY"},
+            },
+        }
+        for family in families:
+            method = "SYNTHETIC_" + family + "_" + timeframe
+            cells.append({
+                "family": family, "timeframe": timeframe, "state": "READY",
+                "runtime_binding": {"runtime_source_bound": True},
+                "current_method_ids": (method,),
+                "method_coverage": ({
+                    "method_id": method, "state": "READY",
+                    "method_receipt_hash": "a" * 64,
+                    "runtime_source_binding": {"runtime_source_bound": True},
+                },),
+            })
+    material = {
+        "code": "TEST", "asset_type": "stock", "fact_mode": "SYNTHETIC_TEST",
+        "factor": {"method_execution_receipt_policy": "REQUIRED"},
+        "mtf": {"timeframes": frames},
+        "trace": {"timeframe_family_matrix": {"cells": cells}},
+        "gate": {"current_product_admitted_dataset_ids": ("P_DAILY", "P_5M")},
+    }
+    for i, timeframe in enumerate(timeframes, 1):
+        leaf = v25._v25_timeframe_leaf_payload(material, timeframe)
+        reader = v25._v25_timeframe_leaf_text(leaf)
+        assert all(leaf["family_execution_verified"][f] for f in families)
+        volume_label = "20日量比" if timeframe == "daily" else "20根量比"
+        assert f"{volume_label}={i + 0.125}" in reader
+        assert f"成本20={120 + i}" in reader
+        assert f"ROC20%={i + 3.125}" in reader
+        assert f"形态=SYNTHETIC_{timeframe}" in reader
+        assert "DIF=" in reader and "RSI6=" in reader and "ATR14=" in reader
+    # A forged/missing method receipt hides the numerical family, even if the
+    # source object and product flag still claim READY.
+    damaged = deepcopy(material)
+    cell = next(c for c in damaged["trace"]["timeframe_family_matrix"]["cells"]
+                if c["family"] == "COST" and c["timeframe"] == "30m")
+    cell["method_coverage"] = ({**cell["method_coverage"][0],
+                                "method_receipt_hash": None},)
+    reader = v25._v25_timeframe_leaf_text(
+        v25._v25_timeframe_leaf_payload(damaged, "30m")
+    )
+    assert "成本20=" not in reader and "成本60=" not in reader
+
+
+def test_v25_each_of_seven_periods_exposes_all_eight_family_execution_states():
+    timeframes = ("monthly", "weekly", "daily", "60m", "30m", "15m", "5m")
+    cells = []
+    frames = {}
+    for timeframe in timeframes:
+        frames[timeframe] = {
+            "status": "PARTIAL",
+            "role": "ROLE_" + timeframe,
+            "completed_through": "2026-10-30",
+            "relative_strength": {
+                "status": "MISSING",
+                "reason": "TIMEFRAME_RELATIVE_STRENGTH_CONTEXT_MISSING",
+                "timeframe": timeframe,
+            },
+        }
+        for family in reg.TECHNICAL_EVIDENCE_FAMILIES:
+            method = "METHOD_" + family + "_" + timeframe
+            cells.append({
+                "cell_id": timeframe + ":" + family,
+                "family": family,
+                "timeframe": timeframe,
+                "state": "MISSING",
+                "reason": "EXPLICIT_INPUT_MISSING",
+                "projection_scope": (
+                    "SHARED_ASSET_CONTEXT" if family == "REGIME" else "TIMEFRAME_LOCAL"
+                ),
+                "shared_parent_context": family == "REGIME",
+                "runtime_binding": {"runtime_source_bound": False},
+                "current_method_ids": (),
+                "method_coverage": ({
+                    "method_id": method,
+                    "state": "MISSING",
+                    "reason": "EXPLICIT_INPUT_MISSING",
+                    "method_receipt_hash": "a" * 64,
+                    "runtime_source_binding": {"runtime_source_bound": False},
+                },),
+            })
+    material = {
+        "asset_type": "stock",
+        "fact_mode": "PARTIALLY_ADMITTED",
+        "factor": {"method_execution_receipt_policy": "REQUIRED"},
+        "mtf": {"timeframes": frames},
+        "trace": {"timeframe_family_matrix": {"cells": cells}},
+        "gate": {"current_product_admitted_dataset_ids": ("P_DAILY", "P_5M")},
+    }
+    for timeframe in timeframes:
+        payload = v25._v25_timeframe_leaf_payload(material, timeframe)
+        reader = v25._v25_timeframe_leaf_text(payload)
+        assert set(payload["family_states"]) == set(reg.TECHNICAL_EVIDENCE_FAMILIES)
+        assert "八族执行" in reader
+        for family in reg.TECHNICAL_EVIDENCE_FAMILIES:
+            assert family + "=MISSING" in reader
+        assert "环境/行业=共享父上下文，不跨周期重复计票" in reader
+        assert "相对强弱=MISSING(TIMEFRAME_RELATIVE_STRENGTH_CONTEXT_MISSING)" in reader
+
+
+def test_v25_timeframe_etf_peer_rs_metrics_require_exact_ready_method_receipt():
+    method = {
+        "method_id": "RELATIVE_STRENGTH",
+        "state": "READY",
+        "reason": "TIMEFRAME_ETF_PEER_UNIVERSE_READY",
+        "method_receipt_hash": "a" * 64,
+        "runtime_source_binding": {"runtime_source_bound": True},
+    }
+    material = {
+        "asset_type": "etf",
+        "fact_mode": "PARTIALLY_ADMITTED",
+        "factor": {"method_execution_receipt_policy": "REQUIRED"},
+        "gate": {"current_product_admitted_dataset_ids": ("E_PRICE_5M",)},
+        "trace": {"timeframe_family_matrix": {"cells": [{
+            "family": "TREND_RS",
+            "timeframe": "30m",
+            "state": "READY",
+            "reason": "ALL_CURRENT_METHODS_READY",
+            "runtime_binding": {"runtime_source_bound": True},
+            "current_method_ids": ("RELATIVE_STRENGTH",),
+            "method_coverage": (method,),
+        }]}},
+        "mtf": {"timeframes": {"30m": {
+            "status": "PARTIAL",
+            "role": "MAIN_STRUCTURE",
+            "relative_strength": {
+                "status": "READY",
+                "reason": "TIMEFRAME_ETF_PEER_UNIVERSE_READY",
+                "relative": {
+                    "state": "OUTPERFORMING",
+                    "rank": 1,
+                    "rank_denominator": 4,
+                    "percentile": 100.0,
+                    "excess_vs_peer_median_pct_points": 2.75,
+                },
+            },
+        }}},
+    }
+    leaf = v25._v25_timeframe_leaf_payload(material, "30m")
+    reader = v25._v25_timeframe_leaf_text(leaf)
+    assert "Peer排名=1" in reader
+    assert "Peer样本=4" in reader
+    assert "Peer百分位=100" in reader
+    assert "超Peer中位收益百分点=2.75" in reader
+    audit = v25._v25_reader_numeric_leaf_audit(leaf, reader)
+    assert audit["missing_numeric_labels"] == ()
+
+    forged = deepcopy(material)
+    forged["trace"]["timeframe_family_matrix"]["cells"][0][
+        "method_coverage"
+    ][0]["method_receipt_hash"] = None
+    hidden = v25._v25_timeframe_leaf_text(
+        v25._v25_timeframe_leaf_payload(forged, "30m")
+    )
+    assert "Peer排名=" not in hidden
+    assert "超Peer中位收益百分点=" not in hidden
+
+
+def test_partial_family_cannot_leak_unready_rsi_or_cmf_while_preserving_ready_macd_ma_volume():
+    """Independent method receipts, not a PARTIAL family flag, authorize each metric."""
+    def method(name, state):
+        return {
+            "method_id": name, "state": state,
+            "method_receipt_hash": "a" * 64,
+            "runtime_source_binding": {"runtime_source_bound": True},
+        }
+
+    def cell(family, methods):
+        return {
+            "family": family, "timeframe": "30m", "state": "PARTIAL",
+            "runtime_binding": {"runtime_source_bound": True},
+            "current_method_ids": tuple(row["method_id"] for row in methods),
+            "method_coverage": tuple(methods),
+        }
+
+    material = {
+        "asset_type": "stock", "fact_mode": "PARTIALLY_ADMITTED",
+        "factor": {"method_execution_receipt_policy": "REQUIRED"},
+        "gate": {"current_product_admitted_dataset_ids": ("P_5M",)},
+        "trace": {"timeframe_family_matrix": {"cells": [
+            cell("TREND_RS", (method("MTF_MA_LEVEL_ALIGNMENT", "READY"),
+                              method("RELATIVE_STRENGTH", "PARTIAL"))),
+            cell("SUPPLY", (method("SUPPLY_RELATIVE_VOLUME", "READY"),
+                            method("SUPPLY_CMF", "PARTIAL"))),
+            cell("MOMENTUM", (method("MACD", "READY"),
+                              method("RSI", "PARTIAL"))),
+        ]}},
+        "mtf": {"timeframes": {"30m": {
+            "status": "PARTIAL", "role": "MAIN_STRUCTURE",
+            "ma_structure": {"ma_values": {"ma5": 110.25}},
+            "supply_demand": {
+                "relative_volume": {"volume_ratio_20d": 1.25},
+                "close_location_flow": {"cmf_20": 0.22},
+            },
+            "volatility_momentum": {"momentum": {
+                "macd": {"dif": 0.35},
+                "rsi": {"rsi_6": 66.5},
+            }},
+        }}},
+    }
+    leaf = v25._v25_timeframe_leaf_payload(material, "30m")
+    reader = v25._v25_timeframe_leaf_text(leaf)
+    assert "SMA " in reader and "MA5=110.25" in reader
+    assert "20根量比=1.25" in reader and "DIF=0.35" in reader
+    assert "CMF20=" not in reader
+    assert "RSI6=" not in reader
+    assert leaf["family_execution_verified"]["MOMENTUM"] is True
+
+    forged = deepcopy(material)
+    methods = list(forged["trace"]["timeframe_family_matrix"]["cells"][2]["method_coverage"])
+    methods[0] = {**methods[0], "method_receipt_hash": None}
+    forged["trace"]["timeframe_family_matrix"]["cells"][2]["method_coverage"] = tuple(methods)
+    forged_reader = v25._v25_timeframe_leaf_text(
+        v25._v25_timeframe_leaf_payload(forged, "30m")
+    )
+    assert "DIF=0.35" not in forged_reader and "RSI6=" not in forged_reader
+
+
+def test_v25_status_only_diagnostic_cannot_claim_full_research_or_executed_auto():
+    """Original V2.5 geometry is no substitute for readable authorized facts."""
+    result = render_v2_5_dynamic_no_send(
+        [_v25_result()], report_date="2026-10-23",
+    )
+    receipt, html = result["receipt"], result["html"]
+    assert receipt["all_accepted_slot_roles_projected"] is True
+    assert receipt["reader_value_audit"]["actual_rendered_numeric_leaf_count"] == 0
+    assert receipt["reader_value_audit"]["full_readable_research_ready"] is False
+    assert receipt["reader_value_audit"]["mode"] == "STATUS_ONLY_DIAGNOSTIC"
+    assert receipt["reader_value_audit"]["auto_execution_state"] == "UNVERIFIED_NOT_RUN"
+    assert "未执行AUTO_SCREEN" in html
+    assert "非完整事实研究" in html
+    assert "Product未准入｜技术载体=" in html
+
+    assert receipt["no_send"] is True and receipt["delivery_authority"] is False
+
+
+def test_v25_unadmitted_card_roles_are_distinct_not_repeated_policy_filler():
+    material = v25._v25_material(_v25_result())
+    lines = tuple(
+        v25._v25_card_missing_line(material, "watch-x", ordinal)
+        for ordinal in range(3)
+    )
+    assert len(set(lines)) == 3
+    assert "全域Product尚未准入" in lines[0]
+    assert "7周期" in lines[1]
+    assert "veto" in lines[2].lower() or "否决" in lines[2]
+    assert all("价格=" not in line and "MACD=" not in line for line in lines)
+
+
+def test_v25_readability_independently_rejects_trimmed_admitted_numeric_leaf():
+    """Input receipt hashes and slot counts cannot stand in for visible values."""
+    leaf = {
+        "timeframe": "30m", "product_admitted": True,
+        "family_execution_verified": {
+            "TREND_RS": False, "SUPPLY": True, "COST": True,
+            "STRUCTURE": False, "MOMENTUM": True, "PATTERN": False, "MTF": True,
+        },
+        "relative_volume_20d": 2.75,
+        "cmf_20": 0.25,
+        "cost_reference_20": 123.45,
+        "macd_dif": 0.31,
+        "rsi_6": 51.2,
+        "roc_20_pct": 1.75,
+        "atr_wilder_14": 2.1,
+    }
+    readable = v25._v25_timeframe_leaf_text(leaf)
+    exact = v25._v25_reader_numeric_leaf_audit(leaf, readable)
+    assert exact["input_numeric_count"] >= 6
+    assert exact["visible_numeric_count"] == exact["input_numeric_count"]
+    assert exact["missing_numeric_labels"] == ()
+    with pytest.raises(reg.TraceabilityError, match="V25_READER_NUMERIC_LEAF_NOT_VISIBLE"):
+        v25._v25_reader_numeric_leaf_audit(
+            leaf, readable.replace("DIF=0.31", "DIF=0.30"),
+        )
+    # Missing price Product rights must never reveal the same source numbers.
+    blocked = dict(leaf, product_admitted=False)
+    with pytest.raises(reg.TraceabilityError, match="V25_READER_UNADMITTED_LEAF_VISIBLE"):
+        v25._v25_reader_numeric_leaf_audit(blocked, readable)
+
+
 def test_actual_material_path_preserves_admitted_daily_leaf_before_recording():
     factor, _minute = _closed_typed_stock_source_factor(source_version_known=True)
     _source_row, _receipt, admitted = _p_daily_operation_admission(factor)
@@ -488,6 +838,171 @@ def test_actual_material_path_preserves_admitted_daily_leaf_before_recording():
     assert projected_objects["P_5M"]["state"] != "READY"
     assert projected_objects["L_OUTCOME"]["state"] != "READY"
     assert receipt["all_input_facts_product_ready"] is False
+    # One genuinely admitted synthetic P_DAILY must reach visible reader text.
+    # Other periods stay denied; a rendered card count does not prove this.
+    audit = receipt["reader_value_audit"]
+    assert audit["actual_rendered_numeric_leaf_count"] > 0
+    assert audit["full_readable_research_ready"] is False
+    assert "DSA部分事实研究" in projected["html"]
+
+    assert "SMA " in projected["html"]
+    assert "MA斜率%" in projected["html"]
+
+
+
+def _sse_admitted_v25_factor(asset_type):
+    from src.services.data_object_admission import (
+        compile_b1_runtime_admission_receipts,
+    )
+
+    bundle = _build_sse_fixture_bundle()
+    if asset_type == "stock":
+        event_bundle = _build_sse_event_fixture_bundle(reconciled=False)
+        factor = deepcopy(native_summary())
+        observations = {
+            **bundle["stock_observations"],
+            **event_bundle["stock_observations"],
+        }
+    else:
+        factor, _minute = _closed_typed_etf_source_factor()
+        template = native_summary()
+        factor["strategy_id"] = template["strategy_id"]
+        factor["canonical_decision"] = deepcopy(template["canonical_decision"])
+        factor["strategy_eligibility"] = deepcopy(template["strategy_eligibility"])
+        observations = bundle["etf_observations"]
+    factor["data_object_source_observations"] = deepcopy(observations)
+    b1 = _sse_b1_context()
+    objects = reg._compile_accepted_data_object_scope(factor)
+    receipts = compile_b1_runtime_admission_receipts(
+        objects, b1_context=b1,
+    )
+    factor.update({
+        "research_as_of": b1["research_as_of"],
+        "research_operation_id": b1["operation_id"],
+        "research_intended_use": b1["intended_use"],
+        "data_object_admission_receipts": receipts,
+    })
+    factor["evidence_traceability"] = reg.build_runtime_trace(factor)
+    factor["investor_brief"] = _build_asset_research_brief_v1(
+        SimpleNamespace(current_price=None), factor,
+    )
+    binding = canonical_factor_binding(factor)
+    factor["canonical_decision_identity"] = binding
+    factor["investor_brief"]["canonical_binding"] = dict(binding)
+    return factor
+
+
+def test_v25_renders_only_admitted_sse_nonprice_facts_and_hashes_reader_text():
+    stock = _sse_admitted_v25_factor("stock")
+    etf = _sse_admitted_v25_factor("etf")
+    projected = render_v2_5_dynamic_no_send(
+        [
+            _v25_result(factor=stock, code="600519", name="贵州茅台"),
+            _v25_result(
+                factor=etf,
+                code="510300",
+                name="沪深300ETF",
+                delivery={
+                    "asset_type": "etf",
+                    "asset_identity_text": "A股ETF｜宽基",
+                    "product_group": "WATCHLIST_ETF",
+                },
+            ),
+        ],
+        report_date="2026-10-31",
+    )
+    html = projected["html"]
+    assert "证券身份：600519 贵州茅台" in html
+    assert "全称 贵州茅台酒股份有限公司" in html
+    assert "现金分红：600519" in html
+    assert "最近除息日 2026-06-26" in html
+    assert "每股含税红利 28.02423元" in html
+    assert "ETF申赎篮子：510300" in html
+    assert "成分 2只" in html
+    assert "PCF文件 1508913" in html
+    # These four source observations are intentionally not Product-admitted.
+    assert "行业归属：" not in html
+    assert "ETF净值：510300" not in html
+    assert "ETF申赎份额：510300" not in html
+    assert "NAV 4.1176" not in html
+    assert "股本事件：600519" not in html
+
+    stage = projected["receipt"]["stage1_vertical_product_receipt"]
+    by_code = {row["code"]: row for row in stage["materials"]}
+    stock_rows = {
+        row["dataset_id"]: row
+        for row in by_code["600519"]["data_object_rows"]
+    }
+    etf_rows = {
+        row["dataset_id"]: row
+        for row in by_code["510300"]["data_object_rows"]
+    }
+    assert stock_rows["P_CODE_IDENTITY"]["v25_consumer_state"] == (
+        "V25_DATA_OBJECT_FACT_CONSUMED"
+    )
+    assert stock_rows["P_CODE_IDENTITY"]["v25_data_object_fact_consumed"] is True
+    assert stock_rows["P_DIVIDEND"]["v25_consumer_state"] == (
+        "V25_DATA_OBJECT_FACT_CONSUMED"
+    )
+    assert stock_rows["P_DIVIDEND"]["v25_data_object_fact_consumed"] is True
+    assert stock_rows["P_SHARES_EVENTS"]["product_admitted"] is False
+    assert etf_rows["E_BASKET"]["v25_consumer_state"] == (
+        "V25_DATA_OBJECT_FACT_CONSUMED"
+    )
+    assert etf_rows["E_BASKET"]["v25_data_object_fact_consumed"] is True
+    assert stock_rows["P_INDUSTRY"]["product_admitted"] is False
+    assert etf_rows["E_NAV_IOPV"]["product_admitted"] is False
+
+    stock_trace = reg.validate_runtime_trace(stock)
+    stock_universe = stock_trace["complete_research_universe"]
+    source_row = next(
+        row for row in stock_universe["data_objects"]
+        if row["dataset_id"] == "P_CODE_IDENTITY"
+    )
+    admission = next(
+        row for row in stock_universe["data_object_admission"]["objects"]
+        if row["dataset_id"] == "P_CODE_IDENTITY"
+    )
+    projection = next(
+        row for row in projected["receipt"]["whole_scope_projection"][
+            "data_object_projections"
+        ]
+        if row["id"] == "P_CODE_IDENTITY"
+    )
+    rendered = {
+        row["block_id"]: deepcopy(row)
+        for row in projected["receipt"]["rendered_blocks"]
+    }
+    location = projection["location_ids"][0]
+    rendered[location]["input_data_object_fact_hashes"] = ()
+    missing_visible_fact = v25._stage1_data_object_consumer_row(
+        source_row,
+        product_admitted=True,
+        admission=admission,
+        scope_projection=projection,
+        rendered_lookup=rendered,
+        direct_leaf_dataset_ids=set(),
+    )
+    assert missing_visible_fact["v25_consumer_bound"] is False
+    assert missing_visible_fact["v25_consumer_state"] == (
+        "V25_DATA_OBJECT_FACT_NOT_VISIBLE"
+    )
+
+    forged_stock = deepcopy(stock)
+    forged_stock["data_object_source_observations"]["P_CODE_IDENTITY"][
+        "facts"
+    ]["short_name"] = "伪造简称"
+    with pytest.raises(
+        reg.TraceabilityError,
+        match=(
+            "V25_DYNAMIC_CANONICAL_BINDING_INVALID|"
+            "V25_ADMITTED_DATA_OBJECT_FACT_BINDING_MISSING"
+        ),
+    ):
+        render_v2_5_dynamic_no_send(
+            [_v25_result(factor=forged_stock)],
+            report_date="2026-10-31",
+        )
 
 
 def test_stage1_vertical_receipt_blocks_registered_historical_and_carrier_substitution():

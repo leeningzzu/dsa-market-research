@@ -89,6 +89,10 @@ _DSA_HOTSPOT_CALL_DEADLINE: ContextVar[Optional[float]] = ContextVar(
     "dsa_hotspot_call_deadline",
     default=None,
 )
+_DSA_HOTSPOT_LAST_REMAINING: ContextVar[Optional[float]] = ContextVar(
+    "dsa_hotspot_last_remaining",
+    default=None,
+)
 _SCREENING_LITELLM_COMPLETION_ATTR = "_screening_litellm_completion_bridge"
 _SCREENING_LITELLM_COMPLETION_LOCK = threading.Lock()
 
@@ -2711,9 +2715,11 @@ class DsaEastMoneyHotspotProvider:
             yield
             return
         token = _DSA_HOTSPOT_CALL_DEADLINE.set(time.monotonic() + timeout)
+        remaining_token = _DSA_HOTSPOT_LAST_REMAINING.set(None)
         try:
             yield
         finally:
+            _DSA_HOTSPOT_LAST_REMAINING.reset(remaining_token)
             _DSA_HOTSPOT_CALL_DEADLINE.reset(token)
 
     def _remaining_source_timeout(self, fallback: float) -> float:
@@ -2723,6 +2729,16 @@ class DsaEastMoneyHotspotProvider:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError("screening hotspot provider call exceeded its configured timeout")
+        # Windows monotonic clocks may expose consecutive calls on the same
+        # scheduler tick.  Keep the one shared absolute deadline authoritative,
+        # but make every downstream fallback see a strictly smaller remaining
+        # budget without materially shortening it.
+        previous = _DSA_HOTSPOT_LAST_REMAINING.get()
+        if previous is not None and remaining >= previous:
+            remaining = math.nextafter(previous, 0.0)
+        if remaining <= 0:
+            raise TimeoutError("screening hotspot provider call exceeded its configured timeout")
+        _DSA_HOTSPOT_LAST_REMAINING.set(remaining)
         return remaining
 
     def _akshare_timeout_seconds(self) -> float:
@@ -3912,7 +3928,27 @@ def _normalize_dsa_daily_history(raw_df: Any) -> Any:
         return None
 
     import pandas as pd
+    from data_provider.daily_data_identity import (
+        DAILY_DATA_IDENTITY_FRAME_ATTR,
+        attach_daily_data_identity,
+        extract_daily_data_identity,
+        rebind_daily_data_identity,
+        verified_observed_daily_frame_provider,
+    )
 
+    typed_source = raw_df if isinstance(raw_df, pd.DataFrame) else None
+    typed_claim = bool(
+        typed_source is not None
+        and DAILY_DATA_IDENTITY_FRAME_ATTR in typed_source.attrs
+    )
+    identity = (
+        extract_daily_data_identity(typed_source, strict=False)
+        if typed_source is not None else None
+    )
+    verified_provider = (
+        verified_observed_daily_frame_provider(typed_source)
+        if typed_source is not None else None
+    )
     df = pd.DataFrame(raw_df).copy()
     if df.empty:
         return df
@@ -3946,14 +3982,33 @@ def _normalize_dsa_daily_history(raw_df: Any) -> Any:
     for column in ("open", "high", "low", "close", "volume", "amount"):
         if column in normalized.columns:
             normalized[column] = pd.to_numeric(normalized[column], errors="coerce")
-    normalized = normalized.dropna(subset=["close"])
-    return normalized.reset_index(drop=True)
+    normalized = normalized.dropna(subset=["close"]).reset_index(drop=True)
+    if verified_provider is not None and isinstance(identity, dict):
+        normalized["data_source"] = verified_provider
+        attach_daily_data_identity(
+            normalized,
+            rebind_daily_data_identity(identity, normalized),
+        )
+    elif typed_claim:
+        # A stale content-bound identity must not be rescued by normalizing the
+        # mutated rows into a fresh trusted frame.
+        normalized.attrs.pop(DAILY_DATA_IDENTITY_FRAME_ATTR, None)
+    return normalized
 
 
 def _normalize_daily_date_value(value: Any) -> str:
+    """Normalize one daily label without retaining a midnight time suffix."""
     text = _env_text(value)
     if len(text) == 8 and text.isdigit():
         return f"{text[:4]}-{text[4:6]}-{text[6:]}"
+    try:
+        import pandas as pd
+
+        stamp = pd.to_datetime(value, errors="raise")
+        if not pd.isna(stamp):
+            return pd.Timestamp(stamp).date().isoformat()
+    except (TypeError, ValueError, OverflowError):
+        pass
     return text
 
 

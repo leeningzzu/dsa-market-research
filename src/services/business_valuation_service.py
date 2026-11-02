@@ -56,6 +56,63 @@ _ROUTE_LABELS = {
     "ETF": "ETF",
 }
 
+INDUSTRY_VALUATION_ROUTE_SCHEMA_VERSION = "industry-valuation-route-v1"
+INDUSTRY_FAMILY_ROUTE_SPECS = {
+    "MATURE_CONSUMER": {
+        "route_id": "MATURE_INDUSTRIAL_CONSUMER",
+        "primary_method": "NORMALIZED_EARNINGS_PE",
+        "allowed_cross_checks": ("HISTORICAL_PE_PERCENTILE", "EV_EBITDA_IF_AVAILABLE"),
+    },
+    "INDUSTRIAL_MANUFACTURING": {
+        "route_id": "MATURE_INDUSTRIAL_CONSUMER",
+        "primary_method": "NORMALIZED_EARNINGS_PE",
+        "allowed_cross_checks": ("HISTORICAL_PE_PERCENTILE", "EV_EBITDA_IF_AVAILABLE"),
+    },
+    "HIGH_GROWTH_TECH": {
+        "route_id": "HIGH_GROWTH_TECH",
+        "loss_route_id": "LOSS_MAKING_EARLY_GROWTH",
+        "primary_method": "FORWARD_EV_SALES",
+        "loss_primary_method": "REVENUE_UNIT_ECONOMICS_EV_SALES",
+        "allowed_cross_checks": ("GROWTH_ADJUSTED_PE_IF_PROFITABLE", "RULE_OF_40_CONTEXT"),
+    },
+    "BANKING": {
+        "route_id": "BANK",
+        "primary_method": "PB_SUSTAINABLE_ROE_ROUTE",
+        "allowed_cross_checks": ("HISTORICAL_PB_PERCENTILE", "ROE_ASSET_QUALITY_CONTEXT"),
+    },
+    "INSURANCE": {
+        "route_id": "INSURANCE",
+        "primary_method": "PRICE_TO_EMBEDDED_VALUE",
+        "allowed_cross_checks": ("HISTORICAL_PEV_PERCENTILE", "NEW_BUSINESS_VALUE_CONTEXT"),
+    },
+    "CYCLICAL_RESOURCE": {
+        "route_id": "CYCLICAL_RESOURCE",
+        "primary_method": "MID_CYCLE_EV_EBITDA",
+        "allowed_cross_checks": ("NORMALIZED_FCF_YIELD", "COMMODITY_CYCLE_CONTEXT"),
+    },
+    "UTILITY_INFRASTRUCTURE": {
+        "route_id": "UTILITY_INFRASTRUCTURE",
+        "primary_method": "GORDON_DDM",
+        "allowed_cross_checks": ("DIVIDEND_YIELD_PERCENTILE", "REGULATED_ASSET_BASE_CONTEXT"),
+    },
+    "REIT": {
+        "route_id": "REIT",
+        "primary_method": "PRICE_TO_AFFO",
+        "allowed_cross_checks": ("NAV_DISCOUNT_CONTEXT", "DISTRIBUTION_YIELD_CONTEXT"),
+    },
+    "EARLY_GROWTH": {
+        "route_id": "LOSS_MAKING_EARLY_GROWTH",
+        "primary_method": "REVENUE_UNIT_ECONOMICS_EV_SALES",
+        "allowed_cross_checks": ("GROSS_MARGIN_CONTEXT", "CASH_RUNWAY_CONTEXT"),
+    },
+    "ETF": {
+        "route_id": "ETF",
+        "primary_method": "NAV_PREMIUM_DISCOUNT_BAND",
+        "allowed_cross_checks": ("UNDERLYING_INDEX_VALUATION", "TRACKING_ERROR_CONTEXT"),
+    },
+}
+
+
 # Route-specific source obligations keep a product-admitted receipt from being
 # reused as a generic valuation permission. ``required_any`` expresses the
 # bounded price observation alternatives; every other object is mandatory.
@@ -419,6 +476,197 @@ def _compile_optional_cross_check(
     return document
 
 
+def compile_industry_valuation_route(
+    payload: Mapping[str, Any] | None,
+    *,
+    as_of: date | datetime | str | None = None,
+) -> dict[str, Any]:
+    """Bind a dated industry classification to one accepted valuation route.
+
+    The mapper consumes an explicit controlled ``industry_family`` supplied by a
+    Product-admitted classification object.  It never guesses from a company
+    name, silently falls back to PE, supplies multiples, or grants action
+    authority.  High-growth technology requires a dated profitability state so
+    profitable and loss-making businesses do not share one valuation formula.
+    """
+    base = {
+        "schema_version": INDUSTRY_VALUATION_ROUTE_SCHEMA_VERSION,
+        "status": "MISSING",
+        "reason_codes": (),
+        "asset_id": None,
+        "asset_type": None,
+        "classification_standard": None,
+        "classification_version": None,
+        "industry_code": None,
+        "industry_name": None,
+        "industry_family": None,
+        "profitability_state": None,
+        "route_id": None,
+        "route_label": None,
+        "primary_method": None,
+        "allowed_cross_checks": (),
+        "route_data_requirements": None,
+        "classification_admission_hash": None,
+        "classification_receipt_hash": None,
+        "published_at": None,
+        "effective_from": None,
+        "as_of": None,
+        "universal_default_route": False,
+        "product_admitted": False,
+        "learning_admitted": False,
+        "strategy_upgrade_authority": False,
+        "veto_override_authority": False,
+        "independent_action_authority": False,
+        "route_plan_hash": None,
+    }
+    if not isinstance(payload, Mapping):
+        return {**base, "reason_codes": ("INDUSTRY_CLASSIFICATION_INPUT_MISSING",)}
+    asset_id = _text(payload.get("asset_id"))
+    asset_type = _text(payload.get("asset_type")).lower()
+    standard = _text(payload.get("classification_standard"))
+    version = _text(payload.get("classification_version"))
+    industry_code = _text(payload.get("industry_code"))
+    industry_name = _text(payload.get("industry_name"))
+    family = _text(payload.get("industry_family")).upper()
+    profitability = _text(payload.get("profitability_state")).upper()
+    published_at = _aware_datetime(payload.get("published_at"))
+    research_as_of = _as_of_ceiling(as_of or payload.get("as_of"))
+    effective_from = _date_text(payload.get("effective_from"))
+    reasons: list[str] = []
+    if not asset_id:
+        reasons.append("INDUSTRY_CLASSIFICATION_ASSET_ID_MISSING")
+    if asset_type not in {"stock", "etf"}:
+        reasons.append("INDUSTRY_CLASSIFICATION_ASSET_TYPE_INVALID")
+    if not standard or not version or not industry_code or not industry_name:
+        reasons.append("INDUSTRY_CLASSIFICATION_IDENTITY_INCOMPLETE")
+    spec = INDUSTRY_FAMILY_ROUTE_SPECS.get(family)
+    if spec is None:
+        reasons.append("INDUSTRY_FAMILY_NOT_MAPPED")
+    if family == "ETF" and asset_type != "etf":
+        reasons.append("INDUSTRY_FAMILY_ASSET_TYPE_MISMATCH")
+    if family != "ETF" and asset_type == "etf":
+        reasons.append("INDUSTRY_FAMILY_ASSET_TYPE_MISMATCH")
+    if published_at is None or research_as_of is None or not effective_from:
+        reasons.append("INDUSTRY_CLASSIFICATION_TIME_MISSING_OR_NAIVE")
+    elif published_at > research_as_of or date.fromisoformat(effective_from) > research_as_of.date():
+        reasons.append("INDUSTRY_CLASSIFICATION_NOT_KNOWN_AT_ASOF")
+
+    validated_admission = None
+    admission = payload.get("classification_admission")
+    if not isinstance(admission, Mapping):
+        reasons.append("INDUSTRY_CLASSIFICATION_ADMISSION_MISSING")
+    elif research_as_of is not None:
+        try:
+            validated_admission = validate_compiled_data_object_admission(
+                admission, as_of=research_as_of,
+            )
+        except DataObjectAdmissionError:
+            reasons.append("INDUSTRY_CLASSIFICATION_ADMISSION_INVALID")
+        else:
+            expected_dataset = "E_BASKET" if asset_type == "etf" else "P_INDUSTRY"
+            if validated_admission.get("dataset_id") != expected_dataset:
+                reasons.append("INDUSTRY_CLASSIFICATION_DATASET_ROUTE_MISMATCH")
+            if validated_admission.get("product_admitted") is not True:
+                reasons.append("INDUSTRY_CLASSIFICATION_NOT_PRODUCT_ADMITTED")
+
+    route_id = spec.get("route_id") if spec else None
+    primary_method = spec.get("primary_method") if spec else None
+    if family == "HIGH_GROWTH_TECH":
+        if profitability == "LOSS_MAKING":
+            route_id = spec["loss_route_id"]
+            primary_method = spec["loss_primary_method"]
+        elif profitability != "PROFITABLE":
+            reasons.append("PROFITABILITY_STATE_REQUIRED_FOR_GROWTH_ROUTE")
+    elif family == "EARLY_GROWTH":
+        if profitability != "LOSS_MAKING":
+            reasons.append("LOSS_MAKING_STATE_REQUIRED_FOR_EARLY_GROWTH_ROUTE")
+    elif family == "ETF":
+        if profitability not in {"", "NOT_APPLICABLE"}:
+            reasons.append("ETF_PROFITABILITY_STATE_MUST_BE_NOT_APPLICABLE")
+    elif profitability not in {"PROFITABLE", "NORMALIZED_CYCLE"}:
+        reasons.append("PROFITABILITY_STATE_REQUIRED_FOR_ROUTE")
+
+    common = {
+        **base,
+        "asset_id": asset_id or None,
+        "asset_type": asset_type or None,
+        "classification_standard": standard or None,
+        "classification_version": version or None,
+        "industry_code": industry_code or None,
+        "industry_name": industry_name or None,
+        "industry_family": family or None,
+        "profitability_state": profitability or None,
+        "route_id": route_id,
+        "route_label": _ROUTE_LABELS.get(route_id),
+        "primary_method": primary_method,
+        "allowed_cross_checks": tuple(spec.get("allowed_cross_checks") or ()) if spec else (),
+        "route_data_requirements": VALUATION_ROUTE_DATA_REQUIREMENTS.get(route_id),
+        "classification_admission_hash": (
+            validated_admission.get("admission_hash") if validated_admission else None
+        ),
+        "classification_receipt_hash": (
+            validated_admission.get("receipt_hash") if validated_admission else None
+        ),
+        "published_at": published_at.isoformat() if published_at else None,
+        "effective_from": effective_from or None,
+        "as_of": research_as_of.isoformat() if research_as_of else None,
+    }
+    if reasons:
+        hard = {
+            "INDUSTRY_CLASSIFICATION_NOT_KNOWN_AT_ASOF",
+            "INDUSTRY_CLASSIFICATION_ADMISSION_INVALID",
+            "INDUSTRY_CLASSIFICATION_NOT_PRODUCT_ADMITTED",
+            "INDUSTRY_CLASSIFICATION_DATASET_ROUTE_MISMATCH",
+            "INDUSTRY_FAMILY_ASSET_TYPE_MISMATCH",
+        }
+        return {
+            **common,
+            "status": "NOT_ADMITTED" if any(reason in hard for reason in reasons) else "MISSING",
+            "reason_codes": tuple(dict.fromkeys(reasons)),
+        }
+    document = {
+        **common,
+        "status": "READY",
+        "reason_codes": (),
+        "product_admitted": True,
+    }
+    document["route_plan_hash"] = sha256_payload({
+        key: value for key, value in document.items() if key != "route_plan_hash"
+    })
+    return document
+
+
+def validate_industry_valuation_route(value: Mapping[str, Any]) -> dict[str, Any]:
+    if (
+        not isinstance(value, Mapping)
+        or value.get("schema_version") != INDUSTRY_VALUATION_ROUTE_SCHEMA_VERSION
+    ):
+        raise BusinessValuationError("INDUSTRY_VALUATION_ROUTE_SCHEMA_INVALID")
+    result = dict(value)
+    if result.get("status") != "READY":
+        return result
+    route_id = _text(result.get("route_id")).upper()
+    if route_id not in VALUATION_ROUTE_IDS:
+        raise BusinessValuationError("INDUSTRY_VALUATION_ROUTE_ID_INVALID")
+    route_plan_hash = _text(result.get("route_plan_hash"))
+    if len(route_plan_hash) != 64:
+        raise BusinessValuationError("INDUSTRY_VALUATION_ROUTE_HASH_MISSING")
+    expected = sha256_payload({
+        key: result[key] for key in result if key != "route_plan_hash"
+    })
+    if route_plan_hash != expected:
+        raise BusinessValuationError("INDUSTRY_VALUATION_ROUTE_HASH_STALE")
+    if result.get("product_admitted") is not True:
+        raise BusinessValuationError("INDUSTRY_VALUATION_ROUTE_NOT_PRODUCT_ADMITTED")
+    if any(result.get(key) is not False for key in (
+        "learning_admitted", "strategy_upgrade_authority",
+        "veto_override_authority", "independent_action_authority",
+        "universal_default_route",
+    )):
+        raise BusinessValuationError("INDUSTRY_VALUATION_ROUTE_AUTHORITY_ESCALATION")
+    return result
+
+
 def compile_business_valuation(
     payload: Mapping[str, Any] | None,
     *,
@@ -443,6 +691,7 @@ def compile_business_valuation(
         "primary_method": None,
         "cross_check": None,
         "underlying_valuation": None,
+        "industry_route_plan": None,
         "route_data_requirements": None,
         "field_lineage": None,
         "fair_value": None,
@@ -476,6 +725,25 @@ def compile_business_valuation(
     published_at = _aware_datetime(payload.get("published_at"))
     research_as_of = _as_of_ceiling(as_of or payload.get("as_of"))
     reasons: list[str] = []
+    industry_route_plan = None
+    raw_route_plan = payload.get("industry_route_plan")
+    if not isinstance(raw_route_plan, Mapping):
+        reasons.append("VALUATION_INDUSTRY_ROUTE_PLAN_MISSING")
+    else:
+        try:
+            industry_route_plan = validate_industry_valuation_route(raw_route_plan)
+        except BusinessValuationError:
+            reasons.append("VALUATION_INDUSTRY_ROUTE_PLAN_INVALID")
+        else:
+            if industry_route_plan.get("status") != "READY":
+                reasons.append("VALUATION_INDUSTRY_ROUTE_PLAN_NOT_READY")
+            if industry_route_plan.get("route_id") != route_id:
+                reasons.append("VALUATION_INDUSTRY_ROUTE_MISMATCH")
+            if (
+                industry_route_plan.get("asset_id") != asset_id
+                or industry_route_plan.get("asset_type") != asset_type
+            ):
+                reasons.append("VALUATION_INDUSTRY_ROUTE_ASSET_MISMATCH")
     if not asset_id:
         reasons.append("ASSET_ID_MISSING")
     expected_asset_type = "etf" if route_id == "ETF" else "stock"
@@ -550,6 +818,7 @@ def compile_business_valuation(
             sorted(_text(item.get("dataset_id")) for item in normalized_admissions)
         ),
         "route_data_requirements": VALUATION_ROUTE_DATA_REQUIREMENTS[route_id],
+        "industry_route_plan": industry_route_plan,
     }
     underlying_valuation = None
     if route_id == "ETF":
@@ -584,6 +853,10 @@ def compile_business_valuation(
                 "VALUATION_DATA_RECEIPT_IDENTITY_MISSING",
                 "VALUATION_DATA_CURRENCY_MISMATCH",
                 "ASSET_TYPE_ROUTE_MISMATCH",
+                "VALUATION_INDUSTRY_ROUTE_PLAN_INVALID",
+                "VALUATION_INDUSTRY_ROUTE_PLAN_NOT_READY",
+                "VALUATION_INDUSTRY_ROUTE_MISMATCH",
+                "VALUATION_INDUSTRY_ROUTE_ASSET_MISMATCH",
             )
         ) else "MISSING"
         return {**common, "status": status, "reason_codes": tuple(dict.fromkeys(reasons))}

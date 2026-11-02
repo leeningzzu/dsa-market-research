@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import hashlib
 
 import pytest
 
@@ -13,6 +14,7 @@ from src.services.data_object_admission import (
     seal_data_object_admission_receipt,
     seal_source_rights_evidence,
     validate_compiled_data_object_admission,
+    validate_source_rights_evidence,
 )
 
 
@@ -124,6 +126,45 @@ def _receipt(*, include_rights_evidence=True, rights_operation_id=NO_SEND_OPERAT
             intended_use=rights_intended_use,
         )
     return seal_data_object_admission_receipt(payload)
+
+
+def test_b1_rights_clock_reports_late_terms_without_masking_and_preserves_nontrigger():
+    """A new rights review cannot retroactively license an older known-at run."""
+    from src.services.data_object_admission import (
+        compile_b1_runtime_admission_receipts,
+        validate_b1_provider_preflight,
+    )
+
+    grant = _rights_evidence(terms_observed_at="2026-10-22T08:00:00+00:00")
+    kwargs = {
+        "operation_id": NO_SEND_OPERATION_ID,
+        "intended_use": "NO_SEND_RESEARCH",
+        "dataset_id": "P_DAILY",
+        "consumer_scope": "STOCK_ASSET_RESEARCH",
+    }
+    with pytest.raises(DataObjectAdmissionError, match="^B1_TERMS_AFTER_RESEARCH_ASOF$"):
+        validate_b1_provider_preflight(
+            grant, research_as_of="2026-10-21T10:00:00+00:00", **kwargs
+        )
+    with pytest.raises(DataObjectAdmissionError, match="^B1_RESEARCH_ASOF_INVALID$"):
+        validate_b1_provider_preflight(
+            grant, research_as_of="2026-10-21Tnot-a-time", **kwargs
+        )
+
+    future = "2026-10-23T10:00:00+00:00"
+    valid = validate_b1_provider_preflight(grant, research_as_of=future, **kwargs)
+    assert valid["rights"]["storage"] == "FORBIDDEN"
+    assert valid["rights"]["training"] == "FORBIDDEN"
+    # Even a syntactically sound simulated grant cannot invent runtime rows.
+    assert compile_b1_runtime_admission_receipts(
+        [{"dataset_id": "P_DAILY", "state": "UNKNOWN"}],
+        b1_context={
+            "operation_id": NO_SEND_OPERATION_ID,
+            "intended_use": "NO_SEND_RESEARCH",
+            "research_as_of": future,
+            "rights_by_dataset": {"P_DAILY": grant},
+        },
+    ) == {}
 
 
 def test_product_admission_requires_explicit_identity_semantics_and_rights():
@@ -554,3 +595,52 @@ def test_rights_terms_observed_after_research_asof_are_not_product_ready():
     )
     assert result["product_admitted"] is False
     assert "RIGHTS_EVIDENCE_AFTER_RESEARCH_ASOF" in result["reasons"]
+
+
+@pytest.mark.parametrize(
+    "terms_uri",
+    (
+        "https://pypi.org/pypi/baostock/json",
+        "https://files.pythonhosted.org/packages/example/baostock.whl",
+        "https://registry.npmjs.org/example-package",
+    ),
+)
+def test_software_package_registry_metadata_cannot_prove_upstream_data_rights(terms_uri):
+    evidence = _rights_evidence()
+    evidence["terms_uri"] = terms_uri
+    evidence["terms_scope"] = "OFFICIAL_PROVIDER_DATA_USE_STATEMENT"
+    clause = "Free china stock market data; Friendly to machine learning and data mining"
+    evidence["product_use_clause"] = clause
+    evidence["product_use_clause_sha256"] = hashlib.sha256(clause.encode("utf-8")).hexdigest()
+    evidence = seal_source_rights_evidence(evidence)
+
+    with pytest.raises(
+        DataObjectAdmissionError,
+        match="SOURCE_RIGHTS_EVIDENCE_SOFTWARE_PACKAGE_METADATA_IS_NOT_DATA_TERMS",
+    ):
+        validate_source_rights_evidence(evidence)
+
+
+@pytest.mark.parametrize(
+    "terms_uri",
+    (
+        "https://www.baostock.com/helpdocs/api/markdown/localdatafactorInfo.md",
+        "https://www.baostock.com/mainContent?file=stockKData.md",
+    ),
+)
+def test_official_technical_api_documentation_cannot_be_promoted_to_data_rights(terms_uri):
+    evidence = _rights_evidence()
+    evidence["terms_uri"] = terms_uri
+    evidence["terms_scope"] = "OFFICIAL_PROVIDER_DATA_USE_STATEMENT"
+    clause = "在量化策略回测中，复权数据是保证价格连续性的基础。"
+    evidence["product_use_clause"] = clause
+    evidence["product_use_clause_sha256"] = hashlib.sha256(
+        clause.encode("utf-8")
+    ).hexdigest()
+    evidence = seal_source_rights_evidence(evidence)
+
+    with pytest.raises(
+        DataObjectAdmissionError,
+        match="SOURCE_RIGHTS_EVIDENCE_TECHNICAL_DOCUMENTATION_IS_NOT_DATA_TERMS",
+    ):
+        validate_source_rights_evidence(evidence)

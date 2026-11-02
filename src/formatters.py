@@ -24,6 +24,23 @@ HIDDEN_MARKDOWN_METADATA_RE = re.compile(
     r"^\[dsa-[^\]]+\]:\s+#\s+\([^)\n]*\)\s*$",
     re.IGNORECASE | re.MULTILINE,
 )
+INLINE_ANGLE_COMPARISON_RE = re.compile(r"(?<=\w)([<>])(?=\w)")
+
+
+def _escape_inline_angle_comparisons(markdown_text: str) -> str:
+    """Preserve inline technical comparisons in visible HTML email text.
+
+    ``markdown2`` may parse ``MA5<MA10<MA20`` as an HTML tag sequence and
+    remove the apparent tag from the reader-visible body. Only comparison
+    operators directly between word characters are escaped here; genuine HTML
+    tags and Markdown blockquotes remain governed by the existing safe mode.
+    Pre-rendered V2.5 HTML bypasses this Markdown conversion path unchanged.
+    """
+    return INLINE_ANGLE_COMPARISON_RE.sub(
+        lambda match: "&lt;" if match.group(1) == "<" else "&gt;",
+        markdown_text,
+    )
+
 
 # Unicode code point ranges for special characters.
 _SPECIAL_CHAR_RANGE = (0x10000, 0xFFFFF)
@@ -115,7 +132,7 @@ def markdown_to_html_document(markdown_text: str) -> str:
         Full HTML document string with DOCTYPE, head, and body.
     """
     html_content = markdown2.markdown(
-        markdown_text,
+        _escape_inline_angle_comparisons(markdown_text),
         extras=["tables", "fenced-code-blocks", "break-on-newline", "cuddled-lists", "code-friendly"],
         safe_mode="escape",
     )

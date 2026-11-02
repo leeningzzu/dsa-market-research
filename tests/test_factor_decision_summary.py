@@ -5,7 +5,11 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
-from data_provider.daily_data_identity import sha256_payload
+from data_provider.daily_data_identity import (
+    attach_daily_data_identity,
+    build_daily_data_identity,
+    sha256_payload,
+)
 
 from src.analyzer import AnalysisResult
 from src.services.factor_decision_summary import (
@@ -19,6 +23,14 @@ from src.services.factor_decision_summary import (
 )
 from src.stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult, VolumeStatus
 from src.services.business_valuation_service import compile_business_valuation
+from src.services.supply_demand_service import compile_volume_price_phase_context
+from src.services.chan_feature_adapter import build_chan_feature_context
+from src.services.evidence_traceability_registry import (
+    build_method_execution_receipt,
+)
+from src.services.relative_strength_service import (
+    compute_etf_peer_relative_strength_context,
+)
 from tests.test_business_valuation_service import _base, _index_valuation
 
 
@@ -417,7 +429,7 @@ def test_gate4_fail_closed_package_evaluates_four_veto_lanes_and_one_canonical()
     assert package["independent_action_authority"] is False
     assert package["score_or_probability_authority"] is False
     assert package["correlation_dedup"]["status"] == "VERIFIED"
-    assert package["correlation_dedup"]["group_count"] == 15
+    assert package["correlation_dedup"]["group_count"] == 16
     assert set(package["vetoes"]) == {
         "DATA", "RISK", "LIQUIDITY", "EXECUTION",
     }
@@ -470,6 +482,127 @@ def test_gate4_package_is_bound_into_factor_and_brief_and_tamper_rejects():
             validate_canonical_factor_binding(tampered)
         with pytest.raises(ValueError, match="stale|risk|Gate4"):
             validate_investor_brief_binding(tampered)
+
+
+def _typed_peer_history(*, end_price: float, provider: str = "synthetic") -> pd.DataFrame:
+    dates = pd.bdate_range("2026-06-24", periods=70)
+    close = [100.0 + (end_price - 100.0) * i / 69 for i in range(70)]
+    frame = pd.DataFrame({"date": dates, "close": close})
+    frame["data_source"] = provider
+    identity = build_daily_data_identity(
+        frame,
+        provider_identity=provider,
+        provider_route="synthetic-peer-test",
+        actual_response_branch="synthetic_qfq",
+        requested_adjustment_basis="qfq",
+        observed_adjustment_basis="qfq",
+        basis_evidence="SYNTHETIC_TEST_EXPLICIT",
+        requested_start=dates[0].date().isoformat(),
+        requested_end=dates[-1].date().isoformat(),
+        currency="CNY",
+        volume_unit="shares",
+        amount_unit="CNY",
+        identity_state="OBSERVED",
+    )
+    return attach_daily_data_identity(frame, identity)
+
+
+def _strict_verified_etf_peer_strength() -> dict:
+    target = _typed_peer_history(end_price=140.0)
+    return compute_etf_peer_relative_strength_context(
+        etf_code="510300",
+        market="cn",
+        target_history=target,
+        peer_histories={
+            "510050": _typed_peer_history(end_price=110.0),
+            "159919": _typed_peer_history(end_price=130.0),
+            "510500": _typed_peer_history(end_price=120.0),
+        },
+        target_date=target.iloc[-1]["date"].date(),
+        min_peer_count=3,
+    )
+
+
+def test_gate4_etf_ready_peer_rs_removes_only_peer_veto():
+    peer_rs = _strict_verified_etf_peer_strength()
+    assert peer_rs["status"] == "READY"
+
+    trend = _trend(code="510300")
+    preliminary = build_stock_factor_decision_summary(
+        trend,
+        relative_strength_context=peer_rs,
+        gate4_context=_gate4_context(),
+        include_canonical=True,
+        asset_type="etf",
+    )
+    receipt = build_method_execution_receipt(
+        "TREND_RS",
+        output=preliminary["trend_relative_strength"],
+        asset_route="ETF",
+        stock_code="510300",
+        market="cn",
+        target_date=pd.to_datetime(peer_rs["target_date"]).date(),
+        timeframe="daily",
+        input_identity=peer_rs["input_identity"],
+    )
+    summary = build_stock_factor_decision_summary(
+        trend,
+        relative_strength_context=peer_rs,
+        method_execution_receipts={"TREND_RS": receipt},
+        gate4_context=_gate4_context(),
+        include_canonical=True,
+        asset_type="etf",
+    )
+    reasons = summary["gate4_decision_package"]["vetoes"]["DATA"]["reason_codes"]
+
+    assert "ETF_PEER_RS_NOT_ADMITTED" not in reasons
+    assert "ETF_VALUATION_NOT_ADMITTED" in reasons
+    assert "ETF_SPECIFIC_FACTS_NOT_ADMITTED" in reasons
+    assert summary["canonical_decision"]["action"] == "PASS"
+    assert peer_rs["independent_action_authority"] is False
+    assert peer_rs["data_rights_admitted"] is False
+
+
+def test_etf_peer_rs_tampered_universe_hash_fails_before_gate4_admission():
+    peer_rs = deepcopy(_strict_verified_etf_peer_strength())
+    peer_rs["input_identity"]["universe_hash"] = "0" * 64
+    trend = _trend(code="510300")
+    preliminary = build_stock_factor_decision_summary(
+        trend,
+        relative_strength_context=peer_rs,
+        gate4_context=_gate4_context(),
+        include_canonical=True,
+        asset_type="etf",
+    )
+    receipt = build_method_execution_receipt(
+        "TREND_RS",
+        output=preliminary["trend_relative_strength"],
+        asset_route="ETF",
+        stock_code="510300",
+        market="cn",
+        target_date=pd.to_datetime(peer_rs["target_date"]).date(),
+        timeframe="daily",
+        input_identity=peer_rs["input_identity"],
+    )
+    summary = build_stock_factor_decision_summary(
+        trend,
+        relative_strength_context=peer_rs,
+        method_execution_receipts={"TREND_RS": receipt},
+        gate4_context=_gate4_context(),
+        include_canonical=True,
+        asset_type="etf",
+    )
+    observation = next(
+        row for row in summary["evidence_traceability"]["observations"]
+        if row["requirement_id"] == "TREND_RS"
+    )
+    reasons = summary["gate4_decision_package"]["vetoes"]["DATA"]["reason_codes"]
+
+    assert observation["state"] == "UNKNOWN"
+    assert observation["reason"] == "ETF_PEER_RS_UNIVERSE_HASH_MISMATCH"
+    assert "ETF_PEER_RS_NOT_ADMITTED" in reasons
+    assert summary["canonical_decision"]["action"] == "PASS"
+
 
 
 def test_gate4_etf_missing_peer_valuation_and_specific_facts_veto():
@@ -2031,6 +2164,154 @@ def test_root_independent_volume_risk_still_vetoes():
         assert factor["canonical_decision"]["action"] == "PASS"
         assert factor["canonical_decision"]["hard_veto"] is True
         assert public.action == "avoid"
+
+
+def _strict_phase_inputs(*, adverse: bool):
+    supply = {
+        "schema_version": "supply-demand-volume-price-v1",
+        "status": "READY", "reason": "COMPLETED_OHLCV_SINGLE_SOURCE",
+        "stock_code": "600519", "target_date": "2026-09-30",
+        "timeframe": "daily", "state": "SUPPLY_PRESSURE" if adverse else "DEMAND_PRESSURE",
+        "completed_bar_only": True,
+        "relative_volume": {"volume_ratio_20d": 1.2},
+        "directional_volume": {"signed_volume_balance": -0.3 if adverse else 0.3},
+        "close_location_flow": {"cmf_20": -0.2 if adverse else 0.2},
+        "data_quality": {"source_alignment": "SINGLE_SOURCE"},
+        "institutional_intent_claim": "NOT_INFERRED",
+    }
+    structure = {
+        "schema_version": "price-structure-v1", "status": "READY",
+        "reason": "CONFIRMED_PIVOTS_READY", "stock_code": "600519",
+        "target_date": "2026-09-30", "timeframe": "daily",
+        "completed_bar_only": True,
+        "range_state": (
+            "FAILED_BREAKOUT_RETURNED_BELOW_LEVEL"
+            if adverse else "FAILED_BREAKDOWN_RETURNED_ABOVE_LEVEL"
+        ),
+        "structure_event": {
+            "state": "FAILED_UP_BREAKOUT" if adverse else "FAILED_DOWN_BREAKDOWN",
+            "provisional": False,
+        },
+        "nearest_support": {"status": "READY", "price": 10.0},
+        "nearest_resistance": {"status": "READY", "price": 11.0},
+    }
+    phase = compile_volume_price_phase_context(
+        supply_demand_context=supply,
+        price_structure_context=structure,
+        timeframe="daily",
+    )
+    identity = {
+        "data_snapshot_identity": "f" * 64,
+        "provider_identity": "synthetic",
+        "adjustment_basis": "qfq",
+        "price_identity_reasons": [],
+        "stock_code": "600519",
+        "market": "cn",
+        "target_date": "2026-09-30",
+    }
+    receipt = build_method_execution_receipt(
+        "DISTRIBUTION", output=phase, asset_route="STOCK",
+        stock_code="600519", market="cn", target_date="2026-09-30",
+        timeframe="daily", input_identity=identity,
+        upstream_hashes={
+            "supply_demand_context": sha256_payload(supply),
+            "price_structure_context": sha256_payload(structure),
+        },
+    )
+    return supply, structure, phase, receipt
+
+
+def test_distribution_candidate_requires_strict_receipt_before_hard_veto():
+    supply, structure, phase, receipt = _strict_phase_inputs(adverse=True)
+    accepted = build_stock_factor_decision_summary(
+        _trend(code="600519"),
+        supply_demand_context=supply,
+        price_structure_context=structure,
+        volume_price_phase_context=phase,
+        method_execution_receipts={"DISTRIBUTION": receipt},
+        include_canonical=True,
+    )
+    assert accepted["distribution_risk_evidence"]["phase"] == "DISTRIBUTION_CANDIDATE"
+    assert accepted["canonical_decision"]["action"] == "PASS"
+    assert accepted["canonical_decision"]["hard_veto"] is True
+    assert "DISTRIBUTION_OR_MARKDOWN_CANDIDATE" in accepted["canonical_decision"]["reason_codes"]
+    assert "不推断参与者身份或意图" in accepted["sections"]["volume_price_phase"]
+
+    rejected = build_stock_factor_decision_summary(
+        _trend(code="600519"),
+        supply_demand_context=supply,
+        price_structure_context=structure,
+        volume_price_phase_context=phase,
+        method_execution_receipts={},
+        include_canonical=True,
+    )
+    assert "DISTRIBUTION_OR_MARKDOWN_CANDIDATE" not in rejected["canonical_decision"]["reason_codes"]
+    assert rejected["canonical_decision"]["action"] == "WAIT"
+
+
+def test_washout_candidate_never_upgrades_canonical_action():
+    supply, structure, phase, receipt = _strict_phase_inputs(adverse=False)
+    summary = build_stock_factor_decision_summary(
+        _trend(code="600519"),
+        supply_demand_context=supply,
+        price_structure_context=structure,
+        volume_price_phase_context=phase,
+        method_execution_receipts={"DISTRIBUTION": receipt},
+        include_canonical=True,
+    )
+    assert phase["phase"] == "WASHOUT_CANDIDATE"
+    assert summary["canonical_decision"]["action"] == "WAIT"
+    assert summary["canonical_decision"]["public_action"] == "watch"
+    assert summary["distribution_risk_evidence"]["independent_action_authority"] is False
+
+
+def test_narrow_chan_is_reader_material_not_canonical_authority():
+    structure = {
+        "schema_version": "price-structure-v1", "status": "READY",
+        "stock_code": "600519", "timeframe": "daily", "end_date": "2026-09-30",
+        "pivots": [
+            {"kind": "LOW", "price": 10.0, "origin_time": "2026-09-01",
+             "confirmed_at": "2026-09-03", "provisional": False,
+             "algorithm_version": "test", "config_hash": "a" * 64, "invalidation": {}},
+            {"kind": "HIGH", "price": 12.0, "origin_time": "2026-09-08",
+             "confirmed_at": "2026-09-10", "provisional": False,
+             "algorithm_version": "test", "config_hash": "a" * 64, "invalidation": {}},
+        ],
+        "swings": [
+            {"direction": "UP", "origin_time": "2026-09-01",
+             "confirmed_at": "2026-09-10", "start_kind": "LOW", "start_price": 10.0,
+             "end_kind": "HIGH", "end_price": 12.0, "price_change_pct": 20.0,
+             "provisional": False, "algorithm_version": "test", "config_hash": "a" * 64},
+        ],
+    }
+    chan = build_chan_feature_context(structure)
+    identity = {
+        "data_snapshot_identity": "e" * 64,
+        "provider_identity": "synthetic",
+        "adjustment_basis": "qfq",
+        "price_identity_reasons": [],
+        "stock_code": "600519",
+        "market": "cn",
+        "target_date": "2026-09-30",
+    }
+    receipt = build_method_execution_receipt(
+        "CHAN", output=chan, asset_route="STOCK", stock_code="600519",
+        market="cn", target_date="2026-09-30", timeframe="daily",
+        input_identity=identity,
+        upstream_hashes={"price_structure_context": sha256_payload(structure)},
+    )
+    summary = build_stock_factor_decision_summary(
+        _trend(code="600519"), chan_feature_context=chan,
+        method_execution_receipts={"CHAN": receipt}, include_canonical=True,
+    )
+    observation = next(
+        row for row in summary["evidence_traceability"]["observations"]
+        if row["requirement_id"] == "CHAN"
+    )
+    assert observation["state"] in {"READY", "PARTIAL"}
+    assert "缠论窄适配" in summary["sections"]["chan_structure"]
+    assert summary["chan_evidence"]["full_chan_standard_claim"] is False
+    assert all("CHAN" not in code for code in summary["canonical_decision"]["reason_codes"])
 
 
 def test_root_unrelated_fixed_window_evidence_is_not_deleted():

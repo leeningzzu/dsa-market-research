@@ -8,9 +8,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [修复] 新增量价阶段与窄Chan后，宽回归发现两条真实消费者遗漏：`_current_daily_window_plan`没有为`DISTRIBUTION/CHAN`绑定其已复用的Supply+Structure/Pivot warm-up，导致合法记录入口失败；通知完整研究范围仍把CHAN显示为延期。现已将两个方法绑定到现有父Owner的精确历史需求，并在报告中显示`证据不足；窄适配（NOT_FULL_CZSC）`而非“未准入”；不增加新窗口常量、不声称完整CZSC或Product READY。
+
+- [修复] 热点详情的一个总截止时间在Windows粗粒度单调时钟上可连续返回相同剩余值，使串行回退未表现为严格递减预算。保留唯一绝对deadline，用ContextVar记录上一可见预算并仅以`math.nextafter`做最小严格下降；30轮复现和原API负例通过，不延长用户等待、不增加线程/请求/重试或数据权限。
+
+- [修复] 恢复`.env.example`中Tushare HTTPS候选和TickFlow说明之间丢失的换行，避免配置注释被拼接误读；不启用Token、Provider或网络请求。
+
+- [改进] 新增行业分类到估值方法的强制机器路由：`P_INDUSTRY/E_BASKET`必须提供分类标准、版本、行业family、盈利状态、published/effective/as-of和Product admission，才能进入成熟消费/工业、高成长科技、银行、保险、周期资源、公用事业、REIT、亏损/早期成长或ETF九条既有估值路线；企业估值必须携带同资产、同route、64位route plan，拒绝通用PE兜底、公司名猜行业、未来分类、股票式ETF估值和未经准入的倍数。无新增交易、概率或veto override权限。
+
+- [改进] 将“吸筹/洗盘/出货/派发”从叙事词升级为可审计量价阶段候选：只以完成bar的Supply/CMF/方向量和已确认Structure事件生成`ACCUMULATION/WASHOUT/DISTRIBUTION/MARKUP/MARKDOWN_CANDIDATE`；永远`institutional_intent_claim=NOT_INFERRED`。只有严格方法回执、完整父身份且结构不利的派发/下跌候选进入单一去重风险veto；吸筹/洗盘/上涨候选不得独立升级BUY，缺回执或冲突保持PARTIAL/UNKNOWN。
+
+- [改进] 新增最薄`ChanFeatureAdapter`：复用现有已确认Pivot/Swing输出分型、笔和三笔价格重叠候选，并以逐前缀回放冻结确认几何；合法的后续失效生命周期允许更新，未来确认、同ID价格/方向/时间篡改失败。明确`NARROW_CONFIRMED_PIVOT_SWING_OVERLAP_NOT_FULL_CZSC`，不实现第二Trader/DB/scheduler，不声称完整包含处理、线段、中枢、背驰或买卖点，无独立行动、策略、学习或数据权利。
+
+- [文档] 重写当前控制页和机器Stage投影：Project Source v3.543、公共Git exact base/feature/PR/CI重入、Program→Product→Lane→Milestone→Atomic五级目标、横向Data/Risk/Liquidity/Execution/known-at/rights/cost/stop-loss门、行业估值/量价阶段/窄Chan能力边界、30 existing+13 deferred方法状态、Role Review和未来模型GitHub连续性均可机读。原V2.5和775边机器图不变，历史CI和失败谱系保留。
+
+- [修复] 七周期股票对benchmark及ETF同类RS的指标取窗曾仅验证区间起止点，允许中间一个30m完成bar时戳不匹配仍输出READY，虚增RS排序样本。新增两条独立RED，复用现有Relative Strength消费者按每根bar_end精确核对全窗口；股票缺格降MISSING，ETF排除错格peer并不足分母则MISSING，保留合法同格正例和原veto。不修改取值公式、提供商、原V2.5，不采集数据或越权晋升Product。
+
+- [修复] 7周期动态候选取窗的实际供应商短回执被错误强制降到10日：过去向现有5m Provider只请求一次67日、实际返回39日完整XSHG后缀时，Pipeline将真实39日错误拒绝并丢失全部5/15/30/60m。新增独立39日RED，最小复用既有日历+完整48根/日校验，按实际已返回的完整交易日后缀接纳，不补造、裁剪、不重请求、不改源请求身份；原67日、10日有效正例及缺失单根/错日/未来/权利负例保留。所有指标按自己实际完成bar/warmup判READY；本修复仅Source-observed方法消费者，不赋予Product权利、交易或报告数值资格。
+
+- [修复] 7×8共享Regime已进入七个来源绑定矩阵格后，不再把同一`MARKET_SECTOR_REGIME`旧asset-level行重复写入`non_matrix_methods`；新增矩阵/非矩阵方法集合不相交负例，消除真实NO_SEND运行中“七个有效Regime回执+一个无回执旧重复行”导致的Stage1假性`METHOD_OUTPUT_NOT_ACTUAL_INVOCATION_VERIFIED`。保留单一共享父上下文、七行读者投影和禁止七票规则，不改原V2.5、方法目录、数据权利、canonical或发送权限。
+
+- [改进] 7周期×8证据族从“有56格”升级为“56格全部可执行且可审计”：每格必须有现有方法Owner、规范路径、状态/原因、64位方法回执、来源/时点绑定或显式缺失、相关组、无独立行动权限和V2.5读者投影；删除REGIME七个空壳N/A，改为同一市场/行业父上下文的七行共享投影且禁止跨周期重复计票；复用现有Relative Strength Owner，为月/周/日/60m/30m/15m/5m建立明确执行入口，缺少真实同周期基准/ETF peers时返回MISSING而非借用日线或MA。当前43方法目录不扩张，技术方法周期目标148→154；实现完整不等于56 READY、Product权利或FACT_READY。原125919字节V2.5不变，无Provider/Secret/DB/发送/训练/Promotion效果。
+
+- [修复] V2.5七周期八证据族指标叶在家族PARTIAL时不能继承其他同族方法的数值准入：逐指标关联真实方法READY状态、64位回执和运行来源绑定；MACD/量比/MA可独立显示，RSI/CMF未READY必须隐藏，结构支撑、ATR、ROC、成本同理。独立CMF/RSI泄漏RED→GREEN并保留未准入/空指标防护；只修复现有消费者，不将23个PARTIAL强制升格READY，不更改125919字节V2.5原件，不授予数据权利或发送资格。
+
+- [修复] Tushare Token 传输默认HTTP与第三方镜像安全缺口：客户端必须显式配置规范化官方HTTPS候选URL，拒绝明文/镜像/空配置，禁止自动跟随重定向，且没有安全URL时Provider不可用；独立3个RED转13个HTTP客户端GREEN。官方REST HTTPS服务是否实际支持、分钟账户权限及四对象Rights-v2仍未准入，绝不以离线mock称真实数据或Product。本次无Token读取、真实Provider请求、Git外部写、数据库、发送、模型训练或Promotion。
+
+- [修复] Tushare股票/ETF日线与5分钟候选来源不再把本次响应哈希或DSA观察时间冒充上游revision/vintage。原始响应/行哈希和observed_at继续用于同次来源身份，但revision/vintage未由Provider明确提供时保持UNKNOWN并阻止Product/PIT；新增独立RED→GREEN反例，同时保留Token缺失、分钟权限/配额不足、错证券、错频率和单位门禁。该路线仍需个人非商业账户、单独分钟权限、精确Rights-v2包和明确外部读取授权；本次无Provider请求、Secret读取、存储、发送、训练或Promotion，原V2.5不变。
+
+- [修复] 机器路线与实际候选重新对齐：Project Source 01/05 v3.536已物理唯一，当前本地候选为46个状态路径；旧BaoStock四价格Product声明被Rights-v2正式作废并从current baseline/test移除。SSE P_CODE_IDENTITY/E_BASKET只记录为一次历史同次NO_SEND operation的scoped准入，原始响应未持久化时不得回填当前运行；当前可重建价格Product仍为0。新增current-runtime checkpoint及强制反例，禁止用历史operation、609/610测试数、84周期容器或270槽位替代当前56格真实数值、读者可见内容、FACT_READY或交付。
+- [改进] 新增最薄的上交所公开披露适配器并接入既有 Pipeline/Registry/Rights-v2：严格消费公司概况、ETF基本信息与申赎篮子同次官方JSON，校验官方host/path/sqlId/证券代码、交易日、NAV、PCF文件ID、篮子数量/唯一成分/替代规则、内容/来源哈希和操作时钟；依据上交所网站法律声明仅授予当前内部NO_SEND Product，storage/training/redistribution均FORBIDDEN。真实600519/510300运行首次准入P_CODE_IDENTITY与E_BASKET；P_INDUSTRY/S_CLASSIFICATION/E_NAV_IOPV/E_SHARES因标准版本/有效期、实际IOPV时间值或总份额缺失继续SOURCE_IDENTITY_ONLY。错误host/sqlId/代码、未来日期、NAV、重复/缺失篮子、晚到许可、篡改与rights-only均fail-closed；不触碰价格/5m权利，不持久化原始响应、不发送/训练/Promotion，原V2.5不变。
+- [修复] 用户发现V2.5真实来源NO_SEND邮件把84周期/270槽结构完整误报为全域研究完成：新增独立读者数值审计（逐周期、逐方法收据、来源/价格Product准入与真实可见文本数值匹配；漏字、变值、未经准入泄漏均fail-closed），修复月/周/日/60/30/15/5m自身Supply/Cost/MACD/RSI/ROC/ATR/Pattern计算叶未被消费者读取，20根与20日单位标签不混用；无Product值时明确STATUS_ONLY_DIAGNOSTIC、未执行AUTO_SCREEN不冒称零候选，并将同资产重复缺失句按Product/7周期/veto/来源角色拆解。原历史空集邮件SHA/golden及125919字节V2.5原件不变；这是受限本地消费者修复，不授予BaoStock行情使用、SMTP投递或43方法/56格正式准入。
+
+- [修复] Email Markdown 转 HTML 在技术比较链（例如 `MA5<MA10<MA20`）中不再把 `<...>` 误当作隐藏 HTML 标签；仅转义夹在文字/数字之间的比较符，保留可见技术信息，预渲染 V2.5 HTML 路径和原件字节不变。
+- [修复] 七周期动态窗口不再只登记旧Trend/MA/MACD/RSI子集：5m/15m/30m/60m从当前Registry全部EXISTING_REUSED技术方法编译逐方法需求与分级共享会话窗口（当前67→35→28→23→16→15→10），可用历史不足时选择最大已验证窗口而非直接从67退回10；日/周/月分离声明source-only载体与当前非递归/递归准入窗口，并纳入ATR启动比较。同步更新MTF配置身份，准确声明Supply/Cost/Structure/Momentum/Pattern/MTF技术上下文已计算但独立触发/动作仍NOT_ADMITTED。AUTO日线候选enrichment由当前MA60、60日变化、MACD/RSI、20日结构及ETF peer RS编译61根完成日线，执行回执分别记录required/requested bars、候选输入/尝试/预算延后；候选上限仍是预算且不声称全市场等价。无新Provider请求、存储、发送、训练、策略或真实Product准入，原V2.5不变。
+
+- [修复] 从已登记A-stock-data Donor 2026-10-07 v3.10.1 独立成交量单位反例吸收至现有DSA TencentFetcher与Screening：腾讯K线科创板688/689原生单位为股、其他已核沪深代码为手×100；两条消费路径共用唯一规范化入口，未知市场/代码不能猜单位。独立离线负例先2 FAIL、最小复用后2 PASS，避免统一100倍转换导致量价、成本或筛选误判；这是源数据语义的工程校正，不授予腾讯上游数据权利、历史PIT、存储、推送、策略或真实72项Product准入，原V2.5不变。
+
+- [修复] 解决XSHG多周期历史采集因exchange_calendars默认滚动20年起点造成的2004年合法月线规划不可用：按各已准入日/周/月方法实际完成bar数构建同一个交易所日历，并提前一段日历构造边界，继续逐个验证精确真实会话；268月线不能缩短，2026-09-25交易所休市仍拒绝。真实历史交易日历与Source一致时避免不必要BaoStock额外日历调用，原生日历缺失则在行情读取/业务库前STOP。修正旧工作日/近20年模拟测试条件，保持真实来源漂移、上市期不足、未来时点及NO_SEND权利负例；此处仅本地技术验收，不产生行情Product、历史PIT、通知或策略授权。
+
+- [修复] 原生财政部Atom/OData数据验真现在只接受官方entry/content/m:properties/d:NEW_DATE与BC_3MONTH/2YEAR/10YEAR精确命名空间及午夜数据日期；独立三条假namespace/假容器/非零时刻负例由RED转GREEN，保持其它Source/日期/回填反例。B1 Pipeline对非价格和Global来源分开统计source_observation_count与product_fact_count：仅来源观察时后者仍0，不能将PARTIAL与有授权的Product混为一谈。继续NO_SEND、不记录原始行情、不写业务库、不训练、不发送，原V2.5不变。
+
+- [改进] 新增最薄的官方美国财政部收益率XML→既有DSA G_UST_NOMINAL来源观察适配器与Pipeline内存消费者；只接受调用方同次已授权HTTP响应字节，不自行发起网络请求/持久化。验证home.treasury.gov精确host/路径/月、Atom日期与3M/2Y/10Y及10Y−3M单位、内容/来源哈希、Rights-v2操作绑定和Registry全域守恒；保留错误来源、未来时点、重复日、非法数值、缺授权、晚到许可/伪造事实等反例。Atom.updated不等于逐日首次发布，response SHA/observed_at不冒充上游revision/vintage：未证明时保持UNKNOWN并阻止Product/PIT、训练/通知；既有37路径候选未获新远端CI，原V2.5不变。
+- [修复] XSHG 5m→15/30/60m完整会话正向准入新增独立交易日历门禁：拒绝2026-09-25已公告休市却由源自身宣称48根完成bar的伪会话；正例使用真实2026-09-28复市日，缺根、父子哈希、网格和午休等原负例保留。完成会话证明仍仅属技术来源，不解锁Product/交易/训练；原V2.5及四veto不变。
+- [修复] 七周期八族现有Owner根修（本地后继、尚未远程接受）：来自已验证完整5m会话的15/30/60m派生网格与父子身份/时间链可核消费，缺根或篡改仍阻断Supply/Cost；MTF技术证据`evidence_state`与既有执行`status`/trigger权限正交，保持Gate4 Execution veto；MACD与RSI每周期独立递归数值/状态回执进入既有Registry，源头不稳或会话不足仍MISSING/UNKNOWN/PARTIAL，辅助同源MTF上下文不重复降低完整主方法。43方法/172目标/56格/原V2.5及权利、训练、发送权限不变；历史本地136/19后继为候选148/21有效范围，不是实时Product准入或模型特征开放。
+
+- [改进] 七周期八证据族当前本地候选：既有 Supply/Demand 20-bar 量价公式支持各周期独立完成 bar，特别修正 5m/15m/30m/60m 同日时间戳被折叠为单个日历日的根因；既有 Cost HLC3×volume 20/60 完成 bar 参考以明确 timeframe/volume_unit/typed identity 复用到 MTF；两类原 owner 输出不含独立交易、权利、PIT 或训练授权。该阶段只是 Source-observed method 接线与负例验证，不能把 56 格、GLOBAL/Market/Sector、完整原 V2.5、Product Gate B/C 写成完成；非日线形态及 ETF peer RS 等其余缺口继续按现有 Registry 真实消费者逐项验收。
+- [修复] B1 Gate B 继续 fail-closed：已核对 BaoStock 官网 contract_type 1/2/3 的实际正文及 SHA256，分别属于商城用户服务协议、作者/知识产品销售协议与隐私政策；没有明确授予公共行情 API 内部研究使用的上游数据条款。新增 `STOCK_DSA_B1_OFFICIAL_CONTRACT_SCOPE_INVALIDATION_R002.json`；19-grant official-r003 和其 18 READY 历史计数仅为方法执行证据，当前 Product admission=0，Gate B=STOP、Gate C=HOLD。无行情查询、数据库写入、数据持久化、发送、训练或 Promotion。
+- [修复] B1 rights admission now rejects official provider technical/API documentation mislabeled as an upstream data-use statement, including both `/helpdocs/api/markdown/*` and the legacy `/mainContent?file=*.md` route; a local-adjustment/backtesting example is not a general data-rights grant. Existing 2026-10-29 `baostock-official-v3-r001` price admission receipts must be treated as source-observed method evidence only, not current rights/Product admission, until a true upstream data-use term or other authorized legal basis is verified.
+- [修复] 既有七周期 MA 压缩／粘连／释放方法长历史性能：将重复的 20-bar 均线交叉统计改为等价前缀差分，前20根分位数改为同插值规则、排除当前bar的 rolling quantile，并用数组定位当前阈值下的最后失效 bar；保留分位数公式、完整历史生命周期、origin/confirmed_at/provisional、算法/config 身份和 veto／策略权限不变。独立对照 CI95 HEAD 的慢实现，6 组确定性序列全对象与 SHA256 一致（另经 3,503 根长样本性能验证）；当前真实七周期最终 Product 仍需单独验收，性能优化不授予数据准入或邮件发送。
 - [修复] Windows/macOS 后端打包验证兼容 AkShare 当前 `akshare/data/calendar.json` 与旧版 `akshare/file_fold/calendar.json` 两种真实包内路径；优先检查当前路径，缺失时仍 fail closed。保留 `--collect-data akshare`，不通过跳过验证或伪造数据放行。
 - [修复] B1非价格授权由“抓全包后过滤”改为请求前限定：Pipeline向既有BaoStock bundle传递精确准入对象，按对象的查询依赖惰性调用；合法部分授权仍可用，空/未知选择在登录前拒绝。新增真实调用计数反例重现原先多出的15次无关请求；不放宽权利、不新增Provider框架或业务库。
-- [修复] B1来源权利证据升级为`source-rights-evidence-v2`：软件包BSD/MIT许可证、包注册元数据或API可调用性不能再替代上游数据使用条款；每个grant必须绑定terms scope、原始条款字节SHA及精确Product-use短句与SHA，官方数据使用声明只能授权内部NO_SEND Product，storage/training/redistribution继续FORBIDDEN。旧PyPI/BSD v1包被当前门禁拒绝；用BaoStock官方发布描述的精确数据使用声明重编v2包后，2026-10-28同一research_as_of真实只读运行使600519的P_DAILY/P_5M与510300的E_PRICE_1D/E_PRICE_5M共4对象Product准入，000300仅取得2026-10-27完成bar的M_INDEX_CURRENT源级PARTIAL；原V2.5内存NO_SEND为107013字节、SHA256 `9c87ba500389e99efcf67a1e749622fa5a2b68c4a1b94785e46267a9e3490e82`，Stage1仍因全域数据和七个原子子字段未完整绑定保持HOLD。无安装、业务库、报告正文持久化、通知、模型或训练。
+- [修复] B1来源权利验证继续收紧：软件包BSD/MIT许可证、PyPI/npm等软件包注册元数据、项目描述或API可调用性不能作为上游数据使用条款。已发现的BaoStock Rights v2包将PyPI项目描述误标为`OFFICIAL_PROVIDER_DATA_USE_STATEMENT`并把上游权利设为`VERIFIED`；当前验证器现在拒绝已知软件包注册表域名，相关2026-10-28四个价格对象的历史Product-admission计数不再作为当前有效权利证明。Storage/training/redistribution仍为FORBIDDEN；在取得可核验的正式上游数据条款前，BaoStock当前数据可做有界来源能力观察，但不能因旧Rights v2包升级为FACT_READY。原V2.5保持不可变；不重用旧Product-ready声明，不安装、不持久化原始行情、不写业务库、不发送、不训练。
 - [修复] B1同源完成日补桥与非价格生产者收口：真实BaoStock单次只读探针在600519上发现既有`get_cn_stock_nonprice_research_bundle`可产出14个当前非价格对象（公司身份、复权因子、流动性、财报vintage、成长、现金流、资产负债、股本事件、分红、行业、估值比率、行业分类、当时证券清单、货币供应），全部保持PARTIAL且不冒充质量/估值READY；为解决交易所当日已完成但BaoStock日线仍滞后一个会话的真实断点，仅在B1 NO_SEND、同一BaoStock/qfq/CNY、恰好缺最新一个XSHG会话且目标日完整48根5m时，以双亲来源身份派生一根run-local日线。缺根、跨源、错代码、错复权、两日缺口均拒绝，禁止持久化、训练、策略或独立动作授权。聚焦41/41、自然相邻446/446通过；随后真实纵向重跑遇BaoStock登录网络接收错误，最小登录探针再超时，按Stop-Loss停止重试并保持Stage1 HOLD，不以代码PASS替代当前全域Product。
 - [修复] 七个Global Golden原子字段从“仅有admission hash即可BOUND”升级为“精确Product admission＋typed facts＋source fact hash＋最终V2.5文本块fact hash同时一致”才算消费；邮件必须显示实际数值/同比、参考期和发布日期，不能再以槽位或绑定状态替代指标值。复用现有Pipeline/Registry/Factor/V2.5链新增BLS官方公共API薄适配器，仅覆盖美国整体CPI、核心CPI、服务通胀三个原子字段，精确grant缺失时网络前STOP，HTTP失败时保持UNKNOWN且不阻断已合法价格链。合成合同与消费者正负例通过；本机无代理的BLS terms/API/release三域实际探针仍全部HTTP 403，因此未封印真实条款包、未产生新Product原子值。AKShare/yfinance/fredapi/pandas-datareader均未安装，Eastmoney/Sina仅有既有调用入口但无精确上游条款或typed Product回执；全部保持DEFER/UNKNOWN，不安装、不换第二数据平台。
 - [改进] 在现有DataAdmission/Registry/Factor/V2.5 Coverage/Evidence Flywheel链内新增Stage1当前真实Product纵向回执：43方法必须有实际调用回执，56个七周期×八族单元必须同时绑定来源和对应价格对象Product准入，76对象必须逐项记账，27个V2.5槽必须证明实际canonical输入或周期叶事实进入最终文本；仅有目录、Product权利、角色摘要、槽位或历史运行均不能替代当前叶消费。B1运行时回执生产者改为76对象闭世界，非价格对象在已有producer身份和精确operation grant同时成立时可复用同一准入编译器，缺任一条件仍为合法nontrigger。Quality/Valuation复用原对象别名，不新增Shell、Provider、数据库、renderer、canonical或模型；Stage1未FACT_READY时Gate6显式HOLD。
