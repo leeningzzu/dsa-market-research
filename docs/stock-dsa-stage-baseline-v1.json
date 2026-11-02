@@ -41,18 +41,18 @@
     "storage_admitted": false
   },
   "acceptance": {
-    "state": "CI97_REMOTE_ACCEPTED_ENGINEERING_CURRENT_CONTINUITY_COMMIT_RESOLVE_AT_RUNTIME",
+    "state": "CI98_REMOTE_ACCEPTED_TYPED_SOURCE_VERTICAL_CANDIDATE_RESOLVE_AT_RUNTIME",
     "production_branch": "main",
     "candidate_branch": "feat/stock-dsa-m2-source-gates-v1",
-    "candidate_head": "746e402e0fff0247fdf153347e66f326573db9ce",
-    "candidate_parent": "6651915ad2bc662fe45006639204a259bbce27c5",
-    "candidate_head_scope": "CI97_ACCEPTED_ENGINEERING_HEAD; COMMIT_CONTAINING_THIS_FILE_IS_CONTINUITY_PROJECTION_RUNTIME_RECHECK_NOT_MAIN",
+    "candidate_head": "c2629c07168764b2cdf2bf733697447e45848365",
+    "candidate_parent": "746e402e0fff0247fdf153347e66f326573db9ce",
+    "candidate_head_scope": "CI98_ACCEPTED_BASE; COMMIT_CONTAINING_THIS_FILE_IS_TYPED_SOURCE_FEATURE_CANDIDATE_NOT_MAIN",
     "pull_request": 31,
     "pull_request_state": "DRAFT_OPEN_NOT_MERGED",
     "latest_required_ci": {
-      "run_number": 97,
-      "run_id": 41417008187,
-      "head": "746e402e0fff0247fdf153347e66f326573db9ce",
+      "run_number": 98,
+      "run_id": 41422089007,
+      "head": "c2629c07168764b2cdf2bf733697447e45848365",
       "conclusion": "success"
     },
     "prior_failed_ci": {
@@ -70,9 +70,9 @@
       "desktop-futu-package-windows"
     ],
     "direct_main_push": false,
-    "candidate_base_head": "746e402e0fff0247fdf153347e66f326573db9ce",
+    "candidate_base_head": "c2629c07168764b2cdf2bf733697447e45848365",
     "candidate_commit_identity": "RESOLVE_COMMIT_CONTAINING_THIS_FILE_FROM_GIT",
-    "candidate_ci_state": "RECHECK_CONTINUITY_COMMIT_NATURAL_CI_AT_RUNTIME",
+    "candidate_ci_state": "RECHECK_TYPED_SOURCE_VERTICAL_NATURAL_CI_AT_RUNTIME",
     "last_failed_ci": {
       "run_number": 96,
       "run_id": 41402275878,
@@ -269,8 +269,8 @@
   "vertical_alignment": {
     "program": "合法known-at数据→白盒证据→唯一canonical→完整交付→合法Outcome/PIT→独立校准→Shadow→显式Promotion，不自动交易",
     "product": "Global→CN Market/Breadth→Sector→ETF/Stock→7TFx8+quality+industry-specific valuation+volume-price phase+narrow Chan→four veto→FULL V2.5",
-    "current_lane": "G0_GITHUB_CONSOLIDATION_WITH_B1_M2_PRODUCT_HOLD",
-    "current_milestone": "Source8 v3.543 physical PASS. Base remote accepted HEAD37e453f7/CI95. Current precommit candidate59 paths (55 tracked modified+4 untracked including existing SSE/Treasury and new Chan source/test) integrates prior local51 plus industry valuation routing, observable volume-price phase, narrow Chan adapter and cross-consumer root fixes. Focused61 and full related1340 PASS; ordinary feature push and natural PR CI remain required. Product remains0/72, original V2.5 FACT_READY false.",
+    "current_lane": "G0_TYPED_SOURCE_GITHUB_CANDIDATE_WITH_B1_M2_PRODUCT_HOLD",
+    "current_milestone": "Source8 v3.544 physical PASS. CI98 accepted predecessor c262. Current exact10 candidate closes typed P_COST_PROXY/E_PEER_RS/M_INDEX_BARS through Registry and Notification with focused5/related583 PASS; Product0/72 and gap46 remain.",
     "atomic_rule": "Existing Owner→actual consumer→strict receipt/source identity→independent RED/GREEN→legal nontrigger→rollback/proof ceiling; no directory-only or document-only completion."
   },
   "stage_ladder": [
@@ -279,14 +279,14 @@
       "scope": "准确origin/main、PR、required CI、可回滚commit身份",
       "exit": "PR所有阻断检查通过并经显式merge",
       "proof_ceiling": "GitHub代码基线，不证明真实数据或产品外部交付",
-      "local_state": "CI96_FAILED_CORRECTIVE_CANDIDATE_PRECOMMIT_AUTHORIZED_REMOTE_OPEN"
+      "local_state": "CI98_ACCEPTED_BASE_TYPED_SOURCE_CANDIDATE_PRECOMMIT_REMOTE_OPEN"
     },
     {
       "id": "B1_SOURCE_RIGHTS",
       "scope": "Product使用、存储、训练、再分发权利分别绑定当前operation、运行时source identity和精确上游条款",
       "exit": "同一as-of Stock+ETF取得可核上游条款证据与当前数据回执；未知权利保持SOURCE_IDENTITY_ONLY",
       "proof_ceiling": "CI80/82及后续Gate1-4回执证明接线与fail-closed消费；当前全域记账PASS不授予供应商真实Product/storage/training/redistribution权利，不证明两资产合法完整Product、历史PIT、策略、邮件交付或模型晋升",
-      "local_state": "PARTIAL_SSE_NONPRICE_OPERATION_SCOPED_PRICE_RIGHTS_STOP",
+      "local_state": "TYPED_SOURCE_CAPABILITY26_GAP46_PRODUCT0_RIGHTS_STOP",
       "next_primary": true
     },
     {
@@ -663,9 +663,9 @@
   },
   "current_local_foundation_successor": {
     "schema_version": "a1-foundation-local-successor-v1",
-    "state": "CI97_REMOTE_ACCEPTED_ENGINEERING_PRODUCT0_OF_72",
-    "base_head": "37e453f729b0f9ad1cec6d8b27457916b7982142",
-    "changed_paths": 8,
+    "state": "TYPED_SOURCE_VERTICAL_CANDIDATE_PRECOMMIT_REMOTE_OPEN",
+    "base_head": "c2629c07168764b2cdf2bf733697447e45848365",
+    "changed_paths": 10,
     "method_profiles": 43,
     "technical_existing_methods": 25,
     "target_method_timeframe_pairs": 172,
@@ -695,25 +695,25 @@
     "gate_b": "STOP_FULL_DOMAIN_PRODUCT_RIGHTS_AND_CURRENT_FACTS",
     "gate_c": "HOLD_ORIGINAL_V25_FACT_READY_AND_DELIVERY",
     "original_v25_unchanged": true,
-    "proof_ceiling": "REMOTE_CI97_ENGINEERING_NOT_CURRENT_PRODUCT_OR_DELIVERY"
+    "proof_ceiling": "LOCAL_TYPED_SOURCE5_AND_RELATED583_NOT_REMOTE_CI_CURRENT_PRODUCT_OR_DELIVERY"
   },
   "current_runtime_checkpoint": {
     "schema_version": "stock-dsa-current-runtime-checkpoint-v2",
-    "source_pair": "01/05 v3.543 PHYSICAL_EXACT8_PASS",
+    "source_pair": "01/05 v3.544 PHYSICAL_EXACT8_PASS",
     "accepted_remote_base": {
-      "head": "746e402e0fff0247fdf153347e66f326573db9ce",
-      "ci_run_number": 97,
-      "ci_run_id": 41417008187,
+      "head": "c2629c07168764b2cdf2bf733697447e45848365",
+      "ci_run_number": 98,
+      "ci_run_id": 41422089007,
       "conclusion": "success"
     },
     "candidate_identity": "RESOLVE_COMMIT_CONTAINING_THIS_FILE_FROM_GIT",
     "candidate_precommit_snapshot": {
-      "status_path_count": 4,
-      "tracked_modified_count": 4,
+      "status_path_count": 10,
+      "tracked_modified_count": 10,
       "untracked_paths": [],
       "staged_count": 0,
       "post_commit_worktree_expected_clean": true,
-      "scope": "CONTINUITY_DOCS_MACHINE_STATE_ONLY"
+      "scope": "TYPED_SOURCE_VERTICAL_EXISTING_DSA_ONLY"
     },
     "local_regression": {
       "focused_passed": 61,
@@ -725,7 +725,7 @@
         "duration_seconds": 612.18,
         "warnings": 2
       },
-      "remote_ci": "CI97_SUCCESS_EXACT_HEAD_746E402E",
+      "remote_ci": "CI98_SUCCESS_BASE_TYPED_SOURCE_CANDIDATE_LOCAL_PASS_PENDING_PUSH",
       "process_only_environment_stubs": [
         "fake_useragent",
         "json_repair",
@@ -737,7 +737,18 @@
       ],
       "litellm_local_cost_map_required_before_import": true,
       "ci96_targeted_passed": 5,
-      "ci96_targeted_failed": 0
+      "ci96_targeted_failed": 0,
+      "typed_source_focused": {
+        "passed": 5,
+        "failed": 0
+      },
+      "typed_source_related": {
+        "selected_modules": 10,
+        "passed": 583,
+        "failed": 0,
+        "duration_seconds": 611.5,
+        "warnings": 1
+      }
     },
     "seven_timeframe_eight_family": {
       "timeframe_carriers_implemented": true,
@@ -758,8 +769,8 @@
       "global_market_sector_quality_valuation_etf_specific_complete": false,
       "stock_applicable_objects": 60,
       "etf_applicable_objects": 55,
-      "typed_or_real_source_capability_minimum": 23,
-      "without_complete_typed_source_chain": 49
+      "typed_or_real_source_capability_minimum": 26,
+      "without_complete_typed_source_chain": 46
     },
     "email_reader_state": {
       "old_empty_numeric_email_revoked": true,
@@ -772,7 +783,7 @@
       "global_atomic_subfields_ready": 0,
       "global_atomic_subfields_total": 7
     },
-    "proof_ceiling": "REMOTE_CI97_ENGINEERING_ACCEPTED_PRODUCT0_OF_72_NOT_FACT_READY_DELIVERY_OR_LEARNING",
+    "proof_ceiling": "LOCAL_TYPED_SOURCE_THREE_OBJECTS_AND_RELATED583_PASS_NOT_REMOTE_CI_PRODUCT_DELIVERY_OR_LEARNING",
     "failed_remote_parent": {
       "head": "6651915ad2bc662fe45006639204a259bbce27c5",
       "ci_run_number": 96,
@@ -782,8 +793,8 @@
     }
   },
   "route_decision": {
-    "next_primary": "B1_M2_49_SOURCE_CHAIN_REENTRY",
-    "reason": "CI97 accepts exact engineering Head746e after closing all three CI96 failures. Product remains0/72: 23 objects have bounded typed/real-source capability while49 lack a complete typed source chain. The only Product route is lawful same-asof data into original V2.5, not more count-only indicator work.",
+    "next_primary": "B1_M2_46_SOURCE_CHAIN_REENTRY",
+    "reason": "Three existing-data typed source chains P_COST_PROXY/E_PEER_RS/M_INDEX_BARS close locally with focused5 and related583; capability26/72 and gaps46. Product remains0/72; after natural CI continue lawful same-asof sources and Rights-v2, not count-only indicators.",
     "bounded_indicator_sub_lanes": [
       "MONTHLY_RSI_HISTORY_IF_LEGAL",
       "15M_CONFIRMATION",
@@ -854,7 +865,11 @@
     "distribution_or_markdown_veto_requires_strict_method_receipt": true,
     "accumulation_or_washout_never_independently_upgrades_action": true,
     "chan_prefix_replay_freezes_confirmed_geometry_not_later_invalidation_lifecycle": true,
-    "chan_narrow_adapter_never_claims_full_czsc": true
+    "chan_narrow_adapter_never_claims_full_czsc": true,
+    "typed_source_value_never_grants_product_storage_pit_learning_or_strategy": true,
+    "p_cost_proxy_requires_strict_cost_receipt_and_exact_daily_identity": true,
+    "e_peer_rs_requires_exact_target_all_peer_identities_and_universe_hash": true,
+    "m_index_bars_requires_strict_completed_5m_runtime_receipt": true
   },
   "current_local_successor": {
     "state": "HISTORICAL_INVALIDATED_LOCAL_SUCCESSOR_NOT_CURRENT",
@@ -1004,12 +1019,12 @@
     "proof_ceiling": "SOURCE_OBSERVED_METHOD_MATRIX_AND_FAIL_CLOSED_CANONICAL_ONLY_NOT_CURRENT_PRODUCT_OR_FULL_V25"
   },
   "source_checkpoint": {
-    "installed_pair": "01/05 v3.543",
+    "installed_pair": "01/05 v3.544",
     "installed_pair_state": "INSTALLED_AND_THREE_FRESH_EIGHT_OWNER_INVENTORIES_PASS",
     "fresh_project_source_count": 8,
     "duplicate_logical_owners": 0,
     "prepared_successor_pair": null,
-    "prepared_successor_state": "GITHUB_CI97_MATERIAL_CLOSURE_REQUIRES_EXTERNAL_PAIRED_01_05_CHECKPOINT",
+    "prepared_successor_state": "NONE_UNTIL_TYPED_SOURCE_GITHUB_COMMIT_AND_CI_MATERIAL_CLOSURE",
     "other_six_owners": "KEEP",
     "ninth_source": false
   },
@@ -1035,7 +1050,7 @@
         "M3_CALIBRATION",
         "P1_PROMOTION"
       ],
-      "CURRENT_MILESTONE": "GITHUB_CONSOLIDATE_LOCAL57_INDUSTRY_VALUATION_VOLUME_PHASE_NARROW_CHAN",
+      "CURRENT_MILESTONE": "TYPED_SOURCE_VERTICAL_P_COST_ETF_PEER_INDEX_BARS_GITHUB_CANDIDATE",
       "ATOMIC_RULE": "EXISTING_OWNER_AND_CONSUMER_PLUS_RED_GREEN_NONTRIGGER_ROLLBACK_PROOF_CEILING"
     },
     "edges": [
@@ -1166,32 +1181,51 @@
       "ci96_targeted_failed": 0,
       "full_related_passed": 1375,
       "full_related_failed": 0,
-      "remote_ci": "CI97_SUCCESS_EXACT_HEAD_746E402E"
+      "remote_ci": "CI98_SUCCESS_BASE_TYPED_SOURCE_CANDIDATE_REMOTE_OPEN",
+      "typed_source_focused_passed": 5,
+      "typed_source_related_passed": 583,
+      "typed_source_related_failed": 0
     },
     "product_admission": "0_OF_72_UNCHANGED",
-    "original_v25_fact_ready": false
+    "original_v25_fact_ready": false,
+    "typed_source_vertical_slice": {
+      "state": "LOCAL_RED_TO_GREEN_REMOTE_OPEN",
+      "dataset_ids": [
+        "P_COST_PROXY",
+        "E_PEER_RS",
+        "M_INDEX_BARS"
+      ],
+      "focused_passed": 5,
+      "related_passed": 583,
+      "related_failed": 0,
+      "independent_source_value_admitted": true,
+      "product_admitted": false,
+      "storage_admitted": false,
+      "historical_pit_eligible": false,
+      "strategy_upgrade_authority": false
+    }
   },
   "role_review": {
     "schema_version": "stock-dsa-role-review-v1",
     "PRODUCT": {
-      "state": "LOCAL_ENGINEERING_PASS_PRODUCT0_OF_72_AND_FACT_READY_STOP",
+      "state": "TYPED_SOURCE26_OF72_PRODUCT0_AND_FACT_READY_STOP",
       "radius": "CROSS_LANE",
-      "route": "KEEP_DSA_SHIFT_TO_49_SOURCE_CHAIN_GAPS"
+      "route": "KEEP_DSA_SHIFT_TO_46_SOURCE_CHAIN_GAPS"
     },
     "DATA_MODEL": {
-      "state": "METHOD30_OF_43_NUMERIC24_OF_35_SOURCE_CAPABILITY23_OF_72_PRODUCT0",
+      "state": "METHOD30_OF43_NUMERIC24_OF35_SOURCE_CAPABILITY26_OF72_PRODUCT0",
       "radius": "CROSS_LANE",
       "route": "REUSE_IDENTITY_RIGHTS_V2_NO_FABRICATION"
     },
     "PROCESS_CONSUMER": {
-      "state": "CI96_THREE_ROOT_FAILURES_CLOSED_BY_CI97",
+      "state": "THREE_TYPED_SOURCE_OWNER_CONSUMER_DRIFTS_RED_GREEN",
       "radius": "LANE_RECURRENT",
-      "route": "CLOSED_NO_REPLAY"
+      "route": "NATURAL_CI_REGRESSION"
     },
     "AUTHORITY_CURRENTNESS": {
-      "state": "SOURCE8_V3543_PASS_ENGINEERING_HEAD746E_CI97_SUCCESS",
+      "state": "SOURCE8_V3544_PASS_CI98_ACCEPTED_TYPED_SOURCE_PRECOMMIT",
       "radius": "LANE",
-      "route": "RUNTIME_RECHECK_CONTINUITY_COMMIT_THEN_B1_M2"
+      "route": "EXACT_GIT_COMMIT_PUSH_NATURAL_CI"
     },
     "ENVIRONMENT": {
       "state": "WEBCODEX_PASS_ONE_INCIDENTAL_LITELLM_COST_MAP_TIMEOUT_GET",
@@ -1204,9 +1238,9 @@
       "route": "KEEP_WRAP"
     },
     "DEV_TOOLING": {
-      "state": "REMOTE_CI97_SUCCESS",
+      "state": "TYPED_FOCUSED5_RELATED583_PASS_REMOTE_OPEN",
       "radius": "LANE",
-      "route": "ENGINEERING_ACCEPTED_PRODUCT_GATE_OPEN"
+      "route": "ATOMIC_COMMIT_PUSH_NATURAL_CI"
     },
     "USER_BURDEN": {
       "state": "NO_MORE_PERMISSION_TOKEN_OR_LOG_UPLOAD",
@@ -1266,26 +1300,29 @@
       "current_product_admitted": 0,
       "stock_applicable": 60,
       "etf_applicable": 55,
-      "typed_or_real_source_capability_minimum": 23,
-      "without_complete_typed_source_chain": 49,
+      "typed_or_real_source_capability_minimum": 26,
+      "without_complete_typed_source_chain": 46,
       "no_current_typed_producer": 22,
-      "consumer_or_partial_code_only": 24,
+      "consumer_or_partial_code_only": 21,
       "direct_snapshot_callable_not_typed_or_rights_admitted": 3
     },
     "typed_or_real_source_capability_ids": [
       "E_BASKET",
       "E_NAV_IOPV",
+      "E_PEER_RS",
       "E_PRICE_1D",
       "E_PRICE_5M",
       "E_SHARES",
       "G_UST_NOMINAL",
       "M_ASOF_UNIVERSE",
+      "M_INDEX_BARS",
       "M_INDEX_CURRENT",
       "M_PBOC_MONEY",
       "P_5M",
       "P_BALANCE_SHEET",
       "P_CASH_FLOW",
       "P_CODE_IDENTITY",
+      "P_COST_PROXY",
       "P_DAILY",
       "P_DIVIDEND",
       "P_EARNINGS_GROWTH",
@@ -1336,7 +1373,7 @@
       "all_real_values_possible_architecturally": true,
       "all_real_values_available_now": false
     },
-    "proof_ceiling": "CAPABILITY_AND_GAP_AUDIT_NOT_CURRENT_FACT_ADMISSION"
+    "proof_ceiling": "THREE_TYPED_SOURCE_CHAINS_LOCAL_PASS_NOT_CURRENT_PRODUCT_ADMISSION"
   },
   "ci97_remote_acceptance": {
     "schema_version": "stock-dsa-ci97-remote-acceptance-v1",
@@ -1394,5 +1431,48 @@
     "state": "CLOSED_NO_REPLAY_BY_CI97",
     "main_changed": false,
     "merge_authority": false
+  },
+  "ci98_remote_acceptance": {
+    "schema_version": "stock-dsa-ci98-remote-acceptance-v1",
+    "head": "c2629c07168764b2cdf2bf733697447e45848365",
+    "parent": "746e402e0fff0247fdf153347e66f326573db9ce",
+    "tree": "ca629a383af6e15d958a2d184df9be4b0f8933b9",
+    "run_number": 98,
+    "run_id": 41422089007,
+    "conclusion": "success",
+    "pr": 31,
+    "pr_state": "DRAFT_OPEN_NOT_MERGED",
+    "main_unchanged": true,
+    "product_admission": "0_OF_72_UNCHANGED",
+    "fact_ready": false
+  },
+  "typed_source_vertical_slice": {
+    "schema_version": "stock-dsa-typed-source-vertical-slice-v1",
+    "dataset_ids": [
+      "P_COST_PROXY",
+      "E_PEER_RS",
+      "M_INDEX_BARS"
+    ],
+    "predecessor_head": "c2629c07168764b2cdf2bf733697447e45848365",
+    "state": "LOCAL_RED_TO_GREEN_REMOTE_OPEN",
+    "focused_regression": {
+      "passed": 5,
+      "failed": 0
+    },
+    "related_regression": {
+      "selected_modules": 10,
+      "passed": 583,
+      "failed": 0,
+      "duration_seconds": 611.5,
+      "warnings": 1
+    },
+    "provider_requests": 0,
+    "database_writes": 0,
+    "email_sends": 0,
+    "model_calls": 0,
+    "product_admitted_count": 0,
+    "source_capability_after": 26,
+    "source_chain_gaps_after": 46,
+    "original_v25_unchanged": true
   }
 }

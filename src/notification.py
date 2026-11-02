@@ -716,6 +716,27 @@ def _append_complete_research_universe_appendix(
                         f"；来源身份：{item['source_identity_hash']}"
                     )
                 elif (
+                    state in {"READY", "PARTIAL"}
+                    and item.get("independent_source_value_admitted") is True
+                    and item.get("strategy_upgrade_authority") is False
+                    and item.get("source_observed_at")
+                    and item.get("source_identity_hash")
+                    and item.get("source_fact_hash")
+                    and item.get("source_observation_hash")
+                ):
+                    # A typed, tamper-evident source/derived fact may be shown as
+                    # observed evidence while Product, rights, storage, PIT,
+                    # learning and strategy authority remain separate gates.
+                    state_text = (
+                        f"{state}／typed来源事实及方法回执已核；不等于Product准入"
+                        f"；原因：{item.get('reason') or 'UNKNOWN'}"
+                        f"；来源：{item.get('provider_identity') or 'UNKNOWN'}"
+                        f"；完成至：{item.get('completed_through') or 'UNKNOWN'}"
+                        f"；实际观测于：{item['source_observed_at']}"
+                        f"；来源身份：{item['source_identity_hash']}"
+                        "；数据权利、存储、历史PIT、训练和策略升级资格未证明"
+                    )
+                elif (
                     state == "PARTIAL"
                     and item.get("dataset_id") in {
                         "M_INDEX_CURRENT", "M_INDEX_BARS",

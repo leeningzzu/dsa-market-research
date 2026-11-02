@@ -112,7 +112,7 @@ def test_source_5m_only_completed_exact_sessions_and_native_derived_frames(monke
     assert proof["source_data_rights"] == "UNKNOWN"
     assert proof["historical_pit_eligible"] is False
     assert proof["strategy_upgrade_authority"] is False
-    assert proof["independent_source_value_admitted"] is False
+    assert proof["independent_source_value_admitted"] is True
     assert proof["native_recursive_stability_admitted"] is False
     assert "close" not in proof and "score" not in proof and "BUY" not in repr(proof)
 
@@ -235,10 +235,28 @@ def test_m2_completed_index5m_enters_market_review_runtime_registry_and_full_tex
         for row in compile_complete_research_universe_view(current)["data_objects"]
     }
     assert len(objects) == 76
-    assert objects["M_INDEX_BARS"]["state"] == "PARTIAL"
-    assert objects["M_INDEX_BARS"]["provider_identity"] == "EastmoneyIndex5mAdapter"
-    assert objects["M_INDEX_BARS"]["strategy_upgrade_authority"] is False
-    assert objects["M_INDEX_BARS"]["independent_source_value_admitted"] is False
+    index_bars = objects["M_INDEX_BARS"]
+    assert index_bars["state"] == "PARTIAL"
+    assert index_bars["provider_identity"] == "EastmoneyIndex5mAdapter"
+    assert index_bars["provider_route"] == (
+        "eastmoney.index_zh_a_hist_min_em|push2his/qt/stock/kline/get"
+    )
+    assert index_bars["strategy_upgrade_authority"] is False
+    assert index_bars["independent_source_value_admitted"] is True
+    assert index_bars["adjustment_basis"] == (
+        "RAW_REQUESTED_OBSERVED_UNCLASSIFIED"
+    )
+    assert index_bars["units"] == {
+        "price": "INDEX_POINTS", "volume": "UNKNOWN", "amount": "UNKNOWN",
+    }
+    assert index_bars["producer_authority"].endswith(
+        "cn_index_minute_source.py::verify_cn_index_completed_5m_source_frame"
+    )
+    assert len(index_bars["source_fact_hash"]) == 64
+    assert len(index_bars["source_observation_hash"]) == 64
+    assert current["evidence_traceability"]["complete_research_universe"][
+        "full_domain_data_gate"
+    ]["current_product_admitted_count"] == 0
     assert objects["M_INDEX_CURRENT"]["state"] == "UNKNOWN"
     assert objects["M_BASIC_BREADTH"]["state"] == "UNKNOWN"
 

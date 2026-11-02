@@ -118,7 +118,7 @@ def _validated_runtime_cn_index_5m_source_observation(
     trade_date: date,
     source: str,
 ) -> Optional[Dict[str, Any]]:
-    """Allow only live, nonnumeric source evidence; never history/PIT reuse."""
+    """Allow only live typed source evidence; never Product/history/PIT reuse."""
     if source != "market_review_runtime" or not isinstance(value, Mapping):
         return None
     expected = {
@@ -132,7 +132,7 @@ def _validated_runtime_cn_index_5m_source_observation(
         "volume_unit": "UNKNOWN",
         "amount_unit": "UNKNOWN",
         "historical_pit_eligible": False,
-        "independent_source_value_admitted": False,
+        "independent_source_value_admitted": True,
         "native_recursive_stability_admitted": False,
         "strategy_upgrade_authority": False,
     }

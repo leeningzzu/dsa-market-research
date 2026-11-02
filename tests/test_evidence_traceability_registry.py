@@ -3492,6 +3492,147 @@ def test_strict_supply_receipt_binds_actual_target_input_producer_and_output():
         assert supply["reason"] == reason
 
 
+def test_existing_cost_context_compiles_typed_p_cost_proxy_without_product_inflation():
+    frame = bars(320)
+    target = frame["date"].iloc[-1]
+    trend = StockTrendAnalyzer().analyze(frame.copy(), "600519")
+    cost = build_cost_structure_context(
+        stock_code="600519", history=frame, chip_data=None,
+        target_date=target, market="cn",
+    )
+    identity = {
+        **_strict_daily_identity(target),
+        "snapshot_observed_at": "2026-10-30T10:00:00+00:00",
+        "available_at_max": "2026-10-30T10:00:00+00:00",
+        "daily_data_identity": {
+            "provider_route": "unit.daily.provider",
+            "currency": "CNY",
+            "volume_unit": "share",
+            "amount_unit": "CNY",
+            "content_sha256": "c" * 64,
+            "revision": "UNKNOWN",
+            "vintage": "UNKNOWN",
+        },
+    }
+    receipt = reg.build_method_execution_receipt(
+        "COST", output=cost, asset_route="STOCK", stock_code="600519",
+        market="cn", target_date=target, timeframe="daily",
+        input_identity=identity,
+    )
+    factor = build_stock_factor_decision_summary(
+        trend,
+        cost_structure_context=cost,
+        method_execution_receipts={"COST": receipt},
+        include_canonical=True,
+    )
+    trace = reg.validate_runtime_trace(factor)
+    objects = {
+        row["dataset_id"]: row
+        for row in trace["complete_research_universe"]["data_objects"]
+    }
+    row = objects["P_COST_PROXY"]
+    assert row["state"] == "READY"
+    assert row["provider_identity"] == "synthetic"
+    assert row["provider_route"] == "unit.daily.provider"
+    assert row["producer_authority"].endswith("cost_structure_service.py::build_cost_structure_context")
+    assert row["independent_source_value_admitted"] is True
+    assert row["strategy_upgrade_authority"] is False
+    assert row["units"]["rolling_reference_price"] == "CNY_PER_LISTED_UNIT"
+    assert row["facts"]["window_20"]["rolling_reference_price"] > 0
+    assert row["facts"]["window_60"]["rolling_reference_price"] > 0
+    assert len(row["source_fact_hash"]) == len(row["source_observation_hash"]) == 64
+    gate = trace["complete_research_universe"]["full_domain_data_gate"]
+    assert gate["current_product_admitted_count"] == 0
+    assert "P_COST_PROXY" in gate["unresolved_product_dataset_ids"]
+
+    forged = deepcopy(factor)
+    forged.pop("evidence_traceability", None)
+    forged["cost_structure_evidence"]["context"]["bar_reference_cost"][
+        "window_20"
+    ]["rolling_reference_price"] += 1.0
+    forged_trace = reg.build_runtime_trace(forged)
+    forged_row = next(
+        row for row in forged_trace["complete_research_universe"]["data_objects"]
+        if row["dataset_id"] == "P_COST_PROXY"
+    )
+    assert forged_row["state"] == "UNKNOWN"
+    assert forged_row["independent_source_value_admitted"] is False
+
+
+def test_existing_etf_peer_rs_compiles_typed_e_peer_rs_without_product_inflation():
+    from src.services.relative_strength_service import (
+        compute_etf_peer_relative_strength_context,
+    )
+    from tests.test_relative_strength_service import _history, _with_identity
+
+    target_history = _with_identity(
+        _history(periods=70, start_price=100.0, end_price=140.0),
+        provider="Fetcher",
+    )
+    peer_histories = {
+        "510050": _with_identity(
+            _history(periods=70, start_price=100.0, end_price=110.0),
+            provider="Fetcher",
+        ),
+        "159919": _with_identity(
+            _history(periods=70, start_price=100.0, end_price=130.0),
+            provider="Fetcher",
+        ),
+        "510500": _with_identity(
+            _history(periods=70, start_price=100.0, end_price=120.0),
+            provider="Fetcher",
+        ),
+    }
+    target_date = target_history.iloc[-1]["date"].date()
+    peer_rs = compute_etf_peer_relative_strength_context(
+        etf_code="510300", market="cn", target_history=target_history,
+        peer_histories=peer_histories, target_date=target_date,
+        horizon_sessions=60, min_peer_count=3,
+    )
+    assert peer_rs["status"] == "READY"
+    trend = TrendAnalysisResult(code="510300")
+    factor = build_stock_factor_decision_summary(
+        trend,
+        relative_strength_context=peer_rs,
+        method_execution_receipts={},
+        include_canonical=True,
+        asset_type="etf",
+    )
+    trace = reg.validate_runtime_trace(factor)
+    objects = {
+        row["dataset_id"]: row
+        for row in trace["complete_research_universe"]["data_objects"]
+    }
+    row = objects["E_PEER_RS"]
+    assert row["state"] == "READY"
+    assert row["provider_identity"] == "Fetcher"
+    assert row["provider_route"] == "synthetic-test"
+    assert row["producer_authority"].endswith(
+        "relative_strength_service.py::compute_etf_peer_relative_strength_context"
+    )
+    assert row["independent_source_value_admitted"] is True
+    assert row["strategy_upgrade_authority"] is False
+    assert row["facts"]["relative"]["rank"] == 1
+    assert row["facts"]["peer_universe"]["eligible_peer_count"] == 3
+    assert len(row["facts"]["peer_universe"]["universe_hash"]) == 64
+    assert trace["complete_research_universe"]["full_domain_data_gate"][
+        "current_product_admitted_count"
+    ] == 0
+
+    forged = deepcopy(factor)
+    forged.pop("evidence_traceability", None)
+    forged["trend_relative_strength"]["relative_strength"]["peer_universe"][
+        "universe_hash"
+    ] = "0" * 64
+    forged_trace = reg.build_runtime_trace(forged)
+    forged_row = next(
+        row for row in forged_trace["complete_research_universe"]["data_objects"]
+        if row["dataset_id"] == "E_PEER_RS"
+    )
+    assert forged_row["state"] == "UNKNOWN"
+    assert forged_row["independent_source_value_admitted"] is False
+
+
 @pytest.mark.parametrize("mutation", ["schema", "stock", "benchmark", "source", "basis", "identity"])
 def test_strict_trend_rs_rejects_forged_upstream_semantics(mutation):
     trend = TrendAnalysisResult(code="600519")

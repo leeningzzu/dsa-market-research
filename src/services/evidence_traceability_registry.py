@@ -4419,7 +4419,7 @@ def _verified_cn_market_5m_source_scope(factor: Mapping) -> dict[str, dict]:
         "volume_unit": "UNKNOWN",
         "amount_unit": "UNKNOWN",
         "historical_pit_eligible": False,
-        "independent_source_value_admitted": False,
+        "independent_source_value_admitted": True,
         "native_recursive_stability_admitted": False,
         "strategy_upgrade_authority": False,
     }
@@ -4437,8 +4437,10 @@ def _verified_cn_market_5m_source_scope(factor: Mapping) -> dict[str, dict]:
     if sha256_payload({k: v for k, v in receipt.items() if k != "receipt_sha256"}) != receipt.get("receipt_sha256"):
         return {}
     for key in ("content_sha256", "identity_hash"):
-        digest = str(receipt.get(key) or "")
-        if len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest.lower()):
+        digest_text = str(receipt.get(key) or "")
+        if len(digest_text) != 64 or any(
+            ch not in "0123456789abcdef" for ch in digest_text.lower()
+        ):
             return {}
     sessions, rows = receipt.get("session_count"), receipt.get("row_count")
     if (
@@ -4456,26 +4458,65 @@ def _verified_cn_market_5m_source_scope(factor: Mapping) -> dict[str, dict]:
             return {}
     except (TypeError, ValueError):
         return {}
+    facts = {
+        "source_code": receipt["source_code"],
+        "timeframe": "5m",
+        "session_count": sessions,
+        "row_count": rows,
+        "bars_per_session": 48,
+        "completed_through": receipt["completed_through"],
+        "native_recursive_stability_admitted": False,
+    }
+    source_fact_hash = digest(facts)
+    source_observation_hash = digest({
+        "dataset_id": "M_INDEX_BARS",
+        "source_identity_hash": receipt["identity_hash"],
+        "source_content_sha256": receipt["content_sha256"],
+        "source_fact_hash": source_fact_hash,
+        "observed_at": receipt["observed_at"],
+    })
     return {
         "M_INDEX_BARS": {
             "state": "PARTIAL",
-            "reason": "INDEX_5M_COMPLETED_SOURCE_VERIFIED_RECURSIVE_METHOD_NOT_ADMITTED",
+            "reason": (
+                "INDEX_5M_COMPLETED_SOURCE_VERIFIED_RECURSIVE_METHOD_NOT_ADMITTED_"
+                "TYPED_SOURCE_CHAIN"
+            ),
             "provider_identity": receipt["provider_identity"],
+            "provider_route": receipt["provider_route"],
+            "producer_authority": (
+                "data_provider/cn_index_minute_source.py::"
+                "verify_cn_index_completed_5m_source_frame"
+            ),
             "source_code": receipt["source_code"],
             "completed_through": receipt["completed_through"],
             "source_observed_at": receipt["observed_at"],
+            "source_available_at": receipt["observed_at"],
             "source_identity_hash": receipt["identity_hash"],
             "source_content_sha256": receipt["content_sha256"],
+            "source_fact_hash": source_fact_hash,
+            "source_observation_hash": source_observation_hash,
             "source_data_rights": "UNKNOWN",
+            "units": {
+                "price": "INDEX_POINTS",
+                "volume": "UNKNOWN",
+                "amount": "UNKNOWN",
+            },
+            "currency": "UNKNOWN",
+            "adjustment_basis": "RAW_REQUESTED_OBSERVED_UNCLASSIFIED",
+            "revision": "UNKNOWN",
+            "vintage": "UNKNOWN",
+            "facts": facts,
             "historical_pit_eligible": False,
-            "independent_source_value_admitted": False,
+            "independent_source_value_admitted": True,
             "native_recursive_stability_admitted": False,
             "strategy_upgrade_authority": False,
+            "storage_admitted": False,
+            "learning_admitted": False,
             "volume_unit": receipt["volume_unit"],
             "amount_unit": receipt["amount_unit"],
         },
     }
-
 
 def _verified_cn_market_7tf_scope(factor: Mapping) -> dict[str, dict]:
     """Project one verified formal-index 7TF context onto existing Market objects."""
@@ -4926,6 +4967,296 @@ def _verified_data_object_source_scope(factor: Mapping) -> dict[str, dict]:
     return result
 
 
+def _valid_source_sha256(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    return len(text) == 64 and all(char in "0123456789abcdef" for char in text)
+
+
+def _typed_daily_source_semantics(identity: Any) -> dict | None:
+    """Extract exact daily-source semantics from an already verified method input.
+
+    This is a read-only projection. It neither fetches data nor grants Product,
+    storage, learning, redistribution, or action authority.
+    """
+    if not isinstance(identity, Mapping):
+        return None
+    provider = str(identity.get("provider_identity") or "").strip()
+    basis = str(identity.get("adjustment_basis") or "").strip()
+    snapshot = str(identity.get("data_snapshot_identity") or "").strip().lower()
+    daily = identity.get("daily_data_identity")
+    daily = dict(daily) if isinstance(daily, Mapping) else {}
+    route = str(
+        daily.get("provider_route") or identity.get("provider_route") or ""
+    ).strip()
+    content = str(
+        daily.get("content_sha256") or identity.get("source_content_sha256") or ""
+    ).strip().lower()
+    observed = str(
+        daily.get("observed_at")
+        or identity.get("snapshot_observed_at")
+        or identity.get("available_at_max")
+        or ""
+    ).strip()
+    available = str(identity.get("available_at_max") or observed).strip()
+    currency = str(daily.get("currency") or identity.get("currency") or "UNKNOWN").strip().upper()
+    volume_unit = str(daily.get("volume_unit") or identity.get("volume_unit") or "UNKNOWN").strip()
+    amount_unit = str(daily.get("amount_unit") or identity.get("amount_unit") or "UNKNOWN").strip()
+    revision = str(daily.get("revision") or identity.get("revision") or "UNKNOWN").strip()
+    vintage = str(daily.get("vintage") or identity.get("vintage") or "UNKNOWN").strip()
+    if (
+        not provider
+        or not basis
+        or not route
+        or not _valid_source_sha256(snapshot)
+        or not _valid_source_sha256(content)
+        or not observed
+        or not available
+        or identity.get("price_identity_reasons")
+    ):
+        return None
+    return {
+        "provider_identity": provider,
+        "provider_route": route,
+        "source_identity_hash": snapshot,
+        "source_content_sha256": content,
+        "source_observed_at": observed,
+        "source_available_at": available,
+        "completed_through": str(identity.get("target_date") or "").strip(),
+        "currency": currency or "UNKNOWN",
+        "volume_unit": volume_unit or "UNKNOWN",
+        "amount_unit": amount_unit or "UNKNOWN",
+        "adjustment_basis": basis,
+        "revision": revision or "UNKNOWN",
+        "vintage": vintage or "UNKNOWN",
+    }
+
+
+def _verified_cost_proxy_source_scope(factor: Mapping) -> dict[str, dict]:
+    """Bind the existing strict COST invocation to P_COST_PROXY source facts."""
+    if str(factor.get("asset_type") or "stock").lower() != "stock" or not _receipt_required(factor):
+        return {}
+    evidence = factor.get("cost_structure_evidence")
+    if not isinstance(evidence, Mapping):
+        return {}
+    binding = next(b for b in EVIDENCE_BINDINGS if b.requirement_id == "COST")
+    receipt = _receipt_for(factor, "COST")
+    state, reason = method_observation(
+        binding, evidence, receipt=receipt, require_receipt=True,
+    )
+    if state not in {"READY", "PARTIAL"} or reason != "METHOD_INVOCATION_VERIFIED":
+        return {}
+    context = evidence.get("context")
+    identity = receipt.get("input_identity") if isinstance(receipt, Mapping) else None
+    semantics = _typed_daily_source_semantics(identity)
+    if not isinstance(context, Mapping) or semantics is None:
+        return {}
+    if context.get("completed_bar_only") is not True:
+        return {}
+    bar = context.get("bar_reference_cost")
+    if not isinstance(bar, Mapping):
+        return {}
+    windows: dict[str, dict] = {}
+    for key, required in (("window_20", 20), ("window_60", 60)):
+        item = bar.get(key)
+        if not isinstance(item, Mapping):
+            continue
+        value = item.get("rolling_reference_price")
+        observations = item.get("observations")
+        if (
+            item.get("status") != "READY"
+            or item.get("source_alignment") != "SINGLE_SOURCE"
+            or not isinstance(value, Real)
+            or isinstance(value, bool)
+            or not math.isfinite(float(value))
+            or float(value) <= 0
+            or type(observations) is not int
+            or observations < required
+            or item.get("end_date") != semantics["completed_through"]
+            or tuple(item.get("sources") or ()) != (semantics["provider_identity"],)
+        ):
+            continue
+        windows[key] = {
+            "status": "READY",
+            "method": item.get("method"),
+            "semantics": item.get("semantics"),
+            "window_sessions": item.get("window_sessions"),
+            "observations": observations,
+            "start_date": item.get("start_date"),
+            "end_date": item.get("end_date"),
+            "rolling_reference_price": float(value),
+            "target_close": item.get("target_close"),
+            "close_distance_pct": item.get("close_distance_pct"),
+            "denominator_volume": item.get("denominator_volume"),
+        }
+    if not windows:
+        return {}
+    object_state = "READY" if set(windows) == {"window_20", "window_60"} else "PARTIAL"
+    facts = {
+        "schema_version": "typed-cost-proxy-source-v1",
+        "stock_code": str(context.get("stock_code") or factor.get("stock_code") or ""),
+        "market": str(context.get("market") or "").lower(),
+        "target_date": str(context.get("target_date") or ""),
+        "algorithm_version": context.get("algorithm_version"),
+        "config_hash": context.get("config_hash"),
+        **windows,
+    }
+    source_fact_hash = digest(facts)
+    row = {
+        "state": object_state,
+        "reason": (
+            "COST_PROXY_20_60_TYPED_SOURCE_READY_RIGHTS_PIT_NOT_ADMITTED"
+            if object_state == "READY"
+            else "COST_PROXY_PARTIAL_TYPED_SOURCE_RIGHTS_PIT_NOT_ADMITTED"
+        ),
+        **semantics,
+        "producer_authority": (
+            "src/services/cost_structure_service.py::build_cost_structure_context"
+        ),
+        "source_data_rights": "UNKNOWN",
+        "units": {
+            "rolling_reference_price": (
+                f"{semantics['currency']}_PER_LISTED_UNIT"
+                if semantics["currency"] != "UNKNOWN" else "UNKNOWN"
+            ),
+            "close_distance_pct": "PERCENTAGE_POINTS",
+            "denominator_volume": semantics["volume_unit"].upper(),
+        },
+        "facts": facts,
+        "source_fact_hash": source_fact_hash,
+        "historical_pit_eligible": False,
+        "independent_source_value_admitted": True,
+        "strategy_upgrade_authority": False,
+        "storage_admitted": False,
+        "learning_admitted": False,
+    }
+    row["source_observation_hash"] = digest({
+        "dataset_id": "P_COST_PROXY",
+        "source_identity_hash": row["source_identity_hash"],
+        "source_content_sha256": row["source_content_sha256"],
+        "source_fact_hash": source_fact_hash,
+        "producer_authority": row["producer_authority"],
+    })
+    return {"P_COST_PROXY": row}
+
+
+def _verified_etf_peer_rs_source_scope(factor: Mapping) -> dict[str, dict]:
+    """Bind an exact strict ETF peer universe to E_PEER_RS source facts."""
+    if str(factor.get("asset_type") or "stock").lower() != "etf" or not _receipt_required(factor):
+        return {}
+    evidence = factor.get("trend_relative_strength")
+    if not isinstance(evidence, Mapping):
+        return {}
+    binding = next(b for b in EVIDENCE_BINDINGS if b.requirement_id == "TREND_RS")
+    receipt = _receipt_for(factor, "TREND_RS")
+    state, reason = method_observation(
+        binding, evidence, receipt=receipt, require_receipt=True,
+    )
+    if state not in {"READY", "PARTIAL"} or reason != "METHOD_INVOCATION_VERIFIED":
+        return {}
+    peer_rs = evidence.get("relative_strength")
+    identity = receipt.get("input_identity") if isinstance(receipt, Mapping) else None
+    if (
+        not isinstance(peer_rs, Mapping)
+        or peer_rs.get("schema_version") != "etf-peer-relative-strength-v1"
+        or not isinstance(identity, Mapping)
+    ):
+        return {}
+    target_identity = identity.get("target")
+    peer_identities = identity.get("peers")
+    target_semantics = _typed_daily_source_semantics(target_identity)
+    if target_semantics is None or not isinstance(peer_identities, (list, tuple)):
+        return {}
+    peer_semantics = []
+    content_rows = []
+    observed_values = [target_semantics["source_observed_at"]]
+    available_values = [target_semantics["source_available_at"]]
+    revisions = {target_semantics["revision"]}
+    vintages = {target_semantics["vintage"]}
+    for peer in peer_identities:
+        semantics = _typed_daily_source_semantics(peer)
+        code = str(peer.get("stock_code") or "").strip() if isinstance(peer, Mapping) else ""
+        if (
+            semantics is None
+            or not code
+            or semantics["provider_identity"] != target_semantics["provider_identity"]
+            or semantics["provider_route"] != target_semantics["provider_route"]
+            or semantics["adjustment_basis"] != target_semantics["adjustment_basis"]
+            or semantics["currency"] != target_semantics["currency"]
+        ):
+            return {}
+        peer_semantics.append((code, semantics))
+        content_rows.append((code, semantics["source_content_sha256"]))
+        observed_values.append(semantics["source_observed_at"])
+        available_values.append(semantics["source_available_at"])
+        revisions.add(semantics["revision"])
+        vintages.add(semantics["vintage"])
+    universe = peer_rs.get("peer_universe")
+    relative = peer_rs.get("relative")
+    target = peer_rs.get("target")
+    if not all(isinstance(item, Mapping) for item in (universe, relative, target)):
+        return {}
+    if universe.get("eligible_peer_count") != len(peer_semantics):
+        return {}
+    facts = {
+        "schema_version": "typed-etf-peer-rs-source-v1",
+        "target_code": str(peer_rs.get("etf_code") or ""),
+        "market": str(peer_rs.get("market") or "").lower(),
+        "target_date": str(peer_rs.get("target_date") or ""),
+        "horizon_sessions": peer_rs.get("horizon_sessions"),
+        "start_date": peer_rs.get("start_date"),
+        "end_date": peer_rs.get("end_date"),
+        "target": dict(target),
+        "peer_universe": dict(universe),
+        "relative": dict(relative),
+    }
+    source_fact_hash = digest(facts)
+    row = {
+        "state": str(peer_rs.get("status") or state).upper(),
+        "reason": "ETF_PEER_RS_TYPED_UNIVERSE_READY_RIGHTS_PIT_NOT_ADMITTED",
+        "provider_identity": target_semantics["provider_identity"],
+        "provider_route": target_semantics["provider_route"],
+        "producer_authority": (
+            "src/services/relative_strength_service.py::"
+            "compute_etf_peer_relative_strength_context"
+        ),
+        "source_identity_hash": digest(identity),
+        "source_content_sha256": digest({
+            "target": target_semantics["source_content_sha256"],
+            "peers": tuple(sorted(content_rows)),
+        }),
+        "source_observed_at": max(observed_values),
+        "source_available_at": max(available_values),
+        "completed_through": str(peer_rs.get("target_date") or ""),
+        "source_data_rights": "UNKNOWN",
+        "units": {
+            "return": "PERCENT",
+            "excess_vs_peer_median": "PERCENTAGE_POINTS",
+            "percentile": "PERCENT",
+            "rank": "ORDINAL",
+            "peer_count": "COUNT",
+        },
+        "currency": target_semantics["currency"],
+        "adjustment_basis": target_semantics["adjustment_basis"],
+        "revision": next(iter(revisions)) if len(revisions) == 1 else "MIXED",
+        "vintage": next(iter(vintages)) if len(vintages) == 1 else "MIXED",
+        "facts": facts,
+        "source_fact_hash": source_fact_hash,
+        "historical_pit_eligible": False,
+        "independent_source_value_admitted": True,
+        "strategy_upgrade_authority": False,
+        "storage_admitted": False,
+        "learning_admitted": False,
+    }
+    row["source_observation_hash"] = digest({
+        "dataset_id": "E_PEER_RS",
+        "source_identity_hash": row["source_identity_hash"],
+        "source_content_sha256": row["source_content_sha256"],
+        "source_fact_hash": source_fact_hash,
+        "producer_authority": row["producer_authority"],
+    })
+    return {"E_PEER_RS": row}
+
+
 def _compile_accepted_data_object_scope(factor: Mapping) -> list[dict]:
     """Expose accepted DATA obligations, not invented data values or strategy votes."""
     rows = [
@@ -4967,14 +5298,20 @@ def _compile_accepted_data_object_scope(factor: Mapping) -> list[dict]:
     else:
         base_source_scope = {}
     market_source_scope = _verified_cn_market_source_scope(factor)
-    market_source_scope.update(_verified_cn_market_5m_source_scope(factor))
     market_source_scope.update(_verified_cn_market_7tf_scope(factor))
+    # The direct strict 5m receipt is the native source identity for
+    # M_INDEX_BARS and therefore overrides only the broader formal projection.
+    market_source_scope.update(_verified_cn_market_5m_source_scope(factor))
     sector_source_scope = _verified_cn_sector_scope(factor)
+    method_source_scope: dict[str, dict] = {}
+    method_source_scope.update(_verified_cost_proxy_source_scope(factor))
+    method_source_scope.update(_verified_etf_peer_rs_source_scope(factor))
     generic_source_scope = _verified_data_object_source_scope(factor)
     occupied = (
         set(base_source_scope)
         | set(market_source_scope)
         | set(sector_source_scope)
+        | set(method_source_scope)
     )
     if occupied & set(generic_source_scope):
         raise TraceabilityError("DATA_OBJECT_SOURCE_OBSERVATION_OWNER_CONFLICT")
@@ -5004,6 +5341,8 @@ def _compile_accepted_data_object_scope(factor: Mapping) -> list[dict]:
             row.update(market_source_scope[dataset_id])
         if applicable and dataset_id in sector_source_scope:
             row.update(sector_source_scope[dataset_id])
+        if applicable and dataset_id in method_source_scope:
+            row.update(method_source_scope[dataset_id])
         if applicable and dataset_id in generic_source_scope:
             row.update(generic_source_scope[dataset_id])
         objects.append(row)

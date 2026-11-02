@@ -2,8 +2,9 @@
 
 Based on the documented AKShare index_zh_a_hist_min_em interface shape; it
 does not import AKShare or start a second analysis/notification/storage stack.
-Observed data and self-hashes do NOT grant data rights, historical PIT, native
-indicator convergence, model features, or an independent regime/BUY vote.
+Strictly verified completed source values may enter the typed data-object chain,
+but do NOT grant data rights, Product admission, historical PIT, native indicator
+convergence, model features, or an independent regime/BUY vote.
 """
 
 from __future__ import annotations
@@ -201,7 +202,7 @@ def get_cn_index_completed_5m_source(
             "volume_unit": "UNKNOWN",
             "amount_unit": "UNKNOWN",
             "historical_pit_eligible": False,
-            "independent_source_value_admitted": False,
+            "independent_source_value_admitted": True,
             "native_recursive_stability_admitted": False,
             "strategy_upgrade_authority": False,
         }
@@ -236,7 +237,7 @@ def verify_cn_index_completed_5m_source_frame(
         "provider_route": _ROUTE, "completed_through": trade_date,
         "source_data_rights": "UNKNOWN", "volume_unit": "UNKNOWN",
         "amount_unit": "UNKNOWN", "historical_pit_eligible": False,
-        "independent_source_value_admitted": False,
+        "independent_source_value_admitted": True,
         "native_recursive_stability_admitted": False,
         "strategy_upgrade_authority": False,
     }
