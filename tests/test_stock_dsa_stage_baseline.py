@@ -106,7 +106,7 @@ def test_stage_ladder_keeps_parent_product_and_blocking_order_explicit() -> None
         "P1_PROMOTION_RELEASE",
     ]
     assert baseline["route_decision"]["next_primary"] == (
-        "B1_M2_44_SOURCE_CHAIN_REENTRY"
+        "B1_M2_44_PROVIDER_BACKED_SOURCE_CHAIN_REENTRY"
     )
     assert [stage["id"] for stage in stages if stage.get("next_primary")] == [
         "B1_SOURCE_RIGHTS"
@@ -131,11 +131,11 @@ def test_stage_ladder_keeps_parent_product_and_blocking_order_explicit() -> None
     ]
     acceptance = baseline["acceptance"]
     assert acceptance["state"] == (
-        "CI99_REMOTE_ACCEPTED_BASE_PREMIUM_EXECUTION_CANDIDATE_"
+        "CI100_REMOTE_ACCEPTED_PREMIUM_EXECUTION_CONTINUITY_"
         "RESOLVE_AT_RUNTIME"
     )
-    assert acceptance["candidate_head"] == "6eb822f5a7efb07284b35472b6f88e4ea8e5fd7a"
-    assert acceptance["candidate_parent"] == "c2629c07168764b2cdf2bf733697447e45848365"
+    assert acceptance["candidate_head"] == "16963cee711392605b2515eef00e390802f5eeeb"
+    assert acceptance["candidate_parent"] == "6eb822f5a7efb07284b35472b6f88e4ea8e5fd7a"
     assert acceptance["candidate_base_head"] == acceptance["candidate_head"]
     assert acceptance["last_failed_ci"] == {
         "run_number": 96,
@@ -151,16 +151,16 @@ def test_stage_ladder_keeps_parent_product_and_blocking_order_explicit() -> None
         "RESOLVE_COMMIT_CONTAINING_THIS_FILE_FROM_GIT"
     )
     assert acceptance["candidate_ci_state"] == (
-        "RECHECK_PREMIUM_EXECUTION_NATURAL_CI_AT_RUNTIME"
+        "RECHECK_CONTINUITY_NATURAL_CI_AT_RUNTIME"
     )
     assert acceptance["candidate_head_scope"] == (
-        "CI99_ACCEPTED_BASE; COMMIT_CONTAINING_THIS_FILE_IS_PREMIUM_"
-        "EXECUTION_FEATURE_CANDIDATE_NOT_MAIN"
+        "CI100_ACCEPTED_FUNCTIONAL_HEAD; COMMIT_CONTAINING_THIS_FILE_IS_"
+        "CONTINUITY_PROJECTION_NOT_MAIN"
     )
     assert acceptance["latest_required_ci"] == {
-        "run_number": 99,
-        "run_id": 41434978379,
-        "head": "6eb822f5a7efb07284b35472b6f88e4ea8e5fd7a",
+        "run_number": 100,
+        "run_id": 41570430451,
+        "head": "16963cee711392605b2515eef00e390802f5eeeb",
         "conclusion": "success",
     }
     # CI94 is the direct failed predecessor; CI92 remains in Git/history.
@@ -172,7 +172,7 @@ def test_stage_ladder_keeps_parent_product_and_blocking_order_explicit() -> None
     }
     assert acceptance["pull_request_state"] == "DRAFT_OPEN_NOT_MERGED"
     assert baseline["route_decision"]["next_primary"] == (
-        "B1_M2_44_SOURCE_CHAIN_REENTRY"
+        "B1_M2_44_PROVIDER_BACKED_SOURCE_CHAIN_REENTRY"
     )
 
 
@@ -317,19 +317,25 @@ def test_current_control_rejects_historical_product_and_email_geometry_substitut
     assert current["schema_version"] == "stock-dsa-current-runtime-checkpoint-v2"
     assert current["source_pair"] == "01/05 v3.545 PHYSICAL_EXACT8_PASS"
     assert current["accepted_remote_base"] == {
-        "head": "6eb822f5a7efb07284b35472b6f88e4ea8e5fd7a",
-        "ci_run_number": 99,
-        "ci_run_id": 41434978379,
+        "head": "16963cee711392605b2515eef00e390802f5eeeb",
+        "ci_run_number": 100,
+        "ci_run_id": 41570430451,
         "conclusion": "success",
     }
     assert current["candidate_identity"] == "RESOLVE_COMMIT_CONTAINING_THIS_FILE_FROM_GIT"
     snapshot = current["candidate_precommit_snapshot"]
-    assert snapshot["status_path_count"] == 15
-    assert snapshot["tracked_modified_count"] == 15
+    assert snapshot["status_path_count"] == 4
+    assert snapshot["tracked_modified_count"] == 4
     assert snapshot["untracked_paths"] == []
     assert snapshot["staged_count"] == 0
     assert snapshot["post_commit_worktree_expected_clean"] is True
-    assert snapshot["scope"] == "E_PREMIUM_P_EXEC_RISK_EXISTING_DSA_VERTICAL_ONLY"
+    assert snapshot["scope"] == "CI100_CONTINUITY_PROJECTION_ONLY"
+    assert snapshot["paths"] == [
+        "docs/CHANGELOG.md",
+        "docs/stock-dsa-roadmap.md",
+        "docs/stock-dsa-stage-baseline-v1.json",
+        "tests/test_stock_dsa_stage_baseline.py",
+    ]
     assert current["local_regression"]["focused_passed"] == 61
     assert current["local_regression"]["focused_failed"] == 0
     assert current["local_regression"]["full_related"] == {
@@ -342,7 +348,7 @@ def test_current_control_rejects_historical_product_and_email_geometry_substitut
     assert current["local_regression"]["ci96_targeted_passed"] == 5
     assert current["local_regression"]["ci96_targeted_failed"] == 0
     assert current["local_regression"]["remote_ci"] == (
-        "CI99_SUCCESS_BASE_PREMIUM_EXECUTION_CANDIDATE_LOCAL_PASS_PENDING_PUSH"
+        "CI100_SUCCESS_PREMIUM_EXECUTION_FUNCTIONAL_ACCEPTED_CONTINUITY_PENDING"
     )
     assert current["local_regression"]["litellm_local_cost_map_required_before_import"] is True
     assert current["local_regression"]["typed_source_focused"] == {
@@ -359,11 +365,17 @@ def test_current_control_rejects_historical_product_and_email_geometry_substitut
         "passed": 6, "failed": 0,
     }
     assert current["local_regression"]["premium_execution_related"] == {
-        "selected_modules": 9,
-        "passed": 608,
+        "selected_modules": 18,
+        "core_passed": 531,
+        "adjacent_passed": 271,
+        "passed": 802,
         "failed": 0,
-        "duration_seconds": 547.37,
-        "warnings": 1,
+        "duration_seconds": 597.10,
+        "warnings": 2,
+        "environment_recovery": (
+            "TWO_OPTIONAL_LARK_OAPI_TEST_SHAPE_STOPS_THEN_"
+            "PROCESS_ONLY_COMPLETE_SDK_SHIM_GREEN"
+        ),
     }
 
     matrix = current["seven_timeframe_eight_family"]
@@ -622,8 +634,14 @@ def test_stage_baseline_records_installed_v3545_and_current_successor_boundaries
     assert source["ninth_source"] is False
 
     successor = baseline["current_local_foundation_successor"]
-    assert successor["state"] == "PREMIUM_EXECUTION_VERTICAL_CANDIDATE_PRECOMMIT_REMOTE_OPEN"
-    assert successor["base_head"] == "6eb822f5a7efb07284b35472b6f88e4ea8e5fd7a"
+    assert successor["state"] == "PREMIUM_EXECUTION_VERTICAL_REMOTE_CI100_ACCEPTED"
+    assert successor["base_head"] == "16963cee711392605b2515eef00e390802f5eeeb"
+    assert successor["accepted_head"] == successor["base_head"]
+    assert successor["accepted_ci"] == {
+        "run_number": 100,
+        "run_id": 41570430451,
+        "conclusion": "success",
+    }
     assert successor["changed_paths"] == 15
     assert successor["method_profiles"] == 43
     assert successor["effective_execution_pairs"] == 154
@@ -686,7 +704,7 @@ def test_stage_baseline_locks_bounded_hierarchical_mtf_screening() -> None:
 def test_indicator_backlog_is_subordinate_to_the_current_product_route() -> None:
     decision = _baseline()["route_decision"]
     assert decision["next_primary"] == (
-        "B1_M2_44_SOURCE_CHAIN_REENTRY"
+        "B1_M2_44_PROVIDER_BACKED_SOURCE_CHAIN_REENTRY"
     )
     assert decision["bounded_indicator_sub_lanes"] == [
         "MONTHLY_RSI_HISTORY_IF_LEGAL",
@@ -798,7 +816,7 @@ def test_multi_level_goal_graph_capabilities_role_review_and_github_continuity_a
     }
     assert closure["product_admission"] == "0_OF_72_UNCHANGED"
     assert closure["focused_regression"]["remote_ci"] == (
-        "CI99_SUCCESS_BASE_PREMIUM_EXECUTION_CANDIDATE_REMOTE_OPEN"
+        "CI100_SUCCESS_PREMIUM_EXECUTION_REMOTE_ACCEPTED"
     )
     typed = closure["typed_source_vertical_slice"]
     assert typed["dataset_ids"] == ["P_COST_PROXY", "E_PEER_RS", "M_INDEX_BARS"]
@@ -845,6 +863,17 @@ def test_multi_level_goal_graph_capabilities_role_review_and_github_continuity_a
         "product_admission": "0_OF_72_UNCHANGED",
         "fact_ready": False,
     }
+    accepted100 = baseline["ci100_remote_acceptance"]
+    assert accepted100["head"] == "16963cee711392605b2515eef00e390802f5eeeb"
+    assert accepted100["parent"] == "6eb822f5a7efb07284b35472b6f88e4ea8e5fd7a"
+    assert accepted100["tree"] == "96afb8ddcf21198ee7490d0474c96049f4aba2f3"
+    assert accepted100["run_number"] == 100
+    assert accepted100["run_id"] == 41570430451
+    assert accepted100["conclusion"] == "success"
+    assert accepted100["pr_state"] == "DRAFT_OPEN_NOT_MERGED"
+    assert accepted100["product_admission"] == "0_OF_72_UNCHANGED"
+    assert accepted100["fact_ready"] is False
+
     slice_ = baseline["premium_execution_vertical_slice"]
     assert slice_["dataset_ids"] == ["E_PREMIUM", "P_EXEC_RISK"]
     assert slice_["focused_regression"] == {"passed": 6, "failed": 0}

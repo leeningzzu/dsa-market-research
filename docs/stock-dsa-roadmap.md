@@ -7,7 +7,7 @@
 
 CONTROL_ID = STOCK_DSA_MASTER_ROUTE_20261103_PREMIUM_EXECUTION_PARTIAL_TYPED_SOURCE
 SOURCE_AUTHORITY = Project Source恰好8个唯一Owner，01/05均为v3.545；按name、created_at、message_order三次物理清单一致PASS，旧v3.544已撤销。
-GIT_AUTHORITY = 唯一公共仓库 `https://github.com/leeningzzu/dsa-market-research.git`。已接受基线为feature Head `6eb822f5a7efb07284b35472b6f88e4ea8e5fd7a` / CI99 Run41434978379 SUCCESS；包含本文的新候选从Git运行时解析，普通non-force推送现有feature，PR31保持Draft/Open/未merge，禁止main直推、force/rebase/squash、手动dispatch、Settings/Secrets及旧/private仓库复活。
+GIT_AUTHORITY = 唯一公共仓库 `https://github.com/leeningzzu/dsa-market-research.git`。功能实现 Head `16963cee711392605b2515eef00e390802f5eeeb` / CI100 Run41570430451 已自然SUCCESS；包含本文的连续性投影提交从Git运行时解析并需自己的自然CI。PR31保持Draft/Open/未merge，禁止main直推、force/rebase/squash、手动dispatch、Settings/Secrets及旧/private仓库复活。
 IMMUTABLES = 原机器图149628字节/775边/SHA256 `b4f69f76807ac44bc0fea1a03f9aa38484b6083ca574a3699220b0564ac55aed`；原V2.5 125919字节/SHA256 `039ca6394baf9cf39494cc29f512802b114c8227f8c965723197a8df4b9de823`。本文与机器JSON仅为状态投影。
 
 ### 0.1 本轮实际闭合
@@ -24,7 +24,7 @@ IMMUTABLES = 原机器图149628字节/775边/SHA256 `b4f69f76807ac44bc0fea1a03f9
 - 方法Profile：30/43现有、13延期；明确数值叶24/35算法准入、11未准入，本轮未用增加指标掩盖数据缺口。
 - 七周期×八族：56/56可执行、154有效执行对；不是56个当前Product READY。
 - typed/真实来源能力下限：**28/72**；完整typed来源链缺口由46降至**44**。
-- 新能力ID：`E_PREMIUM`、`P_EXEC_RISK`；前驱`P_COST_PROXY/E_PEER_RS/M_INDEX_BARS`已由CI99接受并CLOSED_NO_REPLAY。
+- 新能力ID：`E_PREMIUM`、`P_EXEC_RISK`已由CI100接受并`CLOSED_REMOTE_ACCEPTED_NO_REPLAY`；前驱`P_COST_PROXY/E_PEER_RS/M_INDEX_BARS`由CI99接受。
 - 当前Product仍**0/72**；股票适用60、ETF适用55；Global Golden原子叶0/7；Rights-v2与同次全域事实不因PARTIAL来源能力自动获得。
 - 原V2.5无需重画；当前`FACT_READY=false`、SMTP0。PARTIAL事实可显示其精确值和缺口，但必须同时显示“不等于Product准入”。
 - 吸筹、洗盘、派发仍**只表示可观察候选**，不识别主力身份/意图；Chan继续`NOT_FULL_CZSC`。
@@ -59,21 +59,21 @@ flowchart TD
 | PRODUCT | capability28/72，但Product0/72与FACT_READY STOP | CROSS_LANE；继续44来源链和当前Rights-v2，不堆指标 |
 | DATA_MODEL | E_PREMIUM/P_EXEC_RISK只达PARTIAL，缺失字段逐项显式 | 不用估值替折溢价，不用流动性替完整执行风险 |
 | PROCESS_CONSUMER | Registry→InvestorBrief→Notification→V2.5的替代/缺链RED→GREEN | LANE_RECURRENT；核心531＋不重叠相邻271 PASS |
-| AUTHORITY_CURRENTNESS | Source8 v3.545 PASS；Git6eb/CI99接受基线；当前候选待自然CI | runtime exact Git优先 |
+| AUTHORITY_CURRENTNESS | Source8 v3.545 PASS；功能Head16963/CI100接受；连续性投影待自身自然CI | runtime exact Git优先 |
 | ENVIRONMENT | 无Provider、Secret、DB、Email、模型调用；可选依赖仅测试进程桩 | INSTANCE_ONLY |
 | ADAPTER_INTERFACE | 一个DSA/Registry/DB/V2.5；无第二来源系统或报告器 | KEEP/WRAP |
-| DEV_TOOLING | focused6、核心531、相邻271 PASS；可选Feishu SDK仅测试进程等价桩 | atomic commit/push/natural CI，不merge |
+| DEV_TOOLING | focused6、核心531、相邻271及自然CI100 PASS；可选Feishu SDK仅测试进程等价桩 | 连续性commit/push/natural CI，不merge |
 | USER_BURDEN | 无需许可原文、Token、日志或命令 | 机器完成确定性步骤 |
 
 CURRENT_ROUTE_STILL_WORTH_CONTINUING = YES_KEEP_ONLY_DSA
 INSTRUCTIONS_UPDATE_DECISION = NO_DELTA_KEEP
-SOURCE_UPDATE_DECISION = v3.545保持当前；候选Git与自然CI终态后一次性生成配对checkpoint。
+SOURCE_UPDATE_DECISION = v3.545保持当前；CI100功能已接受，连续性CI终态后一次性生成配对checkpoint。
 
 ### 0.5 GitHub是跨模型连续性的唯一代码基线
 
 后续模型必须依次读取`AGENTS.md`、本文、Stage JSON、Project Source8，并实际核origin/HEAD/tree/status/PR/CI。任何typed来源对象必须同时具备生产Owner、来源身份、事实哈希、实际消费者、篡改/错时点/错资产负例、非Product nontrigger和自然CI；`independent_source_value_admitted=true`绝不解释为rights/Product/storage/PIT/strategy已准入。
 
-UNIQUE_NEXT_STEP = Stage与完整相关回归PASS后，将当前候选作为一个英文原子commit普通推送现有feature并观察自然PR CI；不merge。远端通过后按机器图继续其余44条typed来源链和独立合法current Rights-v2运行，不再重做7×8或已关闭五对象。
+UNIQUE_NEXT_STEP = 将本控制页作为一个小型连续性commit普通推送并观察自然PR CI；不merge。其后进入`B1_M2_44_PROVIDER_BACKED_SOURCE_CHAIN_REENTRY`：只有真实同次父数据、Rights-v2、单位/时点/版本和消费者齐全的对象才推进；不得用P_ORDERFLOW价量代理、估值区间或报价局部字段替代机器图完整语义。
 <!-- CURRENT_MASTER_CONTROL_END -->
 
 ## 1. GitHub是后续工程基线

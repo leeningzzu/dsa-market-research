@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [闭环] `E_PREMIUM/P_EXEC_RISK`功能提交`16963cee711392605b2515eef00e390802f5eeeb`经自然PR CI100（Run41570430451）SUCCESS：backend、Docker、AI governance、Windows/macOS打包全部通过，web按路径跳过；PR31仍Draft/Open未合并，main未变。仅接受日终收盘对同日官方NAV及流动性/完成会话PARTIAL typed事实，不扩大为盘中IOPV、完整执行风险、Rights、Product或邮件FACT_READY。
+
 - [改进] 闭合`E_PREMIUM`与`P_EXEC_RISK`现有父事实纵向链并消除局部替代总体：ETF仅在raw交易价、同资产同交易日官方NAV及严格Structure回执一致时生成日终折溢价PARTIAL，明确缺IOPV实时值/发布时间与同刻价格；股票仅以`P_QUOTE_LIQUID`同日量额换手和严格XSHG完成5m会话生成执行风险PARTIAL，明确缺停牌、涨跌停、bid/ask及费率税费。ETF估值区间不再冒充折溢价READY；错复权、错日期、错资产均降UNKNOWN。Registry→InvestorBrief→Notification→V2.5消费者贯通，独立3 RED转聚焦6/6；重新执行九核心模块531/531与九个不重叠发送前/路由/Flywheel相邻模块271/271，共18模块802/802。宿主缺可选`lark-oapi`导致两次测试形状STOP，完整进程内SDK桩复跑全绿；未安装依赖或修改生产通知代码。来源能力26→28、完整链缺口46→44，Product仍0/72、Rights/PIT/策略/发送不变，原V2.5字节不变。
 
 - [改进] 关闭首个无新Provider的typed来源纵向切片：现有COST严格回执生成`P_COST_PROXY` 20/60日HLC3×量事实；现有ETF peer RS完整身份/宇宙哈希生成`E_PEER_RS`；严格XSHG完成5m回执生成`M_INDEX_BARS`。三者补齐provider route、单位/币种/复权语义、source/fact/observation哈希和报告point-of-use消费者；typed来源可显示但Product、rights、storage、PIT、learning、strategy仍false。三独立RED转5/5 GREEN，相关十模块583/583通过；来源能力23→26、完整链缺口49→46，Product保持0/72，原V2.5不变。
