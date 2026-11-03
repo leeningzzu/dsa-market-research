@@ -4942,6 +4942,12 @@ def _verified_data_object_source_scope(factor: Mapping) -> dict[str, dict]:
                     "DATA_OBJECT_SOURCE_OBSERVATION_FIELD_MISSING:"
                     + dataset_id + ":" + text_key
                 )
+        if dataset_id == "M_BASIC_BREADTH":
+            from data_provider.market_breadth_source import validate_market_breadth_observation
+            try:
+                validate_market_breadth_observation(row)
+            except ValueError as exc:
+                raise TraceabilityError("BREADTH_SOURCE_OBSERVATION_INVALID:" + str(exc)) from exc
         result[dataset_id] = {
             "state": row["state"],
             "reason": ",".join(str(item) for item in row["reason_codes"]),

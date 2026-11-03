@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [chore] P0安全拒绝与P1/P2可独立工程验收分离：P0当前观察/PIT的10条失败测试保留为本地开放契约，拒绝扩大Product和虚构revision/vintage；独立提交仅包含P1市场宽度和P2财务比率、银行合理PB的生产Owner/现有消费者/正反例、闭环文档，不以GitHub的P1/P2绿灯声称全三关完成或当前Product晋升。
+
+- [修复] P1追加8条独立反例先RED：市场宽度外层回执重新哈希不能替代供应商/路由/内容/观测时间的原source identity，消费端重算内层身份并强校验SECURITY/FRACTION、RAW与非币种计数语义；拒绝SH…SZ等冲突证券前后缀。原合法样本保留，聚焦64/64、13模块自然回归487/487通过；P0仍10项开放失败，不能称整仓绿灯或三关全部完成。
+
+- [修复] 市场宽度在AkShare/Efinance/Tushare三个既有统计入口拒绝重复证券，新增唯一证券池、同日覆盖、明确停牌排除、分母守恒和来源时点回执；MarketAnalyzer保留typed身份并清除失败刷新后的旧值，现有B1共享上下文拒绝跨运行回放，Registry复核事实哈希与计数。未获取真实全市场数据、不授予Rights/Product、不重建行情或报告系统。
+- [改进] 现有Quality可按已准入的同财报期、TTM、原始价格、股数单位和行业身份复算基本/稀释EPS、ROE、BVPS、PE、PB、NOPAT-ROIC并进入原报告摘要；亏损PE不当作便宜、银行/保险不套工业ROIC、错期间/复权/单位拒绝。BANK增加显式可持续ROE驱动合理PB八角点情景，保留外部PB倍数旧路线、不默认资本成本或增长率，不授予BUY/PIT/模型权限。
+- [文档] 前三关P0/P1/P2记录为本地未提交候选。P0当前观察用途改动被工具安全检查拒绝、生产准入文件未改变，新增需求测试保持RED；P1/P2局部通过不能替代P0、真实数据、全部行业估值或当前GitHub验收。原V2.5与机器图原件不变。
+
 - [闭环] `E_PREMIUM/P_EXEC_RISK`功能提交`16963cee711392605b2515eef00e390802f5eeeb`经自然PR CI100（Run41570430451）SUCCESS：backend、Docker、AI governance、Windows/macOS打包全部通过，web按路径跳过；PR31仍Draft/Open未合并，main未变。仅接受日终收盘对同日官方NAV及流动性/完成会话PARTIAL typed事实，不扩大为盘中IOPV、完整执行风险、Rights、Product或邮件FACT_READY。
 
 - [改进] 闭合`E_PREMIUM`与`P_EXEC_RISK`现有父事实纵向链并消除局部替代总体：ETF仅在raw交易价、同资产同交易日官方NAV及严格Structure回执一致时生成日终折溢价PARTIAL，明确缺IOPV实时值/发布时间与同刻价格；股票仅以`P_QUOTE_LIQUID`同日量额换手和严格XSHG完成5m会话生成执行风险PARTIAL，明确缺停牌、涨跌停、bid/ask及费率税费。ETF估值区间不再冒充折溢价READY；错复权、错日期、错资产均降UNKNOWN。Registry→InvestorBrief→Notification→V2.5消费者贯通，独立3 RED转聚焦6/6；重新执行九核心模块531/531与九个不重叠发送前/路由/Flywheel相邻模块271/271，共18模块802/802。宿主缺可选`lark-oapi`导致两次测试形状STOP，完整进程内SDK桩复跑全绿；未安装依赖或修改生产通知代码。来源能力26→28、完整链缺口46→44，Product仍0/72、Rights/PIT/策略/发送不变，原V2.5字节不变。

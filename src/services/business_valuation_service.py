@@ -236,6 +236,18 @@ VALUATION_ROUTE_FIELD_SOURCES = {
 }
 
 
+BANK_JUSTIFIED_PB_METHOD = "BANK_JUSTIFIED_PB"
+_BANK_JUSTIFIED_PB_LINEAGE = {
+    "inputs": {"book_value_per_share": "P_BALANCE_SHEET"},
+    "assumptions": {
+        "sustainable_roe_low": "P_EARNINGS_GROWTH",
+        "sustainable_roe_high": "P_EARNINGS_GROWTH",
+        "growth_low": "P_EARNINGS_GROWTH", "growth_high": "P_EARNINGS_GROWTH",
+        "cost_of_equity_low": "M_ERP_VAL", "cost_of_equity_high": "M_ERP_VAL",
+    },
+}
+
+
 class BusinessValuationError(ValueError):
     """Raised when a purported READY valuation is malformed or stale."""
 
@@ -879,6 +891,10 @@ def compile_business_valuation(
         if _text(item.get("dataset_id"))
     }
     primary_method = _text(payload.get("primary_method")).upper() or None
+    bank_justified = route_id == "BANK" and primary_method == BANK_JUSTIFIED_PB_METHOD
+    if route_id == "BANK" and primary_method not in {None, "PB_SUSTAINABLE_ROE_ROUTE", BANK_JUSTIFIED_PB_METHOD}:
+        return {**common, "reason_codes": ("BANK_PRIMARY_METHOD_NOT_ADMITTED",)}
+
     if (
         route_id == "MATURE_INDUSTRIAL_CONSUMER"
         and primary_method != "NORMALIZED_EARNINGS_PE"
@@ -907,7 +923,10 @@ def compile_business_valuation(
         group for group in requirement["required_any"]
         if not any(dataset_id in admission_index for dataset_id in group)
     ]
-    expected_lineage = VALUATION_ROUTE_FIELD_SOURCES[route_id]
+    expected_lineage = (
+        _BANK_JUSTIFIED_PB_LINEAGE if bank_justified
+        else VALUATION_ROUTE_FIELD_SOURCES[route_id]
+    )
     lineage_reasons: list[str] = []
     if missing_required:
         lineage_reasons.append(
@@ -966,7 +985,8 @@ def compile_business_valuation(
             },
         }
     try:
-        methods, low, high, sensitivity = _ROUTE_COMPILERS[route_id](inputs, assumptions)
+        compiler = _bank_justified_pb if bank_justified else _ROUTE_COMPILERS[route_id]
+        methods, low, high, sensitivity = compiler(inputs, assumptions)
     except BusinessValuationError as exc:
         return {
             **common,
@@ -1103,6 +1123,42 @@ def _bank(inputs, assumptions):
         metric="book_value_per_share", low_key="pb_low", high_key="pb_high",
         method="PB_SUSTAINABLE_ROE_ROUTE",
     )
+
+
+def _bank_justified_pb(inputs, assumptions):
+    """Stable clean-surplus scenario PB=(sustainable ROE-g)/(ke-g).
+
+    ROE is an explicit forward sustainability assumption, not silently replaced
+    by the latest reported ROE. Evaluate all range corners; no default ke/g or
+    externally supplied PB can masquerade as a derived justified multiple.
+    """
+    from itertools import product
+
+    book = _required_positive(inputs, "book_value_per_share")
+    roe = tuple(_required_rate(assumptions, "sustainable_roe_" + side) for side in ("low", "high"))
+    cost = tuple(_required_rate(assumptions, "cost_of_equity_" + side) for side in ("low", "high"))
+    growth = tuple(_required_rate(assumptions, "growth_" + side, allow_negative=True) for side in ("low", "high"))
+    if any(low > high for low, high in (roe, cost, growth)):
+        raise BusinessValuationError("BANK_ASSUMPTION_RANGE_INVALID")
+    # This bounded stable-growth implementation requires nonnegative retention
+    # and payout; recession/run-off or capital-raise scenarios need another model.
+    if growth[0] < 0 or growth[1] >= min(cost[0], roe[0]):
+        raise BusinessValuationError("BANK_GROWTH_MUST_BE_BELOW_ROE_AND_COST")
+    scenarios = [
+        {"roe": r, "cost_of_equity": k, "growth": g,
+         "justified_pb": (r - g) / (k - g),
+         "per_share_value": book * (r - g) / (k - g)}
+        for r, k, g in product(roe, cost, growth)
+    ]
+    values = [row["per_share_value"] for row in scenarios]
+    return (BANK_JUSTIFIED_PB_METHOD,), min(values), max(values), {
+        "formula": "BVPS*(sustainable_ROE-g)/(cost_of_equity-g)",
+        "model_scope": "STABLE_CLEAN_SURPLUS_EXPLICIT_FORWARD_ASSUMPTIONS",
+        "rate_unit": "FRACTION", "scenario_count": len(scenarios),
+        "scenarios": scenarios,
+        "assumptions_not_observed_facts": True,
+        "asset_quality_capital_and_solvency_vetoes_remain_separate": True,
+    }
 
 
 def _insurance(inputs, assumptions):

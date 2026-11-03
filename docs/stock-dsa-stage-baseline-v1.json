@@ -2,6 +2,60 @@
   "schema_version": "stock-dsa-stage-baseline-v1",
   "baseline_id": "STOCK_DSA_GITHUB_7TF_FULL_PRODUCT_BASELINE_V1",
   "authority": "CI_DERIVED_GUARDRAIL_ONLY_NOT_RUNTIME_PROOF",
+  "p012_local_candidate": {
+    "schema_version": "stock-dsa-p012-local-candidate-v1",
+    "base_head": "67b35e685c3fe6b694a0d8731964189fb9a0381f",
+    "project_source_pair": "v3.546_PHYSICAL_EXACT8_PASS",
+    "git_effect": "P1_P2_SCOPED_FEATURE_CANDIDATE_RESOLVE_COMMIT_AND_NATURAL_CI_FROM_GIT",
+    "p0": {
+      "state": "TOOL_SAFETY_WRITE_BLOCKED_NO_BYPASS",
+      "production_admission_unchanged": true,
+      "proposal_tests_failed": 10,
+      "legacy_control_passed": 1,
+      "proposal_test_path": "tests/test_current_observation_admission.py",
+      "proposal_test_scope": "LOCAL_OPEN_RED_NOT_INCLUDED_IN_P1_P2_CANDIDATE",
+      "whole_worktree_full_suite_green": false
+    },
+    "p1": {
+      "state": "LOCAL_CONDITIONAL_PRODUCER_AND_CONSUMER_TESTED",
+      "dataset_id": "M_BASIC_BREADTH",
+      "existing_provider_owners": ["AkshareFetcher", "EfinanceFetcher", "TushareFetcher"],
+      "new_network_provider": false,
+      "required_parent": "EXACT_SAME_DAY_INDEPENDENT_UNIVERSE_AND_TRADING_STATUS",
+      "consumers": ["MarketAnalyzer", "B1_MEMORY_CONTEXT", "Registry"],
+      "real_full_market_snapshot_observed": false,
+      "current_product_admitted": false
+    },
+    "p2": {
+      "state": "LOCAL_SPECIFIC_FORMULAS_AND_REPORT_CONSUMERS_TESTED",
+      "financial_subformulas": ["EPS_BASIC", "EPS_DILUTED", "ROE_AVERAGE_EQUITY", "BVPS", "PE_BASIC_TTM", "PE_DILUTED_TTM", "PB", "ROIC_NOPAT_AVERAGE_INVESTED_CAPITAL"],
+      "bank_method": "BANK_JUSTIFIED_PB",
+      "bank_scenario_corners": 8,
+      "real_financial_input_acquired": false,
+      "all_industry_valuation_models_complete": false,
+      "new_subformulas_increment_technical_leaf_count": false
+    },
+    "validation_scope": "SCOPED_P1_P2_TESTS_ONLY_P0_REMAINS_RED",
+    "related_natural_regression": {"passed": 487, "failed": 0, "module_count": 13, "warning_count": 1, "full_worktree_green": false},
+    "followup_identity_hardening": {"independent_red_cases": 8, "focused_passed": 64, "scope": "SOURCE_IDENTITY_RECOMPUTE_FIXED_DIMENSIONS_EXCHANGE_QUALIFIERS"},
+    "provider_calls": 0,
+    "business_db_writes": 0,
+    "email_telegram_sends": 0,
+    "model_training_promotion": 0,
+    "original_v25_unchanged": true,
+    "product_counts_and_accepted_capability_counts_unchanged": true,
+    "p1_p2_isolated_git_candidate": {
+      "committed_p0_production_changes": false,
+      "committed_p0_proposal_tests": false,
+      "scope": "P1_P2_OWNER_CONSUMER_AND_INDEPENDENT_NEGATIVES_ONLY",
+      "local_related_passed": 487,
+      "local_related_failed": 0,
+      "git_commit_sha": "RESOLVE_FROM_EXACT_GIT_AT_RUNTIME",
+      "remote_ci": "NOT_PROVEN_UNTIL_NATURAL_CI_TERMINAL",
+      "product_admitted": 0
+    },
+    "current_route_still_worth_continuing": "YES_KEEP_DSA_NO_FALSE_COMPLETE"
+  },
   "production_shell": "DSA/daily_stock_analysis",
   "continuity_entrypoints": {
     "agent_rules": "AGENTS.md#0-stock_dsa-连续实施入口",

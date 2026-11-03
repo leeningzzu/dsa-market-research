@@ -1112,6 +1112,10 @@ class TushareFetcher(BaseFetcher):
             """从行情 DataFrame 计算涨跌统计。"""
             import numpy as np
 
+            from data_provider.market_breadth_source import (
+                attach_breadth_evidence, validate_unique_market_instruments,
+            )
+            validate_unique_market_instruments(df)
             df = df.copy()
             
             # 1. 提取基础比对数据：最新价、昨收
@@ -1192,7 +1196,7 @@ class TushareFetcher(BaseFetcher):
                 df[amount_col] = pd.to_numeric(df[amount_col], errors='coerce')
                 stats['total_amount'] = (df[amount_col].sum() / 1e8)
                 
-            return stats
+            return attach_breadth_evidence(stats, df)
 
     def get_trade_time(self,early_time='09:30',late_time='16:30') -> Optional[str]:
         '''

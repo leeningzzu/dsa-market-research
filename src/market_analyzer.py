@@ -167,6 +167,9 @@ class MarketOverview:
     limit_up_count: int = 0             # 涨停家数
     limit_down_count: int = 0           # 跌停家数
     total_amount: float = 0.0           # 两市成交额（亿元）
+    breadth_denominator: Optional[int] = None
+    market_universe_complete: bool = False
+    data_object_source_observations: Dict[str, Any] = field(default_factory=dict)
     # north_flow: float = 0.0           # 北向资金净流入（亿元）- 已废弃，接口不可用
     
     # 板块涨幅榜
@@ -571,6 +574,13 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 
     def _get_market_statistics(self, overview: MarketOverview):
         """获取市场涨跌统计"""
+        # A failed refresh cannot leave a previous successful observation READY.
+        overview.up_count = overview.down_count = overview.flat_count = 0
+        overview.limit_up_count = overview.limit_down_count = 0
+        overview.total_amount = 0.0
+        overview.breadth_denominator = 0
+        overview.market_universe_complete = False
+        overview.data_object_source_observations = {}
         try:
             logger.info("[大盘] %s action=get_market_stats status=start", self._log_context())
 
@@ -578,11 +588,28 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 
             if stats:
                 overview.up_count = stats.get('up_count', 0)
+
                 overview.down_count = stats.get('down_count', 0)
                 overview.flat_count = stats.get('flat_count', 0)
                 overview.limit_up_count = stats.get('limit_up_count', 0)
                 overview.limit_down_count = stats.get('limit_down_count', 0)
                 overview.total_amount = stats.get('total_amount', 0.0)
+                # Preserve source receipts instead of silently reducing them to
+                # six scalars. Legacy counts alone never prove all-market coverage.
+                overview.breadth_denominator = stats.get('breadth_denominator')
+                from copy import deepcopy
+                from data_provider.market_breadth_source import validate_market_breadth_observation
+                source_rows = dict(stats.get('data_object_source_observations') or {})
+                observation = source_rows.get('M_BASIC_BREADTH')
+                if observation is not None:
+                    observation = validate_market_breadth_observation(observation, target_date=overview.date)
+                    if any(stats.get(key) != observation['facts'][key] for key in ('up_count', 'down_count', 'flat_count')):
+                        raise ValueError('BREADTH_CONSUMER_COUNT_MISMATCH')
+                overview.market_universe_complete = observation is not None
+                overview.data_object_source_observations = (
+                    {'M_BASIC_BREADTH': deepcopy(observation)} if observation is not None else {}
+                )
+
 
                 logger.info(
                     "[大盘] %s action=get_market_stats status=success up=%s down=%s flat=%s "
@@ -912,6 +939,19 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             breadth_state = "BALANCED"
             breadth_status = "READY"
 
+        coverage_scope = "LEGACY_COUNTS_UNVERIFIED"
+        if overview.breadth_denominator is not None:
+            coverage_scope = "OBSERVED_SUBSET"
+            if overview.market_universe_complete:
+                from data_provider.market_breadth_source import validate_market_breadth_observation
+                validate_market_breadth_observation(
+                    overview.data_object_source_observations.get("M_BASIC_BREADTH"),
+                    target_date=overview.date,
+                )
+                coverage_scope = "VERIFIED_COMPLETE_UNIVERSE"
+            elif breadth_denominator > 0:
+                breadth_status = "PARTIAL"
+
         limit_up_count = max(0, int(overview.limit_up_count or 0))
         limit_down_count = max(0, int(overview.limit_down_count or 0))
         limit_total = limit_up_count + limit_down_count
@@ -941,6 +981,12 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             "representative_index_roles": self._build_representative_index_roles(overview),
             "breadth": {
                 "status": breadth_status,
+                "coverage_scope": coverage_scope,
+                "product_admitted": False,
+                "source_observation_hash": (
+                    overview.data_object_source_observations.get("M_BASIC_BREADTH", {}).get("observation_hash")
+                ),
+
                 "up_count": up_count,
                 "down_count": down_count,
                 "flat_count": flat_count,
@@ -1092,6 +1138,10 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         market_brief = self._build_market_regime_brief(overview)
         if market_brief:
             payload["market_brief"] = market_brief
+
+        if overview.data_object_source_observations:
+            from copy import deepcopy
+            payload["data_object_source_observations"] = deepcopy(overview.data_object_source_observations)
 
         if has_breadth_data:
             payload["breadth"] = {

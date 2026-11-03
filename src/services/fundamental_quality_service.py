@@ -305,9 +305,166 @@ def compile_fundamental_quality(
         "product_admitted": True,
         "learning_admitted": False,
     }
+    if "accounting_ratio_input" in payload:
+        ratios = _compile_accounting_ratios(
+            payload["accounting_ratio_input"], common, admission_index,
+        )
+        document["accounting_ratios"] = ratios
+        document["summary_zh"] += " " + ratios["summary_zh"]
     document["receipt_hash"] = sha256_payload({
         key: value for key, value in document.items() if key != "receipt_hash"
     })
+    return document
+
+
+_ACCOUNTING_RATIO_FIELDS = {
+    "earnings_common": ("P_EARNINGS_GROWTH", "MONEY"),
+    "diluted_earnings_common": ("P_EARNINGS_GROWTH", "MONEY"),
+    "weighted_basic_shares": ("P_SHARES_EVENTS", "SHARE"),
+    "weighted_diluted_shares": ("P_SHARES_EVENTS", "SHARE"),
+    "ending_shares": ("P_SHARES_EVENTS", "SHARE"),
+    "equity_begin": ("P_BALANCE_SHEET", "MONEY"),
+    "equity_end": ("P_BALANCE_SHEET", "MONEY"),
+    "price": ("P_DAILY", "PER_SHARE"),
+    "ebit": ("P_EARNINGS_GROWTH", "MONEY"),
+    "effective_tax_rate": ("P_EARNINGS_GROWTH", "FRACTION"),
+    "invested_capital_begin": ("P_BALANCE_SHEET", "MONEY"),
+    "invested_capital_end": ("P_BALANCE_SHEET", "MONEY"),
+}
+_ROIC_FIELDS = frozenset({
+    "ebit", "effective_tax_rate", "invested_capital_begin", "invested_capital_end",
+})
+
+
+def _compile_accounting_ratios(raw, common, admission_index):
+    """Optional field-level TTM arithmetic inside the existing Quality consumer.
+
+    No provider ratio, market multiple or score is accepted as a substitute for
+    the explicitly dated numerator and denominator. Does not grant data rights.
+    """
+    base = {
+        "schema_version": "dated-accounting-ratios-v1", "status": "NOT_ADMITTED",
+        "reason_codes": (), "values": {}, "value_states": {},
+        "summary_zh": "EPS/ROE/PE/PB/ROIC：输入口径或来源不足，不补值。",
+        "strategy_upgrade_authority": False, "learning_admitted": False,
+    }
+
+    def reject(reason, status="NOT_ADMITTED"):
+        return {**base, "status": status, "reason_codes": (reason,)}
+
+    if not isinstance(raw, Mapping) or raw.get("schema_version") != "dated-accounting-ratio-input-v1":
+        return reject("RATIO_INPUT_SCHEMA_INVALID")
+    for key in ("asset_id", "financial_version", "financial_period_end"):
+        if raw.get(key) != common.get(key):
+            return reject("RATIO_FINANCIAL_IDENTITY_MISMATCH:" + key)
+    if raw.get("earnings_basis") != "TTM":
+        return reject("RATIO_EARNINGS_BASIS_NOT_TTM")
+    metrics, sources, units = (raw.get(key) for key in ("metrics", "field_sources", "field_units"))
+    if not all(isinstance(item, Mapping) for item in (metrics, sources, units)):
+        return reject("RATIO_FIELD_LINEAGE_MISSING")
+    if set(metrics) != set(sources) or set(metrics) != set(units) or set(metrics) - set(_ACCOUNTING_RATIO_FIELDS):
+        return reject("RATIO_FIELD_KEYS_MISMATCH")
+    if set(_ACCOUNTING_RATIO_FIELDS) - _ROIC_FIELDS - set(metrics):
+        return reject("RATIO_REQUIRED_FIELD_MISSING", "MISSING")
+    currency = common["currency"]
+    unit_names = {"MONEY": currency, "PER_SHARE": currency + "_PER_SHARE"}
+    for key in metrics:
+        dataset, unit = _ACCOUNTING_RATIO_FIELDS[key]
+        if sources[key] != dataset or units[key] != unit_names.get(unit, unit):
+            return reject("RATIO_FIELD_LINEAGE_OR_UNITS_MISMATCH:" + key)
+        if dataset not in admission_index or admission_index[dataset].get("product_admitted") is not True:
+            return reject("RATIO_FIELD_SOURCE_NOT_ADMITTED:" + dataset)
+        if dataset != "P_DAILY" and _date_text(admission_index[dataset].get("completed_through")) != common["financial_period_end"]:
+            return reject("RATIO_SOURCE_PERIOD_MISMATCH:" + dataset)
+
+    price_source = admission_index["P_DAILY"]
+    if str(price_source.get("adjustment_basis", "")).upper() != "RAW":
+        return reject("RATIO_PRICE_BASIS_NOT_RAW")
+    price_date = _date_text(raw.get("price_date"))
+    research_time = _as_of_ceiling(common["as_of"])
+    if (
+        not price_date or price_date != _date_text(price_source.get("completed_through"))
+        or research_time is None or price_date > research_time.date().isoformat()
+    ):
+        return reject("RATIO_PRICE_DATE_MISMATCH_OR_FUTURE")
+    from src.services.business_valuation_service import (
+        BusinessValuationError, validate_industry_valuation_route,
+    )
+    try:
+        plan = validate_industry_valuation_route(raw.get("industry_route_plan"))
+    except (BusinessValuationError, TypeError):
+        return reject("RATIO_INDUSTRY_PLAN_INVALID")
+    if plan.get("status") != "READY" or plan.get("asset_id") != common["asset_id"]:
+        return reject("RATIO_INDUSTRY_PLAN_NOT_BOUND")
+    plan_time = _aware_datetime(plan.get("as_of"))
+    if plan_time is None or plan_time > research_time:
+        return reject("RATIO_INDUSTRY_PLAN_FUTURE")
+    is_financial = plan.get("route_id") in {"BANK", "INSURANCE"}
+    applicability = "FINANCIAL" if is_financial else "NON_FINANCIAL"
+    if raw.get("industry_applicability") != applicability:
+        return reject("RATIO_INDUSTRY_APPLICABILITY_MISMATCH")
+    try:
+        numbers = {key: _finite(value) for key, value in metrics.items()}
+        shares_basic = _positive(numbers["weighted_basic_shares"])
+        shares_diluted = _positive(numbers["weighted_diluted_shares"])
+        shares_end = _positive(numbers["ending_shares"])
+        price = _positive(numbers["price"])
+    except FundamentalQualityError:
+        return reject("RATIO_NUMERATOR_OR_DENOMINATOR_INVALID")
+    basic = numbers["earnings_common"] / shares_basic
+    diluted = numbers["diluted_earnings_common"] / shares_diluted
+    begin, end = numbers["equity_begin"], numbers["equity_end"]
+    book = end / shares_end
+    states = {}
+    values = {
+        "eps_basic": basic, "eps_diluted": diluted,
+        "roe_fraction": numbers["earnings_common"] / ((begin + end) / 2) if min(begin, end) > 0 else None,
+        "book_value_per_share": book,
+        "pe_basic_ttm": price / basic if basic > 0 else None,
+        "pe_diluted_ttm": price / diluted if diluted > 0 else None,
+        "pb": price / book if book > 0 else None,
+        "roic_nopat_fraction": None,
+    }
+    for key in values:
+        states[key] = "READY" if values[key] is not None else "NOT_COMPARABLE_NON_POSITIVE_EQUITY"
+    for key in ("pe_basic_ttm", "pe_diluted_ttm"):
+        if values[key] is None:
+            states[key] = "NOT_COMPARABLE_NON_POSITIVE_EARNINGS"
+    # Reported diluted EPS must not become higher than basic EPS by including
+    # antidilutive instruments. Never silently substitute the basic denominator.
+    if diluted > basic + 1e-12:
+        values["eps_diluted"] = values["pe_diluted_ttm"] = None
+        states["eps_diluted"] = states["pe_diluted_ttm"] = "NOT_COMPARABLE_ANTIDILUTIVE_INPUT"
+    if is_financial:
+        states["roic_nopat_fraction"] = "NOT_APPLICABLE_FINANCIAL_INDUSTRY"
+    elif not _ROIC_FIELDS <= set(numbers):
+        states["roic_nopat_fraction"] = "MISSING_ROIC_INPUTS"
+    else:
+        tax = numbers["effective_tax_rate"]
+        capital_start, capital_end = numbers["invested_capital_begin"], numbers["invested_capital_end"]
+        if not 0 <= tax <= 1 or min(capital_start, capital_end) <= 0:
+            return reject("RATIO_ROIC_TAX_OR_CAPITAL_INVALID")
+        values["roic_nopat_fraction"] = numbers["ebit"] * (1 - tax) / ((capital_start + capital_end) / 2)
+        states["roic_nopat_fraction"] = "READY"
+    values = {key: _round(value) if value is not None else None for key, value in values.items()}
+    status = "PARTIAL" if any(value.startswith(("MISSING", "NOT_COMPARABLE")) for value in states.values()) else "READY"
+    display = lambda key: str(values[key]) if values[key] is not None else states[key]
+    document = {
+        **base, "status": status, "values": values, "value_states": states,
+        "earnings_basis": "TTM", "price_date": price_date,
+        "financial_version": common["financial_version"], "financial_period_end": common["financial_period_end"],
+        "asset_id": common["asset_id"], "as_of": common["as_of"],
+        "industry_route_plan_hash": plan.get("route_plan_hash"),
+        "input_values": numbers, "field_sources": dict(sources), "field_units": dict(units),
+        "source_admission_hashes": {key: admission_index[key]["admission_hash"] for key in sorted(set(sources.values()))},
+        "summary_zh": (
+            f"TTM EPS(基本/稀释) {display('eps_basic')}/{display('eps_diluted')}；"
+            f"ROE {display('roe_fraction')}（比例）；PE(基本/稀释) {display('pe_basic_ttm')}/{display('pe_diluted_ttm')}；"
+            f"PB {display('pb')}；ROIC(NOPAT/平均投入资本) {display('roic_nopat_fraction')}。"
+            "比率不是合理倍数或收益预测；负利润/负权益不解释为便宜。"
+        ),
+    }
+    document["receipt_hash"] = sha256_payload(document)
     return document
 
 

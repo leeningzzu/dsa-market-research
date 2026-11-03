@@ -1907,6 +1907,49 @@ class StockAnalysisPipeline:
             }
         }
 
+    def _ingest_b1_market_breadth_snapshot(
+        self, *, snapshot: pd.DataFrame, snapshot_context: Mapping[str, Any],
+    ) -> Dict[str, Any]:
+        """Consume one already acquired snapshot, with the existing B1 grant gate.
+
+        No fetch or persistence. The returned source-only observation cannot
+        bypass Product admission, and cannot replace another shared owner.
+        """
+        context = self._bind_b1_run_context(persist=False)
+        if not isinstance(context, Mapping):
+            raise DataObjectAdmissionError("B1_BREADTH_OPERATION_NOT_BOUND")
+        from src.services.data_object_admission import validate_b1_provider_preflight
+        from data_provider.market_breadth_source import (
+            compile_market_breadth_observation, validate_market_breadth_observation,
+        )
+        grant = validate_b1_provider_preflight(
+            (context.get("rights_by_dataset") or {}).get("M_BASIC_BREADTH"),
+            operation_id=context.get("operation_id"), intended_use=context.get("intended_use"),
+            dataset_id="M_BASIC_BREADTH", consumer_scope="MARKET_REGIME_BRIEF",
+            research_as_of=context.get("research_as_of"),
+        )
+        parse_clock = lambda value: datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parse_clock(snapshot_context.get("research_as_of")) != parse_clock(context.get("research_as_of")):
+            raise DataObjectAdmissionError("B1_BREADTH_RESEARCH_CLOCK_MISMATCH")
+        observation = compile_market_breadth_observation(snapshot, snapshot_context)
+        validate_market_breadth_observation(observation, as_of=context.get("research_as_of"))
+        if grant["provider_identity"] != observation["provider_identity"]:
+            raise DataObjectAdmissionError("B1_BREADTH_PROVIDER_GRANT_MISMATCH")
+        if parse_clock(grant["terms_observed_at"]) > parse_clock(observation["source_observed_at"]):
+            raise DataObjectAdmissionError("B1_BREADTH_TERMS_AFTER_OBSERVATION")
+        shared = getattr(self, "_b1_nonprice_shared_observations", {}) or {}
+        if "M_BASIC_BREADTH" in shared or getattr(self, "_b1_market_breadth_binding", None):
+            raise DataObjectAdmissionError("B1_BREADTH_SOURCE_ALREADY_BOUND")
+        self._b1_market_breadth_binding = {
+            "operation_id": context["operation_id"],
+            "research_as_of": context["research_as_of"],
+            "observation": deepcopy(observation),
+        }
+        self._b1_nonprice_shared_observations = {
+            **deepcopy(shared), "M_BASIC_BREADTH": deepcopy(observation),
+        }
+        return deepcopy(observation)
+
     def _ingest_b1_treasury_official_response(
         self, *,
         response_xml: bytes,
@@ -2056,6 +2099,23 @@ class StockAnalysisPipeline:
         observations = deepcopy(
             getattr(self, "_b1_nonprice_shared_observations", {}) or {}
         )
+        breadth_binding = getattr(self, "_b1_market_breadth_binding", None)
+        if isinstance(breadth_binding, Mapping):
+            current_context = self._bind_b1_run_context(persist=False)
+            parse_clock = lambda value: datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if (
+                not isinstance(current_context, Mapping)
+                or breadth_binding.get("operation_id") != current_context.get("operation_id")
+                or parse_clock(breadth_binding.get("research_as_of")) != parse_clock(current_context.get("research_as_of"))
+            ):
+                raise DataObjectAdmissionError("B1_BREADTH_RUN_CONTEXT_MISMATCH")
+            from data_provider.market_breadth_source import validate_market_breadth_observation
+            breadth = validate_market_breadth_observation(
+                breadth_binding.get("observation"), as_of=current_context["research_as_of"],
+            )
+            if "M_BASIC_BREADTH" in observations and observations["M_BASIC_BREADTH"] != breadth:
+                raise DataObjectAdmissionError("B1_BREADTH_SOURCE_OWNER_CONFLICT")
+            observations["M_BASIC_BREADTH"] = deepcopy(breadth)
         treasury = deepcopy(
             getattr(self, "_b1_treasury_global_observations", {}) or {}
         )
