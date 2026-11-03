@@ -241,6 +241,9 @@ def test_baostock_nonprice_bundle_is_source_bound_partial_and_non_authoritative(
     growth = observations["P_EARNINGS_GROWTH"]["facts"]
     assert growth["revenue_growth_yoy_pct"] > 0
     assert growth["net_profit_growth_yoy_pct"] > 0
+    quote = observations["P_QUOTE_LIQUID"]["facts"]
+    assert quote["stock_code"] == "600519"
+    assert quote["trade_date"] == "2026-10-27"
     assert bundle["quality_growth_input"] is None
     assert bundle["business_valuation_input"] is None
     assert bundle["storage_admitted"] is False

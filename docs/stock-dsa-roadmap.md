@@ -3,33 +3,31 @@
 > 本文是现有DSA机器图、执行合同和运行证据的维护者视图，不是新的Source、策略、数据库、调度器或报告权威。机器可读不变量见 `docs/stock-dsa-stage-baseline-v1.json`；真实状态仍由GitHub代码、CI、运行回执和合法数据证据决定。
 
 <!-- CURRENT_MASTER_CONTROL_START -->
-## 当前控制页：三项typed来源纵向链与Product边界（2026-11-02）
+## 当前控制页：E_PREMIUM与P_EXEC_RISK现有父事实纵向链（2026-11-03）
 
-CONTROL_ID = STOCK_DSA_MASTER_ROUTE_20261102_TYPED_SOURCE_VERTICAL_P_COST_ETF_PEER_INDEX_BARS
-SOURCE_AUTHORITY = Project Source恰好8个唯一Owner，01/05为v3.544；三次物理清单PASS。Source内PREPARED切点由本轮物理证据覆盖。
-GIT_AUTHORITY = 唯一公共仓库 `https://github.com/leeningzzu/dsa-market-research.git`。接受前驱为feature Head `c2629c07168764b2cdf2bf733697447e45848365` / CI98 Run41422089007 SUCCESS；包含本文的typed-source候选从Git运行时解析，普通non-force推送现有feature，PR31保持Draft/Open/未merge，禁止main直推、force/rebase/squash、手动dispatch、Settings/Secrets及旧/private仓库复活。
+CONTROL_ID = STOCK_DSA_MASTER_ROUTE_20261103_PREMIUM_EXECUTION_PARTIAL_TYPED_SOURCE
+SOURCE_AUTHORITY = Project Source恰好8个唯一Owner，01/05均为v3.545；按name、created_at、message_order三次物理清单一致PASS，旧v3.544已撤销。
+GIT_AUTHORITY = 唯一公共仓库 `https://github.com/leeningzzu/dsa-market-research.git`。已接受基线为feature Head `6eb822f5a7efb07284b35472b6f88e4ea8e5fd7a` / CI99 Run41434978379 SUCCESS；包含本文的新候选从Git运行时解析，普通non-force推送现有feature，PR31保持Draft/Open/未merge，禁止main直推、force/rebase/squash、手动dispatch、Settings/Secrets及旧/private仓库复活。
 IMMUTABLES = 原机器图149628字节/775边/SHA256 `b4f69f76807ac44bc0fea1a03f9aa38484b6083ca574a3699220b0564ac55aed`；原V2.5 125919字节/SHA256 `039ca6394baf9cf39494cc29f512802b114c8227f8c965723197a8df4b9de823`。本文与机器JSON仅为状态投影。
 
 ### 0.1 本轮实际闭合
 
-| 对象 | 复用的现有事实 | 新增typed来源链 | 保留门禁 |
+| 对象 | 精确父事实 | 新增typed来源链与消费者 | 明确保留缺口 |
 |---|---|---|---|
-| `P_COST_PROXY` | COST严格方法回执、完成日线、20/60日HLC3×量滚动参考 | exact daily identity、来源内容哈希、单位/币种/复权、20/60窗口事实哈希、point-of-use报告消费者 | 非持仓者真实成本；rights/storage/PIT/strategy/Product均未授权 |
-| `E_PEER_RS` | ETF目标与至少3只peers同源同复权、完整bar网格、宇宙哈希、rank/percentile/excess | 目标+全部peer内容身份聚合、完整宇宙事实哈希、typed数据对象与报告消费者 | 不自动选peer、不升级BUY；rights/PIT/Product仍false |
-| `M_INDEX_BARS` | Eastmoney指数5m严格完成XSHG会话、48bar/日、单次runtime回执 | Provider route、单位/币种/请求复权语义、source/fact/observation哈希及runtime-only consumer | observed basis未独立证明；宽度/估值/权利/递归指标/Product仍未准入 |
+| `E_PREMIUM` | raw ETF日线收盘身份＋同资产同交易日官方NAV | 计算`DAILY_CLOSE_TO_OFFICIAL_NAV`日终折溢价，冻结双亲身份、事实/观察哈希并进入InvestorBrief、Notification和V2.5事实摘要 | 仅PARTIAL；IOPV数值/发布时间、同刻成交价和盘中对齐未观测；qfq/hfq或错日期/错资产拒绝 |
+| `P_EXEC_RISK` | `P_QUOTE_LIQUID`同日收盘/量/额/换手＋严格XSHG 48根/日完成5m会话 | 冻结报价与会话双亲身份，形成流动性/完成会话部分执行事实并进入InvestorBrief、Notification和V2.5事实摘要 | 仅PARTIAL；停牌、涨跌停状态、bid/ask spread、费率税费未观测，不能声称完整执行可行性 |
 
-三条独立RED先分别得到`UNKNOWN/UNKNOWN/缺provider_route`，生产修复后5/5 PASS；十个相关Owner模块583/583 PASS（611.50秒，一条第三方warning）。测试、Source value、Product、邮件和学习五列继续独立。
+三条独立RED先证明：`E_PREMIUM=UNKNOWN`、`P_EXEC_RISK=UNKNOWN`、ETF估值区间错误占用折溢价READY槽位。修复后聚焦6/6 PASS；本次重新执行九个核心Owner模块531/531 PASS，并执行九个不重叠的发送前/路由/Flywheel相邻模块271/271 PASS，合计18模块802/802（聚焦6项包含于核心范围，不重复相加）。相邻套件前两次仅因宿主缺可选`lark-oapi`测试符号/字段形状停止，完整进程内SDK形状复跑后原测试全绿；未安装依赖、未改生产通知代码或断言。估值区间继续属于估值层，永不替代实际价格/NAV折溢价；报价/会话部分事实也永不替代完整执行风险。
 
-### 0.2 当前完整度
+### 0.2 当前完整度与机器图对齐
 
-- 方法Profile：30/43现有，13延期；明确数值叶24/35算法准入，11未准入。
+- 方法Profile：30/43现有、13延期；明确数值叶24/35算法准入、11未准入，本轮未用增加指标掩盖数据缺口。
 - 七周期×八族：56/56可执行、154有效执行对；不是56个当前Product READY。
-- typed/真实来源能力下限：**26/72**；完整typed来源链缺口由49降至**46**。
-- 新能力ID：`P_COST_PROXY`、`E_PEER_RS`、`M_INDEX_BARS`。三者只证明来源/派生事实可审计，不证明上游Product、存储、训练、PIT或策略权限。
-- 吸筹、洗盘、派发等仍**只表示可观察候选**，不识别主力身份或意图；Chan继续明确`NOT_FULL_CZSC`，不因typed来源进展扩大行动权限。
-- 当前Product仍**0/72**；单股适用60、ETF适用55；Global Golden原子叶0/7。
-- 数据库框架存在，但Product关键表仍无合法当前事实；不新建第二DB。
-- 原V2.5无需重画；当前`FACT_READY=false`、SMTP0。typed来源对象可以显示“已核但未Product准入”，不得降成UNKNOWN或伪装成完整数值邮件。
+- typed/真实来源能力下限：**28/72**；完整typed来源链缺口由46降至**44**。
+- 新能力ID：`E_PREMIUM`、`P_EXEC_RISK`；前驱`P_COST_PROXY/E_PEER_RS/M_INDEX_BARS`已由CI99接受并CLOSED_NO_REPLAY。
+- 当前Product仍**0/72**；股票适用60、ETF适用55；Global Golden原子叶0/7；Rights-v2与同次全域事实不因PARTIAL来源能力自动获得。
+- 原V2.5无需重画；当前`FACT_READY=false`、SMTP0。PARTIAL事实可显示其精确值和缺口，但必须同时显示“不等于Product准入”。
+- 吸筹、洗盘、派发仍**只表示可观察候选**，不识别主力身份/意图；Chan继续`NOT_FULL_CZSC`。
 
 ### 0.3 Program→Product→Lane→Milestone→Atomic
 
@@ -52,30 +50,30 @@ flowchart TD
   CANONICAL --> B8
 ```
 
-当前Milestone只关闭三条已有事实到Data Object/报告消费者的纵向链；Atomic规则仍是Owner→实际consumer→独立RED→合法nontrigger→回滚→自然CI。兄弟Lane成功不得覆盖rights、Product或delivery。
+当前Milestone只关闭两个已有父事实到Data Object和读者消费者的PARTIAL纵向链；Atomic规则仍为Owner→实际consumer→独立RED→合法nontrigger→回滚→自然CI。局部来源链、CI绿灯或报告槽位均不得覆盖rights、Product或delivery。
 
 ### 0.4 Role Review
 
 | Role | 当前结论 | 处置 |
 |---|---|---|
-| PRODUCT | typed工程进展，Product0/72与FACT_READY STOP | CROSS_LANE；继续46来源链，不堆指标 |
-| DATA_MODEL | source capability26/72、gap46；三对象身份/单位/事实哈希闭合 | rights/current-run/storage仍独立 |
-| PROCESS_CONSUMER | Registry、DailyMarketContext、Notification三层旧契约漂移RED→GREEN | LANE_RECURRENT；同族回归583 PASS |
-| AUTHORITY_CURRENTNESS | Source8 v3.544 PASS；Git c262/CI98接受前驱；当前候选待自然CI | runtime exact Git优先 |
+| PRODUCT | capability28/72，但Product0/72与FACT_READY STOP | CROSS_LANE；继续44来源链和当前Rights-v2，不堆指标 |
+| DATA_MODEL | E_PREMIUM/P_EXEC_RISK只达PARTIAL，缺失字段逐项显式 | 不用估值替折溢价，不用流动性替完整执行风险 |
+| PROCESS_CONSUMER | Registry→InvestorBrief→Notification→V2.5的替代/缺链RED→GREEN | LANE_RECURRENT；核心531＋不重叠相邻271 PASS |
+| AUTHORITY_CURRENTNESS | Source8 v3.545 PASS；Git6eb/CI99接受基线；当前候选待自然CI | runtime exact Git优先 |
 | ENVIRONMENT | 无Provider、Secret、DB、Email、模型调用；可选依赖仅测试进程桩 | INSTANCE_ONLY |
 | ADAPTER_INTERFACE | 一个DSA/Registry/DB/V2.5；无第二来源系统或报告器 | KEEP/WRAP |
-| DEV_TOOLING | focused5、related583 PASS；远端CI待执行 | commit/push/natural CI，不merge |
+| DEV_TOOLING | focused6、核心531、相邻271 PASS；可选Feishu SDK仅测试进程等价桩 | atomic commit/push/natural CI，不merge |
 | USER_BURDEN | 无需许可原文、Token、日志或命令 | 机器完成确定性步骤 |
 
 CURRENT_ROUTE_STILL_WORTH_CONTINUING = YES_KEEP_ONLY_DSA
 INSTRUCTIONS_UPDATE_DECISION = NO_DELTA_KEEP
-SOURCE_UPDATE_DECISION = v3.544保持当前；Git候选和自然CI终态后一次性生成配对checkpoint。
+SOURCE_UPDATE_DECISION = v3.545保持当前；候选Git与自然CI终态后一次性生成配对checkpoint。
 
 ### 0.5 GitHub是跨模型连续性的唯一代码基线
 
-后续模型必须依次读取`AGENTS.md`、本文、Stage JSON、Project Source8，并实际核origin/HEAD/tree/status/PR/CI。任何typed来源对象必须同时具备生产Owner、来源身份、事实哈希、实际消费者、篡改负例、非Product nontrigger和自然CI；不得把`independent_source_value_admitted=true`解释为rights/Product/storage/PIT/strategy已准入。
+后续模型必须依次读取`AGENTS.md`、本文、Stage JSON、Project Source8，并实际核origin/HEAD/tree/status/PR/CI。任何typed来源对象必须同时具备生产Owner、来源身份、事实哈希、实际消费者、篡改/错时点/错资产负例、非Product nontrigger和自然CI；`independent_source_value_admitted=true`绝不解释为rights/Product/storage/PIT/strategy已准入。
 
-UNIQUE_NEXT_STEP = 完整Stage/相关回归PASS后，将当前exact10作为一个英文原子commit普通推送现有feature，观察自然PR CI；不merge。远端通过后，下一Product主线为其余46条typed来源链和一次独立合法current Rights-v2运行，不再重做7×8。
+UNIQUE_NEXT_STEP = Stage与完整相关回归PASS后，将当前候选作为一个英文原子commit普通推送现有feature并观察自然PR CI；不merge。远端通过后按机器图继续其余44条typed来源链和独立合法current Rights-v2运行，不再重做7×8或已关闭五对象。
 <!-- CURRENT_MASTER_CONTROL_END -->
 
 ## 1. GitHub是后续工程基线

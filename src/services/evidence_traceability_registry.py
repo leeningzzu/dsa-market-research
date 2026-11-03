@@ -5257,6 +5257,355 @@ def _verified_etf_peer_rs_source_scope(factor: Mapping) -> dict[str, dict]:
     return {"E_PEER_RS": row}
 
 
+def _six_digit_asset_code(value: Any) -> str:
+    digits = "".join(character for character in str(value or "") if character.isdigit())
+    return digits[-6:] if len(digits) >= 6 else digits
+
+
+def _verified_generic_source_facts(
+    factor: Mapping,
+    dataset_id: str,
+    generic_source_scope: Mapping[str, Mapping],
+) -> dict | None:
+    row = generic_source_scope.get(dataset_id)
+    observations = factor.get("data_object_source_observations")
+    raw = observations.get(dataset_id) if isinstance(observations, Mapping) else None
+    facts = raw.get("facts") if isinstance(raw, Mapping) else None
+    if (
+        not isinstance(row, Mapping)
+        or not isinstance(facts, Mapping)
+        or not facts
+        or row.get("source_fact_hash") != digest(facts)
+    ):
+        return None
+    return dict(facts)
+
+
+def _verified_etf_premium_source_scope(
+    factor: Mapping,
+    *,
+    base_source_scope: Mapping[str, Mapping],
+    generic_source_scope: Mapping[str, Mapping],
+) -> dict[str, dict]:
+    """Compile daily-close versus official NAV without pretending it is IOPV."""
+    if (
+        str(factor.get("asset_type") or "stock").lower() != "etf"
+        or "E_PREMIUM" in generic_source_scope
+        or not _receipt_required(factor)
+    ):
+        return {}
+    price = base_source_scope.get("E_PRICE_1D")
+    nav = generic_source_scope.get("E_NAV_IOPV")
+    nav_facts = _verified_generic_source_facts(
+        factor, "E_NAV_IOPV", generic_source_scope,
+    )
+    evidence = factor.get("price_structure_evidence")
+    receipt = _receipt_for(factor, "STRUCTURE")
+    if not all(isinstance(item, Mapping) for item in (price, nav, nav_facts, evidence, receipt)):
+        return {}
+    binding = next(
+        item for item in EVIDENCE_BINDINGS if item.requirement_id == "STRUCTURE"
+    )
+    state, reason = method_observation(
+        binding, evidence, receipt=receipt, require_receipt=True,
+    )
+    context = evidence.get("context")
+    semantics = _typed_daily_source_semantics(receipt.get("input_identity"))
+    receipt_input = receipt.get("input_identity")
+    if (
+        state not in {"READY", "PARTIAL"}
+        or reason != "METHOD_INVOCATION_VERIFIED"
+        or not isinstance(context, Mapping)
+        or semantics is None
+        or context.get("completed_bar_only") is not True
+        or str(price.get("adjustment_basis") or "").upper() not in {"RAW", "UNADJUSTED"}
+        or str(semantics.get("adjustment_basis") or "").upper() not in {"RAW", "UNADJUSTED"}
+        or not isinstance(receipt_input, Mapping)
+        or price.get("source_identity_hash")
+        != receipt_input.get("daily_data_identity_hash")
+        or price.get("source_content_sha256")
+        != receipt_input.get("data_snapshot_identity")
+        or price.get("currency") != "CNY"
+        or nav.get("currency") != "CNY"
+    ):
+        return {}
+    close = context.get("current_close")
+    nav_value = nav_facts.get("nav_cny_per_share")
+    target = str(context.get("target_date") or "").strip()
+    fund_code = _six_digit_asset_code(nav_facts.get("fund_code"))
+    asset_code = _six_digit_asset_code(
+        context.get("stock_code") or factor.get("stock_code")
+    )
+    trading_day = str(nav_facts.get("trading_day") or "").strip()
+    if (
+        not isinstance(close, Real)
+        or isinstance(close, bool)
+        or not math.isfinite(float(close))
+        or float(close) <= 0
+        or not isinstance(nav_value, Real)
+        or isinstance(nav_value, bool)
+        or not math.isfinite(float(nav_value))
+        or float(nav_value) <= 0
+        or not target
+        or price.get("completed_through") != target
+        or nav.get("completed_through") != target
+        or trading_day != target
+        or not asset_code
+        or fund_code != asset_code
+    ):
+        return {}
+    premium_pct = (float(close) / float(nav_value) - 1.0) * 100.0
+    facts = {
+        "schema_version": "typed-etf-daily-premium-source-v1",
+        "fund_code": asset_code,
+        "trading_day": target,
+        "daily_close_cny_per_share": float(close),
+        "official_nav_cny_per_share": float(nav_value),
+        "premium_discount_pct": round(premium_pct, 8),
+        "comparison_basis": "DAILY_CLOSE_TO_OFFICIAL_NAV",
+        "iopv_value_used": False,
+        "unobserved_components": (
+            "INTRADAY_IOPV_VALUE",
+            "INTRADAY_IOPV_PUBLISHED_AT",
+            "INTRADAY_PRICE_ALIGNMENT",
+        ),
+        "full_intraday_premium_ready": False,
+    }
+    source_fact_hash = digest(facts)
+    row = {
+        "state": "PARTIAL",
+        "reason": (
+            "DAILY_CLOSE_OFFICIAL_NAV_PREMIUM_TYPED_"
+            "INTRADAY_IOPV_AND_RIGHTS_NOT_ADMITTED"
+        ),
+        "provider_identity": (
+            str(price.get("provider_identity")) + "+" + str(nav.get("provider_identity"))
+        ),
+        "provider_route": (
+            str(price.get("provider_route")) + "+" + str(nav.get("provider_route"))
+        ),
+        "producer_authority": (
+            "src/services/evidence_traceability_registry.py::"
+            "_verified_etf_premium_source_scope"
+        ),
+        "source_identity_hash": digest({
+            "price": price.get("source_identity_hash"),
+            "nav": nav.get("source_identity_hash"),
+            "structure_receipt": receipt.get("receipt_hash"),
+        }),
+        "source_content_sha256": digest({
+            "price": price.get("source_content_sha256"),
+            "nav": nav.get("source_content_sha256"),
+        }),
+        "source_observed_at": max(
+            str(price.get("source_observed_at")), str(nav.get("source_observed_at"))
+        ),
+        "source_available_at": max(
+            str(price.get("source_available_at")), str(nav.get("source_available_at"))
+        ),
+        "completed_through": target,
+        "source_data_rights": "UNKNOWN",
+        "units": {
+            "price": "CNY_PER_FUND_SHARE",
+            "nav": "CNY_PER_FUND_SHARE",
+            "premium_discount": "PERCENT",
+        },
+        "currency": "CNY",
+        "adjustment_basis": "RAW_DAILY_CLOSE_VS_OFFICIAL_NAV",
+        "revision": (
+            "PRICE=" + str(price.get("revision")) + "|NAV=" + str(nav.get("revision"))
+        ),
+        "vintage": (
+            "PRICE=" + str(price.get("vintage")) + "|NAV=" + str(nav.get("vintage"))
+        ),
+        "facts": facts,
+        "source_fact_hash": source_fact_hash,
+        "historical_pit_eligible": False,
+        "independent_source_value_admitted": True,
+        "strategy_upgrade_authority": False,
+        "storage_admitted": False,
+        "learning_admitted": False,
+    }
+    row["source_observation_hash"] = digest({
+        "dataset_id": "E_PREMIUM",
+        "source_identity_hash": row["source_identity_hash"],
+        "source_content_sha256": row["source_content_sha256"],
+        "source_fact_hash": source_fact_hash,
+        "producer_authority": row["producer_authority"],
+    })
+    return {"E_PREMIUM": row}
+
+
+def _verified_stock_execution_risk_source_scope(
+    factor: Mapping,
+    *,
+    base_source_scope: Mapping[str, Mapping],
+    generic_source_scope: Mapping[str, Mapping],
+) -> dict[str, dict]:
+    """Compile observed liquidity/session facts while retaining execution gaps."""
+    if (
+        str(factor.get("asset_type") or "stock").lower() != "stock"
+        or "P_EXEC_RISK" in generic_source_scope
+    ):
+        return {}
+    minute = base_source_scope.get("P_5M")
+    quote = generic_source_scope.get("P_QUOTE_LIQUID")
+    quote_facts = _verified_generic_source_facts(
+        factor, "P_QUOTE_LIQUID", generic_source_scope,
+    )
+    mtf = factor.get("multi_timeframe_structure_context")
+    frames = mtf.get("timeframes") if isinstance(mtf, Mapping) else None
+    five = frames.get("5m") if isinstance(frames, Mapping) else None
+    session = (
+        five.get("completed_source_session_receipt")
+        if isinstance(five, Mapping) else None
+    )
+    if not all(isinstance(item, Mapping) for item in (minute, quote, quote_facts, mtf, five, session)):
+        return {}
+    target = str(mtf.get("target_date") or "").strip()
+    asset_code = _six_digit_asset_code(mtf.get("stock_code") or factor.get("stock_code"))
+    quote_code = _six_digit_asset_code(quote_facts.get("stock_code"))
+    quote_date = str(
+        quote_facts.get("trade_date") or quote.get("completed_through") or ""
+    ).strip()
+    close = quote_facts.get("close")
+    volume = quote_facts.get("volume")
+    amount = quote_facts.get("amount")
+    turnover = quote_facts.get(
+        "turnover_rate_pct", quote_facts.get("turn")
+    )
+    pct_change = quote_facts.get("pct_change", quote_facts.get("pctChg"))
+    numeric = (close, volume, amount, turnover)
+    if (
+        not target
+        or not asset_code
+        or quote_code != asset_code
+        or quote_date != target
+        or minute.get("completed_through") != target
+        or quote.get("completed_through") != target
+        or quote.get("currency") != minute.get("currency")
+        or str(quote.get("adjustment_basis") or "").upper()
+        != str(minute.get("adjustment_basis") or "").upper()
+        or any(
+            not isinstance(value, Real)
+            or isinstance(value, bool)
+            or not math.isfinite(float(value))
+            for value in numeric
+        )
+        or float(close) <= 0
+        or float(volume) <= 0
+        or float(amount) <= 0
+        or float(turnover) < 0
+        or session.get("identity_state") != "OBSERVED"
+        or session.get("provider_identity") != minute.get("provider_identity")
+        or session.get("content_sha256") != minute.get("source_content_sha256")
+        or session.get("available_at_max") != minute.get("source_available_at")
+        or session.get("session_count") != minute.get("completed_sessions")
+        or session.get("bars_per_session") != 48
+    ):
+        return {}
+    facts = {
+        "schema_version": "typed-stock-execution-risk-partial-source-v1",
+        "stock_code": asset_code,
+        "trading_day": target,
+        "observed_components": (
+            "COMPLETED_XSHG_SESSION",
+            "DAILY_CLOSE_VOLUME_AMOUNT_TURNOVER",
+        ),
+        "unobserved_components": (
+            "SUSPENSION_STATUS",
+            "DAILY_PRICE_LIMIT_STATUS",
+            "BID_ASK_SPREAD",
+            "FEES_AND_TAXES",
+        ),
+        "daily_quote": {
+            "close": float(close),
+            "volume": float(volume),
+            "amount": float(amount),
+            "turnover_rate_pct": float(turnover),
+            "pct_change": (
+                float(pct_change)
+                if isinstance(pct_change, Real)
+                and not isinstance(pct_change, bool)
+                and math.isfinite(float(pct_change))
+                else None
+            ),
+            "adjustment_basis": quote.get("adjustment_basis"),
+        },
+        "completed_session": {
+            "calendar": session.get("session_calendar") or "XSHG",
+            "session_count": session.get("session_count"),
+            "bars_per_session": 48,
+            "completed_through": target,
+        },
+        "full_execution_risk_ready": False,
+    }
+    source_fact_hash = digest(facts)
+    row = {
+        "state": "PARTIAL",
+        "reason": (
+            "LIQUIDITY_AND_COMPLETED_SESSION_TYPED_"
+            "SUSPENSION_LIMIT_SPREAD_FEES_NOT_OBSERVED"
+        ),
+        "provider_identity": (
+            str(quote.get("provider_identity")) + "+" + str(minute.get("provider_identity"))
+        ),
+        "provider_route": (
+            str(quote.get("provider_route")) + "+" + str(minute.get("provider_route"))
+        ),
+        "producer_authority": (
+            "src/services/evidence_traceability_registry.py::"
+            "_verified_stock_execution_risk_source_scope"
+        ),
+        "source_identity_hash": digest({
+            "quote": quote.get("source_identity_hash"),
+            "minute": minute.get("source_identity_hash"),
+        }),
+        "source_content_sha256": digest({
+            "quote": quote.get("source_content_sha256"),
+            "minute": minute.get("source_content_sha256"),
+        }),
+        "source_observed_at": max(
+            str(quote.get("source_observed_at")), str(minute.get("source_observed_at"))
+        ),
+        "source_available_at": max(
+            str(quote.get("source_available_at")), str(minute.get("source_available_at"))
+        ),
+        "completed_through": target,
+        "source_data_rights": "UNKNOWN",
+        "units": {
+            "price": quote.get("units", {}).get("price", "UNKNOWN"),
+            "volume": quote.get("units", {}).get("volume", "UNKNOWN"),
+            "amount": quote.get("units", {}).get("amount", "UNKNOWN"),
+            "turnover_rate": quote.get("units", {}).get("turnover_rate", "PERCENT"),
+            "session_count": "COUNT",
+        },
+        "currency": quote.get("currency"),
+        "adjustment_basis": quote.get("adjustment_basis"),
+        "revision": (
+            "QUOTE=" + str(quote.get("revision")) + "|5M=" + str(minute.get("revision"))
+        ),
+        "vintage": (
+            "QUOTE=" + str(quote.get("vintage")) + "|5M=" + str(minute.get("vintage"))
+        ),
+        "facts": facts,
+        "source_fact_hash": source_fact_hash,
+        "historical_pit_eligible": False,
+        "independent_source_value_admitted": True,
+        "strategy_upgrade_authority": False,
+        "storage_admitted": False,
+        "learning_admitted": False,
+    }
+    row["source_observation_hash"] = digest({
+        "dataset_id": "P_EXEC_RISK",
+        "source_identity_hash": row["source_identity_hash"],
+        "source_content_sha256": row["source_content_sha256"],
+        "source_fact_hash": source_fact_hash,
+        "producer_authority": row["producer_authority"],
+    })
+    return {"P_EXEC_RISK": row}
+
+
 def _compile_accepted_data_object_scope(factor: Mapping) -> list[dict]:
     """Expose accepted DATA obligations, not invented data values or strategy votes."""
     rows = [
@@ -5307,14 +5656,27 @@ def _compile_accepted_data_object_scope(factor: Mapping) -> list[dict]:
     method_source_scope.update(_verified_cost_proxy_source_scope(factor))
     method_source_scope.update(_verified_etf_peer_rs_source_scope(factor))
     generic_source_scope = _verified_data_object_source_scope(factor)
+    derived_source_scope: dict[str, dict] = {}
+    derived_source_scope.update(_verified_etf_premium_source_scope(
+        factor,
+        base_source_scope=base_source_scope,
+        generic_source_scope=generic_source_scope,
+    ))
+    derived_source_scope.update(_verified_stock_execution_risk_source_scope(
+        factor,
+        base_source_scope=base_source_scope,
+        generic_source_scope=generic_source_scope,
+    ))
     occupied = (
         set(base_source_scope)
         | set(market_source_scope)
         | set(sector_source_scope)
         | set(method_source_scope)
     )
-    if occupied & set(generic_source_scope):
+    if occupied & (set(generic_source_scope) | set(derived_source_scope)):
         raise TraceabilityError("DATA_OBJECT_SOURCE_OBSERVATION_OWNER_CONFLICT")
+    if set(generic_source_scope) & set(derived_source_scope):
+        raise TraceabilityError("DERIVED_DATA_OBJECT_SOURCE_OWNER_CONFLICT")
     objects = []
     for dataset_id, domain, fact, frequency, consumer in rows:
         applicable = (
@@ -5343,6 +5705,8 @@ def _compile_accepted_data_object_scope(factor: Mapping) -> list[dict]:
             row.update(sector_source_scope[dataset_id])
         if applicable and dataset_id in method_source_scope:
             row.update(method_source_scope[dataset_id])
+        if applicable and dataset_id in derived_source_scope:
+            row.update(derived_source_scope[dataset_id])
         if applicable and dataset_id in generic_source_scope:
             row.update(generic_source_scope[dataset_id])
         objects.append(row)

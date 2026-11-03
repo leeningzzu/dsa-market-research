@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [改进] 闭合`E_PREMIUM`与`P_EXEC_RISK`现有父事实纵向链并消除局部替代总体：ETF仅在raw交易价、同资产同交易日官方NAV及严格Structure回执一致时生成日终折溢价PARTIAL，明确缺IOPV实时值/发布时间与同刻价格；股票仅以`P_QUOTE_LIQUID`同日量额换手和严格XSHG完成5m会话生成执行风险PARTIAL，明确缺停牌、涨跌停、bid/ask及费率税费。ETF估值区间不再冒充折溢价READY；错复权、错日期、错资产均降UNKNOWN。Registry→InvestorBrief→Notification→V2.5消费者贯通，独立3 RED转聚焦6/6；重新执行九核心模块531/531与九个不重叠发送前/路由/Flywheel相邻模块271/271，共18模块802/802。宿主缺可选`lark-oapi`导致两次测试形状STOP，完整进程内SDK桩复跑全绿；未安装依赖或修改生产通知代码。来源能力26→28、完整链缺口46→44，Product仍0/72、Rights/PIT/策略/发送不变，原V2.5字节不变。
+
 - [改进] 关闭首个无新Provider的typed来源纵向切片：现有COST严格回执生成`P_COST_PROXY` 20/60日HLC3×量事实；现有ETF peer RS完整身份/宇宙哈希生成`E_PEER_RS`；严格XSHG完成5m回执生成`M_INDEX_BARS`。三者补齐provider route、单位/币种/复权语义、source/fact/observation哈希和报告point-of-use消费者；typed来源可显示但Product、rights、storage、PIT、learning、strategy仍false。三独立RED转5/5 GREEN，相关十模块583/583通过；来源能力23→26、完整链缺口49→46，Product保持0/72，原V2.5不变。
 
 - [闭环] GitHub自然PR CI97（Run 41417008187）在exact Head `746e402e0fff0247fdf153347e66f326573db9ce` SUCCESS，关闭CI96截图的旧2015窗口、绕过生产XSHG扩展日历及Legacy Ledger v1哈希污染三根因。路线图/Stage机器状态同步为工程远端接受、Product仍0/72；后继转为23/72已有来源能力与49个完整typed来源链缺口，不再以指标数量替代真实数据或FACT_READY邮件。

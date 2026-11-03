@@ -62,6 +62,37 @@ def test_protected_original_is_read_from_independent_git_bytes_not_regenerated()
             verify_original_mapping(changed)
 
 
+def test_v25_fact_summary_keeps_daily_premium_and_execution_partial_boundaries():
+    premium = v25._v25_data_object_fact_summary(
+        "E_PREMIUM",
+        {
+            "trading_day": "2026-09-28",
+            "daily_close_cny_per_share": 4.04,
+            "official_nav_cny_per_share": 4.00,
+            "premium_discount_pct": 1.0,
+        },
+    )
+    execution = v25._v25_data_object_fact_summary(
+        "P_EXEC_RISK",
+        {
+            "trading_day": "2026-09-28",
+            "observed_components": (
+                "COMPLETED_XSHG_SESSION",
+                "DAILY_CLOSE_VOLUME_AMOUNT_TURNOVER",
+            ),
+            "unobserved_components": (
+                "SUSPENSION_STATUS",
+                "DAILY_PRICE_LIMIT_STATUS",
+                "BID_ASK_SPREAD",
+                "FEES_AND_TAXES",
+            ),
+        },
+    )
+    assert "日终折溢价" in premium and "IOPV实时同刻未绑定" in premium
+    assert "完整执行风险未就绪" in execution
+    assert "BID_ASK_SPREAD" in execution and "FEES_AND_TAXES" in execution
+
+
 def test_semantic_slots_preserve_the_independent_accepted_contract():
     expected = {
         "first_screen.conclusion", "first_screen.price_or_valuation", "first_screen.higher_timeframe_thesis",

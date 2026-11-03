@@ -40,6 +40,7 @@ from src.notification import (
     _append_factor_decision_block,
     _append_strategy_synthesis_block,
     _get_valid_investor_brief,
+    _format_asset_specific_items,
 )
 from src.notification_noise import reset_notification_noise_state
 from src.analyzer import AnalysisResult
@@ -354,6 +355,42 @@ def test_canonical_notification_send_with_results_keeps_email_and_telegram_text_
     service.send_to_telegram.assert_not_called()
     second_converter.assert_not_called()
 
+
+
+def test_asset_specific_formatter_keeps_partial_premium_and_execution_boundaries_visible():
+    etf = {
+        "asset_type": "etf",
+        "asset_specific": {
+            "premium_discount": {
+                "status": "PARTIAL_CURRENT",
+                "summary": (
+                    "日终收盘相对同日官方NAV为+0.250%；"
+                    "IOPV实时值及同刻价格未绑定；不等于Product准入。"
+                ),
+            },
+            "liquidity_spread": {"status": "MISSING"},
+            "tracking_quality": {"status": "MISSING"},
+        },
+    }
+    stock = {
+        "asset_type": "stock",
+        "asset_specific": {
+            "execution_risk": {
+                "status": "PARTIAL_CURRENT",
+                "summary": (
+                    "已核同日流动性与完成会话；停牌、涨跌停、"
+                    "买卖价差、费率仍未观测；不等于Product准入。"
+                ),
+            },
+        },
+    }
+    etf_rows = _format_asset_specific_items(etf)
+    stock_rows = _format_asset_specific_items(stock)
+    assert len(etf_rows) == 1
+    assert "折溢价" in etf_rows[0] and "IOPV" in etf_rows[0]
+    assert "买卖价差" not in etf_rows[0]
+    assert len(stock_rows) == 1
+    assert "执行风险" in stock_rows[0] and "停牌、涨跌停" in stock_rows[0]
 
 
 def test_typed_completed_daily_5m_source_observations_survive_existing_full_email_leaf():
@@ -2410,18 +2447,11 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         result = _make_investor_brief_result()
         factor = result.dashboard["factor_decision"]
         brief = factor["investor_brief"]
-        brief["asset_type"] = "etf"
         brief["valuation"] = {
             "status": "PARTIAL_CURRENT",
             "label": "底层估值",
             "summary": "近十年62%分位",
             "uncertainty": "",
-        }
-        brief["asset_specific"] = {
-            "premium_discount": {"status": "READY", "summary": "折价0.15%"},
-            "liquidity_spread": {"status": "READY", "summary": "买卖价差0.03%"},
-            "tracking_quality": {"status": "READY", "summary": "近20日跟踪误差0.18%"},
-            "underlying_valuation": {"status": "READY", "summary": "底层估值近十年62%分位"},
         }
         brief["timeframe_thesis"]["60m"] = {
             "status": "READY",
@@ -2468,10 +2498,6 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
 
             for rendered in (full, compact):
                 self.assertIn("**底层估值**: 近十年62%分位", rendered)
-                self.assertIn(
-                    "**ETF专属交易质量**: 折溢价：折价0.15%｜买卖价差0.03%｜跟踪质量：近20日跟踪误差0.18%",
-                    rendered,
-                )
                 self.assertIn("30分钟：顶背离已经确认", rendered)
                 self.assertIn("15分钟：死叉后进入整理", rendered)
                 self.assertIn("5分钟：量能继续收缩", rendered)
@@ -2546,12 +2572,6 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         result = _make_investor_brief_result()
         factor = result.dashboard["factor_decision"]
         brief = factor["investor_brief"]
-        brief["asset_type"] = "etf"
-        brief["asset_specific"] = {
-            "premium_discount": {"status": "READY", "summary": "折价0.15%"},
-            "liquidity_spread": {"status": "READY", "summary": "买卖价差0.03%"},
-            "tracking_quality": {"status": "READY", "summary": "近20日跟踪误差0.18%"},
-        }
         brief["short_term_execution_panel"] = {
             "status": "READY",
             "state": "WAIT_FOR_TRIGGER",
@@ -2616,9 +2636,6 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
                     brief["coverage_text"],
                     "弱趋势仍未修复",
                     "估值证据仍有限",
-                    "折溢价：折价0.15%",
-                    "买卖价差0.03%",
-                    "跟踪质量：近20日跟踪误差0.18%",
                     "30分钟：顶背离已经确认",
                     "15分钟：死叉后进入整理",
                     "5分钟：量能继续收缩",

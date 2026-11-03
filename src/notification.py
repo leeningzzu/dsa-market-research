@@ -302,20 +302,23 @@ def _canonical_conclusion_for_result(
         return ""
     return str(brief.get("one_line_conclusion") or "").strip()
 
-def _format_etf_asset_specific_items(brief: Dict[str, Any]) -> List[str]:
-    """Render only proven ETF-specific trading-quality facts without adding authority."""
-    if str(brief.get("asset_type") or "").strip().lower() != "etf":
-        return []
+def _format_asset_specific_items(brief: Dict[str, Any]) -> List[str]:
+    """Render exact typed asset facts without adding Product/action authority."""
+    asset_type = str(brief.get("asset_type") or "").strip().lower()
     asset_specific = brief.get("asset_specific") or {}
     if not isinstance(asset_specific, dict):
         return []
-
+    rows = (
+        (
+            ("premium_discount", "折溢价"),
+            ("liquidity_spread", "买卖价差"),
+            ("tracking_quality", "跟踪质量"),
+        )
+        if asset_type == "etf"
+        else (("execution_risk", "执行风险"),)
+    )
     rendered: List[str] = []
-    for key, label in (
-        ("premium_discount", "折溢价"),
-        ("liquidity_spread", "买卖价差"),
-        ("tracking_quality", "跟踪质量"),
-    ):
+    for key, label in rows:
         item = asset_specific.get(key) or {}
         if not isinstance(item, dict):
             continue
@@ -886,9 +889,14 @@ def _append_investor_brief_block(lines: List[str], factor: Any, report_language:
 
     _append_quality_valuation_material(lines, brief)
 
-    etf_specific_items = _format_etf_asset_specific_items(brief)
-    if etf_specific_items:
-        lines.append(f"**ETF专属交易质量**: {'｜'.join(etf_specific_items)}")
+    asset_specific_items = _format_asset_specific_items(brief)
+    if asset_specific_items:
+        heading = (
+            "ETF专属交易质量"
+            if str(brief.get("asset_type") or "").lower() == "etf"
+            else "执行风险实测边界"
+        )
+        lines.append(f"**{heading}**: {'｜'.join(asset_specific_items)}")
 
     key_levels = brief.get("key_levels") or {}
     if isinstance(key_levels, dict):
@@ -1085,9 +1093,14 @@ def _append_investor_notification_block(
 
     _append_quality_valuation_material(lines, brief)
 
-    etf_specific_items = _format_etf_asset_specific_items(brief)
-    if etf_specific_items:
-        lines.append(f"**ETF专属交易质量**: {'｜'.join(etf_specific_items)}")
+    asset_specific_items = _format_asset_specific_items(brief)
+    if asset_specific_items:
+        heading = (
+            "ETF专属交易质量"
+            if str(brief.get("asset_type") or "").lower() == "etf"
+            else "执行风险实测边界"
+        )
+        lines.append(f"**{heading}**: {'｜'.join(asset_specific_items)}")
 
     coverage_text = str(brief.get("coverage_text") or "").strip()
     if coverage_text:

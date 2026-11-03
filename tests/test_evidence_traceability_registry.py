@@ -6,6 +6,7 @@ import json
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 import subprocess
 
 import numpy as np
@@ -24,7 +25,11 @@ from src.services.data_object_admission import (
     seal_data_object_admission_receipt,
     seal_source_rights_evidence,
 )
-from src.services.factor_decision_summary import build_stock_factor_decision_summary
+from src.services.factor_decision_summary import (
+    _build_asset_research_brief_v1,
+    _build_price_structure_evidence,
+    build_stock_factor_decision_summary,
+)
 from src.services.multi_timeframe_structure_service import build_multi_timeframe_structure_context
 from src.services.pattern_trigger_service import build_pattern_trigger_context, _dedupe_patterns
 from src.services.price_structure_service import build_price_structure_context
@@ -2480,6 +2485,52 @@ def _exchange_daily_test_window(end, count):
     return pd.DatetimeIndex(sessions[-count:])
 
 
+def _generic_data_object_source_observation(
+    dataset_id,
+    *,
+    facts,
+    completed_through,
+    units,
+    currency,
+    adjustment_basis="NOT_APPLICABLE",
+    provider_identity="SyntheticExistingParentProvider",
+    provider_route="synthetic.existing_parent",
+    producer_authority="tests.existing_parent_fixture",
+):
+    """Exact generic source seam; fixture only, never a Product/right grant."""
+    content_hash = reg.digest({"dataset_id": dataset_id, "facts": facts})
+    body = {
+        "schema_version": "data-object-source-observation-v1",
+        "dataset_id": dataset_id,
+        "state": "PARTIAL",
+        "reason_codes": ("CURRENT_SOURCE_OBSERVED_PRODUCT_NOT_ADMITTED",),
+        "provider_identity": provider_identity,
+        "provider_route": provider_route,
+        "producer_authority": producer_authority,
+        "source_identity_hash": reg.digest({
+            "dataset_id": dataset_id,
+            "provider_identity": provider_identity,
+            "completed_through": completed_through,
+            "content_sha256": content_hash,
+        }),
+        "source_content_sha256": content_hash,
+        "source_observed_at": "2026-10-02T08:00:00+00:00",
+        "source_available_at": "2026-10-02T07:30:00+00:00",
+        "completed_through": completed_through,
+        "units": dict(units),
+        "currency": currency,
+        "adjustment_basis": adjustment_basis,
+        "revision": "SYNTHETIC_CURRENT_RESPONSE_R1",
+        "vintage": "UNKNOWN",
+        "historical_pit_eligible": False,
+        "independent_source_value_admitted": True,
+        "strategy_upgrade_authority": False,
+        "facts": dict(facts),
+    }
+    body["observation_hash"] = reg.digest(body)
+    return body
+
+
 def _closed_typed_stock_source_factor(*, source_version_known: bool = False):
     """Original DSA price identity + ten completed XSHG sessions + real MTF receipt."""
     from datetime import datetime, date, timezone
@@ -2546,7 +2597,7 @@ def _closed_typed_stock_source_factor(*, source_version_known: bool = False):
 
 
 
-def _closed_typed_etf_source_factor():
+def _closed_typed_etf_source_factor(*, basis: str = "qfq"):
     """ETF price bars use the same typed source proof, never stock fundamentals."""
     from datetime import datetime, date, timezone
     from data_provider.daily_data_identity import (
@@ -2603,9 +2654,9 @@ def _closed_typed_etf_source_factor():
         frame,
         provider_identity="BaostockFetcher",
         provider_route="baostock.query_history_k_data_plus",
-        actual_response_branch="fixture:etf;adjustflag=2",
-        requested_adjustment_basis="qfq",
-        observed_adjustment_basis="qfq",
+        actual_response_branch=f"fixture:etf;basis={basis}",
+        requested_adjustment_basis=basis,
+        observed_adjustment_basis=basis,
         basis_evidence="independent_etf_fixture",
         requested_start="2025-01-01",
         requested_end="2026-09-28",
@@ -2619,6 +2670,9 @@ def _closed_typed_etf_source_factor():
     target = dates[-1]
     analyzer = StockTrendAnalyzer()
     trend = analyzer.analyze(frame.copy(), "510300")
+    price = build_price_structure_context(
+        stock_code="510300", history=frame, target_date=target, market="cn",
+    )
     mtf = build_multi_timeframe_structure_context(
         stock_code="510300", history=frame, target_date=target, market="cn",
         trend_analyzer=analyzer, daily_trend_result=trend,
@@ -2635,11 +2689,20 @@ def _closed_typed_etf_source_factor():
         market="cn", target_date=target, timeframe="multi",
         input_identity=source,
     )
+    structure_receipt = reg.build_method_execution_receipt(
+        "STRUCTURE", output=price, asset_route="ETF", stock_code="510300",
+        market="cn", target_date=target, timeframe="daily",
+        input_identity=source,
+    )
     factor = {
         "asset_type": "etf",
+        "price_structure_evidence": _build_price_structure_evidence(trend, price),
         "multi_timeframe_structure_context": mtf,
         "method_execution_receipt_policy": "REQUIRED",
-        "method_execution_receipts": {"MTF": receipt},
+        "method_execution_receipts": {
+            "MTF": receipt,
+            "STRUCTURE": structure_receipt,
+        },
     }
     return factor, minute
 
@@ -2677,6 +2740,204 @@ def test_m2_etf_typed_1d_5m_sources_progress_only_etf_price_objects():
     }
     assert missing["E_PRICE_1D"]["state"] == "UNKNOWN"
     assert missing["E_PRICE_5M"]["state"] == "UNKNOWN"
+
+
+def test_existing_etf_price_and_official_nav_compile_only_daily_close_premium_partial():
+    factor, _minute = _closed_typed_etf_source_factor(basis="raw")
+    target = str(factor["multi_timeframe_structure_context"]["target_date"])
+    close = float(
+        factor["price_structure_evidence"]["context"]["current_close"]
+    )
+    nav = close / 1.01
+    factor["data_object_source_observations"] = {
+        "E_NAV_IOPV": _generic_data_object_source_observation(
+            "E_NAV_IOPV",
+            facts={
+                "fund_code": "510300",
+                "fund_name": "沪深300ETF",
+                "trading_day": target,
+                "nav_cny_per_share": nav,
+                "publish_iopv": False,
+            },
+            completed_through=target,
+            units={"nav": "CNY_PER_FUND_SHARE"},
+            currency="CNY",
+            provider_identity="SSEOfficialPublicDisclosure",
+            provider_route="query.sse.com.cn:ETF_BASIC+PCF",
+            producer_authority=(
+                "data_provider.sse_public_disclosure_source::"
+                "build_sse_public_disclosure_bundle"
+            ),
+        ),
+    }
+
+    data = {
+        row["dataset_id"]: row
+        for row in reg.build_runtime_trace(factor)[
+            "complete_research_universe"
+        ]["data_objects"]
+    }
+    premium = data["E_PREMIUM"]
+    assert premium["state"] == "PARTIAL"
+    assert premium["independent_source_value_admitted"] is True
+    assert premium["strategy_upgrade_authority"] is False
+    assert premium["facts"]["comparison_basis"] == "DAILY_CLOSE_TO_OFFICIAL_NAV"
+    assert premium["facts"]["premium_discount_pct"] == pytest.approx(1.0)
+    assert premium["facts"]["iopv_value_used"] is False
+    assert "INTRADAY_IOPV_VALUE" in premium["facts"]["unobserved_components"]
+    factor["evidence_traceability"] = reg.build_runtime_trace(factor)
+    brief = _build_asset_research_brief_v1(
+        SimpleNamespace(
+            current_price=close,
+            support_levels=[],
+            resistance_levels=[],
+        ),
+        factor,
+        asset_type="etf",
+    )
+    assert brief["asset_specific"]["premium_discount"]["status"] == "PARTIAL_CURRENT"
+    assert "同日官方NAV" in brief["asset_specific"]["premium_discount"]["summary"]
+    assert "IOPV实时值及同刻价格未绑定" in (
+        brief["asset_specific"]["premium_discount"]["summary"]
+    )
+    assert brief["asset_specific"]["premium_discount"]["product_admitted"] is False
+
+    adjusted, _ = _closed_typed_etf_source_factor(basis="qfq")
+    adjusted["data_object_source_observations"] = deepcopy(
+        factor["data_object_source_observations"]
+    )
+    adjusted_data = {
+        row["dataset_id"]: row
+        for row in reg.build_runtime_trace(adjusted)[
+            "complete_research_universe"
+        ]["data_objects"]
+    }
+    assert adjusted_data["E_PREMIUM"]["state"] == "UNKNOWN"
+    wrong_day, _ = _closed_typed_etf_source_factor(basis="raw")
+    wrong_day["data_object_source_observations"] = {
+        "E_NAV_IOPV": _generic_data_object_source_observation(
+            "E_NAV_IOPV",
+            facts={
+                "fund_code": "510300",
+                "fund_name": "沪深300ETF",
+                "trading_day": "2026-09-24",
+                "nav_cny_per_share": nav,
+                "publish_iopv": False,
+            },
+            completed_through="2026-09-24",
+            units={"nav": "CNY_PER_FUND_SHARE"},
+            currency="CNY",
+        ),
+    }
+    wrong_day_data = {
+        row["dataset_id"]: row
+        for row in reg.build_runtime_trace(wrong_day)[
+            "complete_research_universe"
+        ]["data_objects"]
+    }
+    assert wrong_day_data["E_PREMIUM"]["state"] == "UNKNOWN"
+
+
+def test_existing_quote_and_completed_session_compile_partial_execution_risk_only():
+    factor, _minute = _closed_typed_stock_source_factor()
+    target = str(factor["multi_timeframe_structure_context"]["target_date"])
+    factor["data_object_source_observations"] = {
+        "P_QUOTE_LIQUID": _generic_data_object_source_observation(
+            "P_QUOTE_LIQUID",
+            facts={
+                "stock_code": "600519",
+                "trade_date": target,
+                "close": 1680.0,
+                "volume": 1234567.0,
+                "amount": 2074072560.0,
+                "turnover_rate_pct": 0.35,
+                "pct_change": 0.8,
+            },
+            completed_through=target,
+            units={
+                "price": "CNY_PER_SHARE",
+                "volume": "SHARE",
+                "amount": "CNY",
+                "turnover_rate": "PERCENT",
+            },
+            currency="CNY",
+            adjustment_basis="QFQ",
+            provider_identity="BaostockFetcher",
+            provider_route="baostock.query_history_k_data_plus:5,6,8,10,12",
+            producer_authority=(
+                "data_provider.baostock_fetcher.BaostockFetcher::"
+                "get_cn_stock_nonprice_research_bundle"
+            ),
+        ),
+    }
+
+    data = {
+        row["dataset_id"]: row
+        for row in reg.build_runtime_trace(factor)[
+            "complete_research_universe"
+        ]["data_objects"]
+    }
+    risk = data["P_EXEC_RISK"]
+    assert risk["state"] == "PARTIAL"
+    assert risk["independent_source_value_admitted"] is True
+    assert risk["strategy_upgrade_authority"] is False
+    assert set(risk["facts"]["observed_components"]) == {
+        "COMPLETED_XSHG_SESSION",
+        "DAILY_CLOSE_VOLUME_AMOUNT_TURNOVER",
+    }
+    assert set(risk["facts"]["unobserved_components"]) == {
+        "SUSPENSION_STATUS",
+        "DAILY_PRICE_LIMIT_STATUS",
+        "BID_ASK_SPREAD",
+        "FEES_AND_TAXES",
+    }
+    assert risk["facts"]["full_execution_risk_ready"] is False
+    factor["evidence_traceability"] = reg.build_runtime_trace(factor)
+    brief = _build_asset_research_brief_v1(
+        SimpleNamespace(
+            current_price=1680.0,
+            support_levels=[],
+            resistance_levels=[],
+        ),
+        factor,
+        asset_type="stock",
+    )
+    execution = brief["asset_specific"]["execution_risk"]
+    assert execution["status"] == "PARTIAL_CURRENT"
+    assert "停牌、涨跌停、买卖价差、费率仍未观测" in execution["summary"]
+    assert execution["full_execution_risk_ready"] is False
+    assert execution["product_admitted"] is False
+    wrong_asset = deepcopy(factor)
+    wrong_asset["data_object_source_observations"] = {
+        "P_QUOTE_LIQUID": _generic_data_object_source_observation(
+            "P_QUOTE_LIQUID",
+            facts={
+                "stock_code": "000001",
+                "trade_date": target,
+                "close": 1680.0,
+                "volume": 1234567.0,
+                "amount": 2074072560.0,
+                "turnover_rate_pct": 0.35,
+                "pct_change": 0.8,
+            },
+            completed_through=target,
+            units={
+                "price": "CNY_PER_SHARE",
+                "volume": "SHARE",
+                "amount": "CNY",
+                "turnover_rate": "PERCENT",
+            },
+            currency="CNY",
+            adjustment_basis="QFQ",
+        ),
+    }
+    wrong_asset_data = {
+        row["dataset_id"]: row
+        for row in reg.build_runtime_trace(wrong_asset)[
+            "complete_research_universe"
+        ]["data_objects"]
+    }
+    assert wrong_asset_data["P_EXEC_RISK"]["state"] == "UNKNOWN"
 
 
 def test_accepted_p_daily_and_p_5m_real_source_receipt_progress_is_scoped_not_full_admission():

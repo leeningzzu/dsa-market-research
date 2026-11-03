@@ -160,11 +160,12 @@ def test_factor_and_investor_brief_keep_stock_etf_and_index_valuation_layers_sep
     brief = factor["investor_brief"]
     assert brief["valuation"]["label"] == "底层估值"
     assert brief["asset_specific"]["underlying_valuation"]["status"] == "READY"
-    assert brief["asset_specific"]["premium_discount"]["status"] == "READY"
-    assert "NAV_PREMIUM_DISCOUNT_BAND" in (
-        brief["asset_specific"]["premium_discount"]["summary"]
-    )
-    assert "指数/行业估值" not in (
+    # A valuation band is not the observed E_PREMIUM object.  Without an
+    # exact same-date/clock price-vs-NAV/IOPV source fact the reader slot stays
+    # missing instead of relabelling valuation assumptions as a premium.
+    assert brief["asset_specific"]["premium_discount"]["status"] == "MISSING"
+    assert brief["asset_specific"]["premium_discount"]["summary"] == ""
+    assert "NAV_PREMIUM_DISCOUNT_BAND" not in (
         brief["asset_specific"]["premium_discount"]["summary"]
     )
     assert "指数/行业估值" in (

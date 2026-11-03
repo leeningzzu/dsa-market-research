@@ -770,6 +770,25 @@ def _v25_data_object_fact_summary(
             f"NAV {_v25_plain(facts.get('nav_cny_per_share'), '缺失')}元/份｜"
             f"公布IOPV {_v25_plain(facts.get('publish_iopv'), '未知')}"
         )
+    if dataset_id == "E_PREMIUM":
+        return (
+            f"ETF日终折溢价：交易日 {_v25_plain(facts.get('trading_day'), '日期缺失')}｜"
+            f"收盘 {_v25_plain(facts.get('daily_close_cny_per_share'), '缺失')}元/份｜"
+            f"官方NAV {_v25_plain(facts.get('official_nav_cny_per_share'), '缺失')}元/份｜"
+            f"折溢价 {_v25_plain(facts.get('premium_discount_pct'), '缺失')}%｜"
+            "IOPV实时同刻未绑定"
+        )
+    if dataset_id == "P_EXEC_RISK":
+        missing = "、".join(
+            str(item) for item in facts.get("unobserved_components") or ()
+        ) or "无"
+        observed = "、".join(
+            str(item) for item in facts.get("observed_components") or ()
+        ) or "缺失"
+        return (
+            f"执行风险部分事实：交易日 {_v25_plain(facts.get('trading_day'), '日期缺失')}｜"
+            f"已核 {observed}｜未核 {missing}｜完整执行风险未就绪"
+        )
     if dataset_id == "E_SHARES":
         return (
             f"ETF申赎份额：{_v25_plain(facts.get('fund_code'), '代码缺失')}｜"

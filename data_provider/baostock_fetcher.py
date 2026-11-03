@@ -979,7 +979,14 @@ class BaostockFetcher(BaseFetcher):
                 units={"price": "CNY_PER_LISTED_UNIT", "volume": "SHARE", "amount": "CNY", "turnover": "PERCENT"},
                 currency="CNY",
                 adjustment_basis="QFQ",
-                facts={key: value for key, value in valuation_facts.items() if key in {"close", "volume", "amount", "turn", "pctChg"}},
+                facts={
+                    "stock_code": code,
+                    "trade_date": row.get("date") or target.isoformat(),
+                    **{
+                        key: value for key, value in valuation_facts.items()
+                        if key in {"close", "volume", "amount", "turn", "pctChg"}
+                    },
+                },
             )
         if selected is not None and financial.get("profit"):
             year, quarter = selected

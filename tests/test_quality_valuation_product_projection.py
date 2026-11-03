@@ -10,6 +10,7 @@ from src.notification import (
 )
 from src.services.business_valuation_service import compile_business_valuation
 from src.services.factor_decision_summary import (
+    canonical_factor_binding,
     build_stock_factor_decision_summary,
     validate_canonical_factor_binding,
     validate_investor_brief_binding,
@@ -76,7 +77,7 @@ def test_ready_stock_quality_and_business_valuation_reach_both_email_consumers()
 
     binding = validate_canonical_factor_binding(factor)
     assert binding["asset_material_binding_version"] == (
-        "factor-brief-quality-valuation-v1"
+        "factor-brief-quality-valuation-typed-asset-v2"
     )
     assert len(binding["asset_material_sha256"]) == 64
     assert validate_investor_brief_binding(factor) == brief
@@ -150,6 +151,33 @@ def test_quality_valuation_material_is_bound_and_tampering_is_rejected():
     forged_brief["quality"]["summary"] = "FORGED_QUALITY_TEXT"
     with pytest.raises(ValueError, match="stale|quality|valuation"):
         validate_investor_brief_binding(factor, forged_brief)
+
+    forged_asset_specific = deepcopy(factor["investor_brief"])
+    forged_asset_specific["asset_specific"]["execution_risk"] = {
+        "status": "PARTIAL_CURRENT",
+        "summary": "FORGED_EXECUTION_FACT",
+    }
+    with pytest.raises(ValueError, match="stale|quality|valuation"):
+        validate_investor_brief_binding(factor, forged_asset_specific)
+
+    # Re-signing presentation prose cannot create a typed source fact either.
+    resigned = deepcopy(factor)
+    resigned["investor_brief"]["asset_specific"]["execution_risk"] = {
+        "status": "PARTIAL_CURRENT",
+        "summary": "FORGED_EXECUTION_FACT",
+        "source_fact_hash": "a" * 64,
+        "source_observation_hash": "b" * 64,
+        "observed_components": ("FORGED",),
+        "unobserved_components": (),
+        "full_execution_risk_ready": False,
+        "product_admitted": False,
+    }
+    resigned["canonical_decision_identity"] = canonical_factor_binding(resigned)
+    resigned["investor_brief"]["canonical_binding"] = deepcopy(
+        resigned["canonical_decision_identity"]
+    )
+    with pytest.raises(ValueError, match="typed P_EXEC_RISK"):
+        validate_investor_brief_binding(resigned)
 
     legacy_binding = deepcopy(factor)
     legacy_binding["canonical_decision_identity"].pop("asset_material_sha256")

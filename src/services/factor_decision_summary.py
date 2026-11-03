@@ -1406,7 +1406,7 @@ def _bound_risk_material(summary: Dict[str, Any], brief: Any = None) -> Dict[str
 
 
 def _bound_asset_material(summary: Dict[str, Any], brief: Any = None) -> Dict[str, Any]:
-    """Bind visible Quality/Valuation atoms without creating action authority."""
+    """Bind Quality/Valuation and typed asset facts without adding authority."""
     candidate = summary.get("investor_brief") if brief is None else brief
     if candidate is not None and not isinstance(candidate, dict):
         raise ValueError("investor brief asset material has invalid type")
@@ -1418,6 +1418,34 @@ def _bound_asset_material(summary: Dict[str, Any], brief: Any = None) -> Dict[st
             raise ValueError(f"{label} has invalid type")
         return value
 
+    trace = summary.get("evidence_traceability")
+    universe = trace.get("complete_research_universe") if isinstance(trace, Mapping) else None
+    rows = universe.get("data_objects") if isinstance(universe, Mapping) else None
+    typed_asset_facts = []
+    if isinstance(rows, list):
+        for row in rows:
+            if (
+                not isinstance(row, Mapping)
+                or row.get("dataset_id") not in {"E_PREMIUM", "P_EXEC_RISK"}
+                or row.get("state") not in {"READY", "PARTIAL"}
+            ):
+                continue
+            typed_asset_facts.append({
+                "dataset_id": row.get("dataset_id"),
+                "state": row.get("state"),
+                "reason": row.get("reason"),
+                "source_fact_hash": row.get("source_fact_hash"),
+                "source_observation_hash": row.get("source_observation_hash"),
+                "independent_source_value_admitted": row.get(
+                    "independent_source_value_admitted"
+                ),
+                "strategy_upgrade_authority": row.get(
+                    "strategy_upgrade_authority"
+                ),
+                "facts": deepcopy(row.get("facts")),
+            })
+    typed_asset_facts.sort(key=lambda row: str(row.get("dataset_id") or ""))
+
     return {
         "factor_quality_growth": summary.get("quality_growth"),
         "factor_valuation_text": summary.get("valuation"),
@@ -1427,6 +1455,7 @@ def _bound_asset_material(summary: Dict[str, Any], brief: Any = None) -> Dict[st
         "factor_business_valuation_receipt": mapping_or_none(
             summary.get("business_valuation"), "business valuation material",
         ),
+        "factor_typed_asset_facts": typed_asset_facts,
         "brief_quality": mapping_or_none(
             candidate.get("quality") if isinstance(candidate, dict) else None,
             "investor brief quality material",
@@ -1434,6 +1463,10 @@ def _bound_asset_material(summary: Dict[str, Any], brief: Any = None) -> Dict[st
         "brief_valuation": mapping_or_none(
             candidate.get("valuation") if isinstance(candidate, dict) else None,
             "investor brief valuation material",
+        ),
+        "brief_asset_specific": mapping_or_none(
+            candidate.get("asset_specific") if isinstance(candidate, dict) else None,
+            "investor brief asset-specific material",
         ),
     }
 
@@ -1470,7 +1503,9 @@ def canonical_factor_binding(summary: Any) -> Dict[str, Any]:
         # snapshots without this digest cannot pass a *current* Product gate.
         "risk_material_binding_version": "factor-brief-risk-atoms-v1",
         "risk_material_sha256": digest(_bound_risk_material(summary)),
-        "asset_material_binding_version": "factor-brief-quality-valuation-v1",
+        "asset_material_binding_version": (
+            "factor-brief-quality-valuation-typed-asset-v2"
+        ),
         "asset_material_sha256": digest(_bound_asset_material(summary)),
     }
 
@@ -1483,6 +1518,68 @@ def validate_canonical_factor_binding(summary: Any) -> Dict[str, Any]:
     if actual != expected:
         raise ValueError("canonical decision identity is missing or stale")
     return expected
+
+
+def _validate_typed_asset_specific_semantics(
+    summary: Mapping[str, Any], candidate: Mapping[str, Any],
+) -> None:
+    """Require reader asset facts to be exact projections of Registry rows."""
+    asset_specific = candidate.get("asset_specific")
+    asset_specific = asset_specific if isinstance(asset_specific, Mapping) else {}
+    active_states = {"READY", "PROVEN_CURRENT", "PARTIAL_CURRENT"}
+
+    premium_row = _typed_source_object_for_brief(summary, "E_PREMIUM")
+    premium = asset_specific.get("premium_discount")
+    premium = premium if isinstance(premium, Mapping) else {}
+    premium_active = str(premium.get("status") or "").upper() in active_states
+    if premium_row:
+        premium_facts = _mapping(premium_row.get("facts"))
+        if (
+            str(candidate.get("asset_type") or "").lower() != "etf"
+            or not premium_active
+            or premium.get("source_fact_hash") != premium_row.get("source_fact_hash")
+            or premium.get("source_observation_hash")
+            != premium_row.get("source_observation_hash")
+            or premium.get("comparison_basis")
+            != premium_facts.get("comparison_basis")
+            or premium.get("full_intraday_premium_ready") is not False
+            or premium.get("product_admitted") is not False
+        ):
+            raise ValueError(
+                "investor brief ETF premium is not bound to the typed source fact"
+            )
+    elif premium_active:
+        raise ValueError(
+            "investor brief ETF premium lacks a typed E_PREMIUM source fact"
+        )
+
+    execution_row = _typed_source_object_for_brief(summary, "P_EXEC_RISK")
+    execution = asset_specific.get("execution_risk")
+    execution = execution if isinstance(execution, Mapping) else {}
+    execution_active = str(execution.get("status") or "").upper() in active_states
+    if execution_row:
+        execution_facts = _mapping(execution_row.get("facts"))
+        if (
+            str(candidate.get("asset_type") or "stock").lower() != "stock"
+            or not execution_active
+            or execution.get("source_fact_hash")
+            != execution_row.get("source_fact_hash")
+            or execution.get("source_observation_hash")
+            != execution_row.get("source_observation_hash")
+            or tuple(execution.get("observed_components") or ())
+            != tuple(execution_facts.get("observed_components") or ())
+            or tuple(execution.get("unobserved_components") or ())
+            != tuple(execution_facts.get("unobserved_components") or ())
+            or execution.get("full_execution_risk_ready") is not False
+            or execution.get("product_admitted") is not False
+        ):
+            raise ValueError(
+                "investor brief execution risk is not bound to the typed source fact"
+            )
+    elif execution_active:
+        raise ValueError(
+            "investor brief execution risk lacks a typed P_EXEC_RISK source fact"
+        )
 
 
 def validate_investor_brief_binding(
@@ -1503,6 +1600,7 @@ def validate_investor_brief_binding(
         raise ValueError("investor brief risk material identity is stale")
     if digest(_bound_asset_material(summary, candidate)) != expected["asset_material_sha256"]:
         raise ValueError("investor brief quality/valuation material identity is stale")
+    _validate_typed_asset_specific_semantics(summary, candidate)
     return candidate
 
 
@@ -1934,6 +2032,34 @@ def _material_event_sentences(summary: Dict[str, Any]) -> List[str]:
     return list(dict.fromkeys(events))
 
 
+def _typed_source_object_for_brief(
+    summary: Mapping[str, Any], dataset_id: str,
+) -> Dict[str, Any]:
+    """Return one exact typed source fact; never infer Product admission."""
+    trace = summary.get("evidence_traceability")
+    universe = trace.get("complete_research_universe") if isinstance(trace, Mapping) else None
+    rows = universe.get("data_objects") if isinstance(universe, Mapping) else None
+    if not isinstance(rows, list):
+        return {}
+    row = next((
+        item for item in rows
+        if isinstance(item, Mapping) and item.get("dataset_id") == dataset_id
+    ), None)
+    facts = row.get("facts") if isinstance(row, Mapping) else None
+    if (
+        not isinstance(row, Mapping)
+        or row.get("state") not in {"READY", "PARTIAL"}
+        or row.get("independent_source_value_admitted") is not True
+        or row.get("strategy_upgrade_authority") is not False
+        or not isinstance(facts, Mapping)
+        or not facts
+        or len(str(row.get("source_fact_hash") or "")) != 64
+        or len(str(row.get("source_observation_hash") or "")) != 64
+    ):
+        return {}
+    return dict(row)
+
+
 def _build_asset_research_brief_v1(trend_result, summary, *, asset_type: str = "stock"):
     summary = summary if isinstance(summary, dict) else {}
     sections = summary.get("sections")
@@ -2044,6 +2170,38 @@ def _build_asset_research_brief_v1(trend_result, summary, *, asset_type: str = "
         str(valuation_document.get("status") or "").upper() == "READY"
         and valuation_document.get("product_admitted") is True
     )
+    typed_premium = (
+        _typed_source_object_for_brief(summary, "E_PREMIUM")
+        if asset_type == "etf" else {}
+    )
+    typed_execution = (
+        _typed_source_object_for_brief(summary, "P_EXEC_RISK")
+        if asset_type == "stock" else {}
+    )
+    premium_facts = _mapping(typed_premium.get("facts"))
+    premium_pct = _safe_float(premium_facts.get("premium_discount_pct"))
+    premium_close = _safe_float(premium_facts.get("daily_close_cny_per_share"))
+    premium_nav = _safe_float(premium_facts.get("official_nav_cny_per_share"))
+    premium_summary = ""
+    if premium_pct is not None and premium_close is not None and premium_nav is not None:
+        premium_summary = (
+            f"日终收盘价 {premium_close:.4f} 元/份，相对同日官方NAV "
+            f"{premium_nav:.4f} 元/份为 {premium_pct:+.3f}%；"
+            "仅日终口径，IOPV实时值及同刻价格未绑定；不等于Product准入。"
+        )
+    execution_facts = _mapping(typed_execution.get("facts"))
+    observed_execution = tuple(execution_facts.get("observed_components") or ())
+    missing_execution = tuple(execution_facts.get("unobserved_components") or ())
+    execution_summary = ""
+    if observed_execution:
+        execution_summary = (
+            "已核同日成交量/成交额/换手及XSHG完成会话；"
+            + (
+                "停牌、涨跌停、买卖价差、费率仍未观测；"
+                if missing_execution else ""
+            )
+            + "仅为执行风险部分事实，不等于完整执行可行性或Product准入。"
+        )
 
     material_events = _material_event_sentences(summary)
     supply_component = supply_demand if _asset_brief_v1_usable(supply_demand) else volume_price
@@ -2305,21 +2463,17 @@ def _build_asset_research_brief_v1(trend_result, summary, *, asset_type: str = "
                     "receipt_hash": underlying_valuation_document.get("receipt_hash"),
                 },
                 "premium_discount": {
-                    "status": (
-                        "READY" if structured_valuation_ready else "MISSING"
+                    "status": "PARTIAL_CURRENT" if premium_summary else "MISSING",
+                    "summary": premium_summary,
+                    "comparison_basis": premium_facts.get("comparison_basis"),
+                    "full_intraday_premium_ready": premium_facts.get(
+                        "full_intraday_premium_ready"
                     ),
-                    "summary": (
-                        str(
-                            valuation_document.get("primary_summary_zh")
-                            or valuation_document.get("summary_zh")
-                            or ""
-                        ).strip()
-                        if structured_valuation_ready else ""
+                    "source_fact_hash": typed_premium.get("source_fact_hash"),
+                    "source_observation_hash": typed_premium.get(
+                        "source_observation_hash"
                     ),
-                    "methods": valuation_document.get("methods") or (),
-                    "fair_value": valuation_document.get("fair_value"),
-                    "price_position": valuation_document.get("price_position"),
-                    "receipt_hash": valuation_document.get("receipt_hash"),
+                    "product_admitted": False,
                 },
                 "liquidity_spread": {"status": "MISSING"},
                 "tracking_quality": {"status": "MISSING"},
@@ -2332,7 +2486,21 @@ def _build_asset_research_brief_v1(trend_result, summary, *, asset_type: str = "
                     "status": row.get("status"),
                     "summary": row.get("summary_zh"),
                     "receipt_hash": row.get("receipt_hash"),
-                } for row in index_sector_valuations)
+                } for row in index_sector_valuations),
+                "execution_risk": {
+                    "status": "PARTIAL_CURRENT" if execution_summary else "MISSING",
+                    "summary": execution_summary,
+                    "observed_components": observed_execution,
+                    "unobserved_components": missing_execution,
+                    "full_execution_risk_ready": execution_facts.get(
+                        "full_execution_risk_ready"
+                    ),
+                    "source_fact_hash": typed_execution.get("source_fact_hash"),
+                    "source_observation_hash": typed_execution.get(
+                        "source_observation_hash"
+                    ),
+                    "product_admitted": False,
+                },
             }
         ),
         "historical_reference": {
