@@ -262,7 +262,6 @@ class PersistedIntelligenceAnalysisIntegrationTestCase(unittest.TestCase):
             ),
             news=merged,
             report="复盘正文",
-            market_light_snapshot={"dimensions": {"breadth": {"available": True}}},
         )
         self.assertEqual(payload["news"][0]["url"], "https://news.example.com/market")
         self.assertGreaterEqual(len(payload["news"]), 1)
@@ -327,7 +326,6 @@ class PersistedIntelligenceAnalysisIntegrationTestCase(unittest.TestCase):
             ),
             news=merged,
             report="复盘正文",
-            market_light_snapshot={"dimensions": {"breadth": {"available": True}}},
         )
         self.assertGreaterEqual(len(payload["news"]), 8)
         self.assertEqual(sum(item["title"].startswith("Search headline") for item in payload["news"][0:8]), 4)

@@ -190,6 +190,23 @@ def test_partial_scope_cannot_be_resealed_as_complete(field, value) -> None:
         )
 
 
+def test_intraday_tushare_breadth_never_dispatches_untyped_rt_k() -> None:
+    from data_provider.tushare_fetcher import TushareFetcher
+
+    fetcher = TushareFetcher.__new__(TushareFetcher)
+    fetcher._api = MagicMock()
+    fetcher._get_china_now = MagicMock(
+        return_value=datetime(2026, 11, 4, 10, 30)
+    )
+    fetcher._get_trade_dates = MagicMock(
+        return_value=["20261104", TARGET]
+    )
+    fetcher._call_api_with_rate_limit = MagicMock()
+
+    assert fetcher.get_market_stats() is None
+    fetcher._call_api_with_rate_limit.assert_not_called()
+
+
 def test_existing_tushare_market_stats_uses_three_batch_endpoints() -> None:
     from data_provider.tushare_fetcher import TushareFetcher
 
@@ -223,6 +240,206 @@ def test_existing_tushare_market_stats_uses_three_batch_endpoints() -> None:
         "suspend_type": "S",
         "fields": "ts_code,trade_date,suspend_type",
     }
+
+
+def test_source_level_breadth_is_evidence_not_market_light_or_action() -> None:
+    from data_provider.market_breadth_source import compile_market_breadth_observation
+    from src.core.market_profile import CN_PROFILE
+    from src.core.market_strategy import get_market_strategy_blueprint
+    from src.market_analyzer import MarketAnalyzer, MarketOverview
+
+    frame = build()
+    observation = compile_market_breadth_observation(
+        frame, frame.attrs["dsa_market_breadth_context"]
+    )
+    analyzer = MarketAnalyzer.__new__(MarketAnalyzer)
+    analyzer.region = "cn"
+    analyzer.profile = CN_PROFILE
+    analyzer.strategy = get_market_strategy_blueprint("cn")
+    analyzer.config = SimpleNamespace(
+        report_language="zh", market_review_color_scheme="green_up",
+    )
+    analyzer._build_representative_index_roles = lambda value: {}
+    overview = MarketOverview(
+        date="2026-11-04",
+        up_count=1,
+        down_count=1,
+        flat_count=1,
+        limit_up_count=8,
+        limit_down_count=1,
+        total_amount=9999.0,
+        breadth_denominator=3,
+        market_universe_complete=True,
+        data_object_source_observations={"M_BASIC_BREADTH": observation},
+    )
+
+    brief = analyzer._build_market_regime_brief(overview)
+    light = analyzer.build_market_light_snapshot(overview)
+    prompt = analyzer._build_review_prompt(overview, [])
+    payload = analyzer.build_market_review_payload(
+        overview,
+        [],
+        "## A股复盘\n\n来源级宽度待准入。",
+    )
+    with pytest.raises(ValueError, match="MARKET_LIGHT_SNAPSHOT_MISMATCH"):
+        analyzer.build_market_review_payload(
+            overview,
+            [],
+            "## A股复盘\n\n来源级宽度待准入。",
+            market_light_snapshot={
+                "dimensions": {"breadth": {"score": 99, "available": True}},
+                "data_quality": "ok",
+            },
+        )
+
+    assert brief["breadth_state"] == "UNKNOWN"
+    assert brief["breadth_denominator"] is None
+    assert brief["breadth_ratio"] is None
+    assert brief["breadth"]["status"] == "PARTIAL"
+    assert brief["breadth"]["observed_state"] == "BALANCED"
+    assert brief["speculative_heat"]["status"] == "PARTIAL"
+    assert brief["breadth"]["product_admitted"] is False
+    assert light["dimensions"]["breadth"]["available"] is False
+    assert light["dimensions"]["limit"]["available"] is False
+    assert analyzer._build_stats_block(overview) == ""
+    assert "上涨: 1 家" not in prompt
+    assert "9999" not in prompt
+    assert "来源级市场统计尚未获得Product准入" in prompt
+    assert "breadth" not in payload
+    assert payload["data_object_source_observations"]["M_BASIC_BREADTH"] == observation
+
+
+def test_exact_compiled_current_admission_opens_only_breadth_consumer() -> None:
+    from data_provider.market_breadth_source import compile_market_breadth_observation
+    from src.core.market_profile import CN_PROFILE
+    from src.core.market_strategy import get_market_strategy_blueprint
+    from src.market_analyzer import MarketAnalyzer, MarketOverview
+    from src.services.data_object_admission import (
+        DataObjectAdmissionError,
+        compile_b1_runtime_admission_receipts,
+        compile_data_object_admission_view,
+    )
+    from src.services.evidence_traceability_registry import (
+        compile_complete_research_universe_view,
+    )
+    from tests.test_data_object_admission import _rights_evidence
+
+    frame = build()
+    observation = compile_market_breadth_observation(
+        frame, frame.attrs["dsa_market_breadth_context"]
+    )
+    objects = compile_complete_research_universe_view({
+        "asset_type": "stock",
+        "data_object_source_observations": {
+            "M_BASIC_BREADTH": observation,
+        },
+    })["data_objects"]
+    operation_id = "breadth-current-nosend-r001"
+    as_of = observation["source_observed_at"]
+    grant = _rights_evidence(
+        dataset_id="M_BASIC_BREADTH",
+        provider_identity=observation["provider_identity"],
+        consumer_scope="MARKET_REGIME_BRIEF",
+        operation_id=operation_id,
+        terms_observed_at="2026-11-03T07:00:00+00:00",
+    )
+    receipts = compile_b1_runtime_admission_receipts(
+        objects,
+        b1_context={
+            "operation_id": operation_id,
+            "intended_use": "NO_SEND_RESEARCH",
+            "research_as_of": as_of,
+            "temporal_scope": "CURRENT_OBSERVATION",
+            "rights_by_dataset": {"M_BASIC_BREADTH": grant},
+        },
+    )
+    admission_view = compile_data_object_admission_view(
+        objects,
+        receipts,
+        as_of=as_of,
+        operation_id=operation_id,
+        intended_use="NO_SEND_RESEARCH",
+    )
+    admission = next(
+        row for row in admission_view["objects"]
+        if row["dataset_id"] == "M_BASIC_BREADTH"
+    )
+
+    analyzer = MarketAnalyzer.__new__(MarketAnalyzer)
+    analyzer.region = "cn"
+    analyzer.strategy = get_market_strategy_blueprint("cn")
+    analyzer.config = SimpleNamespace(report_language="zh")
+    analyzer.profile = CN_PROFILE
+    analyzer._build_representative_index_roles = lambda value: {}
+    overview = MarketOverview(
+        date="2026-11-03",
+        up_count=1,
+        down_count=1,
+        flat_count=1,
+        limit_up_count=8,
+        limit_down_count=1,
+        total_amount=9999.0,
+        breadth_denominator=3,
+        market_universe_complete=True,
+        data_object_source_observations={"M_BASIC_BREADTH": observation},
+        data_object_admissions={"M_BASIC_BREADTH": admission},
+    )
+
+    brief = analyzer._build_market_regime_brief(overview)
+    light = analyzer.build_market_light_snapshot(overview)
+    assert admission["product_admitted"] is True
+    assert brief["breadth"]["status"] == "READY"
+    assert brief["breadth"]["product_admitted"] is True
+    assert brief["breadth_state"] == "BALANCED"
+    assert light["dimensions"]["breadth"]["available"] is True
+    # M_LIMIT and turnover remain separate closed objects.
+    assert light["dimensions"]["limit"]["available"] is False
+    assert brief["speculative_heat"]["product_admitted"] is False
+
+    # An internally self-consistent compiled admission for different units is
+    # still not the admission for this exact runtime source observation.
+    from copy import deepcopy
+    from data_provider.daily_data_identity import sha256_payload
+
+    forged = deepcopy(admission)
+    forged["units"] = {"count": "LOT", "breadth_ratio": "PERCENT"}
+    forged["runtime_units"] = dict(forged["units"])
+    forged.pop("admission_hash")
+    forged["admission_hash"] = sha256_payload(forged)
+    overview.data_object_admissions = {"M_BASIC_BREADTH": forged}
+    with pytest.raises(
+        DataObjectAdmissionError,
+        match="BREADTH_COMPILED_ADMISSION_SOURCE_MISMATCH",
+    ):
+        analyzer._build_market_regime_brief(overview)
+
+
+def test_bare_product_flag_cannot_open_market_breadth_consumers() -> None:
+    from data_provider.market_breadth_source import compile_market_breadth_observation
+    from src.core.market_profile import CN_PROFILE
+    from src.market_analyzer import MarketAnalyzer, MarketOverview
+    from src.services.data_object_admission import DataObjectAdmissionError
+
+    frame = build()
+    observation = compile_market_breadth_observation(
+        frame, frame.attrs["dsa_market_breadth_context"]
+    )
+    analyzer = MarketAnalyzer.__new__(MarketAnalyzer)
+    analyzer.profile = CN_PROFILE
+    analyzer._build_representative_index_roles = lambda value: {}
+    overview = MarketOverview(
+        date="2026-11-04",
+        up_count=1,
+        down_count=1,
+        flat_count=1,
+        data_object_source_observations={"M_BASIC_BREADTH": observation},
+        data_object_admissions={
+            "M_BASIC_BREADTH": {"product_admitted": True},
+        },
+    )
+
+    with pytest.raises(DataObjectAdmissionError):
+        analyzer._build_market_regime_brief(overview)
 
 
 def test_provider_failure_never_falls_back_to_unverified_counts() -> None:

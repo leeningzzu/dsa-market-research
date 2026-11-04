@@ -4319,21 +4319,37 @@ def _verified_typed_price_bar_scope(factor: Mapping) -> dict[str, dict]:
 
 
 
-def _verified_cn_market_source_scope(factor: Mapping) -> dict[str, dict]:
-    """Admit only source identity for M_INDEX_CURRENT, never the index value."""
+def _verified_regime_source_carrier(
+    factor: Mapping,
+    evidence: Mapping,
+) -> bool:
+    """Verify the REGIME invocation identity without upgrading its output state.
+
+    A strict source receipt can remain independently visible when the composite
+    regime is UNKNOWN.  The method receipt still binds producer, output hash and
+    upstream identities; this helper grants no method readiness or action vote.
+    """
     if not _receipt_required(factor):
-        return {}
-    evidence = factor.get("market_sector_regime")
-    if not isinstance(evidence, Mapping):
-        return {}
-    binding = next(b for b in EVIDENCE_BINDINGS if b.requirement_id == "REGIME")
-    state, reason = method_observation(
+        return False
+    binding = next(
+        item for item in EVIDENCE_BINDINGS
+        if item.requirement_id == "REGIME"
+    )
+    valid, reason = _receipt_state(
         binding,
         evidence,
-        receipt=_receipt_for(factor, "REGIME"),
-        require_receipt=True,
+        _receipt_for(factor, "REGIME"),
     )
-    if state not in {"READY", "PARTIAL"} or reason != "METHOD_INVOCATION_VERIFIED":
+    return valid and reason == "METHOD_INVOCATION_VERIFIED"
+
+
+def _verified_cn_market_source_scope(factor: Mapping) -> dict[str, dict]:
+    """Admit only source identity for M_INDEX_CURRENT, never the index value."""
+    evidence = factor.get("market_sector_regime")
+    if (
+        not isinstance(evidence, Mapping)
+        or not _verified_regime_source_carrier(factor, evidence)
+    ):
         return {}
     sources = evidence.get("source_observations")
     observation = (
@@ -4399,17 +4415,11 @@ def _verified_cn_market_5m_source_scope(factor: Mapping) -> dict[str, dict]:
     Market index returns, numeric vote, warmup, storage, PIT and rights all
     remain independent closed gates.
     """
-    if not _receipt_required(factor):
-        return {}
     evidence = factor.get("market_sector_regime")
-    if not isinstance(evidence, Mapping):
-        return {}
-    parent = next(b for b in EVIDENCE_BINDINGS if b.requirement_id == "REGIME")
-    state, reason = method_observation(
-        parent, evidence, receipt=_receipt_for(factor, "REGIME"),
-        require_receipt=True,
-    )
-    if state not in {"READY", "PARTIAL"} or reason != "METHOD_INVOCATION_VERIFIED":
+    if (
+        not isinstance(evidence, Mapping)
+        or not _verified_regime_source_carrier(factor, evidence)
+    ):
         return {}
     sources = evidence.get("source_observations")
     receipt = sources.get("M_INDEX_BARS") if isinstance(sources, Mapping) else None

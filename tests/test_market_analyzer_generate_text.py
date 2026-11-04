@@ -2631,6 +2631,17 @@ class TestMarketAnalyzerBypassFix:
             ma.region = "cn"
             return ma
 
+    @staticmethod
+    def _admit_breadth_for_formatting(ma):
+        """Isolate formatting tests from the separately tested B1 compiler."""
+        ma._validated_market_stats_product_admission = (
+            lambda overview: {
+                "dataset_id": "M_BASIC_BREADTH",
+                "product_admitted": True,
+            }
+        )
+        return ma
+
     def test_no_access_to_private_model_attribute(self):
         """generate_text() must be called; _model must never be accessed."""
         ma = self._make_market_analyzer_with_mock_generate_text("复盘结果")
@@ -2802,6 +2813,7 @@ class TestMarketAnalyzerBypassFix:
 
         ma = self._make_market_analyzer_with_mock_generate_text(return_value=None)
         ma.config.report_language = "en"
+        self._admit_breadth_for_formatting(ma)
         overview = MarketOverview(
             date="2026-03-05",
             indices=[
@@ -2828,7 +2840,9 @@ class TestMarketAnalyzerBypassFix:
         assert "### 1. Market Summary" in result
         assert "### 3. Breadth & Liquidity" in result
         assert "- **Market Signal**:" in result
-        assert "Turnover 14567 (CNY 100m)" in result
+        assert "Advancers 3200 / Decliners 1800 / Flat 0" in result
+        assert "Turnover 14567" not in result
+        assert "Limit-up 88" not in result
         assert "### 4. Sector / Theme Highlights" in result
         assert "### 6. Strategy Framework" in result
         assert "### 一、市场总结" not in result
@@ -2940,6 +2954,7 @@ class TestMarketAnalyzerBypassFix:
 
         ma = self._make_market_analyzer_with_mock_generate_text(return_value="review")
         ma.config.report_language = "en"
+        self._admit_breadth_for_formatting(ma)
         overview = MarketOverview(
             date="2026-03-05",
             indices=[
@@ -2975,9 +2990,10 @@ Sector text.
 
         result = ma._inject_data_into_review(review, overview)
 
-        assert "- **Market Signal**: 66/100 (constructive, risk-on)" in result
-        assert "- **Breadth**: Advancers 3200 / Decliners 1800 / Flat 100;" in result
-        assert "Turnover 14567 (CNY 100m)" in result
+        assert "- **Market Signal**: 60/100 (constructive, risk-on)" in result
+        assert "- **Breadth**: Advancers 3200 / Decliners 1800 / Flat 100." in result
+        assert "Turnover 14567" not in result
+        assert "Limit-up 88" not in result
         assert "| Index | Last | Change % | Open | High | Low | Amplitude | Turnover (CNY 100m) |" in result
         assert "#### Leading Industry Sectors" in result
         assert "| 1 | AI算力 | +3.25% |" in result
@@ -2988,6 +3004,7 @@ Sector text.
         from src.market_analyzer import MarketOverview, MarketIndex
 
         ma = self._make_market_analyzer_with_mock_generate_text(return_value="review")
+        self._admit_breadth_for_formatting(ma)
         overview = MarketOverview(
             date="2026-03-05",
             indices=[
@@ -3032,7 +3049,7 @@ Sector text.
         result = ma._inject_data_into_review(review, overview, news)
 
         assert "今天的大环境" in result
-        assert "市场参考分 66/100" in result
+        assert "市场参考分 60/100" in result
         assert "绿灯（可进攻）" not in result
         assert "大盘红绿灯" not in result
         assert "green（可进攻）" not in result
@@ -3040,7 +3057,7 @@ Sector text.
         signal_line = next(line for line in result.splitlines() if "**今天的大环境**" in line)
         drivers_line = next(line for line in result.splitlines() if "**为什么**" in line)
         assert signal_line.startswith("- ")
-        assert "66/100" in signal_line
+        assert "60/100" in signal_line
         assert "█" not in result
         assert "░" not in result
         assert "盘面温度" not in drivers_line
@@ -3478,7 +3495,7 @@ Index text.
                 cn_index_completed_close_source=source,
             )
     def test_market_index_zero_filled_quote_is_not_a_ready_index_vote_or_r004_role(self):
-        """All-zero fallback is not an observed index; valid breadth/limit stay available."""
+        """All-zero index and source-only breadth/limit cannot become votes."""
         from src.market_analyzer import MarketIndex, MarketOverview
 
         ma = self._make_market_analyzer_with_mock_generate_text(return_value="review")
@@ -3496,10 +3513,10 @@ Index text.
         light = ma.build_market_light_snapshot(overview)
         regime = ma._build_market_regime_brief(overview)
         roles = regime["representative_index_roles"]
-        assert light["dimensions"]["breadth"]["available"] is True
-        assert light["dimensions"]["limit"]["available"] is True
+        assert light["dimensions"]["breadth"]["available"] is False
+        assert light["dimensions"]["limit"]["available"] is False
         assert light["dimensions"]["index"] == {"score": 50, "available": False}
-        assert light["data_quality"] == "partial"
+        assert light["data_quality"] == "unavailable"
         from src.services.factor_decision_summary import build_stock_factor_decision_summary
         from tests.test_factor_decision_summary import _trend
         factor = build_stock_factor_decision_summary(
@@ -3507,7 +3524,7 @@ Index text.
             daily_market_context={"market_light": light},
             include_canonical=True,
         )
-        assert factor["market_sector_regime"]["market"]["state"] == "CAUTION"
+        assert factor["market_sector_regime"]["market"]["state"] == "UNKNOWN"
         assert factor["market_sector_regime"]["hard_veto"] is False
         assert "MARKET_REGIME_RISK_OFF" not in factor["canonical_decision"]["reason_codes"]
         assert roles["status"] == "MISSING"
@@ -3533,7 +3550,7 @@ Index text.
         light = ma.build_market_light_snapshot(overview)
         roles = ma._build_market_regime_brief(overview)["representative_index_roles"]
         assert light["dimensions"]["index"] == {"score": 50, "available": True}
-        assert light["data_quality"] == "ok"
+        assert light["data_quality"] == "partial"
         assert roles["roles"]["broad_all_market"]["status"] == "READY"
         assert any("权益指数平均涨跌幅 +0.00%" in reason for reason in light["reasons"])
 
@@ -3561,11 +3578,12 @@ Index text.
         assert snapshot["score"] < 40
         assert snapshot["region"] == "cn"
         assert snapshot["trade_date"] == "2026-03-06"
-        assert snapshot["data_quality"] == "ok"
-        assert snapshot["dimensions"]["breadth"]["available"] is True
+        assert snapshot["data_quality"] == "partial"
+        assert snapshot["dimensions"]["breadth"]["available"] is False
         assert snapshot["dimensions"]["index"]["available"] is True
-        assert snapshot["dimensions"]["limit"]["available"] is True
-        assert any("亏钱效应" in reason for reason in snapshot["reasons"])
+        assert snapshot["dimensions"]["limit"]["available"] is False
+        assert any("权益指数平均涨跌幅 -2.10%" in reason for reason in snapshot["reasons"])
+        assert not any("亏钱效应" in reason for reason in snapshot["reasons"])
 
     def test_market_light_snapshot_uses_english_labels_and_reasons(self):
         from src.market_analyzer import MarketIndex, MarketOverview
@@ -3594,9 +3612,10 @@ Index text.
         )
         assert not any(reason.startswith("market temperature ") for reason in snapshot["reasons"])
         assert any(
-            reason.startswith("advancers ratio ") and "downside pressure dominates" in reason
+            reason == "average equity-index change -2.10%"
             for reason in snapshot["reasons"]
         )
+        assert not any(reason.startswith("advancers ratio ") for reason in snapshot["reasons"])
 
     def test_market_light_snapshot_marks_us_without_breadth_as_partial(self):
         from src.core.market_profile import US_PROFILE
@@ -3778,7 +3797,6 @@ Index text.
             ),
             [],
             "美股复盘报告",
-            market_light_snapshot={"dimensions": {"breadth": {"score": 60, "available": True}}},
         )
 
         assert "breadth" not in payload
@@ -3823,7 +3841,6 @@ Index text.
             ),
             [],
             "A股复盘报告",
-            market_light_snapshot={"dimensions": {"breadth": {"score": 55, "available": False}}},
         )
 
         assert "breadth" not in payload
@@ -3838,6 +3855,7 @@ Index text.
         from src.market_analyzer import MarketIndex, MarketOverview
 
         ma = self._make_market_analyzer_with_mock_generate_text(return_value="复盘结果")
+        self._admit_breadth_for_formatting(ma)
         payload = ma.build_market_review_payload(
             MarketOverview(
                 date="2026-03-18",
@@ -3853,28 +3871,23 @@ Index text.
             ),
             [],
             "A股复盘报告",
-            market_light_snapshot={"dimensions": {"breadth": {"score": 62, "available": True}}},
         )
 
         assert payload["breadth"] is not None
         assert payload["breadth"]["up_count"] == 1200
         assert payload["breadth"]["down_count"] == 900
-        assert payload["breadth"]["limit_up_count"] == 12
-        assert payload["breadth"]["total_amount"] == 12345.0
+        assert "limit_up_count" not in payload["breadth"]
+        assert "total_amount" not in payload["breadth"]
         market_brief = payload["market_brief"]
         assert market_brief["breadth_state"] == "ADVANCERS_LEAD"
         assert market_brief["breadth_denominator"] == 2160
         assert market_brief["breadth_ratio"] == 0.555556
         assert market_brief["breadth"]["status"] == "READY"
-        assert market_brief["speculative_heat"] == {
-            "status": "READY",
-            "proxy": "limit_up_down_structure",
-            "limit_up_count": 12,
-            "limit_down_count": 4,
-            "limit_total": 16,
-            "limit_up_ratio": 0.75,
-            "state": "LIMIT_UP_LEAD",
-        }
+        speculative = market_brief["speculative_heat"]
+        assert speculative["status"] == "PARTIAL"
+        assert speculative["product_admitted"] is False
+        assert speculative["observed_state"] == "LIMIT_UP_LEAD"
+        assert speculative["state"] == "UNKNOWN"
 
     def test_market_review_includes_concept_rankings_in_prompt_payload_and_tables(self):
         from src.market_analyzer import MarketIndex, MarketOverview
@@ -3897,7 +3910,6 @@ Index text.
             overview,
             [],
             "A股复盘报告",
-            market_light_snapshot={"dimensions": {"breadth": {"score": 55, "available": False}}},
         )
 
         assert "行业领涨: 半导体(+2.35%)" in prompt

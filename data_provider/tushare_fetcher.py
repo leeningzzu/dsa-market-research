@@ -1025,108 +1025,79 @@ class TushareFetcher(BaseFetcher):
         return None
 
     def get_market_stats(self) -> Optional[dict]:
-        """
-        获取市场涨跌统计 (Tushare Pro)
-        2000积分 每天访问该接口 ts.pro_api().rt_k 两次
-        接口限制见：https://tushare.pro/document/1?doc_id=108
+        """Return exact current completed-day all-A breadth or fail closed.
+
+        Intraday ``rt_k`` scalar counts have no same-day listed universe or
+        suspension denominator, so this owner deliberately leaves intraday
+        fallback to the existing manager instead of presenting them as breadth.
         """
         if self._api is None:
             return None
-
         try:
-            logger.info("[Tushare] ts.pro_api() 获取市场统计...")
-            
-            # 获取当前中国时间，判断是否在交易时间内
             china_now = self._get_china_now()
             current_clock = china_now.strftime("%H:%M")
             current_date = china_now.strftime("%Y%m%d")
-
             trade_dates = self._get_trade_dates(current_date)
             if not trade_dates:
                 return None
+            if (
+                current_date in trade_dates
+                and "09:30" <= current_clock <= "16:30"
+            ):
+                logger.info(
+                    "[Tushare] exact completed-day breadth deferred intraday"
+                )
+                return None
 
-            if current_date in trade_dates:
-                if current_clock < '09:30' or current_clock > '16:30':
-                    use_realtime = False
-                else:
-                    use_realtime = True
+            if current_date not in trade_dates:
+                last_date = self._pick_trade_date(trade_dates, use_today=True)
+            elif current_clock < "09:30":
+                last_date = self._pick_trade_date(trade_dates, use_today=False)
             else:
-                use_realtime = False
+                last_date = self._pick_trade_date(trade_dates, use_today=True)
+            if last_date is None:
+                return None
 
-            # 若实盘的时候使用 则使用其他可以实盘获取的数据源 akshare、efinance
-            if use_realtime:
-                try:
-                    df = self._call_api_with_rate_limit("rt_k", ts_code='3*.SZ,6*.SH,0*.SZ,92*.BJ')
-                    if df is not None and not df.empty:
-                        return self._calc_market_stats(df)
-                    
-                except Exception as e:
-                    logger.error(f"[Tushare] ts.pro_api().rt_k 尝试获取实时数据失败: {e}")
-                    return None
-            else:
+            daily = self._call_api_with_rate_limit(
+                "daily",
+                trade_date=last_date,
+                fields="ts_code,trade_date,close,pre_close,vol,amount",
+            )
+            basic = self._call_api_with_rate_limit(
+                "stock_basic",
+                exchange="",
+                list_status="L",
+                fields=(
+                    "ts_code,name,market,exchange,list_status,"
+                    "list_date,delist_date"
+                ),
+            )
+            suspensions = self._call_api_with_rate_limit(
+                "suspend_d",
+                trade_date=last_date,
+                suspend_type="S",
+                fields="ts_code,trade_date,suspend_type",
+            )
+            from data_provider.tushare_market_breadth_source import (
+                build_tushare_current_market_breadth_frame,
+            )
 
-                if current_date not in trade_dates:
-                    last_date = self._pick_trade_date(trade_dates, use_today=True)  # 拿最近的日期
-                else:
-                    if current_clock < '09:30': 
-                        last_date = self._pick_trade_date(trade_dates, use_today=False)  # 拿取前一天的数据
-                    else:  # 即 '> 16:30'                  
-                        last_date = self._pick_trade_date(trade_dates, use_today=True)  # 拿取当天的数据
-
-                if last_date is None:
-                    return None
-
-                try:
-                    # One trade date per endpoint: daily excludes suspended
-                    # instruments, stock_basic owns the current listed universe,
-                    # and suspend_d explains every non-trading member.  This
-                    # replaces the historical wildcard query, which could not
-                    # prove a denominator or BSE coverage.
-                    daily = self._call_api_with_rate_limit(
-                        "daily",
-                        trade_date=last_date,
-                        fields="ts_code,trade_date,close,pre_close,vol,amount",
-                    )
-                    basic = self._call_api_with_rate_limit(
-                        "stock_basic",
-                        exchange="",
-                        list_status="L",
-                        fields=(
-                            "ts_code,name,market,exchange,list_status,"
-                            "list_date,delist_date"
-                        ),
-                    )
-                    suspensions = self._call_api_with_rate_limit(
-                        "suspend_d",
-                        trade_date=last_date,
-                        suspend_type="S",
-                        fields="ts_code,trade_date,suspend_type",
-                    )
-                    from data_provider.tushare_market_breadth_source import (
-                        build_tushare_current_market_breadth_frame,
-                    )
-                    observed_at = datetime.now(timezone.utc)
-                    frame = build_tushare_current_market_breadth_frame(
-                        daily,
-                        basic,
-                        suspensions,
-                        trade_date=last_date,
-                        observed_at=observed_at,
-                        current_completed_trade_date=last_date,
-                        research_as_of=observed_at,
-                    )
-                    return self._calc_market_stats(frame)
-                except Exception as e:
-                    logger.error(
-                        "[Tushare] current all-A breadth source failed: %s", e
-                    )
-                    
-
-            
-        except Exception as e:
-            logger.error(f"[Tushare] 获取市场统计失败: {e}")
-
-        return None
+            observed_at = datetime.now(timezone.utc)
+            frame = build_tushare_current_market_breadth_frame(
+                daily,
+                basic,
+                suspensions,
+                trade_date=last_date,
+                current_completed_trade_date=last_date,
+                observed_at=observed_at,
+                research_as_of=observed_at,
+            )
+            return self._calc_market_stats(frame)
+        except Exception as exc:
+            logger.error(
+                "[Tushare] current all-A breadth source failed: %s", exc
+            )
+            return None
     
     def _calc_market_stats(
             self,

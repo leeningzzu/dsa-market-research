@@ -164,18 +164,7 @@ def test_m2_completed_index5m_enters_market_review_runtime_registry_and_full_tex
     frame = _read_fixture(monkeypatch)
     ma = TestMarketAnalyzerBypassFix()._make_market_analyzer_with_mock_generate_text()
     overview = MarketOverview(date=_TARGET.isoformat())
-    market_light = {
-        "region": "cn", "trade_date": _TARGET.isoformat(),
-        "status": "yellow", "score": 45, "label": "谨慎",
-        "temperature_label": "谨慎", "reasons": ["来源不完整"],
-        "guidance": "等待独立宽度与行业确认",
-        "dimensions": {
-            "breadth": {"score": 50, "available": False},
-            "index": {"score": 50, "available": True},
-            "limit": {"score": 50, "available": False},
-        },
-        "data_quality": "partial",
-    }
+    market_light = ma.build_market_light_snapshot(overview)
     base = ma.build_market_review_payload(
         overview, [], "## 大盘市场复盘\\n\\n全市场宽度未知、行业未知、反证仍保留。",
         market_light,
@@ -259,6 +248,17 @@ def test_m2_completed_index5m_enters_market_review_runtime_registry_and_full_tex
     ]["current_product_admitted_count"] == 0
     assert objects["M_INDEX_CURRENT"]["state"] == "UNKNOWN"
     assert objects["M_BASIC_BREADTH"]["state"] == "UNKNOWN"
+
+    # The source remains independent of the composite REGIME state, but not of
+    # the exact invocation receipt that binds its upstream identity.
+    from copy import deepcopy
+    forged_factor = deepcopy(current)
+    forged_factor["method_execution_receipts"]["REGIME"]["receipt_hash"] = "0" * 64
+    forged_objects = {
+        row["dataset_id"]: row
+        for row in compile_complete_research_universe_view(forged_factor)["data_objects"]
+    }
+    assert forged_objects["M_INDEX_BARS"]["state"] == "UNKNOWN"
 
 
     # FULL investor report and required Email consume the same 76 data

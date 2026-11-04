@@ -2549,74 +2549,112 @@ class DataFetcherManager:
                 continue
         return []
 
-    def get_market_stats(self, *, purpose: str = "unspecified") -> Dict[str, Any]:
-        """获取市场涨跌统计（自动切换数据源）"""
-        logger.info("[MarketStats] component=market_stats action=start purpose=%s", purpose)
-        tickflow_fetcher = self._get_tickflow_fetcher()
-        if tickflow_fetcher is not None:
-            started_at = time.monotonic()
-            try:
-                data = tickflow_fetcher.get_market_stats()
-                elapsed = time.monotonic() - started_at
-                if data:
-                    logger.info(
-                        "[MarketStats] component=market_stats action=provider_success "
-                        "purpose=%s provider=TickFlowFetcher elapsed=%.2fs",
-                        purpose,
-                        elapsed,
-                    )
-                    return data
-                logger.info(
-                    "[MarketStats] component=market_stats action=provider_empty "
-                    "purpose=%s provider=TickFlowFetcher elapsed=%.2fs",
-                    purpose,
-                    elapsed,
-                )
-            except Exception as e:
-                elapsed = time.monotonic() - started_at
-                logger.warning(
-                    "[MarketStats] component=market_stats action=provider_failed "
-                    "purpose=%s provider=TickFlowFetcher elapsed=%.2fs error=%s",
-                    purpose,
-                    elapsed,
-                    e,
-                )
+    @staticmethod
+    def _has_verified_market_breadth(data: Any) -> bool:
+        """Validate a typed breadth claim; legacy scalars return False."""
+        if not isinstance(data, dict):
+            return False
+        source_rows = data.get("data_object_source_observations")
+        if not isinstance(source_rows, dict):
+            return False
+        observation = source_rows.get("M_BASIC_BREADTH")
+        if observation is None:
+            return False
+        from .market_breadth_source import validate_market_breadth_observation
 
-        for fetcher in self._fetchers:
-            if fetcher.name == "TickFlowFetcher":
-                continue
+        facts = validate_market_breadth_observation(observation)["facts"]
+        if any(
+            data.get(key) != facts.get(key)
+            for key in ("up_count", "down_count", "flat_count")
+        ):
+            raise ValueError("BREADTH_MANAGER_COUNT_MISMATCH")
+        return True
+
+    def get_market_stats(self, *, purpose: str = "unspecified") -> Dict[str, Any]:
+        """Prefer exact typed breadth; keep scalar providers as fallback only."""
+        logger.info("[MarketStats] component=market_stats action=start purpose=%s", purpose)
+        fetchers = list(self._fetchers)
+
+        def attempt(fetcher):
+            provider_name = getattr(fetcher, "name", fetcher.__class__.__name__)
             started_at = time.monotonic()
             try:
                 data = fetcher.get_market_stats()
-                elapsed = time.monotonic() - started_at
-                if data:
-                    logger.info(
-                        "[MarketStats] component=market_stats action=provider_success "
-                        "purpose=%s provider=%s elapsed=%.2fs",
-                        purpose,
-                        fetcher.name,
-                        elapsed,
-                    )
-                    return data
-                logger.info(
-                    "[MarketStats] component=market_stats action=provider_empty "
-                    "purpose=%s provider=%s elapsed=%.2fs",
-                    purpose,
-                    fetcher.name,
-                    elapsed,
-                )
-            except Exception as e:
-                elapsed = time.monotonic() - started_at
+            except Exception as exc:
                 logger.warning(
                     "[MarketStats] component=market_stats action=provider_failed "
                     "purpose=%s provider=%s elapsed=%.2fs error=%s",
-                    purpose,
-                    fetcher.name,
-                    elapsed,
-                    e,
+                    purpose, provider_name, time.monotonic() - started_at, exc,
+                )
+                return None
+            logger.info(
+                "[MarketStats] component=market_stats action=provider_%s "
+                "purpose=%s provider=%s elapsed=%.2fs",
+                "observed" if data else "empty",
+                purpose, provider_name, time.monotonic() - started_at,
+            )
+            return data
+
+        # The old TickFlow shortcut exposed scalars before the only current
+        # daily+universe+suspension producer. Probe that exact owner first.
+        tushare = next(
+            (item for item in fetchers if item.name == "TushareFetcher"),
+            None,
+        )
+        if tushare is not None:
+            data = attempt(tushare)
+            if data:
+                try:
+                    if self._has_verified_market_breadth(data):
+                        return data
+                    logger.info(
+                        "[MarketStats] component=market_stats action=untyped_candidate_ignored "
+                        "purpose=%s provider=%s",
+                        purpose, tushare.name,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "[MarketStats] component=market_stats action=typed_source_rejected "
+                        "purpose=%s provider=%s error=%s",
+                        purpose, tushare.name, exc,
+                    )
+
+        tickflow = self._get_tickflow_fetcher()
+        if tickflow is not None:
+            data = attempt(tickflow)
+            if data:
+                try:
+                    self._has_verified_market_breadth(data)
+                except Exception as exc:
+                    logger.warning(
+                        "[MarketStats] component=market_stats action=typed_source_rejected "
+                        "purpose=%s provider=TickFlowFetcher error=%s",
+                        purpose, exc,
+                    )
+                else:
+                    return data
+
+        for fetcher in fetchers:
+            if fetcher.name in {"TickFlowFetcher", "TushareFetcher"}:
+                continue
+            data = attempt(fetcher)
+            if not data:
+                continue
+            try:
+                self._has_verified_market_breadth(data)
+            except Exception as exc:
+                logger.warning(
+                    "[MarketStats] component=market_stats action=typed_source_rejected "
+                    "purpose=%s provider=%s error=%s",
+                    purpose, fetcher.name, exc,
                 )
                 continue
-        logger.warning("[MarketStats] component=market_stats action=complete status=empty purpose=%s", purpose)
+            return data
+
+        logger.warning(
+            "[MarketStats] component=market_stats action=complete status=empty purpose=%s",
+            purpose,
+        )
         return {}
 
     def _run_with_timeout(

@@ -5,7 +5,7 @@ import os
 import sys
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -118,6 +118,88 @@ class TestTickFlowMarketReviewFallback(unittest.TestCase):
         data = DataFetcherManager.get_market_stats(manager, purpose="market_review:cn")
 
         self.assertEqual(data["up_count"], 1)
+        self.assertEqual(fallback.stats_calls, 1)
+
+    def test_verified_breadth_outranks_tickflow_legacy_scalars(self):
+        manager = DataFetcherManager.__new__(DataFetcherManager)
+        legacy = {"up_count": 9, "down_count": 1, "flat_count": 0}
+        verified = {
+            "up_count": 1,
+            "down_count": 1,
+            "flat_count": 1,
+            "data_object_source_observations": {
+                "M_BASIC_BREADTH": {"fixture": "verified"},
+            },
+        }
+        exact = _DummyFetcher("TushareFetcher", stats=verified)
+        manager._fetchers = [exact]
+        manager._get_tickflow_fetcher = lambda: _DummyTickFlowFetcher(stats=legacy)
+
+        with patch(
+            "data_provider.market_breadth_source.validate_market_breadth_observation",
+            return_value={"facts": {"up_count": 1, "down_count": 1, "flat_count": 1}},
+        ):
+            data = DataFetcherManager.get_market_stats(
+                manager, purpose="market_review:cn"
+            )
+
+        self.assertIs(data, verified)
+        self.assertEqual(exact.stats_calls, 1)
+
+    def test_invalid_typed_breadth_cannot_be_laundered_over_tickflow_fallback(self):
+        manager = DataFetcherManager.__new__(DataFetcherManager)
+        legacy = {"up_count": 4, "down_count": 5, "flat_count": 1}
+        forged = {
+            "up_count": 99,
+            "down_count": 0,
+            "flat_count": 0,
+            "data_object_source_observations": {
+                "M_BASIC_BREADTH": {"fixture": "forged"},
+            },
+        }
+        exact = _DummyFetcher("TushareFetcher", stats=forged)
+        manager._fetchers = [exact]
+        manager._get_tickflow_fetcher = lambda: _DummyTickFlowFetcher(stats=legacy)
+
+        with patch(
+            "data_provider.market_breadth_source.validate_market_breadth_observation",
+            side_effect=ValueError("BREADTH_OBSERVATION_HASH_MISMATCH"),
+        ):
+            data = DataFetcherManager.get_market_stats(
+                manager, purpose="market_review:cn"
+            )
+
+        self.assertIs(data, legacy)
+        self.assertEqual(exact.stats_calls, 1)
+
+    def test_invalid_typed_tickflow_cannot_preempt_legacy_fallback(self):
+        manager = DataFetcherManager.__new__(DataFetcherManager)
+        forged = {
+            "up_count": 99,
+            "down_count": 0,
+            "flat_count": 0,
+            "data_object_source_observations": {
+                "M_BASIC_BREADTH": {"fixture": "forged-tickflow"},
+            },
+        }
+        fallback = _DummyFetcher(
+            "AkshareFetcher",
+            stats={"up_count": 2, "down_count": 3, "flat_count": 1},
+        )
+        manager._fetchers = [fallback]
+        manager._get_tickflow_fetcher = lambda: _DummyTickFlowFetcher(
+            stats=forged
+        )
+
+        with patch(
+            "data_provider.market_breadth_source.validate_market_breadth_observation",
+            side_effect=ValueError("BREADTH_OBSERVATION_HASH_MISMATCH"),
+        ):
+            data = DataFetcherManager.get_market_stats(
+                manager, purpose="market_review:cn"
+            )
+
+        self.assertIs(data, fallback.stats)
         self.assertEqual(fallback.stats_calls, 1)
 
     @patch("src.config.get_config")
