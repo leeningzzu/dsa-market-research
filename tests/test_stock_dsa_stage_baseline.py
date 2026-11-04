@@ -104,16 +104,24 @@ def test_current_global_observation_candidate_separates_product_from_pit() -> No
 def test_current_market_breadth_candidate_is_partial_until_real_all_a_admission() -> None:
     baseline = _baseline()
     current = baseline["current_market_breadth_candidate"]
-    assert current["state"] == "LOCAL_TUSHARE_THREE_BATCH_CURRENT_ALL_A_CI_OPEN"
-    assert current["base_head"] == "06f91a0ae5553813237dfbd3446750a26ff90b5c"
+    assert current["state"] == "LOCAL_CORRECTIVE_COMMIT_PUSH_BLOCKED_GITHUB_443"
+    assert current["base_head"] == "17715216b6de31973e261bb9fd7f1f1d19d86f7e"
+    assert current["code_commit"] == "79f7c5df45d79b0ca78cad3366f0b5ca2a4de080"
     contract = current["provider_contract"]
     assert contract["endpoints"] == ["daily", "stock_basic", "suspend_d"]
     assert contract["requests_per_current_trade_date"] == 3
     assert contract["daily_wildcard_query_removed"] is True
-    assert contract["current_completed_trade_date_required"] is True
+    assert contract["intraday_rt_k_breadth_forbidden"] is True
+    assert contract["typed_claims_must_validate_before_preemption"] is True
     assert contract["historical_stock_basic_backfill_forbidden"] is True
     assert contract["all_a_scope_requires_exchanges"] == ["SSE", "SZSE", "BSE"]
     assert contract["missing_bse_state"] == "CN_SH_SZ_A_EXCLUDES_BJ_PARTIAL"
+    isolation = current["consumer_isolation"]
+    assert isolation["compiled_b1_product_admission_required"] is True
+    assert isolation["source_only_breadth_enters_llm_market_light_or_action"] is False
+    assert isolation["m_basic_breadth_opens_m_limit_or_turnover"] is False
+    assert isolation["caller_market_light_mismatch"] == "STOP"
+    assert isolation["index_sources_independent_of_composite_regime_state"] is True
     trial = current["real_baostock_research_trial"]
     assert (trial["universe_count"], trial["trading_count"], trial["suspended_count"]) == (5510, 5502, 8)
     assert (trial["up_count"], trial["down_count"], trial["flat_count"]) == (2157, 3197, 148)
@@ -124,18 +132,20 @@ def test_current_market_breadth_candidate_is_partial_until_real_all_a_admission(
     assert actual["token_present_in_local_executor"] is False
     assert actual["network_requests"] == 0
     assert actual["rights_v2_bound"] is False
-    assert actual["current_product_admitted"] is False
     validation = current["local_validation"]
-    assert (validation["independent_requirement_red"], validation["independent_requirement_green"]) == (8, 18)
-    assert (validation["related_passed"], validation["related_failed"]) == (126, 0)
-    assert validation["natural_ci"].startswith("NOT_RUN")
+    assert (validation["base_requirement_red"], validation["consumer_isolation_red"]) == (8, 3)
+    assert (validation["root_passed"], validation["related_passed"], validation["deep_consumer_passed"]) == (32, 385, 496)
+    assert validation["failed"] == 0
+    assert validation["scopes_overlap_and_must_not_be_summed"] is True
+    assert validation["natural_ci"] == "NOT_STARTED_PUSH_BLOCKED_GITHUB_443"
     effect = current["capability_effect"]
     assert effect["typed_or_real_source_capability_before"] == effect["typed_or_real_source_capability_after"] == 31
     assert effect["complete_typed_source_chain_gaps_before"] == effect["complete_typed_source_chain_gaps_after"] == 41
     assert effect["current_product_before"] == effect["current_product_after"] == 4
     assert effect["full_v25_fact_ready"] is False
-    assert current["git_commit"] is None and current["git_push"] is False
-    assert current["merge"] is False
+    assert current["git_push"] is False and current["merge"] is False
+    assert current["push_failure"]["immediate_retry_stopped"] is True
+
 
 
 def test_stage_baseline_is_derived_from_the_existing_machine_graph() -> None:

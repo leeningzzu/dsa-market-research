@@ -110,23 +110,40 @@
   },
   "current_market_breadth_candidate": {
     "schema_version": "stock-dsa-current-market-breadth-candidate-v1",
-    "state": "LOCAL_TUSHARE_THREE_BATCH_CURRENT_ALL_A_CI_OPEN",
-    "base_head": "06f91a0ae5553813237dfbd3446750a26ff90b5c",
+    "state": "LOCAL_CORRECTIVE_COMMIT_PUSH_BLOCKED_GITHUB_443",
+    "base_head": "17715216b6de31973e261bb9fd7f1f1d19d86f7e",
+    "code_commit": "79f7c5df45d79b0ca78cad3366f0b5ca2a4de080",
+    "checkpoint_commit": "RESOLVE_FROM_GIT_CONTAINING_THIS_FILE",
     "project_source_pair": "v3.553_PHYSICAL_EXACT8_PASS_KEEP_NO_CHURN",
     "dataset_id": "M_BASIC_BREADTH",
-    "existing_owner_route": "TushareFetcher->MarketAnalyzer->Registry/B1->Canonical/V2.5",
+    "existing_owner_route": "TushareFetcher->DataFetcherManager->MarketAnalyzer->Registry/B1->Canonical/V2.5",
     "provider_contract": {
       "endpoints": ["daily", "stock_basic", "suspend_d"],
       "requests_per_current_trade_date": 3,
       "daily_wildcard_query_removed": true,
+      "intraday_rt_k_breadth_forbidden": true,
       "current_completed_trade_date_required": true,
       "historical_stock_basic_backfill_forbidden": true,
       "all_a_scope_requires_exchanges": ["SSE", "SZSE", "BSE"],
       "missing_bse_state": "CN_SH_SZ_A_EXCLUDES_BJ_PARTIAL",
       "missing_trading_member_without_suspend_reason": "STOP",
+      "typed_claims_must_validate_before_preemption": true,
       "storage_admitted": false,
       "historical_pit_eligible": false,
       "strategy_upgrade_authority": false
+    },
+    "consumer_isolation": {
+      "compiled_b1_product_admission_required": true,
+      "admission_source_semantics_bound": [
+        "source_identity_hash", "content_sha256", "provider_identity",
+        "provider_route", "observed_at", "available_at", "completed_through",
+        "units", "currency", "adjustment_basis", "revision", "vintage"
+      ],
+      "source_only_breadth_enters_llm_market_light_or_action": false,
+      "m_basic_breadth_opens_m_limit_or_turnover": false,
+      "caller_market_light_mismatch": "STOP",
+      "index_sources_independent_of_composite_regime_state": true,
+      "index_source_requires_exact_regime_invocation_receipt": true
     },
     "real_baostock_research_trial": {
       "target_date": "2026-11-03",
@@ -158,12 +175,16 @@
       "current_product_admitted": false
     },
     "local_validation": {
-      "independent_requirement_red": 8,
-      "independent_requirement_green": 18,
-      "related_passed": 126,
-      "related_failed": 0,
-      "optional_fake_useragent_process_shim": true,
-      "natural_ci": "NOT_RUN_CURRENT_LOCAL_CANDIDATE"
+      "base_requirement_red": 8,
+      "consumer_isolation_red": 3,
+      "root_passed": 32,
+      "related_passed": 385,
+      "deep_consumer_passed": 496,
+      "failed": 0,
+      "scopes_overlap_and_must_not_be_summed": true,
+      "optional_process_shims": ["fake_useragent", "markdown2"],
+      "static_checks": "PASS",
+      "natural_ci": "NOT_STARTED_PUSH_BLOCKED_GITHUB_443"
     },
     "capability_effect": {
       "typed_or_real_source_capability_before": 31,
@@ -174,10 +195,17 @@
       "current_product_after": 4,
       "full_v25_fact_ready": false
     },
-    "git_commit": null,
+    "git_commit": "79f7c5df45d79b0ca78cad3366f0b5ca2a4de080",
     "git_push": false,
+    "push_failure": {
+      "classification": "ENVIRONMENT_INSTANCE_ONLY",
+      "reason": "GITHUB_443_UNREACHABLE_AFTER_READ_AND_PUSH",
+      "immediate_retry_stopped": true,
+      "merge": false,
+      "main_changed": false
+    },
     "merge": false,
-    "source_update_decision": "KEEP_V3_553_NO_OP",
+    "source_update_decision": "KEEP_V3_553_NO_OP_UNTIL_REMOTE_CI_OR_PRODUCT_MILESTONE",
     "current_route_still_worth_continuing": "YES_KEEP_ONLY_DSA"
   },
   "p012_local_candidate": {

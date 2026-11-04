@@ -35,7 +35,7 @@ flowchart LR
 
 CONTROL_ID = STOCK_DSA_MASTER_ROUTE_20261104_PRODUCT4_CI105_PLUS_CURRENT_BREADTH_BATCH_CANDIDATE
 SOURCE_AUTHORITY = Project Source恰好8个唯一Owner，01/05均为v3.553；2026-11-04按name、created_at、message_order三次物理清单一致PASS，旧v3.552已删除。局部代码/测试进展不触发Source换版；仅远端CI、权限/架构、Product里程碑或交接checkpoint再成对更新01/05。
-GIT_AUTHORITY = 唯一公共仓库 `https://github.com/leeningzzu/dsa-market-research.git`；Product4提交`f4582a29098144157787fc250265e9a39055eb64`与最小测试隔离提交`a8f68223d1328874aa7b3d44c4abc565e1037714`均已自然CI接受，状态同步提交`06f91a0ae5553813237dfbd3446750a26ff90b5c`的自然CI Run41796437409亦SUCCESS。远端feature/PR31均为`06f91a0a`，PR仍Draft/Open、未合并，main未变。当前`M_BASIC_BREADTH`批量数据链是基于该干净远端基线的本地未提交候选，尚无新自然CI，不得借用既有绿灯。
+GIT_AUTHORITY = 唯一公共仓库 `https://github.com/leeningzzu/dsa-market-research.git`；Product4、测试隔离与状态同步提交此前均获自然CI接受。`M_BASIC_BREADTH`基础提交`17715216b6de31973e261bb9fd7f1f1d19d86f7e`已普通非force推送到现有feature，但GitHub事故期PR31 synthetic head仍停在`06f91a0a`且未产生该SHA的自然CI。其后审计纠正提交`79f7c5df45d79b0ca78cad3366f0b5ca2a4de080`已在干净工作树形成；连续只读核对与普通push均因`github.com:443`不可达失败，按Stop-Loss停止即时重试。PR仍Draft/Open、未合并，main未变；`79f7c5df`仅是本地代码权威，不得借用旧绿灯冒充远端接受。
 IMMUTABLES = 原机器图149628字节/775边/SHA256 `b4f69f76807ac44bc0fea1a03f9aa38484b6083ca574a3699220b0564ac55aed`；原V2.5 125919字节/SHA256 `039ca6394baf9cf39494cc29f512802b114c8227f8c965723197a8df4b9de823`。两者未修改。
 
 ### 0.1 本轮实际闭合
@@ -49,7 +49,7 @@ IMMUTABLES = 原机器图149628字节/775边/SHA256 `b4f69f76807ac44bc0fea1a03f9
 | `G_UST_REAL` | 美国财政部官方real-yield XML：2026-11-03，5Y 2.35%、10Y 2.65%、30Y 3.09% | Data.gov 015-DO-036/CC0当前用途；不制造历史首发vintage |
 | `G_INFL_BREAKEVEN` | 同日名义10Y减实际10Y白盒计算=2.30个百分点，冻结两个父对象身份/内容/观察哈希 | 不使用错日期或被篡改父对象，不替代独立历史PIT序列 |
 | G3既有补丁 | 行业估值交叉核验仅允许已实现方法；20日量比要求完整前20根及当前量 | 62项当前回归PASS；完整FCFF/DCF、盘中同刻量比和真实财报仍开放 |
-| `M_BASIC_BREADTH`当前数据链 | 复用现有`TushareFetcher`，用`daily + stock_basic + suspend_d`三个按日批量父对象闭合同日Universe、停牌、分母、单位、时钟和原Market消费者；去除无分母证明的通配符查询 | 只允许交易日历认定的最新完成日；历史Universe禁止回填。完整SSE/SZSE/BSE时可生成全A typed观察，缺BSE时只能`PARTIAL`并显式veto；实际Tushare Token/权利未绑定，Product不晋升 |
+| `M_BASIC_BREADTH`当前数据链 | 复用现有`TushareFetcher`，以`daily + stock_basic + suspend_d`三个按日批量父对象闭合同日Universe、停牌、分母、单位、时钟；精确typed链优先于TickFlow旧标量，盘中`rt_k`退出宽度Owner | 纯来源观察只进证据区；只有与当前来源身份、内容、时钟、单位、币种、basis、revision/vintage逐字段一致的编译B1 admission才可打开宽度消费者。`M_LIMIT`/成交额、LLM行动和手工Market Light不得借宽度补齐；实际Token/权利未绑定，Product不晋升 |
 
 统一真实operation `global-policy-rates-current-nosend-20261104-r001` 实际读取两份美联储官方HTML和两份财政部官方XML，生成真实Product4/72；运行收据 `.tmp/stock_dsa_b1/GLOBAL_POLICY_RATES_REAL_CURRENT_PRODUCT_20261104_R001/receipt.json` SHA256 `22973aef0287c9177641699ca180b01babcf3c37bc81b62f3b61b91702169c7f`。同一原Pipeline无网络重放收据 `pipeline_owner_receipt.json` SHA256 `4647dbe20ff9623b6229faf43e82ff43c94de00f62c673f6bb9e554aa3a43e5d`，证明四对象经`StockAnalysisPipeline→Registry→B1→V2.5`原Owner而非手工平行链。
 
@@ -73,21 +73,22 @@ IMMUTABLES = 原机器图149628字节/775边/SHA256 `b4f69f76807ac44bc0fea1a03f9
 - 五个Global/P0/旧v1/导入边界模块：85/85 PASS。
 - Registry＋原V2.5消费者：196/196 PASS。
 - G3估值/量比/Supply相邻范围：62/62 PASS。
-- `M_BASIC_BREADTH`新契约：独立8 FAIL→18/18 PASS；Tushare/Market/Breadth/F2/Stage相关范围126/126 PASS，另Registry＋原V2.5消费者196/196 PASS；现有`fake_useragent`仅用进程内测试桩，尚待自然CI原生环境验证。
+- `M_BASIC_BREADTH`基础需求先8 FAIL；提交后审计另以3个独立RED证明TickFlow抢占和来源级标量替代总体。当前根反例32/32、相关面385/385、B1/CURRENT/Registry/Factor/DailyContext/MarketReview/Market Light/原V2.5深消费者496/496 PASS；范围重叠不得相加。可选`fake_useragent/markdown2`仅用进程内测试桩，尚待自然CI原生环境验证。
 - 上述范围重叠，不相加为虚构总数。CI104在`f4582a29`暴露4条`json_repair`失败；根因是3个旧测试模块在收集期无条件覆盖真实模块。独立反例3 RED→3 GREEN，只删除3个无条件桩，5个合法条件桩保持原状；本地关联回归108 PASS/4 SKIP。修复提交`a8f68223`的自然CI105 Run41793577681已全绿，证明原4条解析断言在完整CI依赖环境恢复通过；这只关闭测试隔离缺陷，不扩大Product4、方法、数据或完整邮件范围。
 - 正反例覆盖：错host/日期/发布时钟/实施区间、future observation、late terms、来源事实篡改、错父日期/哈希、旧as-of回放、PIT/learning/strategy越权、短20日量比与未实现估值方法。
+- 审计Closure：旧代码污染=TickFlow优先与盘中`rt_k`；局部膨胀=初版生产净增300行以上，重构后约105行；局部替代总体=未准入breadth/limit/turnover进入Light/LLM/行动、手工Light旁路、复合REGIME误删独立指数来源。三根因均有自然负例；Product、Rights、PIT、发送和模型权限均未扩大。
 
 ### 0.4 Role Review
 
 | Role | 当前结论 | 处置 |
 |---|---|---|
-| PRODUCT | 真实CURRENT Product4/72；全域与完整邮件仍STOP | 继续41条typed来源链，不把四个Global对象冒充完整产品 |
-| DATA_MODEL | CURRENT_OBSERVATION与历史PIT已拆开；Market breadth新增当前完成日Universe/停牌/分母合同 | 当前`stock_basic`不得回填历史；缺BSE明确PARTIAL，历史Universe仍需独立PIT数据 |
-| PROCESS_CONSUMER | Product4已进入原Pipeline；Breadth复用现有Tushare→Market→Registry/B1→原V2.5入口 | KEEP原DSA；三批次Provider替代逐只/通配符路线，不建第二数据平台 |
-| AUTHORITY_CURRENTNESS | Source8 v3.553 PASS；远端feature/PR31为`06f91a0a`且自然CI SUCCESS | Breadth仅本地候选、CI OPEN；Source保持不动，PR仍Draft/Open、main未变 |
+| PRODUCT | 真实CURRENT Product仍4/72；Breadth是本地工程候选，全域与完整邮件仍STOP | 继续41条typed来源链；来源级宽度与测试绿灯均不得替代Product admission |
+| DATA_MODEL | CURRENT_OBSERVATION与历史PIT已拆开；Breadth新增来源→编译admission→消费者三段绑定 | 当前`stock_basic`不得回填历史；缺BSE明确PARTIAL，M_LIMIT/成交额保持独立对象 |
+| PROCESS_CONSUMER | Product4已进入原Pipeline；Breadth复用现有Tushare→Manager→Market→Registry/B1→原V2.5入口 | KEEP原DSA；TickFlow只作旧标量降级，手工Light不再是第二事实入口 |
+| AUTHORITY_CURRENTNESS | Source8 v3.553 PASS；远端最后确认feature=`17715216`、PR synthetic head=`06f91a0a`；本地纠正=`79f7c5df` | GitHub 443环境阻断，远端CI NOT_PROVEN；Source保持不动，PR仍Draft/Open、main未变 |
 | ENVIRONMENT | eager import同根缺陷已从fake_useragent/json_repair/markdown2/newspaper/HK classifier入口移除 | 可选能力真正调用时仍要求其依赖；不安装无关包 |
-| ADAPTER_INTERFACE | 新增最薄纯Tushare批量响应适配，网络仍由现有Fetcher拥有 | 不安装Tushare SDK、不创建缓存/DB；Token缺失时fail-closed，不退回未验证计数 |
-| DEV_TOOLING | Product4 CI105与状态CI均成功；Breadth独立13和相关102本地PASS | 新候选尚待自然CI；真实BaoStock试验只证明沪深PARTIAL，不冒充Tushare或全AProduct |
+| ADAPTER_INTERFACE | 复用现有Tushare批量响应与唯一Manager；新增共享验真门而非第二Provider图 | 不安装SDK、不建缓存/DB；typed伪回执被拒，旧标量可降级显示但不能开Product消费者 |
+| DEV_TOOLING | 根32、相关385、深消费者496与静态检查本地PASS；纠正提交`79f7c5df`已形成 | GitHub网络失败属于ENVIRONMENT/INSTANCE_ONLY；不重复push、不把本地PASS冒充自然CI |
 | USER_BURDEN | 无Source替换、Token、人工日志诊断或依赖安装 | 下一关继续机器执行一个真实Market/Breadth数据纵向切片 |
 
 CURRENT_ROUTE_STILL_WORTH_CONTINUING = YES_KEEP_ONLY_DSA
@@ -98,7 +99,7 @@ SOURCE_UPDATE_DECISION = KEEP_PROJECT_SOURCE_V3_553_NO_OP；本轮不生成v3.55
 
 后续模型必须读取`AGENTS.md`、本文、Stage JSON、Project Source8，并实际核origin/HEAD/tree/status/PR/CI。真实Product必须同时保留来源事实、Rights、CURRENT/PIT用途、消费者和运行回执；Product4不等于全域或完整邮件。
 
-UNIQUE_NEXT_STEP = 将当前仅含现有Tushare三批次父事实、PARTIAL语义、Market消费者和正反例的`M_BASIC_BREADTH`候选形成一个英文原子commit，普通非force push到现有feature并观察自然PR CI；不merge。CI通过后，只有实际配置的Tushare个人研究权限、同次全A含BSE响应和Rights-v2同时成立时才运行CURRENT NO_SEND Product正例；否则保留PARTIAL/UNKNOWN并转入下一个官方高复用Market/Sector来源，不扩技术指标或第二数据平台。Project Source继续v3.553，待真实Product/架构/权限里程碑再批量checkpoint。
+UNIQUE_NEXT_STEP = 由既有条件监测在GitHub Pull Requests/Actions恢复且PR31 synthetic head同步后，将本地`79f7c5df`及本控制页checkpoint普通非force推送到现有feature并观察精确SHA的自然PR CI；不merge、不手工dispatch。只有自然CI终态成功且实际Tushare个人研究权限、同次全A含BSE响应和Rights-v2同时成立，才运行CURRENT NO_SEND Product正例；否则保持PARTIAL/UNKNOWN并转下一个官方高复用Market/Sector来源。
 <!-- CURRENT_MASTER_CONTROL_END -->
 ## 1. GitHub是后续工程基线
 
