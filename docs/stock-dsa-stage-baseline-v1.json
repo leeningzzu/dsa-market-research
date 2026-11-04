@@ -108,6 +108,78 @@
     "source_update_decision": "KEEP_V3_553_NO_OP_UNTIL_REMOTE_CI_OR_MATERIAL_MILESTONE",
     "current_route_still_worth_continuing": "YES_KEEP_ONLY_DSA"
   },
+  "current_market_breadth_candidate": {
+    "schema_version": "stock-dsa-current-market-breadth-candidate-v1",
+    "state": "LOCAL_TUSHARE_THREE_BATCH_CURRENT_ALL_A_CI_OPEN",
+    "base_head": "06f91a0ae5553813237dfbd3446750a26ff90b5c",
+    "project_source_pair": "v3.553_PHYSICAL_EXACT8_PASS_KEEP_NO_CHURN",
+    "dataset_id": "M_BASIC_BREADTH",
+    "existing_owner_route": "TushareFetcher->MarketAnalyzer->Registry/B1->Canonical/V2.5",
+    "provider_contract": {
+      "endpoints": ["daily", "stock_basic", "suspend_d"],
+      "requests_per_current_trade_date": 3,
+      "daily_wildcard_query_removed": true,
+      "current_completed_trade_date_required": true,
+      "historical_stock_basic_backfill_forbidden": true,
+      "all_a_scope_requires_exchanges": ["SSE", "SZSE", "BSE"],
+      "missing_bse_state": "CN_SH_SZ_A_EXCLUDES_BJ_PARTIAL",
+      "missing_trading_member_without_suspend_reason": "STOP",
+      "storage_admitted": false,
+      "historical_pit_eligible": false,
+      "strategy_upgrade_authority": false
+    },
+    "real_baostock_research_trial": {
+      "target_date": "2026-11-03",
+      "scope": "CN_SH_SZ_A_EXCLUDES_BJ",
+      "universe_count": 5510,
+      "trading_count": 5502,
+      "suspended_count": 8,
+      "up_count": 2157,
+      "down_count": 3197,
+      "flat_count": 148,
+      "provider_errors": 0,
+      "unexplained_universe_gaps": 0,
+      "duration_seconds": 796.61217,
+      "raw_rows_persisted": false,
+      "amount_fact_admitted": false,
+      "current_product_admitted": false,
+      "closure_sha256": "fcf71b2f3f20367d767bc69e8441a54d2798c8893b9e4e27644f6cf6726c832d",
+      "blockers": [
+        "BSE_NOT_COVERED",
+        "UPSTREAM_DATA_USE_RIGHTS_NOT_VERIFIED",
+        "NOT_A_PRODUCTION_EFFICIENT_ROUTE_5510_PER_CODE_CALLS"
+      ]
+    },
+    "actual_tushare_operation": {
+      "token_present_in_local_executor": false,
+      "network_requests": 0,
+      "rights_v2_bound": false,
+      "full_all_a_response_observed": false,
+      "current_product_admitted": false
+    },
+    "local_validation": {
+      "independent_requirement_red": 8,
+      "independent_requirement_green": 18,
+      "related_passed": 126,
+      "related_failed": 0,
+      "optional_fake_useragent_process_shim": true,
+      "natural_ci": "NOT_RUN_CURRENT_LOCAL_CANDIDATE"
+    },
+    "capability_effect": {
+      "typed_or_real_source_capability_before": 31,
+      "typed_or_real_source_capability_after": 31,
+      "complete_typed_source_chain_gaps_before": 41,
+      "complete_typed_source_chain_gaps_after": 41,
+      "current_product_before": 4,
+      "current_product_after": 4,
+      "full_v25_fact_ready": false
+    },
+    "git_commit": null,
+    "git_push": false,
+    "merge": false,
+    "source_update_decision": "KEEP_V3_553_NO_OP",
+    "current_route_still_worth_continuing": "YES_KEEP_ONLY_DSA"
+  },
   "p012_local_candidate": {
     "schema_version": "stock-dsa-p012-local-candidate-v1",
     "base_head": "67b35e685c3fe6b694a0d8731964189fb9a0381f",

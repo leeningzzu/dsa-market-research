@@ -602,10 +602,19 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 source_rows = dict(stats.get('data_object_source_observations') or {})
                 observation = source_rows.get('M_BASIC_BREADTH')
                 if observation is not None:
-                    observation = validate_market_breadth_observation(observation, target_date=overview.date)
+                    observation = validate_market_breadth_observation(
+                        observation, as_of=datetime.now().astimezone(),
+                    )
+                    if observation["completed_through"] > overview.date:
+                        raise ValueError("BREADTH_SOURCE_AFTER_REVIEW_DATE")
                     if any(stats.get(key) != observation['facts'][key] for key in ('up_count', 'down_count', 'flat_count')):
                         raise ValueError('BREADTH_CONSUMER_COUNT_MISMATCH')
-                overview.market_universe_complete = observation is not None
+                overview.market_universe_complete = bool(
+                    observation
+                    and observation.get("facts", {}).get(
+                        "market_universe_complete"
+                    ) is True
+                )
                 overview.data_object_source_observations = (
                     {'M_BASIC_BREADTH': deepcopy(observation)} if observation is not None else {}
                 )
@@ -627,6 +636,14 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 
         except Exception as e:
             logger.error("[大盘] %s action=get_market_stats status=failed error=%s", self._log_context(), e)
+            # Counts copied before receipt validation must not survive a
+            # malformed, future-dated or semantically conflicting receipt.
+            overview.up_count = overview.down_count = overview.flat_count = 0
+            overview.limit_up_count = overview.limit_down_count = 0
+            overview.total_amount = 0.0
+            overview.breadth_denominator = 0
+            overview.market_universe_complete = False
+            overview.data_object_source_observations = {}
 
     def _get_sector_rankings(self, overview: MarketOverview):
         """获取板块涨跌榜"""
@@ -940,16 +957,29 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             breadth_status = "READY"
 
         coverage_scope = "LEGACY_COUNTS_UNVERIFIED"
-        if overview.breadth_denominator is not None:
-            coverage_scope = "OBSERVED_SUBSET"
-            if overview.market_universe_complete:
-                from data_provider.market_breadth_source import validate_market_breadth_observation
-                validate_market_breadth_observation(
-                    overview.data_object_source_observations.get("M_BASIC_BREADTH"),
-                    target_date=overview.date,
-                )
+        missing_markets: List[str] = []
+        observation = overview.data_object_source_observations.get(
+            "M_BASIC_BREADTH"
+        )
+        if observation is not None:
+            from data_provider.market_breadth_source import (
+                validate_market_breadth_observation,
+            )
+            observation = validate_market_breadth_observation(
+                observation, as_of=datetime.now().astimezone(),
+            )
+            if observation["completed_through"] > overview.date:
+                raise ValueError("BREADTH_SOURCE_AFTER_REVIEW_DATE")
+            facts = observation["facts"]
+            if facts["market_universe_complete"] is True:
                 coverage_scope = "VERIFIED_COMPLETE_UNIVERSE"
-            elif breadth_denominator > 0:
+            else:
+                coverage_scope = "VERIFIED_PARTIAL_SH_SZ_EXCLUDES_BJ"
+                missing_markets = list(facts["missing_markets"])
+                breadth_status = "PARTIAL"
+        elif overview.breadth_denominator is not None:
+            coverage_scope = "OBSERVED_SUBSET"
+            if breadth_denominator > 0:
                 breadth_status = "PARTIAL"
 
         limit_up_count = max(0, int(overview.limit_up_count or 0))
@@ -983,6 +1013,11 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 "status": breadth_status,
                 "coverage_scope": coverage_scope,
                 "product_admitted": False,
+                "missing_markets": missing_markets,
+                "completed_through": (
+                    observation.get("completed_through")
+                    if observation is not None else None
+                ),
                 "source_observation_hash": (
                     overview.data_object_source_observations.get("M_BASIC_BREADTH", {}).get("observation_hash")
                 ),

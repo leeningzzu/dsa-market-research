@@ -1077,26 +1077,49 @@ class TushareFetcher(BaseFetcher):
                     return None
 
                 try:
-                    df = self._call_api_with_rate_limit(
+                    # One trade date per endpoint: daily excludes suspended
+                    # instruments, stock_basic owns the current listed universe,
+                    # and suspend_d explains every non-trading member.  This
+                    # replaces the historical wildcard query, which could not
+                    # prove a denominator or BSE coverage.
+                    daily = self._call_api_with_rate_limit(
                         "daily",
-                        ts_code='3*.SZ,6*.SH,0*.SZ,92*.BJ',
-                        start_date=last_date,
-                        end_date=last_date,
+                        trade_date=last_date,
+                        fields="ts_code,trade_date,close,pre_close,vol,amount",
                     )
-                    # 为防止不同接口返回的列名大小写不一致（例如 rt_k 返回小写，daily 返回大写），统一将列名转为小写
-                    df.columns = [col.lower() for col in df.columns]
-
-                    # 获取股票基础信息（包含代码和名称）
-                    df_basic = self._call_api_with_rate_limit("stock_basic", fields='ts_code,name')
-                    df = pd.merge(df, df_basic, on='ts_code', how='left')
-                    # 将 daily的 amount 列的值乘以 1000 来和其他数据源保持一致
-                    if 'amount' in df.columns:
-                        df['amount'] = df['amount'] * 1000
-
-                    if df is not None and not df.empty:
-                        return self._calc_market_stats(df)
+                    basic = self._call_api_with_rate_limit(
+                        "stock_basic",
+                        exchange="",
+                        list_status="L",
+                        fields=(
+                            "ts_code,name,market,exchange,list_status,"
+                            "list_date,delist_date"
+                        ),
+                    )
+                    suspensions = self._call_api_with_rate_limit(
+                        "suspend_d",
+                        trade_date=last_date,
+                        suspend_type="S",
+                        fields="ts_code,trade_date,suspend_type",
+                    )
+                    from data_provider.tushare_market_breadth_source import (
+                        build_tushare_current_market_breadth_frame,
+                    )
+                    observed_at = datetime.now(timezone.utc)
+                    frame = build_tushare_current_market_breadth_frame(
+                        daily,
+                        basic,
+                        suspensions,
+                        trade_date=last_date,
+                        observed_at=observed_at,
+                        current_completed_trade_date=last_date,
+                        research_as_of=observed_at,
+                    )
+                    return self._calc_market_stats(frame)
                 except Exception as e:
-                    logger.error(f"[Tushare] ts.pro_api().daily 获取数据失败: {e}")
+                    logger.error(
+                        "[Tushare] current all-A breadth source failed: %s", e
+                    )
                     
 
             

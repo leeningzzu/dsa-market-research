@@ -27,6 +27,11 @@ _ALIASES = {
     "amount": ("成交额", "amount"),
 }
 
+_UNIVERSE_SCOPE_MISSING_MARKETS = {
+    "CN_ALL_A": (),
+    "CN_SH_SZ_A_EXCLUDES_BJ": ("BSE",),
+}
+
 
 def _code(value) -> str:
     text = str(value).strip().upper()
@@ -110,7 +115,10 @@ def seal_breadth_universe(value: Mapping) -> dict:
         raise MarketBreadthError("BREADTH_UNIVERSE_MISSING")
     required = {"scope", "trade_date", "codes", "source_identity_hash", "available_at"}
     body = {key: item for key, item in value.items() if key != "universe_hash"}
-    if set(body) != required or body["scope"] != "CN_ALL_A":
+    if (
+        set(body) != required
+        or body["scope"] not in _UNIVERSE_SCOPE_MISSING_MARKETS
+    ):
         raise MarketBreadthError("BREADTH_UNIVERSE_SCHEMA_INVALID")
     if not isinstance(body["codes"], (list, tuple)) or not body["codes"]:
         raise MarketBreadthError("BREADTH_UNIVERSE_CODES_INVALID")
@@ -181,18 +189,40 @@ def compile_market_breadth_observation(frame: pd.DataFrame, context: Mapping) ->
     denominator = sum(counts.values())
     if not denominator:
         raise MarketBreadthError("BREADTH_ELIGIBLE_UNIVERSE_EMPTY")
+    coverage_scope = universe["scope"]
+    missing_markets = list(
+        _UNIVERSE_SCOPE_MISSING_MARKETS[coverage_scope]
+    )
+    market_complete = not missing_markets
     facts = {
-        **counts, "eligible_count": denominator, "breadth_ratio": counts["up_count"] / denominator,
-        "universe_count": len(rows), "universe_hash": universe["universe_hash"],
-        "market_universe_complete": True,
+        **counts,
+        "eligible_count": denominator,
+        "breadth_ratio": counts["up_count"] / denominator,
+        "universe_count": len(rows),
+        "universe_hash": universe["universe_hash"],
+        "coverage_scope": coverage_scope,
+        "missing_markets": missing_markets,
+        "market_universe_complete": market_complete,
         "excluded_by_reason": {"SUSPENDED": excluded} if excluded else {},
-        "denominator_definition": "EXACT_SAME_DAY_UNIVERSE_MINUS_EXPLICIT_SUSPENSIONS",
-        "not_proven": ["PRICE_LIMIT_RULES", "MARKET_RIGHTS", "HISTORICAL_PIT"],
+        "denominator_definition": (
+            "EXACT_SAME_DAY_ALL_A_UNIVERSE_MINUS_EXPLICIT_SUSPENSIONS"
+            if market_complete
+            else "EXACT_SAME_DAY_SH_SZ_A_UNIVERSE_MINUS_EXPLICIT_SUSPENSIONS"
+        ),
+        "not_proven": [
+            "PRICE_LIMIT_RULES", "MARKET_RIGHTS", "HISTORICAL_PIT",
+            *([] if market_complete else ["BSE_BREADTH"]),
+        ],
     }
+    reason_codes = (
+        ("COMPLETE_OBSERVED_UNIVERSE_COUNTS_NOT_PRODUCT",)
+        if market_complete
+        else ("VERIFIED_SH_SZ_UNIVERSE_EXCLUDES_BSE_NOT_PRODUCT",)
+    )
     body = {
         "schema_version": "data-object-source-observation-v1",
         "dataset_id": "M_BASIC_BREADTH", "state": "PARTIAL",
-        "reason_codes": ("COMPLETE_OBSERVED_UNIVERSE_COUNTS_NOT_PRODUCT",),
+        "reason_codes": reason_codes,
         "provider_identity": context["provider_identity"], "provider_route": context["provider_route"],
         "producer_authority": "data_provider.market_breadth_source.compile_market_breadth_observation",
         "source_content_sha256": context["source_content_sha256"],
@@ -248,7 +278,10 @@ def validate_market_breadth_observation(value: Mapping, *, target_date=None, as_
     facts = row.get("facts")
     if not isinstance(facts, Mapping):
         raise MarketBreadthError("BREADTH_FACTS_MISSING")
-    fields = ("up_count", "down_count", "flat_count", "eligible_count", "universe_count")
+    fields = (
+        "up_count", "down_count", "flat_count", "eligible_count",
+        "universe_count",
+    )
     if any(type(facts.get(key)) is not int or facts[key] < 0 for key in fields):
         raise MarketBreadthError("BREADTH_COUNT_INVALID")
     excluded = facts.get("excluded_by_reason")
@@ -259,12 +292,33 @@ def validate_market_breadth_observation(value: Mapping, *, target_date=None, as_
         raise MarketBreadthError("BREADTH_EXCLUSION_INVALID")
     eligible = facts["eligible_count"]
     if (
-        eligible <= 0 or sum(facts[key] for key in fields[:3]) != eligible
+        eligible <= 0
+        or sum(facts[key] for key in fields[:3]) != eligible
         or facts["universe_count"] != eligible + len(excluded_codes)
-        or facts.get("market_universe_complete") is not True
     ):
         raise MarketBreadthError("BREADTH_COUNT_CONSERVATION")
-    if not _sha(facts.get("universe_hash")) or facts.get("breadth_ratio") != facts["up_count"] / eligible:
+    coverage_scope = facts.get("coverage_scope")
+    if coverage_scope not in _UNIVERSE_SCOPE_MISSING_MARKETS:
+        raise MarketBreadthError("BREADTH_COVERAGE_SCOPE_INVALID")
+    expected_missing = list(
+        _UNIVERSE_SCOPE_MISSING_MARKETS[coverage_scope]
+    )
+    if facts.get("missing_markets") != expected_missing:
+        raise MarketBreadthError("BREADTH_MISSING_MARKETS_INVALID")
+    complete = not expected_missing
+    if facts.get("market_universe_complete") is not complete:
+        raise MarketBreadthError("BREADTH_COMPLETENESS_INVALID")
+    expected_definition = (
+        "EXACT_SAME_DAY_ALL_A_UNIVERSE_MINUS_EXPLICIT_SUSPENSIONS"
+        if complete
+        else "EXACT_SAME_DAY_SH_SZ_A_UNIVERSE_MINUS_EXPLICIT_SUSPENSIONS"
+    )
+    if facts.get("denominator_definition") != expected_definition:
+        raise MarketBreadthError("BREADTH_DENOMINATOR_DEFINITION_INVALID")
+    if (
+        not _sha(facts.get("universe_hash"))
+        or facts.get("breadth_ratio") != facts["up_count"] / eligible
+    ):
         raise MarketBreadthError("BREADTH_RATIO_OR_UNIVERSE_HASH_INVALID")
     expected_identity = sha256_payload({
         "provider_identity": row.get("provider_identity"),
@@ -293,6 +347,8 @@ def attach_breadth_evidence(stats: dict, frame: pd.DataFrame) -> dict:
         obs = compile_market_breadth_observation(frame, context)
         if any(stats[key] != obs["facts"][key] for key in ("up_count", "down_count", "flat_count")):
             raise MarketBreadthError("BREADTH_LEGACY_CONSUMER_COUNT_MISMATCH")
-        result["market_universe_complete"] = True
+        result["market_universe_complete"] = bool(
+            obs["facts"]["market_universe_complete"]
+        )
         result["data_object_source_observations"] = {"M_BASIC_BREADTH": obs}
     return result

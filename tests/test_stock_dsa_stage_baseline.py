@@ -95,10 +95,47 @@ def test_current_global_observation_candidate_separates_product_from_pit() -> No
     assert current["merge"] is False
     assert current["source_update_decision"].startswith("KEEP_V3_553_NO_OP")
     roadmap = (ROOT / "docs" / "stock-dsa-roadmap.md").read_text(encoding="utf-8")
-    assert "CURRENT_OBSERVATION 与四项官方 Global Product" in roadmap
+    assert "Product4自然CI基线与M_BASIC_BREADTH当前数据链候选" in roadmap
     assert "真实同次Product由0/72升至**4/72**" in roadmap
     assert "SOURCE_UPDATE_DECISION = KEEP_PROJECT_SOURCE_V3_553_NO_OP" in roadmap
     assert "自然CI105 Run41793577681已全绿" in roadmap
+
+
+def test_current_market_breadth_candidate_is_partial_until_real_all_a_admission() -> None:
+    baseline = _baseline()
+    current = baseline["current_market_breadth_candidate"]
+    assert current["state"] == "LOCAL_TUSHARE_THREE_BATCH_CURRENT_ALL_A_CI_OPEN"
+    assert current["base_head"] == "06f91a0ae5553813237dfbd3446750a26ff90b5c"
+    contract = current["provider_contract"]
+    assert contract["endpoints"] == ["daily", "stock_basic", "suspend_d"]
+    assert contract["requests_per_current_trade_date"] == 3
+    assert contract["daily_wildcard_query_removed"] is True
+    assert contract["current_completed_trade_date_required"] is True
+    assert contract["historical_stock_basic_backfill_forbidden"] is True
+    assert contract["all_a_scope_requires_exchanges"] == ["SSE", "SZSE", "BSE"]
+    assert contract["missing_bse_state"] == "CN_SH_SZ_A_EXCLUDES_BJ_PARTIAL"
+    trial = current["real_baostock_research_trial"]
+    assert (trial["universe_count"], trial["trading_count"], trial["suspended_count"]) == (5510, 5502, 8)
+    assert (trial["up_count"], trial["down_count"], trial["flat_count"]) == (2157, 3197, 148)
+    assert trial["provider_errors"] == trial["unexplained_universe_gaps"] == 0
+    assert trial["raw_rows_persisted"] is False
+    assert trial["current_product_admitted"] is False
+    actual = current["actual_tushare_operation"]
+    assert actual["token_present_in_local_executor"] is False
+    assert actual["network_requests"] == 0
+    assert actual["rights_v2_bound"] is False
+    assert actual["current_product_admitted"] is False
+    validation = current["local_validation"]
+    assert (validation["independent_requirement_red"], validation["independent_requirement_green"]) == (8, 18)
+    assert (validation["related_passed"], validation["related_failed"]) == (126, 0)
+    assert validation["natural_ci"].startswith("NOT_RUN")
+    effect = current["capability_effect"]
+    assert effect["typed_or_real_source_capability_before"] == effect["typed_or_real_source_capability_after"] == 31
+    assert effect["complete_typed_source_chain_gaps_before"] == effect["complete_typed_source_chain_gaps_after"] == 41
+    assert effect["current_product_before"] == effect["current_product_after"] == 4
+    assert effect["full_v25_fact_ready"] is False
+    assert current["git_commit"] is None and current["git_push"] is False
+    assert current["merge"] is False
 
 
 def test_stage_baseline_is_derived_from_the_existing_machine_graph() -> None:
@@ -462,7 +499,7 @@ def test_current_control_rejects_historical_product_and_email_geometry_substitut
     assert current["email_reader_state"]["smtp_send"] == 0
 
     roadmap = (ROOT / "docs" / "stock-dsa-roadmap.md").read_text(encoding="utf-8")
-    assert "CONTROL_ID = STOCK_DSA_MASTER_ROUTE_20261104_CURRENT_OBSERVATION_GLOBAL_PRODUCT4_CI105_ACCEPTED" in roadmap
+    assert "CONTROL_ID = STOCK_DSA_MASTER_ROUTE_20261104_PRODUCT4_CI105_PLUS_CURRENT_BREADTH_BATCH_CANDIDATE" in roadmap
     assert "真实同次Product由0/72升至**4/72**" in roadmap
     assert "full_domain_product_ready=false" in roadmap
     assert "历史PIT" in roadmap and "绝不倒灌" in roadmap
