@@ -16,8 +16,6 @@ from unittest.mock import MagicMock
 # full LLM runtime dependencies in minimal CI.
 if "litellm" not in sys.modules:
     sys.modules["litellm"] = MagicMock()
-if "json_repair" not in sys.modules:
-    sys.modules["json_repair"] = MagicMock()
 
 # Core imports (should stay runnable even when optional data-source deps are absent)
 try:
