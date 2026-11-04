@@ -132,6 +132,7 @@ from src.services.business_valuation_service import (
 )
 from src.services.data_object_admission import (
     DataObjectAdmissionError,
+    TEMPORAL_SCOPE_CURRENT_OBSERVATION,
     bind_b1_rights_context_as_of,
     load_b1_rights_context,
     validate_b1_rights_context,
@@ -1982,6 +1983,91 @@ class StockAnalysisPipeline:
         }
         return deepcopy(observation)
 
+    def _ingest_b1_treasury_rate_family_responses(
+        self, *,
+        nominal_response_xml: bytes,
+        real_response_xml: bytes,
+        nominal_request_url: str,
+        real_request_url: str,
+        nominal_observed_at: datetime,
+        real_observed_at: datetime,
+    ) -> Dict[str, Any]:
+        """Atomically bind nominal, real and derived 10Y breakeven observations."""
+        context = self._bind_b1_run_context(persist=False)
+        if not isinstance(context, Mapping):
+            raise DataObjectAdmissionError("B1_TREASURY_OPERATION_NOT_BOUND")
+        from data_provider.treasury_yield_curve_source import (
+            build_treasury_yield_source_observation,
+        )
+        from data_provider.treasury_real_yield_source import (
+            build_treasury_real_yield_source_observation,
+            build_treasury_breakeven_source_observation,
+        )
+        nominal = build_treasury_yield_source_observation(
+            nominal_response_xml,
+            request_url=nominal_request_url,
+            observed_at=nominal_observed_at,
+            b1_context=context,
+        )
+        real = build_treasury_real_yield_source_observation(
+            real_response_xml,
+            request_url=real_request_url,
+            observed_at=real_observed_at,
+            b1_context=context,
+        )
+        breakeven = build_treasury_breakeven_source_observation(
+            nominal, real, b1_context=context,
+        )
+        incoming = {
+            nominal["dataset_id"]: nominal,
+            real["dataset_id"]: real,
+            breakeven["dataset_id"]: breakeven,
+        }
+        existing = getattr(self, "_b1_treasury_global_observations", {}) or {}
+        overlap = sorted(set(existing) & set(incoming))
+        if overlap:
+            raise DataObjectAdmissionError(
+                "B1_TREASURY_SOURCE_ALREADY_BOUND:" + ",".join(overlap)
+            )
+        self._b1_treasury_global_observations = {
+            **deepcopy(existing), **deepcopy(incoming),
+        }
+        return deepcopy(incoming)
+
+    def _ingest_b1_federal_reserve_policy_responses(
+        self, *,
+        statement_html: bytes,
+        implementation_html: bytes,
+        statement_url: str,
+        implementation_url: str,
+        observed_at: datetime,
+    ) -> Dict[str, Any]:
+        """Bind one current official FOMC statement and implementation pair."""
+        context = self._bind_b1_run_context(persist=False)
+        if not isinstance(context, Mapping):
+            raise DataObjectAdmissionError("B1_FED_POLICY_OPERATION_NOT_BOUND")
+        from data_provider.federal_reserve_policy_source import (
+            build_federal_reserve_policy_source_observation,
+        )
+        observation = build_federal_reserve_policy_source_observation(
+            statement_html,
+            implementation_html,
+            statement_url=statement_url,
+            implementation_url=implementation_url,
+            observed_at=observed_at,
+            b1_context=context,
+        )
+        existing = getattr(self, "_b1_treasury_global_observations", {}) or {}
+        dataset_id = observation["dataset_id"]
+        if dataset_id in existing:
+            raise DataObjectAdmissionError(
+                "B1_GLOBAL_SOURCE_ALREADY_BOUND:" + dataset_id
+            )
+        self._b1_treasury_global_observations = {
+            **deepcopy(existing), dataset_id: deepcopy(observation),
+        }
+        return deepcopy(observation)
+
     def _ingest_b1_sse_public_disclosure_responses(
         self, *,
         company_response_json: bytes,
@@ -2478,6 +2564,7 @@ class StockAnalysisPipeline:
             "rights_context_sha256",
             "research_as_of",
             "source_metadata_by_dataset",
+            "temporal_scope",
         }
         if set(context) - allowed_fields:
             raise DataObjectAdmissionError(
@@ -2509,6 +2596,11 @@ class StockAnalysisPipeline:
         else:
             instant = current_time or datetime.now(timezone.utc)
         bound = bind_b1_rights_context_as_of(base, instant)
+        temporal_scope = str(context.get("temporal_scope") or "").strip().upper()
+        if temporal_scope:
+            if temporal_scope != TEMPORAL_SCOPE_CURRENT_OBSERVATION:
+                raise DataObjectAdmissionError("B1_TEMPORAL_SCOPE_INVALID")
+            bound["temporal_scope"] = temporal_scope
         duplicate = context.get("source_metadata_by_dataset")
         if isinstance(duplicate, Mapping):
             bound["source_metadata_by_dataset"] = dict(duplicate)

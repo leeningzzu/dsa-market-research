@@ -464,12 +464,19 @@ def validate_index_sector_valuation(value: Mapping[str, Any]) -> dict[str, Any]:
 def _compile_optional_cross_check(
     value: Any,
     admission_index: Mapping[str, Mapping[str, Any]],
+    *,
+    allowed_methods: tuple[str, ...],
 ) -> dict[str, Any] | None:
     if value is None:
         return None
     if not isinstance(value, Mapping):
         raise BusinessValuationError("VALUATION_CROSS_CHECK_INVALID")
     method = _text(value.get("method")).upper()
+    # A method name and a sealed source receipt are not a calculation. Only
+    # this asset's validated industry-route methods may claim cross-checks.
+    # FCFF/FCFE/DCF require their own deterministic input/formula receipts.
+    if method not in allowed_methods:
+        raise BusinessValuationError("VALUATION_CROSS_CHECK_METHOD_NOT_IMPLEMENTED")
     low = _positive(value.get("low"))
     high = _positive(value.get("high"))
     datasets = tuple(_text(item) for item in value.get("dataset_ids") or ())
@@ -907,6 +914,7 @@ def compile_business_valuation(
     try:
         cross_check = _compile_optional_cross_check(
             payload.get("cross_check"), admission_index,
+            allowed_methods=tuple(industry_route_plan.get("allowed_cross_checks") or ()),
         )
     except BusinessValuationError as exc:
         return {

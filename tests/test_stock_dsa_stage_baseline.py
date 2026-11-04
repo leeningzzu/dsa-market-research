@@ -41,6 +41,47 @@ def _baseline() -> dict:
     return json.loads(BASELINE_PATH.read_text(encoding="utf-8"))
 
 
+def test_current_global_observation_candidate_separates_product_from_pit() -> None:
+    baseline = _baseline()
+    current = baseline["current_global_observation_candidate"]
+    assert current["state"] == "LOCAL_INTEGRATED_PRODUCT4_REMOTE_CI_OPEN"
+    assert current["base_head"] == "03f1bf7ffa2f3b71142a3d469fdc0a37495768d2"
+    assert current["project_source_pair"] == "v3.553_PHYSICAL_EXACT8_PASS_KEEP_NO_CHURN"
+    temporal = current["temporal_contract"]
+    assert temporal["temporal_scope"] == "CURRENT_OBSERVATION"
+    assert temporal["intended_use"] == "NO_SEND_RESEARCH"
+    assert temporal["historical_pit_eligible"] is False
+    assert temporal["storage_admitted"] is False
+    assert temporal["learning_admitted"] is False
+    assert temporal["strategy_upgrade_authority"] is False
+    actual = current["actual_operation"]
+    assert actual["product_admitted_dataset_ids"] == [
+        "G_INFL_BREAKEVEN", "G_UST_NOMINAL", "G_UST_REAL", "G_US_POLICY",
+    ]
+    assert actual["product_admitted_count"] == 4
+    assert actual["full_domain_product_ready"] is False
+    counts = current["capability_counts"]
+    assert counts["typed_or_real_source_capability"] == 31
+    assert counts["complete_typed_source_chain_gaps"] == 41
+    assert counts["current_product_admitted"] == 4
+    assert counts["current_product_denominator"] == 72
+    validation = current["validation"]
+    assert validation["lazy_import_and_b1_preflight"] == {"passed": 45, "failed": 0}
+    assert validation["global_p0_pipeline_focused"] == {"passed": 85, "failed": 0}
+    assert validation["registry_and_v25"] == {"passed": 196, "failed": 0}
+    assert validation["g3_valuation_volume_supply"] == {"passed": 62, "failed": 0}
+    assert validation["scopes_overlap_and_must_not_be_summed"] is True
+    assert current["full_v25_fact_ready"] is False
+    assert current["git_commit"] is None
+    assert current["git_push"] is False
+    assert current["merge"] is False
+    assert current["source_update_decision"].startswith("KEEP_V3_553_NO_OP")
+    roadmap = (ROOT / "docs" / "stock-dsa-roadmap.md").read_text(encoding="utf-8")
+    assert "CURRENT_OBSERVATION 与四项官方 Global Product" in roadmap
+    assert "真实同次Product由0/72升至**4/72**" in roadmap
+    assert "SOURCE_UPDATE_DECISION = KEEP_PROJECT_SOURCE_V3_553_NO_OP" in roadmap
+
+
 def test_stage_baseline_is_derived_from_the_existing_machine_graph() -> None:
     baseline = _baseline()
     locked = baseline["immutable_contracts"]
@@ -402,7 +443,11 @@ def test_current_control_rejects_historical_product_and_email_geometry_substitut
     assert current["email_reader_state"]["smtp_send"] == 0
 
     roadmap = (ROOT / "docs" / "stock-dsa-roadmap.md").read_text(encoding="utf-8")
-    assert "CONTROL_ID = STOCK_DSA_MASTER_ROUTE_20261103_PREMIUM_EXECUTION_PARTIAL_TYPED_SOURCE" in roadmap
+    assert "CONTROL_ID = STOCK_DSA_MASTER_ROUTE_20261104_CURRENT_OBSERVATION_GLOBAL_PRODUCT4_LOCAL" in roadmap
+    assert "真实同次Product由0/72升至**4/72**" in roadmap
+    assert "full_domain_product_ready=false" in roadmap
+    assert "历史PIT" in roadmap and "绝不倒灌" in roadmap
+    assert "SOURCE_UPDATE_DECISION = KEEP_PROJECT_SOURCE_V3_553_NO_OP" in roadmap
     assert "行业分类→适用方法→所需数据" not in roadmap  # prose must not claim an unbound shortcut
     assert "只表示可观察候选" in roadmap
     assert "NOT_FULL_CZSC" in roadmap

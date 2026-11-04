@@ -20,7 +20,6 @@ from dataclasses import dataclass
 from typing import Optional, Dict, Any, List, Tuple, Callable
 
 import litellm
-from json_repair import repair_json
 from litellm import Router
 
 from src.agent.llm_adapter import (
@@ -4858,6 +4857,8 @@ class GeminiAnalyzer:
         json_str = json_str.replace('True', 'true').replace('False', 'false')
         
         # fix by json-repair
+        from json_repair import repair_json
+
         json_str = repair_json(json_str)
         
         return json_str

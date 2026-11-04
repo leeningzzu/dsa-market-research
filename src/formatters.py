@@ -10,7 +10,6 @@
 import re
 from typing import Callable, List, Optional
 
-import markdown2
 
 TRUNCATION_SUFFIX = "\n\n...(本段内容过长已截断)"
 PAGE_MARKER_PREFIX = f"\n\n📄"
@@ -131,6 +130,8 @@ def markdown_to_html_document(markdown_text: str) -> str:
     Returns:
         Full HTML document string with DOCTYPE, head, and body.
     """
+    import markdown2
+
     html_content = markdown2.markdown(
         _escape_inline_angle_comparisons(markdown_text),
         extras=["tables", "fenced-code-blocks", "break-on-newline", "cuddled-lists", "code-friendly"],

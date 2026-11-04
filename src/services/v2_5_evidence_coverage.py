@@ -726,6 +726,38 @@ def _v25_data_object_fact_summary(
     """Render bounded admitted non-price facts without dumping source rows."""
     if not isinstance(facts, Mapping) or not facts:
         return ""
+    if dataset_id == "G_US_POLICY":
+        return (
+            f"美联储政策：{_v25_plain(facts.get('release_date'), '日期缺失')}｜"
+            f"联邦基金目标区间 "
+            f"{_v25_plain(facts.get('target_lower_pct_per_year'), '缺失')}%–"
+            f"{_v25_plain(facts.get('target_upper_pct_per_year'), '缺失')}%｜"
+            f"决策 {_v25_plain(facts.get('decision'), '缺失')}｜"
+            f"发布 {_v25_plain(facts.get('source_published_at'), '时点缺失')}｜"
+            f"实施说明一致 {_v25_plain(facts.get('implementation_agrees'), '未知')}"
+        )
+    if dataset_id == "G_UST_NOMINAL":
+        return (
+            f"美国国债名义收益率：{_v25_plain(facts.get('latest_completed_date'), '日期缺失')}｜"
+            f"3M {_v25_plain(facts.get('yield_3m_pct_per_year'), '缺失')}%｜"
+            f"2Y {_v25_plain(facts.get('yield_2y_pct_per_year'), '缺失')}%｜"
+            f"10Y {_v25_plain(facts.get('yield_10y_pct_per_year'), '缺失')}%｜"
+            f"10Y-3M {_v25_plain(facts.get('spread_10y_3m_percentage_points'), '缺失')}个百分点"
+        )
+    if dataset_id == "G_UST_REAL":
+        return (
+            f"美国TIPS实际收益率：{_v25_plain(facts.get('latest_completed_date'), '日期缺失')}｜"
+            f"5Y {_v25_plain(facts.get('real_yield_5y_pct_per_year'), '缺失')}%｜"
+            f"10Y {_v25_plain(facts.get('real_yield_10y_pct_per_year'), '缺失')}%｜"
+            f"30Y {_v25_plain(facts.get('real_yield_30y_pct_per_year'), '缺失')}%"
+        )
+    if dataset_id == "G_INFL_BREAKEVEN":
+        return (
+            f"美国10Y通胀补偿：{_v25_plain(facts.get('latest_completed_date'), '日期缺失')}｜"
+            f"名义10Y {_v25_plain(facts.get('nominal_yield_10y_pct_per_year'), '缺失')}%｜"
+            f"实际10Y {_v25_plain(facts.get('real_yield_10y_pct_per_year'), '缺失')}%｜"
+            f"差值 {_v25_plain(facts.get('breakeven_10y_percentage_points'), '缺失')}个百分点"
+        )
     if dataset_id == "P_CODE_IDENTITY":
         return (
             f"证券身份：{_v25_plain(facts.get('stock_code'), '代码缺失')} "

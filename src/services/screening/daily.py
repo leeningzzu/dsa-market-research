@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import threading
@@ -1234,19 +1235,24 @@ def _range_pct(df: pd.DataFrame) -> float | None:
 
 
 def _volume_ratio_20d(df: pd.DataFrame) -> float | None:
-    if "volume" not in df.columns:
-        return None
-    volume = pd.to_numeric(df["volume"], errors="coerce")
-    if len(volume) < 2 or pd.isna(volume.iloc[-1]):
-        return None
-    previous = volume.iloc[:-1].tail(20).dropna()
-    if previous.empty:
-        return None
-    base = float(previous.mean())
-    if base <= 0:
-        return None
-    return float(volume.iloc[-1]) / base
+    """Last completed bar divided by the **exact prior 20** completed bars.
 
+    A sparse 2/19-bar mean is not a 20-bar statistic. The caller must still
+    prove source identity, completed XSHG sessions and lawful data rights.
+    """
+    if "volume" not in df.columns or len(df) < 21:
+        return None
+    volume = pd.to_numeric(df["volume"], errors="coerce").tail(21)
+    if volume.isna().any():
+        return None
+    values = [float(value) for value in volume]
+    if any(not math.isfinite(value) or value < 0 for value in values):
+        return None
+    base = sum(values[:-1]) / 20.0
+    if not math.isfinite(base) or base <= 0:
+        return None
+    result = values[-1] / base
+    return result if math.isfinite(result) else None
 
 def _volatility_20d_pct(close: pd.Series) -> float | None:
     values = pd.to_numeric(close, errors="coerce").dropna()

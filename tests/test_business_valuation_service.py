@@ -493,6 +493,30 @@ def test_mature_stock_primary_method_and_optional_cross_check_are_explicit():
     )
 
 
+@pytest.mark.parametrize("bad_method", (
+    "FCFF", "FCFF_DCF", "UNIMPLEMENTED_METHOD_SENTINEL",
+    "HISTORICAL_PB_PERCENTILE",
+))
+def test_mature_industrial_unimplemented_or_wrong_route_crosscheck_never_ready(
+    bad_method,
+):
+    """A claimed method name plus a signed input is not a calculated model."""
+    payload = _base(
+        "MATURE_INDUSTRIAL_CONSUMER",
+        inputs={"normalized_eps": 2.0},
+        assumptions={"pe_low": 8.0, "pe_high": 12.0},
+    )
+    payload["cross_check"] = {
+        "method": bad_method,
+        "low": 17.0, "high": 23.0,
+        "dataset_ids": ("P_VAL_RATIO",),
+    }
+    result = compile_business_valuation(payload)
+    assert result["status"] == "MISSING"
+    assert "VALUATION_CROSS_CHECK_METHOD_NOT_IMPLEMENTED" in result["reason_codes"]
+    assert result["product_admitted"] is False
+
+
 def test_pipeline_compiles_and_binds_etf_underlying_index_valuation_before_etf_route():
     raw_underlying = {
         "scope": "etf_underlying",

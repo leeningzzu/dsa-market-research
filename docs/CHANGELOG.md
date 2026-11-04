@@ -8,13 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [新功能] 新增严格隔离的`CURRENT_OBSERVATION`准入：公开来源在同次`NO_SEND_RESEARCH`中即使没有发布者历史revision/vintage，也可在来源身份、内容、单位、basis、时钟、as-of、operation和Rights-v2全部一致时成为当前Product；回执强制`historical_pit/storage/learning/strategy_upgrade=false`，旧v1和历史PIT门禁不放宽。实际同次接入FOMC官方声明/实施说明、美国财政部名义收益率、实际收益率及同日10Y名义减实际通胀补偿，当前Product由0/72升至4/72，完整全域与原V2.5 FACT_READY仍为false。
+- [改进] 新增最薄官方来源适配与原Pipeline消费者：`G_US_POLICY/G_UST_NOMINAL/G_UST_REAL/G_INFL_BREAKEVEN`经`StockAnalysisPipeline→Registry→B1→V2.5`生成真实摘要；2026-11-03值为名义10Y 4.95%、实际10Y 2.65%、通胀补偿2.30个百分点，FOMC为3.75%–4.00% MAINTAIN。Data.gov数据集015-DO-020/015-DO-036均按CC0当前用途绑定；不创建第二Shell/DB/report，不发送或训练。
+- [修复] 清除F2同根可选依赖预导入：`data_provider`公开符号、港股纯市场分类、`json_repair`、`markdown2`、`newspaper`改为真正按需加载，保持`DataFetcherManager`和旧Fetcher导出兼容。此前轻量来源/B1/Pipeline会因未使用的`fake_useragent/json_repair/markdown2/newspaper`缺失而收集失败；当前原生无测试桩范围45/45、85/85、Registry/V2.5 196/196通过。局部修复不再触发Project Source换版。
+- [修复] G3粗筛与估值跨消费者拒绝假READY：日线20根相对量只有在确实具有20根有效历史量和完整当前量时才产出数值，禁止2根/19根/NaN/负值/∞缩成“20日量比”；估值交叉核验只接受由已核行业路由明确允许的方法，未实现FCFF/DCF或跨行业PB方法不得用数值区间+数据回执冒充真实计算。当前估值/量比/Supply相邻62/62通过；完整FCFF/DCF、当前真实财报及盘中同刻量比仍开放，原V2.5不修改。
+
 - [修复] Registry派生对象不再把父对象UNKNOWN/MIXED包装为非空“已知版本”：`E_PREMIUM`、`P_EXEC_RISK`、`E_PEER_RS`及通用来源投影在任一父revision/vintage未知时统一降为精确`UNKNOWN`，保留事实、内容哈希与PARTIAL来源能力，但严格v1 Product继续阻断。独立反例先证明`PRICE=UNKNOWN|NAV=...`曾可伪装为已知；不修改受保护准入器，不用局部派生状态替代总体Product。
 
 - [修复] BaoStock日线/5m/交易日历/14类非价源、BLS CPI原子源及同源5m补全日线桥接，不再把本地响应SHA、DSA observed_at或派生桥接哈希伪装为上游revision/vintage；仍保留原内容身份、来源时点、桥接父子哈希及BLS可验证CPI正式发布时刻，但上游修订版本缺失时当前v1 Product保持阻断。与SSE四对象同根修复；不放宽P0受保护准入器或伪造当前邮件数值。此为本地候选，未计为远端CI或真实Product。
 
 - [修复] SSE公告P_CODE_IDENTITY/E_BASKET/P_SHARES_EVENTS/P_DIVIDEND四个来源对象的发布者版本时点伪准入：本地响应SHA、DSA observed_at、股本生效日和分红除权日不能充当上游revision/vintage。保留官方事实、来源哈希和原报告消费者，但没有真实发布版本时Product/PIT/学习一律fail-closed；独立RED与原正反例守卫，不修改受保护的P0 v1准入器或V2.5原件。此项为本地代码候选，远端CI须另验，不是现实Product进展。
 
-- [chore] P0安全拒绝与P1/P2可独立工程验收分离：P0当前观察/PIT的10条失败测试保留为本地开放契约，拒绝扩大Product和虚构revision/vintage；独立提交仅包含P1市场宽度和P2财务比率、银行合理PB的生产Owner/现有消费者/正反例、闭环文档，不以GitHub的P1/P2绿灯声称全三关完成或当前Product晋升。
+- [chore] P0历史开放契约已由`CURRENT_OBSERVATION`用途分离在本地关闭：原10条RED及旧v1对照现全部通过；这只解除当前NO_SEND对未知发布者修订号的过度阻断，不授予历史PIT、存储、训练、策略或独立行动权限。P1/P2既有远端验收和边界保持不变。
 
 - [修复] P1追加8条独立反例先RED：市场宽度外层回执重新哈希不能替代供应商/路由/内容/观测时间的原source identity，消费端重算内层身份并强校验SECURITY/FRACTION、RAW与非币种计数语义；拒绝SH…SZ等冲突证券前后缀。原合法样本保留，聚焦64/64、13模块自然回归487/487通过；P0仍10项开放失败，不能称整仓绿灯或三关全部完成。
 

@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
-"""Fail-closed admission receipts for the existing 76-object research graph.
+"""Admission receipts for the existing 76-object research graph.
 
-This module is a thin validator/compiler used by the existing Registry.  It is
+This module is a thin validator/compiler used by the existing Registry. It is
 not a provider, database, cache, rights authority, PIT store, strategy, report
-or model feature factory.  A receipt can only record explicit upstream facts;
-UNKNOWN rights, units, vintages or clocks remain not admitted.
+or model feature factory. A receipt can only record explicit upstream facts.
+Unknown rights, units, basis or clocks never admit Product; an explicitly bound
+CURRENT_OBSERVATION may use unknown publisher revision/vintage for that exact
+NO_SEND run only and can never become historical PIT, learning or promotion.
 """
 from __future__ import annotations
 
@@ -21,6 +23,8 @@ from src.services.pit_identity import sha256_payload
 
 
 SCHEMA_VERSION = "data-object-admission-receipt-v1"
+CURRENT_OBSERVATION_SCHEMA_VERSION = "data-object-admission-receipt-v2"
+TEMPORAL_SCOPE_CURRENT_OBSERVATION = "CURRENT_OBSERVATION"
 RIGHTS_EVIDENCE_SCHEMA_VERSION = "source-rights-evidence-v2"
 B1_RIGHTS_CONTEXT_SCHEMA_VERSION = "b1-operation-rights-context-v1"
 RIGHTS_EVIDENCE_PURPOSE_NO_SEND = "NO_SEND_RESEARCH"
@@ -91,6 +95,9 @@ _REQUIRED_RIGHTS_FIELDS = frozenset({
     "redistribution",
 })
 _OPTIONAL_RECEIPT_FIELDS = frozenset({"rights_evidence"})
+_CURRENT_RECEIPT_FIELDS = frozenset({
+    "temporal_scope", "research_as_of", "observation_operation_id",
+})
 _REQUIRED_RIGHTS_EVIDENCE_FIELDS = frozenset({
     "schema_version",
     "operation_id",
@@ -147,6 +154,51 @@ def validate_compiled_data_object_admission(
         if type(result.get(key)) is not bool:
             raise DataObjectAdmissionError(
                 "DATA_OBJECT_COMPILED_ADMISSION_FLAG_INVALID:" + key
+            )
+    temporal_scope = _text(result.get("temporal_scope")).upper()
+    if temporal_scope and temporal_scope != TEMPORAL_SCOPE_CURRENT_OBSERVATION:
+        raise DataObjectAdmissionError("DATA_OBJECT_COMPILED_ADMISSION_TEMPORAL_SCOPE_INVALID")
+    if temporal_scope == TEMPORAL_SCOPE_CURRENT_OBSERVATION:
+        if (
+            result.get("historical_pit_eligible") is not False
+            or result.get("learning_admitted") is not False
+            or result.get("strategy_upgrade_authority") is not False
+            or result.get("independent_action_authority") is not False
+        ):
+            raise DataObjectAdmissionError("CURRENT_OBSERVATION_AUTHORITY_FORBIDDEN")
+        if result.get("intended_use") != RIGHTS_EVIDENCE_PURPOSE_NO_SEND:
+            raise DataObjectAdmissionError("CURRENT_OBSERVATION_NO_SEND_REQUIRED")
+        observation_operation_id = _text(result.get("observation_operation_id"))
+        if (
+            not observation_operation_id
+            or observation_operation_id != _text(result.get("operation_id"))
+        ):
+            raise DataObjectAdmissionError("CURRENT_OBSERVATION_OPERATION_MISMATCH")
+        receipt_asof = _parse_aware_datetime(result.get("research_as_of"))
+        if as_of is not None:
+            ceiling = _as_of_ceiling(as_of)
+            if ceiling is None or receipt_asof != ceiling:
+                raise DataObjectAdmissionError("CURRENT_OBSERVATION_CONTEXT_MISMATCH")
+        for clock_field in ("available_at", "observed_at"):
+            if _parse_aware_datetime(result.get(clock_field)) > receipt_asof:
+                raise DataObjectAdmissionError(
+                    "CURRENT_OBSERVATION_OUTSIDE_RESEARCH_ASOF:" + clock_field
+                )
+        rights_clock = _text(result.get("rights_terms_observed_at"))
+        if rights_clock and _parse_aware_datetime(rights_clock) > receipt_asof:
+            raise DataObjectAdmissionError(
+                "CURRENT_OBSERVATION_OUTSIDE_RESEARCH_ASOF:rights_terms_observed_at"
+            )
+        vintage = _parse_optional_vintage_timestamp(result.get("vintage"))
+        if vintage is not None and vintage > receipt_asof:
+            raise DataObjectAdmissionError(
+                "CURRENT_OBSERVATION_OUTSIDE_RESEARCH_ASOF:vintage"
+            )
+        if _completed_through_after_asof(
+            result.get("completed_through"), receipt_asof
+        ):
+            raise DataObjectAdmissionError(
+                "CURRENT_OBSERVATION_OUTSIDE_RESEARCH_ASOF:completed_through"
             )
     if result.get("product_admitted") is True and result.get("rights_evidence_verified") is not True:
         raise DataObjectAdmissionError(
@@ -251,6 +303,11 @@ def seal_data_object_admission_receipt(payload: Mapping[str, Any]) -> dict[str, 
     body = dict(payload)
     body.pop("receipt_hash", None)
     body.setdefault("schema_version", SCHEMA_VERSION)
+    if body["schema_version"] == CURRENT_OBSERVATION_SCHEMA_VERSION:
+        if _text(body.get("temporal_scope")).upper() != TEMPORAL_SCOPE_CURRENT_OBSERVATION:
+            raise DataObjectAdmissionError("CURRENT_OBSERVATION_SCOPE_INVALID")
+        if body.get("historical_pit_eligible") is not False:
+            raise DataObjectAdmissionError("CURRENT_OBSERVATION_PIT_FORBIDDEN")
     body["receipt_hash"] = sha256_payload(body)
     return body
 
@@ -535,6 +592,19 @@ def compile_b1_runtime_admission_receipts(
     as_of = b1_context.get("research_as_of")
     rights_by_dataset = b1_context.get("rights_by_dataset") or {}
     supplied_metadata = b1_context.get("source_metadata_by_dataset") or {}
+    temporal_scope = _text(b1_context.get("temporal_scope")).upper()
+    if temporal_scope not in {"", TEMPORAL_SCOPE_CURRENT_OBSERVATION}:
+        raise DataObjectAdmissionError("B1_TEMPORAL_SCOPE_INVALID")
+    current_research_asof = None
+    if temporal_scope == TEMPORAL_SCOPE_CURRENT_OBSERVATION:
+        if intended_use != RIGHTS_EVIDENCE_PURPOSE_NO_SEND:
+            raise DataObjectAdmissionError("B1_CURRENT_OBSERVATION_NO_SEND_REQUIRED")
+        try:
+            current_research_asof = _parse_aware_datetime(as_of).isoformat()
+        except DataObjectAdmissionError as exc:
+            raise DataObjectAdmissionError(
+                "B1_CURRENT_OBSERVATION_REQUIRES_EXACT_ASOF"
+            ) from exc
     if not isinstance(rights_by_dataset, Mapping) or not isinstance(supplied_metadata, Mapping):
         raise DataObjectAdmissionError("B1_RECEIPT_PRODUCER_SCHEMA_INVALID")
     known = {
@@ -596,8 +666,12 @@ def compile_b1_runtime_admission_receipts(
         units = metadata.get("units")
         if not isinstance(units, Mapping) or not units:
             raise DataObjectAdmissionError("B1_RUNTIME_UNITS_MISSING")
-        receipts[dataset_id] = seal_data_object_admission_receipt({
-            "schema_version": SCHEMA_VERSION,
+        receipt_payload = {
+            "schema_version": (
+                CURRENT_OBSERVATION_SCHEMA_VERSION
+                if temporal_scope == TEMPORAL_SCOPE_CURRENT_OBSERVATION
+                else SCHEMA_VERSION
+            ),
             "dataset_id": dataset_id,
             "provider_identity": grant["provider_identity"],
             "provider_route": metadata["provider_route"],
@@ -616,7 +690,14 @@ def compile_b1_runtime_admission_receipts(
             "rights_evidence": grant,
             "historical_pit_eligible": False,
             "consumer_scope": scope["product_consumer"],
-        })
+        }
+        if temporal_scope == TEMPORAL_SCOPE_CURRENT_OBSERVATION:
+            receipt_payload.update({
+                "temporal_scope": TEMPORAL_SCOPE_CURRENT_OBSERVATION,
+                "research_as_of": current_research_asof,
+                "observation_operation_id": operation_id,
+            })
+        receipts[dataset_id] = seal_data_object_admission_receipt(receipt_payload)
     return receipts
 
 def compile_data_object_admission(
@@ -668,6 +749,9 @@ def compile_data_object_admission(
         "strategy_upgrade_authority": False,
         "independent_action_authority": False,
         "receipt_hash": None,
+        "temporal_scope": None,
+        "research_as_of": None,
+        "observation_operation_id": None,
     }
     if not applicable:
         base["reasons"] = ["DATA_OBJECT_NOT_APPLICABLE_TO_ASSET_ROUTE"]
@@ -676,6 +760,8 @@ def compile_data_object_admission(
         base["reasons"] = ["DATA_OBJECT_ADMISSION_RECEIPT_MISSING"]
         return _seal_compiled_admission(base)
     normalized = validate_data_object_admission_receipt(receipt)
+    temporal_scope = _text(normalized.get("temporal_scope")).upper() or None
+    current_observation = temporal_scope == TEMPORAL_SCOPE_CURRENT_OBSERVATION
     reasons: list[str] = []
     if normalized["dataset_id"] != dataset_id:
         reasons.append("DATASET_ID_MISMATCH")
@@ -702,13 +788,19 @@ def compile_data_object_admission(
             reasons.append("COMPLETED_THROUGH_AFTER_RESEARCH_ASOF")
     units = normalized["units"]
     unit_values = tuple(_text(value).upper() for value in units.values())
+    version_semantics_complete = bool(
+        current_observation
+        or (
+            _known_semantic(normalized["revision"])
+            and _known_semantic(normalized["vintage"])
+        )
+    )
     semantic_complete = bool(
         units
         and all(value and value != "UNKNOWN" for value in unit_values)
         and _known_semantic(normalized["currency"])
         and _known_semantic(normalized["adjustment_basis"])
-        and _known_semantic(normalized["revision"])
-        and _known_semantic(normalized["vintage"])
+        and version_semantics_complete
         and _text(normalized["completed_through"])
     )
     if not semantic_complete:
@@ -789,6 +881,17 @@ def compile_data_object_admission(
             runtime_source_bound = False
     expected_operation_id = _text(operation_id)
     expected_intended_use = _text(intended_use)
+    current_context_valid = True
+    if current_observation:
+        receipt_asof = _parse_aware_datetime(normalized["research_as_of"])
+        if (
+            expected_intended_use != RIGHTS_EVIDENCE_PURPOSE_NO_SEND
+            or normalized["observation_operation_id"] != expected_operation_id
+            or ceiling is None
+            or receipt_asof != ceiling
+        ):
+            reasons.append("CURRENT_OBSERVATION_CONTEXT_MISMATCH")
+            current_context_valid = False
     if rights["product_use"] == "ALLOWED":
         if (
             not expected_operation_id
@@ -831,6 +934,7 @@ def compile_data_object_admission(
         rights["product_use"] == "ALLOWED"
         and rights_evidence_verified
         and runtime_source_bound
+        and current_context_valid
     )
     if rights["product_use"] != "ALLOWED":
         reasons.append("PRODUCT_USE_RIGHT_NOT_ALLOWED")
@@ -896,6 +1000,9 @@ def compile_data_object_admission(
         "rights_evidence_hash": rights_evidence.get("evidence_hash") if isinstance(rights_evidence, Mapping) else None,
         "operation_id": rights_evidence.get("operation_id") if isinstance(rights_evidence, Mapping) else None,
         "intended_use": rights_evidence.get("intended_use") if isinstance(rights_evidence, Mapping) else None,
+        "temporal_scope": temporal_scope,
+        "research_as_of": normalized.get("research_as_of"),
+        "observation_operation_id": normalized.get("observation_operation_id"),
         "upstream_source_owner": rights_evidence.get("upstream_source_owner") if isinstance(rights_evidence, Mapping) else None,
         "terms_uri": rights_evidence.get("terms_uri") if isinstance(rights_evidence, Mapping) else None,
         "terms_scope": rights_evidence.get("terms_scope") if isinstance(rights_evidence, Mapping) else None,
@@ -923,10 +1030,18 @@ def validate_data_object_admission_receipt(value: Mapping[str, Any]) -> dict[str
     if not isinstance(value, Mapping):
         raise DataObjectAdmissionError("DATA_OBJECT_ADMISSION_RECEIPT_SCHEMA_MISMATCH")
     fields = set(value)
-    if not _REQUIRED_RECEIPT_FIELDS <= fields or fields - _REQUIRED_RECEIPT_FIELDS - _OPTIONAL_RECEIPT_FIELDS:
-        raise DataObjectAdmissionError("DATA_OBJECT_ADMISSION_RECEIPT_SCHEMA_MISMATCH")
     result = dict(value)
-    if result.get("schema_version") != SCHEMA_VERSION:
+    schema_version = result.get("schema_version")
+    if schema_version == SCHEMA_VERSION:
+        allowed_fields = _REQUIRED_RECEIPT_FIELDS | _OPTIONAL_RECEIPT_FIELDS
+        if not _REQUIRED_RECEIPT_FIELDS <= fields or fields - allowed_fields:
+            raise DataObjectAdmissionError("DATA_OBJECT_ADMISSION_RECEIPT_SCHEMA_MISMATCH")
+    elif schema_version == CURRENT_OBSERVATION_SCHEMA_VERSION:
+        required_fields = _REQUIRED_RECEIPT_FIELDS | _CURRENT_RECEIPT_FIELDS
+        allowed_fields = required_fields | _OPTIONAL_RECEIPT_FIELDS
+        if not required_fields <= fields or fields - allowed_fields:
+            raise DataObjectAdmissionError("DATA_OBJECT_ADMISSION_RECEIPT_SCHEMA_MISMATCH")
+    else:
         raise DataObjectAdmissionError("DATA_OBJECT_ADMISSION_RECEIPT_VERSION_MISMATCH")
     for key in (
         "dataset_id", "provider_identity", "provider_route", "native_frequency",
@@ -953,6 +1068,19 @@ def validate_data_object_admission_receipt(value: Mapping[str, Any]) -> dict[str
         result["rights_evidence"] = validate_source_rights_evidence(rights_evidence)
     if type(result.get("historical_pit_eligible")) is not bool:
         raise DataObjectAdmissionError("DATA_OBJECT_ADMISSION_PIT_FLAG_INVALID")
+    if result["schema_version"] == CURRENT_OBSERVATION_SCHEMA_VERSION:
+        if result.get("temporal_scope") != TEMPORAL_SCOPE_CURRENT_OBSERVATION:
+            raise DataObjectAdmissionError("CURRENT_OBSERVATION_SCOPE_INVALID")
+        if result.get("historical_pit_eligible") is not False:
+            raise DataObjectAdmissionError("CURRENT_OBSERVATION_PIT_FORBIDDEN")
+        if not _text(result.get("observation_operation_id")):
+            raise DataObjectAdmissionError("CURRENT_OBSERVATION_OPERATION_MISSING")
+        research_asof = _parse_aware_datetime(result.get("research_as_of"))
+        if (
+            _parse_aware_datetime(result["observed_at"]) > research_asof
+            or _parse_aware_datetime(result["available_at"]) > research_asof
+        ):
+            raise DataObjectAdmissionError("CURRENT_OBSERVATION_AFTER_RESEARCH_ASOF")
     _parse_aware_datetime(result["observed_at"])
     _parse_aware_datetime(result["available_at"])
     expected_hash = sha256_payload({key: result[key] for key in result if key != "receipt_hash"})
@@ -1000,6 +1128,7 @@ def compile_data_object_admission_view(
             "learning_requires_distinct_learning_operation_purpose": True,
             "product_admission_requires_current_operation_context": True,
             "product_admission_requires_current_runtime_source_identity": True,
+            "current_observation_unknown_revision_never_grants_historical_pit": True,
             "no_strategy_or_action_authority": True,
         },
     }
