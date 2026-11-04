@@ -267,8 +267,8 @@ def fetch_us_inflation_atomic_bundle(
             },
             "currency": "NOT_APPLICABLE",
             "adjustment_basis": "SEASONALLY_ADJUSTED",
-            "revision": "observed-response-sha256:" + combined_content_hash,
-            "vintage": released_at.isoformat(),
+            "revision": "UNKNOWN",  # Local response SHA is not BLS series revision.
+            "vintage": released_at.isoformat(),  # Verified CPI release instant.
             "facts": facts,
             "source_fact_hash": fact_hash,
         }

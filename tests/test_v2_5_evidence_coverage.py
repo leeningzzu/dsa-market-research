@@ -923,7 +923,7 @@ def _sse_admitted_v25_factor(asset_type):
     return factor
 
 
-def test_v25_renders_only_admitted_sse_nonprice_facts_and_hashes_reader_text():
+def test_v25_never_renders_sse_self_observed_vintage_as_admitted_product():
     stock = _sse_admitted_v25_factor("stock")
     etf = _sse_admitted_v25_factor("etf")
     projected = render_v2_5_dynamic_no_send(
@@ -943,15 +943,18 @@ def test_v25_renders_only_admitted_sse_nonprice_facts_and_hashes_reader_text():
         report_date="2026-10-31",
     )
     html = projected["html"]
-    assert "证券身份：600519 贵州茅台" in html
-    assert "全称 贵州茅台酒股份有限公司" in html
-    assert "现金分红：600519" in html
-    assert "最近除息日 2026-06-26" in html
-    assert "每股含税红利 28.02423元" in html
-    assert "ETF申赎篮子：510300" in html
-    assert "成分 2只" in html
-    assert "PCF文件 1508913" in html
-    # These four source observations are intentionally not Product-admitted.
+    # Source-observed values cannot silently become readable Product facts.
+    # Response SHA, local observed_at and ex-dividend dates are not the
+    # publisher's revision/release vintage. Keep the real values in the
+    # source manifest for later authorized reentry, never in a false mail.
+    assert "证券身份：600519 贵州茅台" not in html
+    assert "全称 贵州茅台酒股份有限公司" not in html
+    assert "现金分红：600519" not in html
+    assert "每股含税红利 28.02423元" not in html
+    assert "ETF申赎篮子：510300" not in html
+    assert "成分 2只" not in html
+    assert "PCF文件 1508913" not in html
+    # Other source observations without real Product are also withheld.
     assert "行业归属：" not in html
     assert "ETF净值：510300" not in html
     assert "ETF申赎份额：510300" not in html
@@ -968,19 +971,13 @@ def test_v25_renders_only_admitted_sse_nonprice_facts_and_hashes_reader_text():
         row["dataset_id"]: row
         for row in by_code["510300"]["data_object_rows"]
     }
-    assert stock_rows["P_CODE_IDENTITY"]["v25_consumer_state"] == (
-        "V25_DATA_OBJECT_FACT_CONSUMED"
-    )
-    assert stock_rows["P_CODE_IDENTITY"]["v25_data_object_fact_consumed"] is True
-    assert stock_rows["P_DIVIDEND"]["v25_consumer_state"] == (
-        "V25_DATA_OBJECT_FACT_CONSUMED"
-    )
-    assert stock_rows["P_DIVIDEND"]["v25_data_object_fact_consumed"] is True
+    assert stock_rows["P_CODE_IDENTITY"]["product_admitted"] is False
+    assert stock_rows["P_CODE_IDENTITY"]["v25_data_object_fact_consumed"] is False
+    assert stock_rows["P_DIVIDEND"]["product_admitted"] is False
+    assert stock_rows["P_DIVIDEND"]["v25_data_object_fact_consumed"] is False
     assert stock_rows["P_SHARES_EVENTS"]["product_admitted"] is False
-    assert etf_rows["E_BASKET"]["v25_consumer_state"] == (
-        "V25_DATA_OBJECT_FACT_CONSUMED"
-    )
-    assert etf_rows["E_BASKET"]["v25_data_object_fact_consumed"] is True
+    assert etf_rows["E_BASKET"]["product_admitted"] is False
+    assert etf_rows["E_BASKET"]["v25_data_object_fact_consumed"] is False
     assert stock_rows["P_INDUSTRY"]["product_admitted"] is False
     assert etf_rows["E_NAV_IOPV"]["product_admitted"] is False
 
@@ -1015,8 +1012,9 @@ def test_v25_renders_only_admitted_sse_nonprice_facts_and_hashes_reader_text():
         direct_leaf_dataset_ids=set(),
     )
     assert missing_visible_fact["v25_consumer_bound"] is False
+    # Missing Product admission fails before the later visible-fact hash gate.
     assert missing_visible_fact["v25_consumer_state"] == (
-        "V25_DATA_OBJECT_FACT_NOT_VISIBLE"
+        "V25_CONSUMER_BINDING_MISSING"
     )
 
     forged_stock = deepcopy(stock)

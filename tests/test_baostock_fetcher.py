@@ -91,12 +91,12 @@ def test_baostock_successful_adjustflag_two_binds_observed_qfq_identity() -> Non
     assert identity["provider_identity"] == "BaostockFetcher"
     assert identity["volume_unit"] == "share"
     assert identity["amount_unit"] == "CNY"
-    # Revision of the actually observed response is data-dependent, not the
-    # installed Python client version or an unobserved vendor release number.
+    # A local response fingerprint is NOT a publisher revision or vintage.
     source_rows = [dict(zip(_Result.fields, row)) for row in fake.result._rows]
     raw_hash = sha256_payload(source_rows)
     assert identity["raw_response_sha256"] == raw_hash
-    assert identity["revision"] == "observed-response-sha256:" + raw_hash
+    assert identity["revision"] == "UNKNOWN"
+    assert identity["vintage"] == "UNKNOWN"
 
 
 def test_baostock_failed_query_never_emits_observed_identity() -> None:
@@ -232,6 +232,8 @@ def test_baostock_nonprice_bundle_is_source_bound_partial_and_non_authoritative(
     } <= set(observations)
     assert all(row["state"] == "PARTIAL" for row in observations.values())
     assert all(row["historical_pit_eligible"] is False for row in observations.values())
+    assert all(row["revision"] == "UNKNOWN" for row in observations.values())
+    assert all(row["vintage"] == "UNKNOWN" for row in observations.values())
     assert all(row["strategy_upgrade_authority"] is False for row in observations.values())
     assert all(
         row["observation_hash"]
@@ -337,8 +339,11 @@ def test_baostock_intraday_5m_seam_binds_identity_without_touching_daily_route()
     expected_source_hash = sha256_payload(minute_raw)
     assert identity["package_version"] == "0.9.4"
     assert identity["source_rows_sha256"] == expected_source_hash
-    assert identity["revision"] == "observed-response-sha256:" + expected_source_hash
-    assert identity["vintage"] == observed_at.isoformat()
+    assert identity["revision"] == "UNKNOWN"
+    assert identity["vintage"] == "UNKNOWN"
+    assert datetime.fromisoformat(
+        identity["observed_at"].replace("Z", "+00:00")
+    ) == observed_at
     assert frame["session"].tolist() == ["2026-09-23:AM"] * 3
 
 

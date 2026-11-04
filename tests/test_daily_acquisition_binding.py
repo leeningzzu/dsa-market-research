@@ -14,6 +14,7 @@ from data_provider.daily_data_identity import (
     build_daily_data_identity,
     canonical_identity_json,
     extract_daily_acquisition_receipt,
+    extract_daily_data_identity,
     sha256_payload,
     validate_daily_acquisition_receipt,
 )
@@ -544,6 +545,11 @@ def test_b1_daily_provider_one_session_lag_uses_same_provider_completed_5m_run_l
     assert admitted.iloc[-1]["close"] == pytest.approx(minute.iloc[-1]["close"])
     assert admitted.iloc[-1]["volume"] == pytest.approx(minute["volume"].sum())
     assert admitted.iloc[-1]["amount"] == pytest.approx(minute["amount"].sum())
+    identity = extract_daily_data_identity(admitted, strict=True)
+    # The completion bridge has a deterministic receipt/hash, but it does not
+    # manufacture a publisher revision or first-release vintage for P_DAILY.
+    assert identity["revision"] == "UNKNOWN"
+    assert identity["vintage"] == "UNKNOWN"
     receipt = extract_daily_acquisition_receipt(admitted, strict=True)
     assert receipt["provider_method_call_count"] == 2
     assert receipt["persistence_status"] == "RIGHTS_NOT_ADMITTED_RUN_LOCAL_ONLY"

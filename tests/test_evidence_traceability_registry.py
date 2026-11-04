@@ -1497,7 +1497,7 @@ def _build_sse_event_fixture_bundle(
     )
 
 
-def test_sse_stock_events_keep_real_mismatch_partial_and_admit_dividend():
+def test_sse_stock_events_keep_mismatch_and_unversioned_dividend_source_only():
     from src.services.data_object_admission import (
         compile_b1_runtime_admission_receipts,
     )
@@ -1529,7 +1529,8 @@ def test_sse_stock_events_keep_real_mismatch_partial_and_admit_dividend():
         row["dataset_id"] for row in view["objects"]
         if row["product_admitted"]
     }
-    assert admitted == {"P_DIVIDEND"}
+    # Source facts are valid, but an ex-dividend date is not publisher vintage.
+    assert admitted == set()
     shares_row = next(
         row for row in view["objects"]
         if row["dataset_id"] == "P_SHARES_EVENTS"
@@ -1540,7 +1541,7 @@ def test_sse_stock_events_keep_real_mismatch_partial_and_admit_dividend():
     )
 
 
-def test_sse_stock_event_reconciled_positive_is_reachable_without_learning():
+def test_sse_reconciled_share_events_still_need_publisher_revision():
     from src.services.data_object_admission import (
         compile_b1_runtime_admission_receipts,
     )
@@ -1561,7 +1562,7 @@ def test_sse_stock_event_reconciled_positive_is_reachable_without_learning():
         row["dataset_id"] for row in view["objects"]
         if row["product_admitted"]
     }
-    assert admitted == {"P_DIVIDEND", "P_SHARES_EVENTS"}
+    assert admitted == set()  # No publisher revision or first-release proof.
     assert not any(row["learning_admitted"] for row in view["objects"])
 
 
@@ -1724,8 +1725,8 @@ def test_sse_public_disclosures_reach_registry_with_only_two_product_objects():
         row["dataset_id"] for row in stock_view["objects"]
         if row["product_admitted"]
     }
-    assert stock_admitted == {"P_CODE_IDENTITY"}
-    for dataset_id in ("P_INDUSTRY", "S_CLASSIFICATION"):
+    assert stock_admitted == set()  # Response SHA is not publisher revision.
+    for dataset_id in ("P_CODE_IDENTITY", "P_INDUSTRY", "S_CLASSIFICATION"):
         row = next(
             item for item in stock_view["objects"]
             if item["dataset_id"] == dataset_id
@@ -1751,8 +1752,8 @@ def test_sse_public_disclosures_reach_registry_with_only_two_product_objects():
         row["dataset_id"] for row in etf_view["objects"]
         if row["product_admitted"]
     }
-    assert etf_admitted == {"E_BASKET"}
-    for dataset_id in ("E_NAV_IOPV", "E_SHARES"):
+    assert etf_admitted == set()  # File ID is not first publication time.
+    for dataset_id in ("E_NAV_IOPV", "E_SHARES", "E_BASKET"):
         row = next(
             item for item in etf_view["objects"]
             if item["dataset_id"] == dataset_id
@@ -2742,6 +2743,23 @@ def test_m2_etf_typed_1d_5m_sources_progress_only_etf_price_objects():
     assert missing["E_PRICE_5M"]["state"] == "UNKNOWN"
 
 
+@pytest.mark.parametrize(
+    "value",
+    (
+        "UNKNOWN",
+        "MIXED",
+        "PRICE=UNKNOWN|NAV=SSE_PCF_FILE_ID:1508913",
+        "QUOTE=SYNTHETIC_R1|5M=UNKNOWN",
+        "PRICE=R1|NAV=MISSING",
+    ),
+)
+def test_unknown_parent_versions_collapse_before_product_admission(value):
+    assert reg._normalized_source_version_semantic(value) == "UNKNOWN"
+    assert reg._normalized_source_version_semantic(
+        "PRICE=R1|NAV=SSE_PCF_FILE_ID:1508913"
+    ) == "PRICE=R1|NAV=SSE_PCF_FILE_ID:1508913"
+
+
 def test_existing_etf_price_and_official_nav_compile_only_daily_close_premium_partial():
     factor, _minute = _closed_typed_etf_source_factor(basis="raw")
     target = str(factor["multi_timeframe_structure_context"]["target_date"])
@@ -2785,6 +2803,8 @@ def test_existing_etf_price_and_official_nav_compile_only_daily_close_premium_pa
     assert premium["facts"]["premium_discount_pct"] == pytest.approx(1.0)
     assert premium["facts"]["iopv_value_used"] is False
     assert "INTRADAY_IOPV_VALUE" in premium["facts"]["unobserved_components"]
+    assert premium["revision"] == "UNKNOWN"
+    assert premium["vintage"] == "UNKNOWN"
     factor["evidence_traceability"] = reg.build_runtime_trace(factor)
     brief = _build_asset_research_brief_v1(
         SimpleNamespace(
@@ -2892,6 +2912,8 @@ def test_existing_quote_and_completed_session_compile_partial_execution_risk_onl
         "FEES_AND_TAXES",
     }
     assert risk["facts"]["full_execution_risk_ready"] is False
+    assert risk["revision"] == "UNKNOWN"
+    assert risk["vintage"] == "UNKNOWN"
     factor["evidence_traceability"] = reg.build_runtime_trace(factor)
     brief = _build_asset_research_brief_v1(
         SimpleNamespace(
@@ -3876,6 +3898,8 @@ def test_existing_etf_peer_rs_compiles_typed_e_peer_rs_without_product_inflation
     assert row["facts"]["relative"]["rank"] == 1
     assert row["facts"]["peer_universe"]["eligible_peer_count"] == 3
     assert len(row["facts"]["peer_universe"]["universe_hash"]) == 64
+    assert row["revision"] == "UNKNOWN"
+    assert row["vintage"] == "UNKNOWN"
     assert trace["complete_research_universe"]["full_domain_data_gate"][
         "current_product_admitted_count"
     ] == 0

@@ -4215,8 +4215,12 @@ def _verified_typed_price_bar_scope(factor: Mapping) -> dict[str, dict]:
     daily_currency = str(daily_identity.get("currency") or "UNKNOWN") if isinstance(daily_identity, Mapping) else "UNKNOWN"
     daily_volume_unit = str(daily_identity.get("volume_unit") or "UNKNOWN") if isinstance(daily_identity, Mapping) else "UNKNOWN"
     daily_amount_unit = str(daily_identity.get("amount_unit") or "UNKNOWN") if isinstance(daily_identity, Mapping) else "UNKNOWN"
-    daily_revision = str(daily_identity.get("revision") or "UNKNOWN") if isinstance(daily_identity, Mapping) else "UNKNOWN"
-    daily_vintage = str(daily_identity.get("vintage") or "UNKNOWN") if isinstance(daily_identity, Mapping) else "UNKNOWN"
+    daily_revision = _normalized_source_version_semantic(
+        daily_identity.get("revision") if isinstance(daily_identity, Mapping) else None
+    )
+    daily_vintage = _normalized_source_version_semantic(
+        daily_identity.get("vintage") if isinstance(daily_identity, Mapping) else None
+    )
     if not (target and provider and basis and observed):
         return {}
     if mtf.get("price_identity_reasons") or mtf.get("daily_data_identity_state") != "OBSERVED":
@@ -4304,8 +4308,12 @@ def _verified_typed_price_bar_scope(factor: Mapping) -> dict[str, dict]:
                     "volume": str(session["volume_unit"] or "UNKNOWN").upper(),
                     "amount": str(session["amount_unit"] or "UNKNOWN").upper(),
                 },
-                "revision": str(session.get("revision") or "UNKNOWN"),
-                "vintage": str(session.get("vintage") or "UNKNOWN"),
+                "revision": _normalized_source_version_semantic(
+                    session.get("revision")
+                ),
+                "vintage": _normalized_source_version_semantic(
+                    session.get("vintage")
+                ),
             }
     return scope
 
@@ -4961,8 +4969,8 @@ def _verified_data_object_source_scope(factor: Mapping) -> dict[str, dict]:
             "units": dict(row["units"]),
             "currency": row["currency"],
             "adjustment_basis": row["adjustment_basis"],
-            "revision": row["revision"],
-            "vintage": row["vintage"],
+            "revision": _normalized_source_version_semantic(row["revision"]),
+            "vintage": _normalized_source_version_semantic(row["vintage"]),
             "producer_authority": row["producer_authority"],
             "source_fact_hash": digest(row["facts"]),
             "source_observation_hash": row["observation_hash"],
@@ -4971,6 +4979,40 @@ def _verified_data_object_source_scope(factor: Mapping) -> dict[str, dict]:
             "strategy_upgrade_authority": False,
         }
     return result
+
+
+_UNKNOWN_SOURCE_VERSION_MARKERS = frozenset({
+    "UNKNOWN", "UNSPECIFIED", "MISSING", "MIXED", "NOT_PROVEN",
+    "UNVERIFIED", "NOT_APPLICABLE", "N/A", "NA",
+})
+
+
+def _normalized_source_version_semantic(value: Any) -> str:
+    """Collapse any composite with an unknown parent to exact UNKNOWN.
+
+    The protected v1 admission contract recognizes exact semantic states.  A
+    derived string such as PRICE=UNKNOWN|NAV=R1 must not turn an unknown parent
+    into a syntactically non-empty, apparently known revision or vintage.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return "UNKNOWN"
+    components = [text]
+    for separator in ("|", ";"):
+        components = [
+            part
+            for component in components
+            for part in component.split(separator)
+        ]
+    for component in components:
+        token = component.split("=", 1)[-1].strip().upper()
+        if (
+            token in _UNKNOWN_SOURCE_VERSION_MARKERS
+            or token.startswith("UNKNOWN_")
+            or token.endswith("_UNKNOWN")
+        ):
+            return "UNKNOWN"
+    return text
 
 
 def _valid_source_sha256(value: Any) -> bool:
@@ -5007,8 +5049,12 @@ def _typed_daily_source_semantics(identity: Any) -> dict | None:
     currency = str(daily.get("currency") or identity.get("currency") or "UNKNOWN").strip().upper()
     volume_unit = str(daily.get("volume_unit") or identity.get("volume_unit") or "UNKNOWN").strip()
     amount_unit = str(daily.get("amount_unit") or identity.get("amount_unit") or "UNKNOWN").strip()
-    revision = str(daily.get("revision") or identity.get("revision") or "UNKNOWN").strip()
-    vintage = str(daily.get("vintage") or identity.get("vintage") or "UNKNOWN").strip()
+    revision = _normalized_source_version_semantic(
+        daily.get("revision") or identity.get("revision")
+    )
+    vintage = _normalized_source_version_semantic(
+        daily.get("vintage") or identity.get("vintage")
+    )
     if (
         not provider
         or not basis
@@ -5243,8 +5289,12 @@ def _verified_etf_peer_rs_source_scope(factor: Mapping) -> dict[str, dict]:
         },
         "currency": target_semantics["currency"],
         "adjustment_basis": target_semantics["adjustment_basis"],
-        "revision": next(iter(revisions)) if len(revisions) == 1 else "MIXED",
-        "vintage": next(iter(vintages)) if len(vintages) == 1 else "MIXED",
+        "revision": _normalized_source_version_semantic(
+            next(iter(revisions)) if len(revisions) == 1 else "MIXED"
+        ),
+        "vintage": _normalized_source_version_semantic(
+            next(iter(vintages)) if len(vintages) == 1 else "MIXED"
+        ),
         "facts": facts,
         "source_fact_hash": source_fact_hash,
         "historical_pit_eligible": False,
@@ -5418,10 +5468,10 @@ def _verified_etf_premium_source_scope(
         },
         "currency": "CNY",
         "adjustment_basis": "RAW_DAILY_CLOSE_VS_OFFICIAL_NAV",
-        "revision": (
+        "revision": _normalized_source_version_semantic(
             "PRICE=" + str(price.get("revision")) + "|NAV=" + str(nav.get("revision"))
         ),
-        "vintage": (
+        "vintage": _normalized_source_version_semantic(
             "PRICE=" + str(price.get("vintage")) + "|NAV=" + str(nav.get("vintage"))
         ),
         "facts": facts,
@@ -5588,10 +5638,10 @@ def _verified_stock_execution_risk_source_scope(
         },
         "currency": quote.get("currency"),
         "adjustment_basis": quote.get("adjustment_basis"),
-        "revision": (
+        "revision": _normalized_source_version_semantic(
             "QUOTE=" + str(quote.get("revision")) + "|5M=" + str(minute.get("revision"))
         ),
-        "vintage": (
+        "vintage": _normalized_source_version_semantic(
             "QUOTE=" + str(quote.get("vintage")) + "|5M=" + str(minute.get("vintage"))
         ),
         "facts": facts,

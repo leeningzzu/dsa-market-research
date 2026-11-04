@@ -242,8 +242,8 @@ def _nonprice_observation(
         "units": dict(units),
         "currency": currency,
         "adjustment_basis": adjustment_basis,
-        "revision": "observed-response-sha256:" + content_sha256,
-        "vintage": observed_at.astimezone(timezone.utc).isoformat(),
+        "revision": "UNKNOWN",
+        "vintage": "UNKNOWN",
         "historical_pit_eligible": False,
         "independent_source_value_admitted": True,
         "strategy_upgrade_authority": False,
@@ -391,8 +391,8 @@ class BaostockFetcher(BaseFetcher):
                     observed_at=observed_at,
                     available_at=observed_at,
                     source_content_sha256=content_sha256,
-                    revision="observed-response-sha256:" + content_sha256,
-                    vintage=observed_at.isoformat(),
+                    revision="UNKNOWN",
+                    vintage="UNKNOWN",
                     sessions=sessions,
                 )
             except Exception as exc:
@@ -518,8 +518,8 @@ class BaostockFetcher(BaseFetcher):
                 
                 df = pd.DataFrame(data_list, columns=rs.fields)
                 observed_at = datetime.now(timezone.utc)
-                # Revision is the received response's actual local fingerprint,
-                # never the client package version or an invented vendor release.
+                # The local response digest proves content only; it cannot be
+                # presented as the upstream publisher revision or vintage.
                 raw_response_sha256 = sha256_payload(
                     df.astype(str).to_dict("records")
                 )
@@ -540,9 +540,10 @@ class BaostockFetcher(BaseFetcher):
                     instrument=stock_code,
                     observed_at=observed_at,
                     raw_response_sha256=raw_response_sha256,
-                    revision="observed-response-sha256:" + raw_response_sha256,
-                    # This is a *current observation* vintage, not historical PIT.
-                    vintage=observed_at.isoformat(),
+                    revision="UNKNOWN",
+                    # The DSA observation clock remains recorded independently.
+                    # No BaoStock first-release or revision chain was supplied.
+                    vintage="UNKNOWN",
                 )
                 attach_daily_data_identity(df, identity)
                 
@@ -1252,10 +1253,10 @@ class BaostockFetcher(BaseFetcher):
             identity_state="OBSERVED",
             observed_at=observed_at,
             source_rows_sha256=source_rows_sha256,
-            # Source response revision is measured from received rows;
-            # package_version above independently records client software.
-            revision="observed-response-sha256:" + source_rows_sha256,
-            vintage=observed_at.isoformat(),
+            # The rows SHA and local observed clock are not provider-supplied
+            # revision/vintage; keep them as their existing distinct fields.
+            revision="UNKNOWN",
+            vintage="UNKNOWN",
         )
         attach_intraday_data_identity(frame, identity)
         frame["intraday_data_identity_hash"] = identity["identity_hash"]

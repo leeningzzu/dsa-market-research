@@ -1730,8 +1730,11 @@ class StockAnalysisPipeline:
             observed_at=observed_at,
             raw_response_sha256=composite_source_hash,
             instrument=instrument,
-            revision="derived-composite-sha256:" + composite_source_hash,
-            vintage=observed_at.isoformat(),
+            # The composite hash and run-local clock are preserved above as
+            # content/observation identity. They are not publisher revision or
+            # first-release vintage and cannot unlock strict-v1 Product.
+            revision="UNKNOWN",
+            vintage="UNKNOWN",
         )
         attach_daily_data_identity(combined, combined_identity)
         bridge = seal_daily_completion_bridge_receipt({

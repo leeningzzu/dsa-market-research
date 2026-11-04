@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [修复] Registry派生对象不再把父对象UNKNOWN/MIXED包装为非空“已知版本”：`E_PREMIUM`、`P_EXEC_RISK`、`E_PEER_RS`及通用来源投影在任一父revision/vintage未知时统一降为精确`UNKNOWN`，保留事实、内容哈希与PARTIAL来源能力，但严格v1 Product继续阻断。独立反例先证明`PRICE=UNKNOWN|NAV=...`曾可伪装为已知；不修改受保护准入器，不用局部派生状态替代总体Product。
+
+- [修复] BaoStock日线/5m/交易日历/14类非价源、BLS CPI原子源及同源5m补全日线桥接，不再把本地响应SHA、DSA observed_at或派生桥接哈希伪装为上游revision/vintage；仍保留原内容身份、来源时点、桥接父子哈希及BLS可验证CPI正式发布时刻，但上游修订版本缺失时当前v1 Product保持阻断。与SSE四对象同根修复；不放宽P0受保护准入器或伪造当前邮件数值。此为本地候选，未计为远端CI或真实Product。
+
+- [修复] SSE公告P_CODE_IDENTITY/E_BASKET/P_SHARES_EVENTS/P_DIVIDEND四个来源对象的发布者版本时点伪准入：本地响应SHA、DSA observed_at、股本生效日和分红除权日不能充当上游revision/vintage。保留官方事实、来源哈希和原报告消费者，但没有真实发布版本时Product/PIT/学习一律fail-closed；独立RED与原正反例守卫，不修改受保护的P0 v1准入器或V2.5原件。此项为本地代码候选，远端CI须另验，不是现实Product进展。
+
 - [chore] P0安全拒绝与P1/P2可独立工程验收分离：P0当前观察/PIT的10条失败测试保留为本地开放契约，拒绝扩大Product和虚构revision/vintage；独立提交仅包含P1市场宽度和P2财务比率、银行合理PB的生产Owner/现有消费者/正反例、闭环文档，不以GitHub的P1/P2绿灯声称全三关完成或当前Product晋升。
 
 - [修复] P1追加8条独立反例先RED：市场宽度外层回执重新哈希不能替代供应商/路由/内容/观测时间的原source identity，消费端重算内层身份并强校验SECURITY/FRACTION、RAW与非币种计数语义；拒绝SH…SZ等冲突证券前后缀。原合法样本保留，聚焦64/64、13模块自然回归487/487通过；P0仍10项开放失败，不能称整仓绿灯或三关全部完成。

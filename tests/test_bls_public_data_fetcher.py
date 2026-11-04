@@ -141,6 +141,9 @@ def test_bls_bundle_binds_three_exact_values_release_time_and_no_effects():
     for row in observations.values():
         assert row["state"] == "READY"
         assert row["source_available_at"] == "2026-10-14T12:30:00+00:00"
+        # BLS release instant is verified but not the value revision number.
+        assert row["revision"] == "UNKNOWN"
+        assert row["vintage"] == "2026-10-14T12:30:00+00:00"
         assert row["completed_through"] == "2026-09"
         assert row["source_fact_hash"] == sha256_payload(row["facts"])
     assert bundle["storage_admitted"] is False

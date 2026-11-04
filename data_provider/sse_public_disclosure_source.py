@@ -423,10 +423,12 @@ def build_sse_public_disclosure_bundle(
 ) -> dict[str, Any]:
     """Build current Stock/Sector/ETF disclosure observations in one run.
 
-    Only P_CODE_IDENTITY and E_BASKET have enough current response semantics
-    to become NO_SEND Product candidates.  Industry classification, NAV/IOPV
-    and shares remain PARTIAL because version/validity, actual IOPV time/value
-    or total-share/split facts are absent from these exact responses.
+    P_CODE_IDENTITY and E_BASKET can be READY as source observations, but
+    a response hash, locally observed clock, or PCF file identifier is not
+    evidence of the publisher's first-release clock / revision history.
+    Without that independent upstream provenance the current strict-v1
+    Product admission remains blocked.  This function neither invents PIT
+    nor grants upstream data-use rights.
     """
     if not re.fullmatch(r"\d{6}", str(company_code or "")):
         raise SSEPublicDisclosureSourceError(
@@ -506,12 +508,14 @@ def build_sse_public_disclosure_bundle(
             "SSE_DISCLOSURE_COMPANY_REQUIRED_FIELD_MISSING"
         )
     observed_iso = observed.isoformat()
-    company_hash = sha256(company_response_json).hexdigest()
     stock_observations = {
         "P_CODE_IDENTITY": _observation(
             dataset_id="P_CODE_IDENTITY",
             state="READY",
-            reason_codes=("OFFICIAL_CURRENT_COMPANY_IDENTITY_OBSERVED",),
+            reason_codes=(
+                "OFFICIAL_CURRENT_COMPANY_IDENTITY_OBSERVED",
+                "PUBLISHER_REVISION_AND_VINTAGE_NOT_PROVEN",
+            ),
             provider_route=company_request_url,
             response_bytes=company_response_json,
             observed_at=observed,
@@ -523,8 +527,8 @@ def build_sse_public_disclosure_bundle(
             },
             currency="NOT_APPLICABLE",
             adjustment_basis="NOT_APPLICABLE",
-            revision="SSE_CURRENT_RESPONSE_SHA256:" + company_hash,
-            vintage=observed_iso,
+            revision="UNKNOWN",
+            vintage="UNKNOWN",
             facts={
                 "stock_code": company_code,
                 "full_name": full_name,
@@ -729,7 +733,10 @@ def build_sse_public_disclosure_bundle(
         "E_BASKET": _observation(
             dataset_id="E_BASKET",
             state="READY",
-            reason_codes=("OFFICIAL_CURRENT_PCF_BASKET_OBSERVED",),
+            reason_codes=(
+                "OFFICIAL_CURRENT_PCF_BASKET_OBSERVED",
+                "PUBLISHER_RELEASE_TIMESTAMP_NOT_PROVEN",
+            ),
             provider_route=etf_basket_request_url,
             response_bytes=etf_basket_response_json,
             observed_at=observed,
@@ -742,7 +749,7 @@ def build_sse_public_disclosure_bundle(
             currency="CNY",
             adjustment_basis="NOT_APPLICABLE",
             revision="SSE_PCF_FILE_ID:" + file_id,
-            vintage=observed_iso,
+            vintage="UNKNOWN",
             facts={
                 "fund_code": fund_code,
                 "fund_name": fund_name,
@@ -987,7 +994,9 @@ def build_sse_stock_event_disclosure_bundle(
         "P_SHARES_EVENTS": _observation(
             dataset_id="P_SHARES_EVENTS",
             state="READY" if shares_reconciled else "PARTIAL",
-            reason_codes=shares_reason,
+            reason_codes=shares_reason + (
+                "PUBLISHER_REVISION_AND_VINTAGE_NOT_PROVEN",
+            ),
             provider_route=(
                 capital_request_url + " | " + equity_change_request_url
             ),
@@ -1001,11 +1010,8 @@ def build_sse_stock_event_disclosure_bundle(
             },
             currency="NOT_APPLICABLE",
             adjustment_basis="NOT_APPLICABLE",
-            revision=(
-                "SSE_CAPITAL_DATE:" + capital_date.isoformat()
-                if shares_reconciled else "UNKNOWN"
-            ),
-            vintage=(observed_iso if shares_reconciled else "UNKNOWN"),
+            revision="UNKNOWN",
+            vintage="UNKNOWN",
             facts={
                 "stock_code": company_code,
                 "capital_trade_date": capital_date.isoformat(),
@@ -1023,7 +1029,11 @@ def build_sse_stock_event_disclosure_bundle(
         "P_DIVIDEND": _observation(
             dataset_id="P_DIVIDEND",
             state="READY",
-            reason_codes=("OFFICIAL_DIVIDEND_HISTORY_OBSERVED",),
+            reason_codes=(
+                "OFFICIAL_DIVIDEND_HISTORY_OBSERVED",
+                "DIVIDEND_EX_DATE_IS_NOT_PUBLISHER_REVISION",
+                "PUBLISHER_RELEASE_VINTAGE_NOT_PROVEN",
+            ),
             provider_route=dividend_request_url,
             response_bytes=dividend_response_json,
             observed_at=observed,
@@ -1035,11 +1045,8 @@ def build_sse_stock_event_disclosure_bundle(
             },
             currency="CNY",
             adjustment_basis="NOT_APPLICABLE",
-            revision=(
-                "SSE_DIVIDEND_LATEST_EX_DATE:" + latest_dividend_date
-                + ";RECORDS:" + str(len(dividends))
-            ),
-            vintage=observed_iso,
+            revision="UNKNOWN",
+            vintage="UNKNOWN",
             facts={
                 "stock_code": company_code,
                 "record_count": len(dividends),
