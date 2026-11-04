@@ -31,11 +31,11 @@ flowchart LR
 <!-- LOCAL_P012_CANDIDATE_END -->
 
 <!-- CURRENT_MASTER_CONTROL_START -->
-## 当前控制页：CURRENT_OBSERVATION 与四项官方 Global Product 本地闭环（2026-11-04）
+## 当前控制页：CURRENT_OBSERVATION 与四项官方 Global Product 自然CI闭环（2026-11-04）
 
-CONTROL_ID = STOCK_DSA_MASTER_ROUTE_20261104_CURRENT_OBSERVATION_GLOBAL_PRODUCT4_LOCAL
+CONTROL_ID = STOCK_DSA_MASTER_ROUTE_20261104_CURRENT_OBSERVATION_GLOBAL_PRODUCT4_CI105_ACCEPTED
 SOURCE_AUTHORITY = Project Source恰好8个唯一Owner，01/05均为v3.553；2026-11-04按name、created_at、message_order三次物理清单一致PASS，旧v3.552已删除。局部代码/测试进展不触发Source换版；仅远端CI、权限/架构、Product里程碑或交接checkpoint再成对更新01/05。
-GIT_AUTHORITY = 唯一公共仓库 `https://github.com/leeningzzu/dsa-market-research.git`；当前本地基线HEAD `03f1bf7ffa2f3b71142a3d469fdc0a37495768d2` / tree `881a286d470d53167453608829d2715b331c1c40`。本控制页描述的是未提交本地候选，尚无新commit/push/PR自然CI；CI103仅接受干净03f1前驱，禁止借用为当前候选证明。
+GIT_AUTHORITY = 唯一公共仓库 `https://github.com/leeningzzu/dsa-market-research.git`；Product4提交`f4582a29098144157787fc250265e9a39055eb64`后，最小测试隔离修复提交`a8f68223d1328874aa7b3d44c4abc565e1037714`普通非force推送到现有feature。自然CI104 Run41785255965曾因4条JSON修复测试FAIL；修复仅删除3个无条件全局`json_repair`测试桩并新增3条隔离反例。自然CI105 Run41793577681对`a8f68223`终态SUCCESS：Change Detection、AI governance、backend、Docker、Windows/macOS打包均成功，web按路径跳过。PR31保持Draft/Open、未合并；main未变。
 IMMUTABLES = 原机器图149628字节/775边/SHA256 `b4f69f76807ac44bc0fea1a03f9aa38484b6083ca574a3699220b0564ac55aed`；原V2.5 125919字节/SHA256 `039ca6394baf9cf39494cc29f512802b114c8227f8c965723197a8df4b9de823`。两者未修改。
 
 ### 0.1 本轮实际闭合
@@ -69,7 +69,7 @@ IMMUTABLES = 原机器图149628字节/775边/SHA256 `b4f69f76807ac44bc0fea1a03f9
 - 五个Global/P0/旧v1/导入边界模块：85/85 PASS。
 - Registry＋原V2.5消费者：196/196 PASS。
 - G3估值/量比/Supply相邻范围：62/62 PASS。
-- 上述范围重叠，不相加为虚构总数；完整仓库自然CI仍待当前候选提交后独立验证。
+- 上述范围重叠，不相加为虚构总数。CI104在`f4582a29`暴露4条`json_repair`失败；根因是3个旧测试模块在收集期无条件覆盖真实模块。独立反例3 RED→3 GREEN，只删除3个无条件桩，5个合法条件桩保持原状；本地关联回归108 PASS/4 SKIP。修复提交`a8f68223`的自然CI105 Run41793577681已全绿，证明原4条解析断言在完整CI依赖环境恢复通过；这只关闭测试隔离缺陷，不扩大Product4、方法、数据或完整邮件范围。
 - 正反例覆盖：错host/日期/发布时钟/实施区间、future observation、late terms、来源事实篡改、错父日期/哈希、旧as-of回放、PIT/learning/strategy越权、短20日量比与未实现估值方法。
 
 ### 0.4 Role Review
@@ -79,11 +79,11 @@ IMMUTABLES = 原机器图149628字节/775边/SHA256 `b4f69f76807ac44bc0fea1a03f9
 | PRODUCT | 真实CURRENT Product4/72；全域与完整邮件仍STOP | 继续41条typed来源链，不把四个Global对象冒充完整产品 |
 | DATA_MODEL | CURRENT_OBSERVATION与历史PIT已拆开，四对象同次身份/单位/时钟/rights闭合 | 历史修订链仍需独立PIT数据；禁止当前观察回填历史 |
 | PROCESS_CONSUMER | 官方来源已进入原Pipeline/Registry/B1/V2.5，Pipeline重放PASS | KEEP原DSA；不建第二provider graph、DB或报告器 |
-| AUTHORITY_CURRENTNESS | Source8 v3.553 PASS；Git本地候选基于03f1，远端CI OPEN | 当前Source保持不动；代码候选需一个原子commit＋自然CI |
+| AUTHORITY_CURRENTNESS | Source8 v3.553 PASS；远端feature/PR31最新`a8f68223`，CI105 SUCCESS | Source保持不动；PR仍Draft/Open、main未变 |
 | ENVIRONMENT | eager import同根缺陷已从fake_useragent/json_repair/markdown2/newspaper/HK classifier入口移除 | 可选能力真正调用时仍要求其依赖；不安装无关包 |
 | ADAPTER_INTERFACE | 新增最薄Fed/Treasury pure adapter及原Pipeline ingest | 无网络隐藏副作用，无第二scheduler/report/model |
-| DEV_TOOLING | 45、85、196、62四个独立范围PASS，py_compile/diff-check另验 | 不把局部绿灯冒充remote/full repo CI |
-| USER_BURDEN | 不再因局部修复要求Source替换、Token或日志 | 下一次用户动作仅用于授权Git commit/push |
+| DEV_TOOLING | CI104四失败经3个无条件测试桩根修；本地108 PASS/4 SKIP，CI105全任务成功 | 原golden和生产解析代码未改；不把CI绿灯冒充Product全域完成 |
+| USER_BURDEN | 无Source替换、Token、人工日志诊断或依赖安装 | 下一关继续机器执行一个真实Market/Breadth数据纵向切片 |
 
 CURRENT_ROUTE_STILL_WORTH_CONTINUING = YES_KEEP_ONLY_DSA
 INSTRUCTIONS_UPDATE_DECISION = NO_DELTA_KEEP；现有规则已覆盖当前用途、PIT隔离、真实来源与外部效果。
@@ -93,7 +93,7 @@ SOURCE_UPDATE_DECISION = KEEP_PROJECT_SOURCE_V3_553_NO_OP；本轮不生成v3.55
 
 后续模型必须读取`AGENTS.md`、本文、Stage JSON、Project Source8，并实际核origin/HEAD/tree/status/PR/CI。真实Product必须同时保留来源事实、Rights、CURRENT/PIT用途、消费者和运行回执；Product4不等于全域或完整邮件。
 
-UNIQUE_NEXT_STEP = 在用户明确授权后，将当前P0/F2/Fed/Treasury/G3整合候选作为一个有界英文commit普通推送到现有feature并观察自然PR CI；不merge、不main直推。CI通过后再选同一官方来源族或一个高复用公开源关闭下一批41条来源链，Project Source保持v3.553直到材料性checkpoint。
+UNIQUE_NEXT_STEP = CI105已接受最小测试隔离修复。下一材料性工作只选择一个高复用真实数据纵向切片：以现有`M_ASOF_UNIVERSE`与市场日终父事实为基础，闭合`M_BASIC_BREADTH`的同日Universe/交易状态/分母/来源时钟/Registry→B1→Market→Canonical→原V2.5 NO_SEND正反例；若真实父事实不足则保持UNKNOWN并STOP，不同时扩展技术指标、行业、ETF或第二数据平台。Project Source继续v3.553，待真实Product/架构/权限里程碑再批量checkpoint。
 <!-- CURRENT_MASTER_CONTROL_END -->
 ## 1. GitHub是后续工程基线
 

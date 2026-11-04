@@ -44,7 +44,7 @@ def _baseline() -> dict:
 def test_current_global_observation_candidate_separates_product_from_pit() -> None:
     baseline = _baseline()
     current = baseline["current_global_observation_candidate"]
-    assert current["state"] == "LOCAL_INTEGRATED_PRODUCT4_REMOTE_CI_OPEN"
+    assert current["state"] == "CI105_PRODUCT4_CORRECTIVE_NATURAL_CI_SUCCESS"
     assert current["base_head"] == "03f1bf7ffa2f3b71142a3d469fdc0a37495768d2"
     assert current["project_source_pair"] == "v3.553_PHYSICAL_EXACT8_PASS_KEEP_NO_CHURN"
     temporal = current["temporal_contract"]
@@ -72,14 +72,33 @@ def test_current_global_observation_candidate_separates_product_from_pit() -> No
     assert validation["g3_valuation_volume_supply"] == {"passed": 62, "failed": 0}
     assert validation["scopes_overlap_and_must_not_be_summed"] is True
     assert current["full_v25_fact_ready"] is False
-    assert current["git_commit"] is None
-    assert current["git_push"] is False
+    assert current["git_commit"] == "a8f68223d1328874aa7b3d44c4abc565e1037714"
+    assert current["git_push"] is True
+    ci = validation["ci104_evidence"]
+    assert ci["run_id"] == 41785255965
+    assert ci["terminal_conclusion"] == "failure"
+    assert (ci["offline_tests_passed"], ci["offline_tests_failed"]) == (6933, 4)
+    assert ci["local_root_cause"] == "EAGER_TEST_MODULE_SYS_MODULES_JSON_REPAIR_MAGICMOCK_GLOBAL_CONTAMINATION"
+    assert ci["independent_red"] == ci["independent_green"] == 3
+    assert (ci["local_related_passed"], ci["local_related_skipped"]) == (108, 4)
+    assert ci["local_full_suite_or_real_json_repair_ci_revalidated"] is True
+    assert ci["new_corrective_commit"] == "a8f68223d1328874aa7b3d44c4abc565e1037714"
+    assert ci["new_corrective_push"] is True
+    resolution = validation["ci105_resolution"]
+    assert resolution["run_id"] == 41793577681
+    assert resolution["terminal_conclusion"] == "success"
+    assert (resolution["jobs_success"], resolution["jobs_skipped"], resolution["jobs_failed"]) == (6, 1, 0)
+    assert resolution["production_json_parsers_changed"] is False
+    assert resolution["original_four_json_repair_assertions_changed"] is False
+    assert resolution["original_four_json_repair_tests_restored_by_natural_ci"] is True
+    assert resolution["merge"] is False and resolution["main_changed"] is False
     assert current["merge"] is False
     assert current["source_update_decision"].startswith("KEEP_V3_553_NO_OP")
     roadmap = (ROOT / "docs" / "stock-dsa-roadmap.md").read_text(encoding="utf-8")
     assert "CURRENT_OBSERVATION 与四项官方 Global Product" in roadmap
     assert "真实同次Product由0/72升至**4/72**" in roadmap
     assert "SOURCE_UPDATE_DECISION = KEEP_PROJECT_SOURCE_V3_553_NO_OP" in roadmap
+    assert "自然CI105 Run41793577681已全绿" in roadmap
 
 
 def test_stage_baseline_is_derived_from_the_existing_machine_graph() -> None:
@@ -443,7 +462,7 @@ def test_current_control_rejects_historical_product_and_email_geometry_substitut
     assert current["email_reader_state"]["smtp_send"] == 0
 
     roadmap = (ROOT / "docs" / "stock-dsa-roadmap.md").read_text(encoding="utf-8")
-    assert "CONTROL_ID = STOCK_DSA_MASTER_ROUTE_20261104_CURRENT_OBSERVATION_GLOBAL_PRODUCT4_LOCAL" in roadmap
+    assert "CONTROL_ID = STOCK_DSA_MASTER_ROUTE_20261104_CURRENT_OBSERVATION_GLOBAL_PRODUCT4_CI105_ACCEPTED" in roadmap
     assert "真实同次Product由0/72升至**4/72**" in roadmap
     assert "full_domain_product_ready=false" in roadmap
     assert "历史PIT" in roadmap and "绝不倒灌" in roadmap

@@ -4,7 +4,7 @@
   "authority": "CI_DERIVED_GUARDRAIL_ONLY_NOT_RUNTIME_PROOF",
   "current_global_observation_candidate": {
     "schema_version": "stock-dsa-current-global-observation-candidate-v1",
-    "state": "LOCAL_INTEGRATED_PRODUCT4_REMOTE_CI_OPEN",
+    "state": "CI105_PRODUCT4_CORRECTIVE_NATURAL_CI_SUCCESS",
     "base_head": "03f1bf7ffa2f3b71142a3d469fdc0a37495768d2",
     "base_tree": "881a286d470d53167453608829d2715b331c1c40",
     "project_source_pair": "v3.553_PHYSICAL_EXACT8_PASS_KEEP_NO_CHURN",
@@ -51,12 +51,59 @@
       "registry_and_v25": {"passed": 196, "failed": 0},
       "g3_valuation_volume_supply": {"passed": 62, "failed": 0},
       "scopes_overlap_and_must_not_be_summed": true,
-      "remote_natural_ci": "NOT_RUN_CURRENT_LOCAL_CANDIDATE"
+      "remote_natural_ci": "CI105_RUN41793577681_SUCCESS_ON_A8F68223",
+      "ci104_evidence": {
+        "remote_feature_commit": "f4582a29098144157787fc250265e9a39055eb64",
+        "pr": 31,
+        "run_id": 41785255965,
+        "terminal_conclusion": "failure",
+        "jobs_success": 5,
+        "jobs_skipped": 1,
+        "jobs_failed": 1,
+        "offline_tests_passed": 6933,
+        "offline_tests_failed": 4,
+        "offline_tests_deselected": 36,
+        "subtests_passed": 588,
+        "failed_test_names": [
+          "tests/test_image_stock_extractor_litellm.py::TestParseItemsFromText::test_uses_json_repair_when_json_invalid",
+          "tests/test_multi_agent.py::TestIntelAgentPostProcess::test_repairs_json_and_caches_intel_context",
+          "tests/test_report_schema.py::TestAnalyzerSchemaFallback::test_parse_response_repairs_nested_single_json_candidate",
+          "tests/test_report_schema.py::TestAnalyzerSchemaFallback::test_parse_response_repairs_single_json_candidate"
+        ],
+        "local_root_cause": "EAGER_TEST_MODULE_SYS_MODULES_JSON_REPAIR_MAGICMOCK_GLOBAL_CONTAMINATION",
+        "independent_red": 3,
+        "independent_green": 3,
+        "local_related_passed": 108,
+        "local_related_skipped": 4,
+        "local_full_suite_or_real_json_repair_ci_revalidated": true,
+        "new_corrective_commit": "a8f68223d1328874aa7b3d44c4abc565e1037714",
+        "new_corrective_push": true
+      },
+      "ci105_resolution": {
+        "remote_feature_commit": "a8f68223d1328874aa7b3d44c4abc565e1037714",
+        "pr": 31,
+        "run_id": 41793577681,
+        "terminal_conclusion": "success",
+        "jobs_success": 6,
+        "jobs_skipped": 1,
+        "jobs_failed": 0,
+        "root_fix_paths": [
+          "tests/test_fetcher_source_optimization.py",
+          "tests/test_hk_realtime_routing.py",
+          "tests/test_stock_code_bse.py",
+          "tests/test_json_repair_import_isolation.py"
+        ],
+        "production_json_parsers_changed": false,
+        "original_four_json_repair_assertions_changed": false,
+        "original_four_json_repair_tests_restored_by_natural_ci": true,
+        "merge": false,
+        "main_changed": false
+      }
     },
     "immutable_v25_sha256": "039ca6394baf9cf39494cc29f512802b114c8227f8c965723197a8df4b9de823",
     "full_v25_fact_ready": false,
-    "git_commit": null,
-    "git_push": false,
+    "git_commit": "a8f68223d1328874aa7b3d44c4abc565e1037714",
+    "git_push": true,
     "merge": false,
     "source_update_decision": "KEEP_V3_553_NO_OP_UNTIL_REMOTE_CI_OR_MATERIAL_MILESTONE",
     "current_route_still_worth_continuing": "YES_KEEP_ONLY_DSA"
