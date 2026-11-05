@@ -2068,6 +2068,34 @@ class StockAnalysisPipeline:
         }
         return deepcopy(observation)
 
+    def _ingest_b1_federal_reserve_h10_response(
+        self, *, response_html: bytes, request_url: str,
+        observed_at: datetime,
+    ) -> Dict[str, Any]:
+        """Bind one current official H.10 broad-dollar release in memory."""
+        context = self._bind_b1_run_context(persist=False)
+        if not isinstance(context, Mapping):
+            raise DataObjectAdmissionError("B1_FED_H10_OPERATION_NOT_BOUND")
+        from data_provider.federal_reserve_h10_source import (
+            build_federal_reserve_h10_source_observation,
+        )
+        observation = build_federal_reserve_h10_source_observation(
+            response_html,
+            request_url=request_url,
+            observed_at=observed_at,
+            b1_context=context,
+        )
+        existing = getattr(self, "_b1_treasury_global_observations", {}) or {}
+        dataset_id = observation["dataset_id"]
+        if dataset_id in existing:
+            raise DataObjectAdmissionError(
+                "B1_GLOBAL_SOURCE_ALREADY_BOUND:" + dataset_id
+            )
+        self._b1_treasury_global_observations = {
+            **deepcopy(existing), dataset_id: deepcopy(observation),
+        }
+        return deepcopy(observation)
+
     def _ingest_b1_sse_public_disclosure_responses(
         self, *,
         company_response_json: bytes,

@@ -44,107 +44,99 @@ def _baseline() -> dict:
 def test_current_global_observation_candidate_separates_product_from_pit() -> None:
     baseline = _baseline()
     current = baseline["current_global_observation_candidate"]
-    assert current["state"] == "CI105_PRODUCT4_CORRECTIVE_NATURAL_CI_SUCCESS"
-    assert current["base_head"] == "03f1bf7ffa2f3b71142a3d469fdc0a37495768d2"
+    assert current["state"] == "LOCAL_PRODUCT5_H10_CURRENT_CI_OPEN"
+    assert current["base_head"] == "55a27f56babdb2d8945097fc4a5eacf43181ae04"
     assert current["project_source_pair"] == "v3.553_PHYSICAL_EXACT8_PASS_KEEP_NO_CHURN"
     temporal = current["temporal_contract"]
     assert temporal["temporal_scope"] == "CURRENT_OBSERVATION"
-    assert temporal["intended_use"] == "NO_SEND_RESEARCH"
     assert temporal["historical_pit_eligible"] is False
     assert temporal["storage_admitted"] is False
     assert temporal["learning_admitted"] is False
     assert temporal["strategy_upgrade_authority"] is False
     actual = current["actual_operation"]
     assert actual["product_admitted_dataset_ids"] == [
-        "G_INFL_BREAKEVEN", "G_UST_NOMINAL", "G_UST_REAL", "G_US_POLICY",
+        "G_INFL_BREAKEVEN", "G_USD_BROAD", "G_UST_NOMINAL",
+        "G_UST_REAL", "G_US_POLICY",
     ]
-    assert actual["product_admitted_count"] == 4
+    assert actual["product_admitted_count"] == 5
+    assert actual["network_requests"] == 8
+    assert actual["receipt_sha256"] == (
+        "d39eea2ab6d0f654ee7c9f4e401b4081cbd3d659147d08f9defeee8ad8726fec"
+    )
+    assert actual["pipeline_owner_verified_in_same_operation"] is True
+    assert actual["raw_source_bytes_persisted"] is False
     assert actual["full_domain_product_ready"] is False
     counts = current["capability_counts"]
-    assert counts["typed_or_real_source_capability"] == 31
-    assert counts["complete_typed_source_chain_gaps"] == 41
-    assert counts["current_product_admitted"] == 4
+    assert counts["typed_or_real_source_capability"] == 32
+    assert counts["complete_typed_source_chain_gaps"] == 40
+    assert counts["current_product_admitted"] == 5
     assert counts["current_product_denominator"] == 72
+    h10 = current["h10_broad_dollar"]
+    assert h10["latest_completed_date"] == "2026-10-30"
+    assert h10["broad_dollar_index_jan2006_100"] == "121.6656"
+    assert h10["index_base"] == "JAN06=100"
     validation = current["validation"]
-    assert validation["lazy_import_and_b1_preflight"] == {"passed": 45, "failed": 0}
-    assert validation["global_p0_pipeline_focused"] == {"passed": 85, "failed": 0}
-    assert validation["registry_and_v25"] == {"passed": 196, "failed": 0}
-    assert validation["g3_valuation_volume_supply"] == {"passed": 62, "failed": 0}
-    assert validation["scopes_overlap_and_must_not_be_summed"] is True
+    assert validation["h10_independent_red"] == 13
+    assert (validation["h10_focused_passed"], validation["h10_focused_failed"]) == (13, 0)
+    assert validation["actual_product5_operation"] == "PASS"
+    accepted = validation["accepted_predecessor_ci107"]
+    assert accepted["run_id"] == 41940325069
+    assert accepted["terminal_conclusion"] == "success"
+    assert (accepted["jobs_success"], accepted["jobs_skipped"], accepted["jobs_failed"]) == (6, 1, 0)
+    history = validation["predecessor_history"]
+    assert history["product4_operation_id"] == "global-policy-rates-current-nosend-20261104-r001"
+    assert history["ci104"]["conclusion"] == "failure"
+    assert (history["ci104"]["offline_passed"], history["ci104"]["offline_failed"]) == (6933, 4)
+    assert history["ci105"]["conclusion"] == "success"
+    assert history["github_443_transport_incident"].startswith("RESOLVED")
     assert current["full_v25_fact_ready"] is False
-    assert current["git_commit"] == "a8f68223d1328874aa7b3d44c4abc565e1037714"
-    assert current["git_push"] is True
-    ci = validation["ci104_evidence"]
-    assert ci["run_id"] == 41785255965
-    assert ci["terminal_conclusion"] == "failure"
-    assert (ci["offline_tests_passed"], ci["offline_tests_failed"]) == (6933, 4)
-    assert ci["local_root_cause"] == "EAGER_TEST_MODULE_SYS_MODULES_JSON_REPAIR_MAGICMOCK_GLOBAL_CONTAMINATION"
-    assert ci["independent_red"] == ci["independent_green"] == 3
-    assert (ci["local_related_passed"], ci["local_related_skipped"]) == (108, 4)
-    assert ci["local_full_suite_or_real_json_repair_ci_revalidated"] is True
-    assert ci["new_corrective_commit"] == "a8f68223d1328874aa7b3d44c4abc565e1037714"
-    assert ci["new_corrective_push"] is True
-    resolution = validation["ci105_resolution"]
-    assert resolution["run_id"] == 41793577681
-    assert resolution["terminal_conclusion"] == "success"
-    assert (resolution["jobs_success"], resolution["jobs_skipped"], resolution["jobs_failed"]) == (6, 1, 0)
-    assert resolution["production_json_parsers_changed"] is False
-    assert resolution["original_four_json_repair_assertions_changed"] is False
-    assert resolution["original_four_json_repair_tests_restored_by_natural_ci"] is True
-    assert resolution["merge"] is False and resolution["main_changed"] is False
+    assert current["git_commit"] is None and current["git_push"] is False
     assert current["merge"] is False
-    assert current["source_update_decision"].startswith("KEEP_V3_553_NO_OP")
     roadmap = (ROOT / "docs" / "stock-dsa-roadmap.md").read_text(encoding="utf-8")
-    assert "Product4自然CI基线与M_BASIC_BREADTH当前数据链候选" in roadmap
-    assert "真实同次Product由0/72升至**4/72**" in roadmap
-    assert "SOURCE_UPDATE_DECISION = KEEP_PROJECT_SOURCE_V3_553_NO_OP" in roadmap
-    assert "自然CI105 Run41793577681已全绿" in roadmap
+    assert "Product5 H.10候选" in roadmap
+    assert "同次真实CURRENT Product：**5/72**" in roadmap
+    assert "SOURCE_UPDATE_DECISION = KEEP_PROJECT_SOURCE_V3_553_NO_OP_UNTIL_PRODUCT5_REMOTE_CI" in roadmap
 
 
-def test_current_market_breadth_candidate_is_partial_until_real_all_a_admission() -> None:
-    baseline = _baseline()
-    current = baseline["current_market_breadth_candidate"]
-    assert current["state"] == "LOCAL_CORRECTIVE_COMMIT_PUSH_BLOCKED_GITHUB_443"
-    assert current["base_head"] == "17715216b6de31973e261bb9fd7f1f1d19d86f7e"
-    assert current["code_commit"] == "79f7c5df45d79b0ca78cad3366f0b5ca2a4de080"
+def test_current_market_breadth_candidate_is_ci107_accepted_but_not_product() -> None:
+    current = _baseline()["current_market_breadth_candidate"]
+    assert current["state"] == "CI107_BREADTH_ISOLATION_NATURAL_CI_SUCCESS"
+    assert current["checkpoint_commit"] == "55a27f56babdb2d8945097fc4a5eacf43181ae04"
     contract = current["provider_contract"]
-    assert contract["endpoints"] == ["daily", "stock_basic", "suspend_d"]
-    assert contract["requests_per_current_trade_date"] == 3
-    assert contract["daily_wildcard_query_removed"] is True
     assert contract["intraday_rt_k_breadth_forbidden"] is True
     assert contract["typed_claims_must_validate_before_preemption"] is True
-    assert contract["historical_stock_basic_backfill_forbidden"] is True
-    assert contract["all_a_scope_requires_exchanges"] == ["SSE", "SZSE", "BSE"]
-    assert contract["missing_bse_state"] == "CN_SH_SZ_A_EXCLUDES_BJ_PARTIAL"
+    assert contract["missing_trading_member_without_suspend_reason"] == "STOP"
     isolation = current["consumer_isolation"]
     assert isolation["compiled_b1_product_admission_required"] is True
+    assert "revision" in isolation["admission_source_semantics_bound"]
+    assert "vintage" in isolation["admission_source_semantics_bound"]
     assert isolation["source_only_breadth_enters_llm_market_light_or_action"] is False
     assert isolation["m_basic_breadth_opens_m_limit_or_turnover"] is False
     assert isolation["caller_market_light_mismatch"] == "STOP"
-    assert isolation["index_sources_independent_of_composite_regime_state"] is True
-    trial = current["real_baostock_research_trial"]
-    assert (trial["universe_count"], trial["trading_count"], trial["suspended_count"]) == (5510, 5502, 8)
-    assert (trial["up_count"], trial["down_count"], trial["flat_count"]) == (2157, 3197, 148)
-    assert trial["provider_errors"] == trial["unexplained_universe_gaps"] == 0
-    assert trial["raw_rows_persisted"] is False
-    assert trial["current_product_admitted"] is False
     actual = current["actual_tushare_operation"]
     assert actual["token_present_in_local_executor"] is False
     assert actual["network_requests"] == 0
     assert actual["rights_v2_bound"] is False
-    validation = current["local_validation"]
+    trial = current["real_baostock_research_trial"]
+    assert trial["duration_seconds"] == 796.61217
+    assert trial["amount_fact_admitted"] is False
+    assert trial["closure_sha256"] == "fcf71b2f3f20367d767bc69e8441a54d2798c8893b9e4e27644f6cf6726c832d"
+    assert trial["blockers"] == [
+        "BSE_NOT_COVERED",
+        "UPSTREAM_DATA_USE_RIGHTS_NOT_VERIFIED",
+        "NOT_A_PRODUCTION_EFFICIENT_ROUTE_5510_PER_CODE_CALLS",
+    ]
+    validation = current["validation"]
     assert (validation["base_requirement_red"], validation["consumer_isolation_red"]) == (8, 3)
     assert (validation["root_passed"], validation["related_passed"], validation["deep_consumer_passed"]) == (32, 385, 496)
-    assert validation["failed"] == 0
-    assert validation["scopes_overlap_and_must_not_be_summed"] is True
-    assert validation["natural_ci"] == "NOT_STARTED_PUSH_BLOCKED_GITHUB_443"
+    assert validation["natural_ci"] == "CI107_RUN41940325069_SUCCESS"
     effect = current["capability_effect"]
     assert effect["typed_or_real_source_capability_before"] == effect["typed_or_real_source_capability_after"] == 31
     assert effect["complete_typed_source_chain_gaps_before"] == effect["complete_typed_source_chain_gaps_after"] == 41
     assert effect["current_product_before"] == effect["current_product_after"] == 4
     assert effect["full_v25_fact_ready"] is False
-    assert current["git_push"] is False and current["merge"] is False
-    assert current["push_failure"]["immediate_retry_stopped"] is True
+    assert current["git_push"] is True and current["merge"] is False
+
 
 
 
@@ -509,11 +501,11 @@ def test_current_control_rejects_historical_product_and_email_geometry_substitut
     assert current["email_reader_state"]["smtp_send"] == 0
 
     roadmap = (ROOT / "docs" / "stock-dsa-roadmap.md").read_text(encoding="utf-8")
-    assert "CONTROL_ID = STOCK_DSA_MASTER_ROUTE_20261104_PRODUCT4_CI105_PLUS_CURRENT_BREADTH_BATCH_CANDIDATE" in roadmap
-    assert "真实同次Product由0/72升至**4/72**" in roadmap
+    assert "CONTROL_ID = STOCK_DSA_MASTER_ROUTE_20261105_CI107_BREADTH_ACCEPTED_PRODUCT5_H10_LOCAL" in roadmap
+    assert "同次真实CURRENT Product：**5/72**" in roadmap
     assert "full_domain_product_ready=false" in roadmap
     assert "历史PIT" in roadmap and "绝不倒灌" in roadmap
-    assert "SOURCE_UPDATE_DECISION = KEEP_PROJECT_SOURCE_V3_553_NO_OP" in roadmap
+    assert "SOURCE_UPDATE_DECISION = KEEP_PROJECT_SOURCE_V3_553_NO_OP_UNTIL_PRODUCT5_REMOTE_CI" in roadmap
     assert "行业分类→适用方法→所需数据" not in roadmap  # prose must not claim an unbound shortcut
     assert "只表示可观察候选" in roadmap
     assert "NOT_FULL_CZSC" in roadmap

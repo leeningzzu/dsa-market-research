@@ -4,9 +4,9 @@
   "authority": "CI_DERIVED_GUARDRAIL_ONLY_NOT_RUNTIME_PROOF",
   "current_global_observation_candidate": {
     "schema_version": "stock-dsa-current-global-observation-candidate-v1",
-    "state": "CI105_PRODUCT4_CORRECTIVE_NATURAL_CI_SUCCESS",
-    "base_head": "03f1bf7ffa2f3b71142a3d469fdc0a37495768d2",
-    "base_tree": "881a286d470d53167453608829d2715b331c1c40",
+    "state": "LOCAL_PRODUCT5_H10_CURRENT_CI_OPEN",
+    "base_head": "55a27f56babdb2d8945097fc4a5eacf43181ae04",
+    "base_tree": "e302775ab90fe453c1cec11956d756ba533b5c95",
     "project_source_pair": "v3.553_PHYSICAL_EXACT8_PASS_KEEP_NO_CHURN",
     "temporal_contract": {
       "schema": "data-object-admission-receipt-v2",
@@ -20,100 +20,92 @@
       "legacy_v1_and_historical_pit_gate_unchanged": true
     },
     "actual_operation": {
-      "operation_id": "global-policy-rates-current-nosend-20261104-r001",
-      "research_as_of": "2026-11-04T05:13:16.757845+00:00",
-      "network_requests": 4,
-      "product_admitted_dataset_ids": ["G_INFL_BREAKEVEN", "G_UST_NOMINAL", "G_UST_REAL", "G_US_POLICY"],
-      "product_admitted_count": 4,
+      "operation_id": "global-policy-rates-usd-current-nosend-20261105-r001",
+      "research_as_of": "2026-11-05T01:04:03.866910+00:00",
+      "network_requests": 8,
+      "product_admitted_dataset_ids": ["G_INFL_BREAKEVEN", "G_USD_BROAD", "G_UST_NOMINAL", "G_UST_REAL", "G_US_POLICY"],
+      "product_admitted_count": 5,
       "full_domain_product_ready": false,
-      "receipt_sha256": "22973aef0287c9177641699ca180b01babcf3c37bc81b62f3b61b91702169c7f",
-      "pipeline_owner_receipt_sha256": "4647dbe20ff9623b6229faf43e82ff43c94de00f62c673f6bb9e554aa3a43e5d",
+      "receipt_sha256": "d39eea2ab6d0f654ee7c9f4e401b4081cbd3d659147d08f9defeee8ad8726fec",
+      "pipeline_owner_verified_in_same_operation": true,
+      "raw_source_bytes_persisted": false,
       "business_db_writes": 0,
       "email_telegram_sends": 0,
       "model_calls": 0,
       "training_or_promotion": 0
+    },
+    "h10_broad_dollar": {
+      "release_date": "2026-11-02",
+      "source_published_at": "2026-11-02T21:15:00+00:00",
+      "latest_completed_date": "2026-10-30",
+      "broad_dollar_index_jan2006_100": "121.6656",
+      "index_base": "JAN06=100",
+      "provider": "FederalReserveBoardH10OfficialRelease"
     },
     "capability_counts": {
       "methods_existing": 30,
       "methods_deferred": 13,
       "technical_numeric_leaves_admitted": 24,
       "technical_numeric_leaves_not_admitted": 11,
-      "typed_or_real_source_capability": 31,
-      "complete_typed_source_chain_gaps": 41,
-      "current_product_admitted": 4,
+      "typed_or_real_source_capability": 32,
+      "complete_typed_source_chain_gaps": 40,
+      "current_product_admitted": 5,
       "current_product_denominator": 72,
       "global_golden_atomic_ready": 0,
       "global_golden_atomic_denominator": 7
     },
     "validation": {
-      "lazy_import_and_b1_preflight": {"passed": 45, "failed": 0},
-      "global_p0_pipeline_focused": {"passed": 85, "failed": 0},
-      "registry_and_v25": {"passed": 196, "failed": 0},
-      "g3_valuation_volume_supply": {"passed": 62, "failed": 0},
+      "h10_independent_red": 13,
+      "h10_focused_passed": 13,
+      "h10_focused_failed": 0,
+      "actual_product5_operation": "PASS",
       "scopes_overlap_and_must_not_be_summed": true,
-      "remote_natural_ci": "CI105_RUN41793577681_SUCCESS_ON_A8F68223",
-      "ci104_evidence": {
-        "remote_feature_commit": "f4582a29098144157787fc250265e9a39055eb64",
+      "remote_natural_ci": "NOT_RUN_CURRENT_PRODUCT5_CANDIDATE",
+      "accepted_predecessor_ci107": {
+        "remote_feature_commit": "55a27f56babdb2d8945097fc4a5eacf43181ae04",
         "pr": 31,
-        "run_id": 41785255965,
-        "terminal_conclusion": "failure",
-        "jobs_success": 5,
-        "jobs_skipped": 1,
-        "jobs_failed": 1,
-        "offline_tests_passed": 6933,
-        "offline_tests_failed": 4,
-        "offline_tests_deselected": 36,
-        "subtests_passed": 588,
-        "failed_test_names": [
-          "tests/test_image_stock_extractor_litellm.py::TestParseItemsFromText::test_uses_json_repair_when_json_invalid",
-          "tests/test_multi_agent.py::TestIntelAgentPostProcess::test_repairs_json_and_caches_intel_context",
-          "tests/test_report_schema.py::TestAnalyzerSchemaFallback::test_parse_response_repairs_nested_single_json_candidate",
-          "tests/test_report_schema.py::TestAnalyzerSchemaFallback::test_parse_response_repairs_single_json_candidate"
-        ],
-        "local_root_cause": "EAGER_TEST_MODULE_SYS_MODULES_JSON_REPAIR_MAGICMOCK_GLOBAL_CONTAMINATION",
-        "independent_red": 3,
-        "independent_green": 3,
-        "local_related_passed": 108,
-        "local_related_skipped": 4,
-        "local_full_suite_or_real_json_repair_ci_revalidated": true,
-        "new_corrective_commit": "a8f68223d1328874aa7b3d44c4abc565e1037714",
-        "new_corrective_push": true
-      },
-      "ci105_resolution": {
-        "remote_feature_commit": "a8f68223d1328874aa7b3d44c4abc565e1037714",
-        "pr": 31,
-        "run_id": 41793577681,
+        "run_id": 41940325069,
         "terminal_conclusion": "success",
         "jobs_success": 6,
         "jobs_skipped": 1,
         "jobs_failed": 0,
-        "root_fix_paths": [
-          "tests/test_fetcher_source_optimization.py",
-          "tests/test_hk_realtime_routing.py",
-          "tests/test_stock_code_bse.py",
-          "tests/test_json_repair_import_isolation.py"
-        ],
-        "production_json_parsers_changed": false,
-        "original_four_json_repair_assertions_changed": false,
-        "original_four_json_repair_tests_restored_by_natural_ci": true,
         "merge": false,
         "main_changed": false
+      },
+      "predecessor_history": {
+        "product4_operation_id": "global-policy-rates-current-nosend-20261104-r001",
+        "product4_receipt_sha256": "22973aef0287c9177641699ca180b01babcf3c37bc81b62f3b61b91702169c7f",
+        "product4_pipeline_receipt_sha256": "4647dbe20ff9623b6229faf43e82ff43c94de00f62c673f6bb9e554aa3a43e5d",
+        "ci104": {
+          "run_id": 41785255965,
+          "head": "f4582a29098144157787fc250265e9a39055eb64",
+          "conclusion": "failure",
+          "offline_passed": 6933,
+          "offline_failed": 4,
+          "root_cause": "EAGER_TEST_MODULE_SYS_MODULES_JSON_REPAIR_MAGICMOCK_GLOBAL_CONTAMINATION"
+        },
+        "ci105": {
+          "run_id": 41793577681,
+          "head": "a8f68223d1328874aa7b3d44c4abc565e1037714",
+          "conclusion": "success"
+        },
+        "github_443_transport_incident": "RESOLVED_BY_LATER_SUCCESSFUL_PUSH_AND_CI107"
       }
     },
     "immutable_v25_sha256": "039ca6394baf9cf39494cc29f512802b114c8227f8c965723197a8df4b9de823",
     "full_v25_fact_ready": false,
-    "git_commit": "a8f68223d1328874aa7b3d44c4abc565e1037714",
-    "git_push": true,
+    "git_commit": null,
+    "git_push": false,
     "merge": false,
-    "source_update_decision": "KEEP_V3_553_NO_OP_UNTIL_REMOTE_CI_OR_MATERIAL_MILESTONE",
+    "source_update_decision": "KEEP_V3_553_NO_OP_UNTIL_PRODUCT5_REMOTE_CI",
     "current_route_still_worth_continuing": "YES_KEEP_ONLY_DSA"
   },
   "current_market_breadth_candidate": {
     "schema_version": "stock-dsa-current-market-breadth-candidate-v1",
-    "state": "LOCAL_CORRECTIVE_COMMIT_PUSH_BLOCKED_GITHUB_443",
+    "state": "CI107_BREADTH_ISOLATION_NATURAL_CI_SUCCESS",
     "base_head": "17715216b6de31973e261bb9fd7f1f1d19d86f7e",
     "code_commit": "79f7c5df45d79b0ca78cad3366f0b5ca2a4de080",
-    "checkpoint_commit": "RESOLVE_FROM_GIT_CONTAINING_THIS_FILE",
+    "checkpoint_commit": "55a27f56babdb2d8945097fc4a5eacf43181ae04",
     "project_source_pair": "v3.553_PHYSICAL_EXACT8_PASS_KEEP_NO_CHURN",
     "dataset_id": "M_BASIC_BREADTH",
     "existing_owner_route": "TushareFetcher->DataFetcherManager->MarketAnalyzer->Registry/B1->Canonical/V2.5",
@@ -157,15 +149,15 @@
       "provider_errors": 0,
       "unexplained_universe_gaps": 0,
       "duration_seconds": 796.61217,
-      "raw_rows_persisted": false,
       "amount_fact_admitted": false,
-      "current_product_admitted": false,
       "closure_sha256": "fcf71b2f3f20367d767bc69e8441a54d2798c8893b9e4e27644f6cf6726c832d",
       "blockers": [
         "BSE_NOT_COVERED",
         "UPSTREAM_DATA_USE_RIGHTS_NOT_VERIFIED",
         "NOT_A_PRODUCTION_EFFICIENT_ROUTE_5510_PER_CODE_CALLS"
-      ]
+      ],
+      "raw_rows_persisted": false,
+      "current_product_admitted": false
     },
     "actual_tushare_operation": {
       "token_present_in_local_executor": false,
@@ -174,17 +166,15 @@
       "full_all_a_response_observed": false,
       "current_product_admitted": false
     },
-    "local_validation": {
+    "validation": {
+      "root_passed": 32,
       "base_requirement_red": 8,
       "consumer_isolation_red": 3,
-      "root_passed": 32,
       "related_passed": 385,
       "deep_consumer_passed": 496,
       "failed": 0,
       "scopes_overlap_and_must_not_be_summed": true,
-      "optional_process_shims": ["fake_useragent", "markdown2"],
-      "static_checks": "PASS",
-      "natural_ci": "NOT_STARTED_PUSH_BLOCKED_GITHUB_443"
+      "natural_ci": "CI107_RUN41940325069_SUCCESS"
     },
     "capability_effect": {
       "typed_or_real_source_capability_before": 31,
@@ -195,17 +185,10 @@
       "current_product_after": 4,
       "full_v25_fact_ready": false
     },
-    "git_commit": "79f7c5df45d79b0ca78cad3366f0b5ca2a4de080",
-    "git_push": false,
-    "push_failure": {
-      "classification": "ENVIRONMENT_INSTANCE_ONLY",
-      "reason": "GITHUB_443_UNREACHABLE_AFTER_READ_AND_PUSH",
-      "immediate_retry_stopped": true,
-      "merge": false,
-      "main_changed": false
-    },
+    "git_commit": "55a27f56babdb2d8945097fc4a5eacf43181ae04",
+    "git_push": true,
     "merge": false,
-    "source_update_decision": "KEEP_V3_553_NO_OP_UNTIL_REMOTE_CI_OR_PRODUCT_MILESTONE",
+    "source_update_decision": "KEEP_V3_553_NO_OP_UNTIL_PRODUCT5_REMOTE_CI",
     "current_route_still_worth_continuing": "YES_KEEP_ONLY_DSA"
   },
   "p012_local_candidate": {

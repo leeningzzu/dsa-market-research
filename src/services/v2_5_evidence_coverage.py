@@ -758,6 +758,14 @@ def _v25_data_object_fact_summary(
             f"实际10Y {_v25_plain(facts.get('real_yield_10y_pct_per_year'), '缺失')}%｜"
             f"差值 {_v25_plain(facts.get('breakeven_10y_percentage_points'), '缺失')}个百分点"
         )
+    if dataset_id == "G_USD_BROAD":
+        return (
+            f"美联储H.10广义美元指数："
+            f"{_v25_plain(facts.get('latest_completed_date'), '日期缺失')}｜"
+            f"{_v25_plain(facts.get('broad_dollar_index_jan2006_100'), '缺失')}｜"
+            f"基期 {_v25_plain(facts.get('index_base'), '缺失')}｜"
+            f"发布 {_v25_plain(facts.get('source_published_at'), '时点缺失')}"
+        )
     if dataset_id == "P_CODE_IDENTITY":
         return (
             f"证券身份：{_v25_plain(facts.get('stock_code'), '代码缺失')} "
