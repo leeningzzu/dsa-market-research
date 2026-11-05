@@ -93,6 +93,63 @@ def test_v25_fact_summary_keeps_daily_premium_and_execution_partial_boundaries()
     assert "BID_ASK_SPREAD" in execution and "FEES_AND_TAXES" in execution
 
 
+
+
+@pytest.mark.parametrize(
+    ("publish_flag", "expected_flag"),
+    [(True, "是"), (False, "否"), (None, "未知")],
+)
+def test_etf_iopv_publication_flag_never_becomes_intraday_value_or_spread(
+    publish_flag, expected_flag,
+):
+    # SSE's 2026 external IOPV channel is independent of the PCF flag.
+    # The fixed V2.5 full source remains byte-for-byte unchanged; only
+    # consumer-authored, source-bound dynamic fact text may clarify semantics.
+    report = v25._v25_data_object_fact_summary(
+        "E_NAV_IOPV",
+        {
+            "fund_code": "510300",
+            "trading_day": "2026-11-05",
+            "nav_cny_per_share": "4.1785",
+            "publish_iopv": publish_flag,
+        },
+    )
+    assert "NAV 4.1785元/份" in report
+    assert f"IOPV发布标志 {expected_flag}" in report
+    assert "未取得实际IOPV数值及发布时间" in report
+    assert "同刻买卖盘和价差未准入" in report
+    assert "实时IOPV已取得" not in report
+
+
+
+@pytest.mark.parametrize("current_total,latest_total,expected", [
+    (1250081600, 1256197800, "最新事件股本与当期总股本不一致，事件链未完成勾稽"),
+    (1256197800, 1256197800, "最近事件股本与当期总股本数量一致"),
+    (1250081600, None, "最近事件股本缺失，无法勾稽"),
+])
+def test_current_sse_share_events_v25_fact_never_silences_parent_reconciliation(
+    current_total, latest_total, expected,
+):
+    # Independent SSE fact projections; do not assume a 2015 event determines
+    # the current issuer share count. This is a forward-only dynamic consumer.
+    fact = v25._v25_data_object_fact_summary(
+        "P_SHARES_EVENTS",
+        {
+            "stock_code": "600519",
+            "capital_trade_date": "2026-11-04",
+            "current_total_domestic_shares": current_total,
+            "event_count": 15,
+            "latest_event_date": "2015-07-20",
+            "latest_event_total_shares": latest_total,
+        },
+    )
+    assert "股本事件：600519" in fact
+    assert expected in fact
+    assert "事件 15条" in fact
+    if latest_total != current_total:
+        assert "勾稽已完成" not in fact
+
+
 def test_semantic_slots_preserve_the_independent_accepted_contract():
     expected = {
         "first_screen.conclusion", "first_screen.price_or_valuation", "first_screen.higher_timeframe_thesis",

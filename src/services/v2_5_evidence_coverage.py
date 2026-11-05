@@ -776,12 +776,21 @@ def _v25_data_object_fact_summary(
             f"板块 {_v25_plain(facts.get('listing_board'), '板块缺失')}"
         )
     if dataset_id == "P_SHARES_EVENTS":
+        current_shares = facts.get("current_total_domestic_shares")
+        event_shares = facts.get("latest_event_total_shares")
+        if type(current_shares) is not int or type(event_shares) is not int:
+            reconciliation = "最近事件股本缺失，无法勾稽"
+        elif current_shares != event_shares:
+            reconciliation = "最新事件股本与当期总股本不一致，事件链未完成勾稽"
+        else:
+            reconciliation = "最近事件股本与当期总股本数量一致"
         return (
             f"股本事件：{_v25_plain(facts.get('stock_code'), '代码缺失')}｜"
             f"股本日 {_v25_plain(facts.get('capital_trade_date'), '日期缺失')}｜"
             f"总股本 {_v25_plain(facts.get('current_total_domestic_shares'), '缺失')}股｜"
             f"事件 {_v25_plain(facts.get('event_count'), '缺失')}条｜"
-            f"最近事件 {_v25_plain(facts.get('latest_event_date'), '缺失')}"
+            f"最近事件 {_v25_plain(facts.get('latest_event_date'), '缺失')}｜"
+            f"{reconciliation}"
         )
     if dataset_id == "P_DIVIDEND":
         return (
@@ -808,7 +817,8 @@ def _v25_data_object_fact_summary(
             f"ETF净值：{_v25_plain(facts.get('fund_code'), '代码缺失')}｜"
             f"交易日 {_v25_plain(facts.get('trading_day'), '日期缺失')}｜"
             f"NAV {_v25_plain(facts.get('nav_cny_per_share'), '缺失')}元/份｜"
-            f"公布IOPV {_v25_plain(facts.get('publish_iopv'), '未知')}"
+            f"IOPV发布标志 {_v25_plain(facts.get('publish_iopv'), '未知')}｜"
+            "未取得实际IOPV数值及发布时间｜同刻买卖盘和价差未准入"
         )
     if dataset_id == "E_PREMIUM":
         return (
