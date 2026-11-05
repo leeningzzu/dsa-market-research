@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from hashlib import sha256
+from unittest.mock import patch
+
+from data_provider import bls_public_data_fetcher as bls_source
 
 import pytest
 import requests
@@ -126,11 +129,19 @@ def test_bls_bundle_binds_three_exact_values_release_time_and_no_effects():
         _Response(payload=payload, content=b"API_BYTES"),
         _Response(content=release),
     )
-    bundle = fetch_us_inflation_atomic_bundle(
-        research_as_of="2026-10-28T23:59:59+00:00",
-        b1_context=_rights_context(),
-        session=session,
-    )
+    # This acceptance fixture describes an observation inside its frozen
+    # 2026-10-28 research operation, not the wall clock of this test run.
+    class _OnTimeClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 10, 28, 23, 58, tzinfo=timezone.utc)
+
+    with patch.object(bls_source, "datetime", _OnTimeClock):
+        bundle = fetch_us_inflation_atomic_bundle(
+            research_as_of="2026-10-28T23:59:59+00:00",
+            b1_context=_rights_context(),
+            session=session,
+        )
 
     assert [item[0] for item in session.calls] == ["POST", "GET"]
     observations = bundle["atomic_subfield_source_observations"]

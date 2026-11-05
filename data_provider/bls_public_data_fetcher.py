@@ -186,7 +186,6 @@ def fetch_us_inflation_atomic_bundle(
         "seriesid": list(BLS_SERIES_BY_DATASET.values()),
         "startyear": str(start_year),
         "endyear": str(ceiling.year),
-        "calculations": True,
     }
     headers = {
         "Accept": "application/json",
@@ -227,8 +226,9 @@ def fetch_us_inflation_atomic_bundle(
         raise BLSPublicDataError("BLS_RELEASE_AFTER_RESEARCH_ASOF")
     observed_at = datetime.now(timezone.utc)
     if observed_at > ceiling:
-        # The actual response becomes known now.  A caller may not backdate it.
-        ceiling = observed_at
+        # A frozen research clock is not allowed to move to accommodate late
+        # observed responses; the same operation must STOP without output.
+        raise BLSPublicDataError("BLS_OBSERVED_AFTER_RESEARCH_ASOF")
     raw_identity = {
         "request_payload": request_payload,
         "api_sha256": sha256(api_response.content).hexdigest(),
