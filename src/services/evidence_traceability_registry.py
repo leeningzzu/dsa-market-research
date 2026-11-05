@@ -4960,6 +4960,39 @@ def _verified_data_object_source_scope(factor: Mapping) -> dict[str, dict]:
                     "DATA_OBJECT_SOURCE_OBSERVATION_FIELD_MISSING:"
                     + dataset_id + ":" + text_key
                 )
+        # A CSI index subset/price series is not the official effective-dated
+        # industry classification owner. Block replay of the revoked WIP route.
+        if dataset_id == "S_CLASSIFICATION" and (
+            row.get("provider_identity") in {
+                "CSIOfficialCurrentIndexConstituents", "CSIOfficialIndexPerformance",
+            }
+            or row.get("provider_route") in {
+                "https://www.csindex.com.cn/csindex-home/perf/index-perf",
+                "https://oss-ch.csindex.com.cn/static/html/csindex/public/uploads/"
+                "file/autofile/cons/000032cons.xls",
+            }
+            or "csi_sector_membership_source" in str(row.get("producer_authority") or "")
+        ):
+            raise TraceabilityError("CSI_SECTOR_SOURCE_OWNER_MISMATCH")
+        if (
+            dataset_id == "S_PRICES_RS"
+            and (
+                row.get("provider_identity") == "CSIOfficialIndexPerformance"
+                or row.get("provider_route") == (
+                    "https://www.csindex.com.cn/csindex-home/perf/index-perf"
+                )
+                or str(row.get("producer_authority") or "").endswith(
+                    "csi_sector_daily_rs_source.compile_csi_sector_daily_rs_source_observation"
+                )
+            )
+        ):
+            from data_provider.csi_sector_daily_rs_source import (
+                validate_csi_sector_daily_rs_source_only_observation,
+            )
+            try:
+                validate_csi_sector_daily_rs_source_only_observation(row)
+            except ValueError as exc:
+                raise TraceabilityError("CSI_SECTOR_RS_SOURCE_ONLY_INVALID:" + str(exc)) from exc
         if dataset_id == "M_BASIC_BREADTH":
             from data_provider.market_breadth_source import validate_market_breadth_observation
             try:
