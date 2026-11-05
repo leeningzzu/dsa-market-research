@@ -45,9 +45,9 @@ def test_current_global_observation_candidate_separates_product_from_pit() -> No
     baseline = _baseline()
     current = baseline["current_global_observation_candidate"]
     assert current["state"] == (
-        "PRODUCT11_GLOBAL5_SSE6_SAME_OPERATION_PASS_BLS_KNOWN_AT_CI_SUCCESS"
+        "PRODUCT13_GLOBAL5_SSE8_SAME_OPERATION_PASS_NATURAL_CI_SUCCESS"
     )
-    assert current["base_head"] == "4aa12b2176f6d1a557d79dd2322ca933a93cca14"
+    assert current["base_head"] == "ac3cce4c2f6ada5d7641a270dd29affa25760b35"
     assert current["project_source_pair"] == "v3.553_PHYSICAL_EXACT8_PASS_KEEP_NO_CHURN"
     temporal = current["temporal_contract"]
     assert temporal["temporal_scope"] == "CURRENT_OBSERVATION"
@@ -56,19 +56,21 @@ def test_current_global_observation_candidate_separates_product_from_pit() -> No
     assert temporal["learning_admitted"] is False
     assert temporal["strategy_upgrade_authority"] is False
     actual = current["actual_operation"]
-    assert actual["operation_id"] == "global5-sse6-current-nosend-20261105-r001"
+    assert actual["operation_id"] == "global5-sse8-current-nosend-20261105-r001"
     assert actual["product_admitted_dataset_ids"] == [
         "E_BASKET", "E_NAV_IOPV", "E_SHARES", "G_INFL_BREAKEVEN",
         "G_USD_BROAD", "G_UST_NOMINAL", "G_UST_REAL", "G_US_POLICY",
-        "P_CODE_IDENTITY", "P_INDUSTRY", "S_CLASSIFICATION",
+        "P_CODE_IDENTITY", "P_DIVIDEND", "P_INDUSTRY", "P_SHARES_EVENTS",
+        "S_CLASSIFICATION",
     ]
-    assert actual["product_admitted_count"] == 11
-    assert actual["network_requests"] == 12
-    assert actual["stock_route_product_count"] == 8
+    assert actual["product_admitted_count"] == 13
+    assert actual["network_requests"] == 15
+    assert actual["stock_route_product_count"] == 10
     assert actual["etf_route_product_count"] == 8
-    assert actual["unique_product_count_after_cross_asset_deduplication"] == 11
+    assert actual["unique_product_count_after_cross_asset_deduplication"] == 13
+    assert actual["v25_fact_summary_count"] == 13
     assert actual["receipt_sha256"] == (
-        "34408b10972fda5b0abcf4d3495cb234621b7377da2b5f46501403ff879e06ac"
+        "ce4fa1746e16e7c62d435b11c02f7868946d3d4d6f922bd0ce004458c5900231"
     )
     assert actual["pipeline_owner_verified_in_same_operation"] is True
     assert actual["cross_receipt_splicing"] is False
@@ -77,38 +79,50 @@ def test_current_global_observation_candidate_separates_product_from_pit() -> No
     counts = current["capability_counts"]
     assert counts["typed_or_real_source_capability"] == 33
     assert counts["complete_typed_source_chain_gaps"] == 39
-    assert counts["current_product_admitted"] == 11
+    assert counts["current_product_admitted"] == 13
     assert counts["current_product_denominator"] == 72
     assert counts["global_golden_atomic_ready"] == 0
     assert counts["global_golden_atomic_denominator"] == 7
     sse = current["sse_current_facts"]
     assert sse["stock_code"] == "600519" and sse["stock_name"] == "贵州茅台"
     assert sse["csrc_great_code"] == "15"
+    assert sse["current_total_domestic_shares"] == 1250081600
+    assert sse["share_event_count"] == 15
+    assert sse["latest_share_event_total_shares"] == 1256197800
+    assert sse["share_events_reconciled"] is False
+    assert sse["dividend_record_count"] == 9
+    assert sse["latest_ex_dividend_date"] == "2026-06-26"
+    assert sse["latest_cash_dividend_before_tax_cny_per_share"] == "28.02423"
     assert sse["etf_code"] == "510300"
     assert sse["etf_nav_cny_per_share"] == "4.1785"
     assert sse["etf_basket_component_count"] == 300
     validation = current["validation"]
-    assert validation["actual_product11_operation"] == "PASS"
+    assert validation["actual_product13_operation"] == "PASS"
     assert validation["same_operation_no_cross_receipt_splice"] is True
-    bls = validation["accepted_bls_known_at_ci"]
-    assert bls["remote_feature_commit"] == "4aa12b2176f6d1a557d79dd2322ca933a93cca14"
-    assert bls["run_id"] == 41974664150
-    assert bls["terminal_conclusion"] == "success"
-    assert (bls["jobs_success"], bls["jobs_skipped"], bls["jobs_failed"]) == (6, 1, 0)
-    sector = validation["accepted_sector_rs_ci"]
-    assert sector["remote_feature_commit"] == "0c0649b11e1fb29aa2b6cff9fd2c9da8b3ac3410"
-    assert sector["run_id"] == 41969453901
-    assert sector["source_scope"] == "S_PRICES_RS_PARTIAL_NOT_PRODUCT"
-    rankings = validation["accepted_market_rankings_ci"]
-    assert rankings["remote_feature_commit"] == "0290ff6066c39d9ea1cf060a5f548483307d8b32"
-    assert rankings["terminal_conclusion"] == "success"
+    ci = validation["accepted_product13_code_ci"]
+    assert ci["remote_feature_commit"] == "ac3cce4c2f6ada5d7641a270dd29affa25760b35"
+    assert ci["run_id"] == 41991363403
+    assert ci["terminal_conclusion"] == "success"
+    assert (ci["jobs_success"], ci["jobs_skipped"], ci["jobs_failed"]) == (6, 1, 0)
+    assert ci["receipt_sha256"] == actual["receipt_sha256"]
+    route = validation["parent_route_review"]
+    assert route["user_reminder_class"] == "TRUE_POSITIVE_PROCESS_CONSUMER"
+    assert route["auto_retrospective_before_user_reminder"] is False
+    assert route["git_write_authorization_required"] is True
+    assert route["route_review_did_not_require_user_reminder"] is True
+    assert len(route["remaining_complex_gates"]) == 6
     assert current["full_v25_fact_ready"] is False
-    assert current["git_commit"] == "4aa12b2176f6d1a557d79dd2322ca933a93cca14"
+    assert current["git_commit"] == "ac3cce4c2f6ada5d7641a270dd29affa25760b35"
     assert current["git_push"] is True and current["merge"] is False
     roadmap = (ROOT / "docs" / "stock-dsa-roadmap.md").read_text(encoding="utf-8")
-    assert "Product11已同次真实准入" in roadmap
-    assert "同次真实CURRENT Product：**11/72**" in roadmap
-    assert "SOURCE_UPDATE_DECISION = KEEP_PROJECT_SOURCE_V3_553_BATCH_PRODUCT11_AT_NEXT_FORMAL_HANDOFF" in roadmap
+    assert "Product13同次真实准入" in roadmap
+    assert "同次真实CURRENT Product：**13/72（18.1%）**" in roadmap
+    assert "AUTO_RETROSPECTIVE_BEFORE_USER_REMINDER=NO" in roadmap
+    assert (
+        "SOURCE_UPDATE_DECISION = "
+        "PREPARE_PAIRED_01_05_V3_554_AFTER_PRODUCT13_CONTROL_CHECKPOINT_CI"
+        in roadmap
+    )
 
 
 
@@ -219,13 +233,13 @@ def test_stage_ladder_keeps_parent_product_and_blocking_order_explicit() -> None
         "P1_PROMOTION_RELEASE",
     ]
     assert baseline["route_decision"]["next_primary"] == (
-        "MARKET_OR_ETF_EXECUTION_PRODUCT_REENTRY"
+        "MARKET_COMPLETED_SESSION_PARENT_GATE"
     )
     assert [stage["id"] for stage in stages if stage.get("next_primary")] == [
         "B1_SOURCE_RIGHTS"
     ]
     assert stages[1]["local_state"] == (
-        "TYPED_SOURCE_CAPABILITY33_GAP39_PRODUCT11_FULL_DOMAIN_RIGHTS_STOP"
+        "TYPED_SOURCE_CAPABILITY33_GAP39_PRODUCT13_MARKET0_FULL_DOMAIN_RIGHTS_STOP"
     )
     assert stages[3]["blocked_by"] == "B1_UPSTREAM_DATA_RIGHTS_AND_FULL_DOMAIN_PRODUCT_DATA"
     assert stages[5]["blocked_by"] == (
@@ -285,7 +299,7 @@ def test_stage_ladder_keeps_parent_product_and_blocking_order_explicit() -> None
     }
     assert acceptance["pull_request_state"] == "DRAFT_OPEN_NOT_MERGED"
     assert baseline["route_decision"]["next_primary"] == (
-        "MARKET_OR_ETF_EXECUTION_PRODUCT_REENTRY"
+        "MARKET_COMPLETED_SESSION_PARENT_GATE"
     )
 
 
@@ -430,8 +444,8 @@ def test_current_control_rejects_historical_product_and_email_geometry_substitut
     assert current["schema_version"] == "stock-dsa-current-runtime-checkpoint-v3"
     assert current["source_pair"] == "01/05 v3.553 PHYSICAL_EXACT8_PASS"
     accepted = current["accepted_remote_base"]
-    assert accepted["head"] == "4aa12b2176f6d1a557d79dd2322ca933a93cca14"
-    assert accepted["ci_run_id"] == 41974664150
+    assert accepted["head"] == "ac3cce4c2f6ada5d7641a270dd29affa25760b35"
+    assert accepted["ci_run_id"] == 41991363403
     assert accepted["event"] == "pull_request"
     assert accepted["conclusion"] == "success"
     assert (accepted["jobs_success"], accepted["jobs_skipped"]) == (6, 1)
@@ -443,7 +457,7 @@ def test_current_control_rejects_historical_product_and_email_geometry_substitut
     assert snapshot["untracked_paths"] == []
     assert snapshot["staged_count"] == 0
     assert snapshot["post_commit_worktree_expected_clean"] is True
-    assert snapshot["scope"] == "PRODUCT11_MACHINE_CHECKPOINT_ONLY"
+    assert snapshot["scope"] == "PRODUCT13_PARENT_ROUTE_CONTROL_CHECKPOINT"
     assert snapshot["paths"] == [
         "docs/CHANGELOG.md",
         "docs/stock-dsa-roadmap.md",
@@ -451,9 +465,15 @@ def test_current_control_rejects_historical_product_and_email_geometry_substitut
         "tests/test_stock_dsa_stage_baseline.py",
     ]
     local = current["local_regression"]
-    assert local["product11_same_operation"] == "PASS"
-    assert local["product11_receipt_sha256"] == (
-        "34408b10972fda5b0abcf4d3495cb234621b7377da2b5f46501403ff879e06ac"
+    assert local["product13_same_operation"] == "PASS"
+    assert local["product13_receipt_sha256"] == (
+        "ce4fa1746e16e7c62d435b11c02f7868946d3d4d6f922bd0ce004458c5900231"
+    )
+    assert local["product13_code_ci_run_id"] == 41991363403
+    assert local["product13_code_ci_conclusion"] == "success"
+    assert local["product13_registry_b1_factor_v25_stage_adjacent_passed"] == 355
+    assert local["checkpoint_stage_registry_b1_v25"] == (
+        "355_PASS_AFTER_PRODUCT13_CONTROL_EDIT"
     )
     assert local["bls_known_at_specific_passed"] == 8
     assert local["bls_registry_b1_v25_stage_adjacent_passed"] == 258
@@ -475,8 +495,8 @@ def test_current_control_rejects_historical_product_and_email_geometry_substitut
         "current_real_product_bound_56_cells_complete": False,
     }
     product = current["product_state"]
-    assert len(product["current_reconstructible_product_ids"]) == 11
-    assert product["current_product_count"] == 11
+    assert len(product["current_reconstructible_product_ids"]) == 13
+    assert product["current_product_count"] == 13
     assert product["denominator"] == 72
     assert product["full_domain_product_ready"] is False
     assert product["typed_or_real_source_capability_minimum"] == 33
@@ -485,17 +505,17 @@ def test_current_control_rejects_historical_product_and_email_geometry_substitut
     assert email["old_empty_numeric_email_revoked"] is True
     assert email["current_fact_ready"] is False
     assert email["original_v25_immutable"] is True
-    assert email["current_v25_fact_summary_count"] == 11
+    assert email["current_v25_fact_summary_count"] == 13
     assert email["smtp_send"] == 0
 
     roadmap = (ROOT / "docs" / "stock-dsa-roadmap.md").read_text(encoding="utf-8")
-    assert "CONTROL_ID = STOCK_DSA_MASTER_ROUTE_20261105_PRODUCT11_GLOBAL5_SSE6_CURRENT_PASS" in roadmap
-    assert "同次真实CURRENT Product：**11/72**" in roadmap
+    assert "CONTROL_ID = STOCK_DSA_MASTER_ROUTE_20261105_PRODUCT13_GLOBAL5_SSE8_CURRENT_ACCEPTED" in roadmap
+    assert "同次真实CURRENT Product：**13/72（18.1%）**" in roadmap
     assert "full_domain_product_ready=false" in roadmap
     assert "历史PIT" in roadmap and "绝不倒灌" in roadmap
-    assert "SOURCE_UPDATE_DECISION = KEEP_PROJECT_SOURCE_V3_553_BATCH_PRODUCT11_AT_NEXT_FORMAL_HANDOFF" in roadmap
+    assert "SOURCE_UPDATE_DECISION = PREPARE_PAIRED_01_05_V3_554_AFTER_PRODUCT13_CONTROL_CHECKPOINT_CI" in roadmap
     assert "行业分类→适用方法→所需数据" not in roadmap
-    assert "GitHub是跨模型连续性的唯一代码基线" in roadmap
+    assert "本次Material Checkpoint先以exact repo、真实运行回执和自然CI为权威" in roadmap
 
     regression = baseline["regression_policy"]
     assert regression["historical_operation_admission_never_backfills_current_runtime"] is True
@@ -809,7 +829,7 @@ def test_stage_baseline_locks_bounded_hierarchical_mtf_screening() -> None:
 def test_indicator_backlog_is_subordinate_to_the_current_product_route() -> None:
     decision = _baseline()["route_decision"]
     assert decision["next_primary"] == (
-        "MARKET_OR_ETF_EXECUTION_PRODUCT_REENTRY"
+        "MARKET_COMPLETED_SESSION_PARENT_GATE"
     )
     assert decision["bounded_indicator_sub_lanes"] == [
         "RISK_REWARD_AFTER_EXECUTION_FACTS",

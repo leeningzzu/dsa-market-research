@@ -31,11 +31,11 @@ flowchart LR
 <!-- LOCAL_P012_CANDIDATE_END -->
 
 <!-- CURRENT_MASTER_CONTROL_START -->
-## 当前控制页：Product11已同次真实准入，BLS known-at根修自然CI成功（2026-11-05）
+## 当前控制页：Product13同次真实准入与父路线复盘（2026-11-05）
 
-CONTROL_ID = STOCK_DSA_MASTER_ROUTE_20261105_PRODUCT11_GLOBAL5_SSE6_CURRENT_PASS
-SOURCE_AUTHORITY = Project Source恰好8个唯一Owner，01/05均为v3.553；本轮没有机械换版。Product11为材料性Checkpoint，物理01/05与下一次正式交接合并更新，避免局部频繁替换。
-GIT_AUTHORITY = 唯一公共仓库 `https://github.com/leeningzzu/dsa-market-research.git`。feature与PR31精确指向`4aa12b2176f6d1a557d79dd2322ca933a93cca14`；BLS known-at根修自然CI Run41974664150终态SUCCESS（六项成功、一项web按路径跳过），PR仍Draft/Open、未合并、main未变。其父`0c0649b1`的CSI Sector日线RS20亦经Run41969453901 SUCCESS；已关闭关口不得重跑或替代Product计数。
+CONTROL_ID = STOCK_DSA_MASTER_ROUTE_20261105_PRODUCT13_GLOBAL5_SSE8_CURRENT_ACCEPTED
+SOURCE_AUTHORITY = Project Source恰好8个唯一Owner，01/05仍为v3.553；本次Material Checkpoint先以exact repo、真实运行回执和自然CI为权威，待控制页checkpoint自身CI接受后一次性准备配对v3.554，禁止局部频繁替换。
+GIT_AUTHORITY = 唯一公共仓库 `https://github.com/leeningzzu/dsa-market-research.git`。feature与PR31精确指向`ac3cce4c2f6ada5d7641a270dd29affa25760b35`；Product13消费者修复自然CI Run41991363403终态SUCCESS（六项成功、一项web按路径跳过），PR仍Draft/Open、未合并、main未变。其父`c7daa50c`为Product11 checkpoint；已关闭关口不得重跑或替代新Product计数。
 IMMUTABLES = 原机器图149628字节/775边/SHA256 `b4f69f76807ac44bc0fea1a03f9aa38484b6083ca574a3699220b0564ac55aed`；原V2.5 125919字节/SHA256 `039ca6394baf9cf39494cc29f512802b114c8227f8c965723197a8df4b9de823`，均未修改。
 
 ### 0.1 当前真实闭合
@@ -43,50 +43,79 @@ IMMUTABLES = 原机器图149628字节/775边/SHA256 `b4f69f76807ac44bc0fea1a03f9
 | 对象/关口 | 当前证明 | 严格边界 |
 |---|---|---|
 | Global 5 | `G_US_POLICY/G_UST_NOMINAL/G_UST_REAL/G_INFL_BREAKEVEN/G_USD_BROAD`同次读取、原Pipeline/B1/V2.5准入 | CURRENT NO_SEND；无历史PIT/存储/训练/策略权限 |
-| 股票身份与行业 | `600519`身份、上市日、CSRC行业与`S_CLASSIFICATION`经SSE官方当前披露准入 | 当前证券归属，不等于完整历史行业成员版本 |
-| ETF当前披露 | `510300` NAV 4.1785、公布IOPV、90万份申赎单位、300只PCF篮子/文件1512701准入 | 无实时IOPV数值、点差、跟踪误差和历史PIT |
-| Sector日线RS | 000032相对000001完成20日白盒RS，`S_PRICES_RS=PARTIAL`且自然CI成功 | 来源能力，不计入11个Product；非七周期/正式Sector Product |
-| BLS known-at | 晚到响应不得移动冻结as-of；匿名请求不使用`calculations=True`；258/258关联回归与自然CI成功 | 真实BLS端点当前403，因此Golden仍0/7 |
-| `M_BASIC_BREADTH` | 旧标量/盘中无分母/手工Market Light旁路已关闭且CI接受 | 无全A+BSE实况及Rights-v2，仍非Product |
+| Stock 4 | `P_CODE_IDENTITY/P_INDUSTRY/P_DIVIDEND/P_SHARES_EVENTS`经SSE官方同次响应准入 | 股本事件为PARTIAL：2015最近事件股本与2026当前总股本不一致，报告必须显式反证 |
+| Sector 1 | `S_CLASSIFICATION`为SSE披露的当前CSRC归属 | 不等于完整历史成员、行业宽度/成交占比/估值或七周期Sector Product |
+| ETF 3 | `E_NAV_IOPV/E_SHARES/E_BASKET`准入；510300 NAV、申赎单位与PCF篮子可核 | IOPV仅发布标志，实际数值/发布时间、同刻价格、点差、跟踪和执行veto未准入 |
+| Sector日线RS | 000032相对000001完成20日白盒RS，`S_PRICES_RS=PARTIAL`且自然CI成功 | 来源能力，不计入13个Product；非七周期/正式Sector Product |
+| Market | `M_BASIC_BREADTH`污染和旁路已关闭 | Market Product仍0；无同日全A+BSE证券池、停牌、成交额/换手和Rights-v2 |
+| BLS known-at | 晚到响应不得移动冻结as-of；匿名请求不使用`calculations=True` | 真实BLS端点当前403，因此Global Golden仍0/7 |
 
-同次operation `global5-sse6-current-nosend-20261105-r001`先读取四份官方条款，再读取FOMC声明/实施说明、Treasury名义/实际XML、H.10及SSE公司/ETF基础/PCF，共12个官方请求；由唯一`StockAnalysisPipeline→Registry→B1→V2.5 facts`得到11个去重Product。回执 `.tmp/stock_dsa_b1/GLOBAL5_SSE6_CURRENT_PRODUCT11_20261105_R001/receipt.json` SHA256 `34408b10972fda5b0abcf4d3495cb234621b7377da2b5f46501403ff879e06ac`。原始响应不持久化，业务DB/邮件/Telegram/模型/训练/Promotion均为0。
+同次operation `global5-sse8-current-nosend-20261105-r001`先读取四份官方条款，再读取11份Fed/Treasury/SSE官方响应，共15次请求；由唯一`StockAnalysisPipeline→Registry→CURRENT_OBSERVATION/Rights-v2→B1→V2.5 facts`得到13个跨资产去重Product。回执 `.tmp/stock_dsa_b1/SSE_GLOBAL5_STOCK5_ETF3_CURRENT_PRODUCT13_ATTEMPT_20261105_R001/receipt.json` SHA256 `ce4fa1746e16e7c62d435b11c02f7868946d3d4d6f922bd0ce004458c5900231`。原始响应不持久化，业务DB/邮件/Telegram/模型/训练/Promotion均为0。
 
 ### 0.2 总体指标，不以局部替代整体
 
-- 方法Profile：**30/43**现有，13延期；技术数值叶：**24/35**准入，11未准入。
-- 七周期×八证据族：56/56合同、154有效执行对；不是56格真实READY。
-- typed/真实来源能力：**33/72**；完整来源链缺口：**39**。本轮唯一新增来源能力是`S_PRICES_RS`；SSE六对象原来已有适配，本轮新增的是Product准入。
-- 同次真实CURRENT Product：**11/72**；按域为Global 5、Market 0、Sector 1、ETF 3、Stock 2。
-- Global Golden原子叶仍**0/7**；BLS接口403不以fixture补齐。
-- 原V2.5已能消费11项真实摘要，但`full_domain_product_ready=false`、完整FACT_READY=false、SMTP/Telegram=0。
+- 方法Profile：**30/43（69.8%）**现有，13延期；技术数值叶：**24/35（68.6%）**准入，11未准入。
+- 七周期×八证据族：**56/56合同**、154有效执行对；不是56格真实READY。
+- typed/真实来源能力：**33/72（45.8%）**；完整来源链缺口：**39**。
+- 同次真实CURRENT Product：**13/72（18.1%）**；按域为Global 5、Market 0、Sector 1、ETF 3、Stock 4。
+- Global Golden原子叶仍**0/7**；完整原V2.5 `full_domain_product_ready=false`、FACT_READY=false、SMTP/Telegram=0。
 - Ledger/Outcome/PIT/OOT/Logistic/LightGBM/校准/Shadow/Promotion均未启动；CURRENT事实绝不倒灌历史。
 
-### 0.3 验证与反例
+### 0.3 父目标机器图与阶段距离
 
-- Product11不是Product5与SSE6旧回执相加：它使用新operation、新as-of、11份Rights-v2和原Pipeline同次重放，股票/ETF各8项、跨资产去重为11项。
-- BLS根反例2 RED→GREEN、具体8/8、原Registry/B1/V2.5/Stage关联258/258 PASS；自然CI41974664150全绿。
-- Sector日线RS保留`PARTIAL`，没有被Product11冒充为完整Sector；CSI当前指数成分冒充正式`S_CLASSIFICATION`的旧候选已删除并阻断回放。
-- SSE法律声明只支持本次非商业内部浏览/下载用途；本操作额外禁止存储、训练和再分发，不扩张为历史权利。
+```mermaid
+flowchart LR
+  G0[G0 Authority: Source8/Git/CI PASS] --> G1[G1 Current lawful Product 13/72]
+  G1 --> GL[Global 5 PASS]
+  G1 --> MK[Market 0 STOP]
+  G1 --> SC[Sector 1 + RS PARTIAL]
+  G1 --> ET[ETF 3 / execution veto OPEN]
+  G1 --> ST[Stock 4 / financial valuation OPEN]
+  GL --> G3[G3 7TF×8: methods 30/43, leaves 24/35]
+  MK --> G3
+  SC --> G3
+  ET --> G3
+  ST --> G3
+  G3 --> G4[G4 canonical + Data/Risk/Liquidity/Execution veto PARTIAL]
+  G4 --> G5[G5 original V2.5 FACT_READY=false]
+  G5 --> G6[G6 Ledger/Outcome/PIT/OOT/calibration NOT_ADMITTED]
+```
 
-### 0.4 Role Review
+| 复杂关口 | 当前距离 | 完成条件 |
+|---|---|---|
+| Market regime | Product 0/18 | 同日完成bar、全A+BSE证券池与状态、宽度/成交额/涨跌停/指数，Rights-v2与原消费者同次闭合 |
+| Sector | Product 1/7＋RS来源PARTIAL | 有效期成员、行业指数、宽度、成交占比、Leader、估值及七周期同一标准 |
+| ETF | Product 3/12 | 1d/5m价格、实际IOPV、同刻premium/spread、tracking/fees、流动性与执行veto |
+| Stock | Product 4/17 | 1d/5m、财报发布版本、质量成长、现金流/资产负债、行业估值与执行风险 |
+| Canonical/Report | 部分 | 相关性去重、四类不可平均veto、全材料进入唯一canonical和原V2.5 |
+| Learning | 未准入 | 不可变Ledger→成熟Outcome→合法PIT→OOT→Logistic→独立校准→Shadow→Promotion |
+
+### 0.4 复盘与Role Review
+
+用户再次提醒后才要求整体机器图和距离，分类为`TRUE_POSITIVE_PROCESS_CONSUMER`。Git commit/push必须等待明确授权是正确的；但父路线复盘、成熟能力复用、剩余复杂关口和是否换Chat不需要额外授权，本应在Product11关闭后自动给出，因此`AUTO_RETROSPECTIVE_BEFORE_USER_REMINDER=NO`。最早检测点是Product11 Closure完成、进入ETF实时来源STOP之前。
 
 | Role | 当前结论 | 处置 |
 |---|---|---|
-| PRODUCT | CURRENT Product11/72；全域与完整邮件仍STOP | 下一步优先Market真实宽度/成交额或ETF执行事实，不堆经典指标 |
-| DATA_MODEL | 11对象同次known-at；CURRENT与历史PIT隔离 | 任何晚观测、未知历史版本不得进入Outcome/训练 |
-| PROCESS_CONSUMER | 全部经原Pipeline/Registry/B1/V2.5 facts | KEEP唯一DSA，无第二Provider图/DB/报告器 |
-| AUTHORITY_CURRENTNESS | Source8 v3.553；代码HEAD4aa12b/CI成功；Product11回执精确 | Product11机器状态为本地Checkpoint，尚待独立checkpoint commit/CI |
-| DEV_TOOLING | 关闭BLS时点漏洞与Sector来源边界；旧污染路线不复活 | 后继只做能提高真实Product或关键veto的关口 |
+| PRODUCT | Product13是真实增量，但全域与完整邮件仍STOP | 下一关优先Market完成日父事实，不堆经典指标 |
+| DATA_MODEL | 同次known-at、Rights-v2和CURRENT/PIT隔离PASS | 晚观测、未知历史版本、局部指数子集不得伪造总体 |
+| PROCESS_CONSUMER | 全部经原Pipeline/Registry/B1/Factor/V2.5 | KEEP唯一DSA；删掉重复Provider/空验证壳 |
+| AUTHORITY_CURRENTNESS | Source8 v3.553；代码`ac3cce4c`与CI41991363403成功 | 本控制页checkpoint自身仍需独立自然CI |
+| ENVIRONMENT | WebCodex Local正常；Git按命令代理完成普通push | 不再把传输波动误判为执行器不可用 |
+| ADAPTER_INTERFACE | 现有Fed/Treasury/SSE与原消费者充分复用 | 新来源只在真实缺口且无现成Owner时窄建 |
+| DEV_TOOLING | 355/355本地相邻回归＋新SHA自然CI成功 | checkpoint后不回做Product11/BLS/Sector RS |
+| USER_BURDEN | 用户不应再负责提醒父路线复盘 | 下一真实正触发与合法非触发后再评价稳定性 |
+| MATURE_REUSE | 既有DSA、AlphaSift readiness、CNEquity provenance、FinanceToolkit公式模式已够 | 当前缺口是数据/权利/消费者，不再广装框架 |
 
 CURRENT_ROUTE_STILL_WORTH_CONTINUING = YES_KEEP_ONLY_DSA
+NEXT_CHAT_CLASS = SAME_CHAT_UNTIL_PRODUCT13_CONTROL_CHECKPOINT_CI_AND_PAIRED_V3_554_PREPARED
 INSTRUCTIONS_UPDATE_DECISION = NO_DELTA_KEEP
-SOURCE_UPDATE_DECISION = KEEP_PROJECT_SOURCE_V3_553_BATCH_PRODUCT11_AT_NEXT_FORMAL_HANDOFF
+SOURCE_UPDATE_DECISION = PREPARE_PAIRED_01_05_V3_554_AFTER_PRODUCT13_CONTROL_CHECKPOINT_CI
 
-### 0.5 GitHub是跨模型连续性的唯一代码基线
+### 0.5 下一条主路线
 
-后继必须区分算法、来源能力、CURRENT Product、完整报告与PIT/ML。CI绿灯本身不增加Product，Product11也不等于全域完成。
+不换Chat、不重跑已关闭关口。下一Atomic只做`MARKET_COMPLETED_SESSION_PARENT_GATE`：优先复用现有`M_INDEX_CURRENT/M_INDEX_BARS/M_BASIC_BREADTH/M_TURNOVER` Owner，要求同日完成bar、SSE+SZSE+BSE明确分母/停牌、单位、来源与Rights-v2；若缺全A+BSE或来源权利，Market保持UNKNOWN/PARTIAL并STOP该对象，不能用沪深子集或标量替代总体。
 
-UNIQUE_NEXT_STEP = 将Product11机器Checkpoint作为小范围英文提交普通推送并观察自然PR CI；不merge。CI接受后，优先选择一个可直接增加Market Product或ETF执行veto的官方同次来源；不再重复Global5、Sector RS、BLS或榜单污染关口，也不为完成率新增高度相关指标。
+UNIQUE_NEXT_STEP = 先让本Product13控制页checkpoint获得精确自然CI，再准备一次配对v3.554 Source；随后在同一Chat进入Market完成日父事实，不新建Shell、DB、scheduler、report或装饰性指标。
 <!-- CURRENT_MASTER_CONTROL_END -->
 ## 1. GitHub是后续工程基线
 
