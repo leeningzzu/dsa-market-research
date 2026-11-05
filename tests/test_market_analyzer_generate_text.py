@@ -3914,10 +3914,15 @@ Index text.
 
         assert "行业领涨: 半导体(+2.35%)" in prompt
         assert "概念领涨: 机器人概念(+4.20%)" in prompt
+        assert "行业/概念榜单仅为来源级排序参考" in prompt
+        assert "不得作为独立BUY或升级依据" in prompt
         assert "#### 概念板块领涨 Top 5" in table_block
         assert "| 1 | 机器人概念 | +4.20% |" in table_block
         assert payload["sectors"]["top"][0]["name"] == "半导体"
         assert payload["concepts"]["top"][0]["name"] == "机器人概念"
+        ma.config.report_language = "en"
+        english_prompt = ma._build_review_prompt(overview, [])
+        assert "Industry/concept rankings are source-level snapshots only" in english_prompt
 
     def test_us_english_indices_do_not_label_turnover_as_cny(self):
         from src.core.market_profile import US_PROFILE

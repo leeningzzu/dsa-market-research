@@ -44,7 +44,7 @@ def _baseline() -> dict:
 def test_current_global_observation_candidate_separates_product_from_pit() -> None:
     baseline = _baseline()
     current = baseline["current_global_observation_candidate"]
-    assert current["state"] == "LOCAL_PRODUCT5_H10_CURRENT_CI_OPEN"
+    assert current["state"] == "CI108_PRODUCT5_H10_NATURAL_CI_SUCCESS"
     assert current["base_head"] == "55a27f56babdb2d8945097fc4a5eacf43181ae04"
     assert current["project_source_pair"] == "v3.553_PHYSICAL_EXACT8_PASS_KEEP_NO_CHURN"
     temporal = current["temporal_contract"]
@@ -79,6 +79,12 @@ def test_current_global_observation_candidate_separates_product_from_pit() -> No
     assert validation["h10_independent_red"] == 13
     assert (validation["h10_focused_passed"], validation["h10_focused_failed"]) == (13, 0)
     assert validation["actual_product5_operation"] == "PASS"
+    ci108 = validation["accepted_product5_ci108"]
+    assert ci108["remote_feature_commit"] == "3583739d283a91fb6f8a5eba268d27f1bfec65d2"
+    assert ci108["run_id"] == 41948352235
+    assert ci108["event"] == "pull_request" and ci108["terminal_conclusion"] == "success"
+    assert (ci108["jobs_success"], ci108["jobs_skipped"], ci108["jobs_failed"]) == (6, 1, 0)
+    assert ci108["full_v25_fact_ready"] is False
     accepted = validation["accepted_predecessor_ci107"]
     assert accepted["run_id"] == 41940325069
     assert accepted["terminal_conclusion"] == "success"
@@ -90,12 +96,20 @@ def test_current_global_observation_candidate_separates_product_from_pit() -> No
     assert history["ci105"]["conclusion"] == "success"
     assert history["github_443_transport_incident"].startswith("RESOLVED")
     assert current["full_v25_fact_ready"] is False
-    assert current["git_commit"] is None and current["git_push"] is False
+    assert current["git_commit"] == "3583739d283a91fb6f8a5eba268d27f1bfec65d2"
+    assert current["git_push"] is True
+    local_fix = validation["market_rankings_local_correction"]
+    assert local_fix["independent_failed_before_fix"] == 4
+    assert local_fix["market_text_native_passed"] == 127
+    assert local_fix["market_strategy_breadth_optional_import_shim_passed"] == 36
+    assert local_fix["stage_v25_import_native_passed"] == 83
+    assert local_fix["commit_identity"] == "RESOLVE_CURRENT_FROM_GIT"
+    assert local_fix["remote_ci"] == "NOT_PROVEN_UNTIL_NATURAL_PR_CHECK_THIS_COMMIT"
     assert current["merge"] is False
     roadmap = (ROOT / "docs" / "stock-dsa-roadmap.md").read_text(encoding="utf-8")
-    assert "Product5 H.10候选" in roadmap
+    assert "Product5 H.10已远端接受" in roadmap
     assert "同次真实CURRENT Product：**5/72**" in roadmap
-    assert "SOURCE_UPDATE_DECISION = KEEP_PROJECT_SOURCE_V3_553_NO_OP_UNTIL_PRODUCT5_REMOTE_CI" in roadmap
+    assert "SOURCE_UPDATE_DECISION = KEEP_PROJECT_SOURCE_V3_553_NO_OP_BATCH_NEXT_MATERIAL_CHECKPOINT" in roadmap
 
 
 def test_current_market_breadth_candidate_is_ci107_accepted_but_not_product() -> None:
@@ -501,11 +515,11 @@ def test_current_control_rejects_historical_product_and_email_geometry_substitut
     assert current["email_reader_state"]["smtp_send"] == 0
 
     roadmap = (ROOT / "docs" / "stock-dsa-roadmap.md").read_text(encoding="utf-8")
-    assert "CONTROL_ID = STOCK_DSA_MASTER_ROUTE_20261105_CI107_BREADTH_ACCEPTED_PRODUCT5_H10_LOCAL" in roadmap
+    assert "CONTROL_ID = STOCK_DSA_MASTER_ROUTE_20261105_CI108_PRODUCT5_ACCEPTED_SECTOR_RANKING_STALE_FIX_LOCAL" in roadmap
     assert "同次真实CURRENT Product：**5/72**" in roadmap
     assert "full_domain_product_ready=false" in roadmap
     assert "历史PIT" in roadmap and "绝不倒灌" in roadmap
-    assert "SOURCE_UPDATE_DECISION = KEEP_PROJECT_SOURCE_V3_553_NO_OP_UNTIL_PRODUCT5_REMOTE_CI" in roadmap
+    assert "SOURCE_UPDATE_DECISION = KEEP_PROJECT_SOURCE_V3_553_NO_OP_BATCH_NEXT_MATERIAL_CHECKPOINT" in roadmap
     assert "行业分类→适用方法→所需数据" not in roadmap  # prose must not claim an unbound shortcut
     assert "只表示可观察候选" in roadmap
     assert "NOT_FULL_CZSC" in roadmap

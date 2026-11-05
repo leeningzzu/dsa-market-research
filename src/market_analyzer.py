@@ -656,6 +656,9 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 
     def _get_sector_rankings(self, overview: MarketOverview):
         """获取板块涨跌榜"""
+        # A failed/empty refresh must not replay the previous run's leaders.
+        overview.top_sectors = []
+        overview.bottom_sectors = []
         try:
             logger.info("[大盘] %s action=get_sector_rankings status=start", self._log_context())
 
@@ -679,6 +682,9 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 
     def _get_concept_rankings(self, overview: MarketOverview):
         """获取概念/题材涨跌榜（fail-open）。"""
+        # Preserve successful current observations, never stale fallback rows.
+        overview.top_concepts = []
+        overview.bottom_concepts = []
         try:
             logger.info("[大盘] %s action=get_concept_rankings status=start", self._log_context())
 
@@ -1984,6 +1990,10 @@ Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
                 )
             if not self.profile.has_sector_rankings:
                 data_limit_lines.append("- Sector/theme ranking data is not available for this market.")
+            elif any((overview.top_sectors, overview.bottom_sectors, overview.top_concepts, overview.bottom_concepts)):
+                data_limit_lines.append(
+                    "- Industry/concept rankings are source-level snapshots only; sector standard, as-of membership and cross-period RS remain unverified. Never use them as independent BUY or strategy-upgrade authority."
+                )
             if data_limit_lines:
                 data_limits_block = "## Data Limits\n" + "\n".join(data_limit_lines)
         else:
@@ -2007,6 +2017,8 @@ Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
                 data_limit_lines.append("- 涨跌停结构与两市成交额属于独立未准入对象，本次继续缺失。")
             if not self.profile.has_sector_rankings:
                 data_limit_lines.append("- 该市场暂无行业板块/概念题材涨跌榜。")
+            elif any((overview.top_sectors, overview.bottom_sectors, overview.top_concepts, overview.bottom_concepts)):
+                data_limit_lines.append("- 行业/概念榜单仅为来源级排序参考；行业分类标准、当时成员及跨周期RS未核验，不得作为独立BUY或升级依据。")
             if data_limit_lines:
                 data_limits_block = "## 数据边界\n" + "\n".join(data_limit_lines)
 

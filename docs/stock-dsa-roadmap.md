@@ -31,11 +31,11 @@ flowchart LR
 <!-- LOCAL_P012_CANDIDATE_END -->
 
 <!-- CURRENT_MASTER_CONTROL_START -->
-## 当前控制页：CI107宽度隔离已接受，Product5 H.10候选（2026-11-05）
+## 当前控制页：CI107宽度隔离与CI108 Product5 H.10已远端接受，行业榜单本地候选（2026-11-05）
 
-CONTROL_ID = STOCK_DSA_MASTER_ROUTE_20261105_CI107_BREADTH_ACCEPTED_PRODUCT5_H10_LOCAL
-SOURCE_AUTHORITY = Project Source恰好8个唯一Owner，01/05均为v3.553；局部代码和测试不触发物理换版。Product5只有在自然CI接受后才与下一材料性里程碑批量checkpoint。
-GIT_AUTHORITY = 唯一公共仓库 `https://github.com/leeningzzu/dsa-market-research.git`；本地、远端feature和PR31均精确指向`55a27f56babdb2d8945097fc4a5eacf43181ae04`。自然CI107 Run41940325069终态SUCCESS：Change Detection、AI governance、backend、Docker、Windows/macOS均成功，web按路径跳过。PR31仍Draft/Open、未合并，main未变。当前Product5代码与真实运行回执是基于该干净基线的本地候选，尚无新commit/push/CI。
+CONTROL_ID = STOCK_DSA_MASTER_ROUTE_20261105_CI108_PRODUCT5_ACCEPTED_SECTOR_RANKING_STALE_FIX_LOCAL
+SOURCE_AUTHORITY = Project Source恰好8个唯一Owner，01/05均为v3.553；2026-11-05新清单PASS。Product5 CI108材料性Checkpoint已在Git记录；01/05物理文件与下一次产品/正式交接合并更新，避免重复替换。
+GIT_AUTHORITY = 唯一公共仓库 `https://github.com/leeningzzu/dsa-market-research.git`。WebCodex 2026-11-05通过git ls-remote及GitHub REST实际确认feature与PR31均为`3583739d283a91fb6f8a5eba268d27f1bfec65d2`、Draft/Open未合并、base main；当前Product5自然CI108 Run41948352235在该SHA终态SUCCESS（六项成功、一项web按路径跳过）。前驱55a27f/CI107另为SUCCESS且不替代当前。行业/概念旧榜单刷新和LLM来源标记是独立的后继补救范围，确切提交身份必须运行时从Git解析；该修复的自然CI尚未证明，不得借用CI108。
 IMMUTABLES = 原机器图149628字节/775边/SHA256 `b4f69f76807ac44bc0fea1a03f9aa38484b6083ca574a3699220b0564ac55aed`；原V2.5 125919字节/SHA256 `039ca6394baf9cf39494cc29f512802b114c8227f8c965723197a8df4b9de823`。两者未修改。
 
 ### 0.1 当前真实闭合
@@ -76,18 +76,18 @@ IMMUTABLES = 原机器图149628字节/775边/SHA256 `b4f69f76807ac44bc0fea1a03f9
 | PRODUCT | CURRENT Product5/72；全域和完整邮件仍STOP | 下一步优先高复用Market/Sector来源，不堆经典指标 |
 | DATA_MODEL | 五对象同次known-at；CURRENT与历史PIT隔离 | revision/vintage未知不进入历史、训练和Promotion |
 | PROCESS_CONSUMER | 全部经原Pipeline/Registry/B1/V2.5 | KEEP唯一DSA，无第二Provider图/DB/报告器 |
-| AUTHORITY_CURRENTNESS | Source8 v3.553；Breadth基线55a27f/CI107成功；Product5本地候选 | 新自然CI前不扩大PASS |
-| DEV_TOOLING | H.10 13/13，真实Product5 operation PASS | 继续相关回归、原子commit、普通push、自然CI；不merge |
+| AUTHORITY_CURRENTNESS | Source8 v3.553；Breadth前驱55a27f/CI107及Product5 3583739d/CI108均远端SUCCESS | 本地行业榜单修复尚无自然CI，不扩大PASS |
+| DEV_TOOLING | H.10 13/13与真实Product5、自然CI108 SUCCESS；行业旧值4 RED转GREEN，127原生+83原生+36导入桩范围 | 只对未提交行业修复另验自然CI，不merge |
 
 CURRENT_ROUTE_STILL_WORTH_CONTINUING = YES_KEEP_ONLY_DSA
 INSTRUCTIONS_UPDATE_DECISION = NO_DELTA_KEEP
-SOURCE_UPDATE_DECISION = KEEP_PROJECT_SOURCE_V3_553_NO_OP_UNTIL_PRODUCT5_REMOTE_CI
+SOURCE_UPDATE_DECISION = KEEP_PROJECT_SOURCE_V3_553_NO_OP_BATCH_NEXT_MATERIAL_CHECKPOINT
 
 ### 0.5 GitHub是跨模型连续性的唯一代码基线
 
 后继必须核Source8、origin/HEAD/status/PR/CI，并区分算法、来源能力、CURRENT Product、完整报告和PIT/ML。CI绿灯本身不增加Product，Product5也不等于全域完成。
 
-UNIQUE_NEXT_STEP = 将H.10纯适配、原Pipeline入口、V2.5摘要、真实Product5 checkpoint及独立负例作为一个英文原子commit，普通非force push到现有feature并观察精确SHA的自然PR CI；不merge。CI接受后再选择一个高复用官方Market/Sector来源，不增加装饰性技术指标。
+UNIQUE_NEXT_STEP = Product5已在精确3583739d自然CI108 SUCCESS。唯一接续是现有MarketAnalyzer行业/概念旧数据刷新和LLM来源级边界局部修复，经相邻测试及原V2.5核验后，在现有feature形成一个小范围英文原子补救提交，普通非force push并观察新SHA自然PR CI；不merge、不手工dispatch。后续直接进入真实Sector分类/成员有效期/RS→原canonical/V2.5，严禁用榜单或指标数代替正式Sector Product，Source8不机械换版。
 <!-- CURRENT_MASTER_CONTROL_END -->
 ## 1. GitHub是后续工程基线
 

@@ -4,7 +4,7 @@
   "authority": "CI_DERIVED_GUARDRAIL_ONLY_NOT_RUNTIME_PROOF",
   "current_global_observation_candidate": {
     "schema_version": "stock-dsa-current-global-observation-candidate-v1",
-    "state": "LOCAL_PRODUCT5_H10_CURRENT_CI_OPEN",
+    "state": "CI108_PRODUCT5_H10_NATURAL_CI_SUCCESS",
     "base_head": "55a27f56babdb2d8945097fc4a5eacf43181ae04",
     "base_tree": "e302775ab90fe453c1cec11956d756ba533b5c95",
     "project_source_pair": "v3.553_PHYSICAL_EXACT8_PASS_KEEP_NO_CHURN",
@@ -60,7 +60,31 @@
       "h10_focused_failed": 0,
       "actual_product5_operation": "PASS",
       "scopes_overlap_and_must_not_be_summed": true,
-      "remote_natural_ci": "NOT_RUN_CURRENT_PRODUCT5_CANDIDATE",
+      "remote_natural_ci": "CI108_RUN41948352235_SUCCESS_ON_3583739D",
+      "accepted_product5_ci108": {
+        "remote_feature_commit": "3583739d283a91fb6f8a5eba268d27f1bfec65d2",
+        "pr": 31,
+        "run_id": 41948352235,
+        "event": "pull_request",
+        "terminal_conclusion": "success",
+        "jobs_success": 6,
+        "jobs_skipped": 1,
+        "jobs_failed": 0,
+        "merge": false,
+        "main_changed": false,
+        "full_v25_fact_ready": false
+      },
+      "market_rankings_local_correction": {
+        "root_cause": "STALE_SECTOR_AND_CONCEPT_RANKINGS_RETAINED_AFTER_FAILED_REFRESH",
+        "independent_failed_before_fix": 4,
+        "independent_success_controls": 2,
+        "market_text_native_passed": 127,
+        "market_strategy_breadth_optional_import_shim_passed": 36,
+        "stage_v25_import_native_passed": 83,
+        "no_prod_formula_or_provider_added": true,
+        "commit_identity": "RESOLVE_CURRENT_FROM_GIT",
+        "remote_ci": "NOT_PROVEN_UNTIL_NATURAL_PR_CHECK_THIS_COMMIT"
+      },
       "accepted_predecessor_ci107": {
         "remote_feature_commit": "55a27f56babdb2d8945097fc4a5eacf43181ae04",
         "pr": 31,
@@ -94,10 +118,10 @@
     },
     "immutable_v25_sha256": "039ca6394baf9cf39494cc29f512802b114c8227f8c965723197a8df4b9de823",
     "full_v25_fact_ready": false,
-    "git_commit": null,
-    "git_push": false,
+    "git_commit": "3583739d283a91fb6f8a5eba268d27f1bfec65d2",
+    "git_push": true,
     "merge": false,
-    "source_update_decision": "KEEP_V3_553_NO_OP_UNTIL_PRODUCT5_REMOTE_CI",
+    "source_update_decision": "KEEP_V3_553_NO_OP_BATCH_NEXT_MATERIAL_CHECKPOINT",
     "current_route_still_worth_continuing": "YES_KEEP_ONLY_DSA"
   },
   "current_market_breadth_candidate": {
