@@ -31,63 +31,62 @@ flowchart LR
 <!-- LOCAL_P012_CANDIDATE_END -->
 
 <!-- CURRENT_MASTER_CONTROL_START -->
-## 当前控制页：CI107宽度隔离与CI108 Product5 H.10已远端接受，行业榜单本地候选（2026-11-05）
+## 当前控制页：Product11已同次真实准入，BLS known-at根修自然CI成功（2026-11-05）
 
-CONTROL_ID = STOCK_DSA_MASTER_ROUTE_20261105_CI108_PRODUCT5_ACCEPTED_SECTOR_RANKING_STALE_FIX_LOCAL
-SOURCE_AUTHORITY = Project Source恰好8个唯一Owner，01/05均为v3.553；2026-11-05新清单PASS。Product5 CI108材料性Checkpoint已在Git记录；01/05物理文件与下一次产品/正式交接合并更新，避免重复替换。
-GIT_AUTHORITY = 唯一公共仓库 `https://github.com/leeningzzu/dsa-market-research.git`。WebCodex 2026-11-05通过git ls-remote及GitHub REST实际确认feature与PR31均为`3583739d283a91fb6f8a5eba268d27f1bfec65d2`、Draft/Open未合并、base main；当前Product5自然CI108 Run41948352235在该SHA终态SUCCESS（六项成功、一项web按路径跳过）。前驱55a27f/CI107另为SUCCESS且不替代当前。行业/概念旧榜单刷新和LLM来源标记是独立的后继补救范围，确切提交身份必须运行时从Git解析；该修复的自然CI尚未证明，不得借用CI108。
-IMMUTABLES = 原机器图149628字节/775边/SHA256 `b4f69f76807ac44bc0fea1a03f9aa38484b6083ca574a3699220b0564ac55aed`；原V2.5 125919字节/SHA256 `039ca6394baf9cf39494cc29f512802b114c8227f8c965723197a8df4b9de823`。两者未修改。
+CONTROL_ID = STOCK_DSA_MASTER_ROUTE_20261105_PRODUCT11_GLOBAL5_SSE6_CURRENT_PASS
+SOURCE_AUTHORITY = Project Source恰好8个唯一Owner，01/05均为v3.553；本轮没有机械换版。Product11为材料性Checkpoint，物理01/05与下一次正式交接合并更新，避免局部频繁替换。
+GIT_AUTHORITY = 唯一公共仓库 `https://github.com/leeningzzu/dsa-market-research.git`。feature与PR31精确指向`4aa12b2176f6d1a557d79dd2322ca933a93cca14`；BLS known-at根修自然CI Run41974664150终态SUCCESS（六项成功、一项web按路径跳过），PR仍Draft/Open、未合并、main未变。其父`0c0649b1`的CSI Sector日线RS20亦经Run41969453901 SUCCESS；已关闭关口不得重跑或替代Product计数。
+IMMUTABLES = 原机器图149628字节/775边/SHA256 `b4f69f76807ac44bc0fea1a03f9aa38484b6083ca574a3699220b0564ac55aed`；原V2.5 125919字节/SHA256 `039ca6394baf9cf39494cc29f512802b114c8227f8c965723197a8df4b9de823`，均未修改。
 
 ### 0.1 当前真实闭合
 
 | 对象/关口 | 当前证明 | 严格边界 |
 |---|---|---|
-| `G_US_POLICY` | FOMC 3.75%–4.00%、MAINTAIN、2026-10-28T18:00Z | CURRENT NO_SEND；无历史PIT/训练/策略权限 |
-| `G_UST_NOMINAL` | 2026-11-03：3M 4.21%、2Y 4.61%、10Y 4.95%、10Y-3M 0.74个百分点 | Treasury CC0当前用途；不制造历史首发vintage |
-| `G_UST_REAL` | 2026-11-03：5Y 2.35%、10Y 2.65%、30Y 3.09% | 同上 |
-| `G_INFL_BREAKEVEN` | 同日名义10Y减实际10Y=2.30个百分点 | 白盒派生，父对象日期/哈希必须一致 |
-| `G_USD_BROAD` | 美联储H.10 2026-11-02发布；完成至2026-10-30，广义美元指数121.6656，基期JAN06=100 | Board官方网页公共领域条款；当前观察，不授予历史PIT/存储/训练/策略升级 |
-| `M_BASIC_BREADTH` | 现有Tushare三批次Producer、来源→B1 admission→消费者隔离、旧标量/手工Light旁路关闭；CI107接受 | 无Token、无全A+BSE实况及Rights-v2，因此仍非Product；不顺带解锁`M_LIMIT`或成交额 |
+| Global 5 | `G_US_POLICY/G_UST_NOMINAL/G_UST_REAL/G_INFL_BREAKEVEN/G_USD_BROAD`同次读取、原Pipeline/B1/V2.5准入 | CURRENT NO_SEND；无历史PIT/存储/训练/策略权限 |
+| 股票身份与行业 | `600519`身份、上市日、CSRC行业与`S_CLASSIFICATION`经SSE官方当前披露准入 | 当前证券归属，不等于完整历史行业成员版本 |
+| ETF当前披露 | `510300` NAV 4.1785、公布IOPV、90万份申赎单位、300只PCF篮子/文件1512701准入 | 无实时IOPV数值、点差、跟踪误差和历史PIT |
+| Sector日线RS | 000032相对000001完成20日白盒RS，`S_PRICES_RS=PARTIAL`且自然CI成功 | 来源能力，不计入11个Product；非七周期/正式Sector Product |
+| BLS known-at | 晚到响应不得移动冻结as-of；匿名请求不使用`calculations=True`；258/258关联回归与自然CI成功 | 真实BLS端点当前403，因此Golden仍0/7 |
+| `M_BASIC_BREADTH` | 旧标量/盘中无分母/手工Market Light旁路已关闭且CI接受 | 无全A+BSE实况及Rights-v2，仍非Product |
 
-同次operation `global-policy-rates-usd-current-nosend-20261105-r001`先读取三份权利页面，再读取FOMC声明/实施说明、财政部名义/实际XML和H.10当前发布，共8个官方请求；经原`StockAnalysisPipeline→Registry→B1→V2.5`生成真实Product5。回执 `.tmp/stock_dsa_b1/GLOBAL_POLICY_RATES_USD_CURRENT_PRODUCT5_20261105_R001/receipt.json` SHA256 `d39eea2ab6d0f654ee7c9f4e401b4081cbd3d659147d08f9defeee8ad8726fec`。未持久化原始响应，业务DB/邮件/Telegram/模型/训练/Promotion均为0。
+同次operation `global5-sse6-current-nosend-20261105-r001`先读取四份官方条款，再读取FOMC声明/实施说明、Treasury名义/实际XML、H.10及SSE公司/ETF基础/PCF，共12个官方请求；由唯一`StockAnalysisPipeline→Registry→B1→V2.5 facts`得到11个去重Product。回执 `.tmp/stock_dsa_b1/GLOBAL5_SSE6_CURRENT_PRODUCT11_20261105_R001/receipt.json` SHA256 `34408b10972fda5b0abcf4d3495cb234621b7377da2b5f46501403ff879e06ac`。原始响应不持久化，业务DB/邮件/Telegram/模型/训练/Promotion均为0。
 
 ### 0.2 总体指标，不以局部替代整体
 
 - 方法Profile：**30/43**现有，13延期；技术数值叶：**24/35**准入，11未准入。
-- 七周期×八证据族：56/56可执行合同、154有效执行对；不是56格实时READY。
-- typed/真实来源能力：**32/72**；完整来源链缺口：**40**。
-- 同次真实CURRENT Product：**5/72**；其余67对象不得由五个Global事实替代。
-- Global Golden原子叶仍0/7；完整Market、Sector、ETF、Stock质量/估值/流动性/执行事实未齐。
-- 原V2.5新增可见H.10摘要，但`full_domain_product_ready=false`、完整FACT_READY邮件=false、SMTP/Telegram=0。
-- Ledger/Outcome/PIT/OOT/Logistic/LightGBM/校准/Shadow/Promotion均未启动；CURRENT事实绝不倒灌。
-- 吸筹、洗盘、派发仍**只表示可观察候选**，不识别机构身份或意图；Chan继续`NOT_FULL_CZSC`，均不得因Product5扩大行动权限。
+- 七周期×八证据族：56/56合同、154有效执行对；不是56格真实READY。
+- typed/真实来源能力：**33/72**；完整来源链缺口：**39**。本轮唯一新增来源能力是`S_PRICES_RS`；SSE六对象原来已有适配，本轮新增的是Product准入。
+- 同次真实CURRENT Product：**11/72**；按域为Global 5、Market 0、Sector 1、ETF 3、Stock 2。
+- Global Golden原子叶仍**0/7**；BLS接口403不以fixture补齐。
+- 原V2.5已能消费11项真实摘要，但`full_domain_product_ready=false`、完整FACT_READY=false、SMTP/Telegram=0。
+- Ledger/Outcome/PIT/OOT/Logistic/LightGBM/校准/Shadow/Promotion均未启动；CURRENT事实绝不倒灌历史。
 
 ### 0.3 验证与反例
 
-- Breadth隔离根32、相关385、深消费者496均本地PASS且范围重叠不相加；自然CI107全绿。
-- H.10独立需求 **13 RED→13 GREEN**：拒绝错host/query、缺发布日、错基期、缺/重复Broad、全ND、未来日期/观察、晚到条款及事实篡改。
-- 真实Product5操作使用同一as-of、同一Rights-v2和同一Pipeline；不是把旧Product4与新事实跨时点拼接。
-- FRED未作为生产Provider：其网站条款和第三方系列许可不满足本路线的最小直接复用要求；改用Federal Reserve Board官方H.10发布页。
+- Product11不是Product5与SSE6旧回执相加：它使用新operation、新as-of、11份Rights-v2和原Pipeline同次重放，股票/ETF各8项、跨资产去重为11项。
+- BLS根反例2 RED→GREEN、具体8/8、原Registry/B1/V2.5/Stage关联258/258 PASS；自然CI41974664150全绿。
+- Sector日线RS保留`PARTIAL`，没有被Product11冒充为完整Sector；CSI当前指数成分冒充正式`S_CLASSIFICATION`的旧候选已删除并阻断回放。
+- SSE法律声明只支持本次非商业内部浏览/下载用途；本操作额外禁止存储、训练和再分发，不扩张为历史权利。
 
 ### 0.4 Role Review
 
 | Role | 当前结论 | 处置 |
 |---|---|---|
-| PRODUCT | CURRENT Product5/72；全域和完整邮件仍STOP | 下一步优先高复用Market/Sector来源，不堆经典指标 |
-| DATA_MODEL | 五对象同次known-at；CURRENT与历史PIT隔离 | revision/vintage未知不进入历史、训练和Promotion |
-| PROCESS_CONSUMER | 全部经原Pipeline/Registry/B1/V2.5 | KEEP唯一DSA，无第二Provider图/DB/报告器 |
-| AUTHORITY_CURRENTNESS | Source8 v3.553；Breadth前驱55a27f/CI107及Product5 3583739d/CI108均远端SUCCESS | 本地行业榜单修复尚无自然CI，不扩大PASS |
-| DEV_TOOLING | H.10 13/13与真实Product5、自然CI108 SUCCESS；行业旧值4 RED转GREEN，127原生+83原生+36导入桩范围 | 只对未提交行业修复另验自然CI，不merge |
+| PRODUCT | CURRENT Product11/72；全域与完整邮件仍STOP | 下一步优先Market真实宽度/成交额或ETF执行事实，不堆经典指标 |
+| DATA_MODEL | 11对象同次known-at；CURRENT与历史PIT隔离 | 任何晚观测、未知历史版本不得进入Outcome/训练 |
+| PROCESS_CONSUMER | 全部经原Pipeline/Registry/B1/V2.5 facts | KEEP唯一DSA，无第二Provider图/DB/报告器 |
+| AUTHORITY_CURRENTNESS | Source8 v3.553；代码HEAD4aa12b/CI成功；Product11回执精确 | Product11机器状态为本地Checkpoint，尚待独立checkpoint commit/CI |
+| DEV_TOOLING | 关闭BLS时点漏洞与Sector来源边界；旧污染路线不复活 | 后继只做能提高真实Product或关键veto的关口 |
 
 CURRENT_ROUTE_STILL_WORTH_CONTINUING = YES_KEEP_ONLY_DSA
 INSTRUCTIONS_UPDATE_DECISION = NO_DELTA_KEEP
-SOURCE_UPDATE_DECISION = KEEP_PROJECT_SOURCE_V3_553_NO_OP_BATCH_NEXT_MATERIAL_CHECKPOINT
+SOURCE_UPDATE_DECISION = KEEP_PROJECT_SOURCE_V3_553_BATCH_PRODUCT11_AT_NEXT_FORMAL_HANDOFF
 
 ### 0.5 GitHub是跨模型连续性的唯一代码基线
 
-后继必须核Source8、origin/HEAD/status/PR/CI，并区分算法、来源能力、CURRENT Product、完整报告和PIT/ML。CI绿灯本身不增加Product，Product5也不等于全域完成。
+后继必须区分算法、来源能力、CURRENT Product、完整报告与PIT/ML。CI绿灯本身不增加Product，Product11也不等于全域完成。
 
-UNIQUE_NEXT_STEP = Product5已在精确3583739d自然CI108 SUCCESS。唯一接续是现有MarketAnalyzer行业/概念旧数据刷新和LLM来源级边界局部修复，经相邻测试及原V2.5核验后，在现有feature形成一个小范围英文原子补救提交，普通非force push并观察新SHA自然PR CI；不merge、不手工dispatch。后续直接进入真实Sector分类/成员有效期/RS→原canonical/V2.5，严禁用榜单或指标数代替正式Sector Product，Source8不机械换版。
+UNIQUE_NEXT_STEP = 将Product11机器Checkpoint作为小范围英文提交普通推送并观察自然PR CI；不merge。CI接受后，优先选择一个可直接增加Market Product或ETF执行veto的官方同次来源；不再重复Global5、Sector RS、BLS或榜单污染关口，也不为完成率新增高度相关指标。
 <!-- CURRENT_MASTER_CONTROL_END -->
 ## 1. GitHub是后续工程基线
 

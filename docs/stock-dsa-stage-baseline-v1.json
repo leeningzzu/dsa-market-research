@@ -4,9 +4,9 @@
   "authority": "CI_DERIVED_GUARDRAIL_ONLY_NOT_RUNTIME_PROOF",
   "current_global_observation_candidate": {
     "schema_version": "stock-dsa-current-global-observation-candidate-v1",
-    "state": "CI108_PRODUCT5_H10_NATURAL_CI_SUCCESS",
-    "base_head": "55a27f56babdb2d8945097fc4a5eacf43181ae04",
-    "base_tree": "e302775ab90fe453c1cec11956d756ba533b5c95",
+    "state": "PRODUCT11_GLOBAL5_SSE6_SAME_OPERATION_PASS_BLS_KNOWN_AT_CI_SUCCESS",
+    "base_head": "4aa12b2176f6d1a557d79dd2322ca933a93cca14",
+    "base_tree": "60a46df3c4d6dfc92d7d35803830c97edfab0dcc",
     "project_source_pair": "v3.553_PHYSICAL_EXACT8_PASS_KEEP_NO_CHURN",
     "temporal_contract": {
       "schema": "data-object-admission-receipt-v2",
@@ -20,14 +20,23 @@
       "legacy_v1_and_historical_pit_gate_unchanged": true
     },
     "actual_operation": {
-      "operation_id": "global-policy-rates-usd-current-nosend-20261105-r001",
-      "research_as_of": "2026-11-05T01:04:03.866910+00:00",
-      "network_requests": 8,
-      "product_admitted_dataset_ids": ["G_INFL_BREAKEVEN", "G_USD_BROAD", "G_UST_NOMINAL", "G_UST_REAL", "G_US_POLICY"],
-      "product_admitted_count": 5,
+      "operation_id": "global5-sse6-current-nosend-20261105-r001",
+      "research_as_of": "2026-11-05T05:43:21.167788+00:00",
+      "network_requests": 12,
+      "product_admitted_dataset_ids": [
+        "E_BASKET", "E_NAV_IOPV", "E_SHARES", "G_INFL_BREAKEVEN",
+        "G_USD_BROAD", "G_UST_NOMINAL", "G_UST_REAL", "G_US_POLICY",
+        "P_CODE_IDENTITY", "P_INDUSTRY", "S_CLASSIFICATION"
+      ],
+      "product_admitted_count": 11,
+      "stock_route_product_count": 8,
+      "etf_route_product_count": 8,
+      "unique_product_count_after_cross_asset_deduplication": 11,
       "full_domain_product_ready": false,
-      "receipt_sha256": "d39eea2ab6d0f654ee7c9f4e401b4081cbd3d659147d08f9defeee8ad8726fec",
+      "receipt_sha256": "34408b10972fda5b0abcf4d3495cb234621b7377da2b5f46501403ff879e06ac",
       "pipeline_owner_verified_in_same_operation": true,
+      "cross_receipt_splicing": false,
+      "v25_fact_summary_count": 11,
       "raw_source_bytes_persisted": false,
       "business_db_writes": 0,
       "email_telegram_sends": 0,
@@ -42,53 +51,42 @@
       "index_base": "JAN06=100",
       "provider": "FederalReserveBoardH10OfficialRelease"
     },
+    "sse_current_facts": {
+      "stock_code": "600519",
+      "stock_name": "贵州茅台",
+      "listing_date": "2001-08-27",
+      "csrc_great_code": "15",
+      "csrc_great_code_desc": "酒、饮料和精制茶制造业",
+      "classification_owner": "CSRC_DISCLOSURE_VIA_SSE",
+      "etf_code": "510300",
+      "etf_trading_day": "2026-11-05",
+      "etf_nav_cny_per_share": "4.1785",
+      "etf_publish_iopv": true,
+      "etf_creation_redemption_unit_shares": 900000,
+      "etf_basket_component_count": 300,
+      "etf_pcf_file_id": "1512701"
+    },
     "capability_counts": {
       "methods_existing": 30,
       "methods_deferred": 13,
       "technical_numeric_leaves_admitted": 24,
       "technical_numeric_leaves_not_admitted": 11,
-      "typed_or_real_source_capability": 32,
-      "complete_typed_source_chain_gaps": 40,
-      "current_product_admitted": 5,
+      "typed_or_real_source_capability": 33,
+      "complete_typed_source_chain_gaps": 39,
+      "current_product_admitted": 11,
       "current_product_denominator": 72,
       "global_golden_atomic_ready": 0,
       "global_golden_atomic_denominator": 7
     },
     "validation": {
-      "h10_independent_red": 13,
-      "h10_focused_passed": 13,
-      "h10_focused_failed": 0,
-      "actual_product5_operation": "PASS",
+      "actual_product11_operation": "PASS",
+      "same_operation_no_cross_receipt_splice": true,
       "scopes_overlap_and_must_not_be_summed": true,
-      "remote_natural_ci": "CI108_RUN41948352235_SUCCESS_ON_3583739D",
-      "accepted_product5_ci108": {
-        "remote_feature_commit": "3583739d283a91fb6f8a5eba268d27f1bfec65d2",
+      "accepted_bls_known_at_ci": {
+        "remote_feature_commit": "4aa12b2176f6d1a557d79dd2322ca933a93cca14",
         "pr": 31,
-        "run_id": 41948352235,
+        "run_id": 41974664150,
         "event": "pull_request",
-        "terminal_conclusion": "success",
-        "jobs_success": 6,
-        "jobs_skipped": 1,
-        "jobs_failed": 0,
-        "merge": false,
-        "main_changed": false,
-        "full_v25_fact_ready": false
-      },
-      "market_rankings_local_correction": {
-        "root_cause": "STALE_SECTOR_AND_CONCEPT_RANKINGS_RETAINED_AFTER_FAILED_REFRESH",
-        "independent_failed_before_fix": 4,
-        "independent_success_controls": 2,
-        "market_text_native_passed": 127,
-        "market_strategy_breadth_optional_import_shim_passed": 36,
-        "stage_v25_import_native_passed": 83,
-        "no_prod_formula_or_provider_added": true,
-        "commit_identity": "RESOLVE_CURRENT_FROM_GIT",
-        "remote_ci": "NOT_PROVEN_UNTIL_NATURAL_PR_CHECK_THIS_COMMIT"
-      },
-      "accepted_predecessor_ci107": {
-        "remote_feature_commit": "55a27f56babdb2d8945097fc4a5eacf43181ae04",
-        "pr": 31,
-        "run_id": 41940325069,
         "terminal_conclusion": "success",
         "jobs_success": 6,
         "jobs_skipped": 1,
@@ -96,32 +94,42 @@
         "merge": false,
         "main_changed": false
       },
+      "accepted_sector_rs_ci": {
+        "remote_feature_commit": "0c0649b11e1fb29aa2b6cff9fd2c9da8b3ac3410",
+        "run_id": 41969453901,
+        "terminal_conclusion": "success",
+        "source_scope": "S_PRICES_RS_PARTIAL_NOT_PRODUCT"
+      },
+      "accepted_market_rankings_ci": {
+        "remote_feature_commit": "0290ff6066c39d9ea1cf060a5f548483307d8b32",
+        "run_id": 41957294096,
+        "terminal_conclusion": "success"
+      },
+      "accepted_product5_ci108": {
+        "remote_feature_commit": "3583739d283a91fb6f8a5eba268d27f1bfec65d2",
+        "run_id": 41948352235,
+        "terminal_conclusion": "success"
+      },
+      "accepted_predecessor_ci107": {
+        "remote_feature_commit": "55a27f56babdb2d8945097fc4a5eacf43181ae04",
+        "run_id": 41940325069,
+        "terminal_conclusion": "success"
+      },
       "predecessor_history": {
         "product4_operation_id": "global-policy-rates-current-nosend-20261104-r001",
         "product4_receipt_sha256": "22973aef0287c9177641699ca180b01babcf3c37bc81b62f3b61b91702169c7f",
-        "product4_pipeline_receipt_sha256": "4647dbe20ff9623b6229faf43e82ff43c94de00f62c673f6bb9e554aa3a43e5d",
-        "ci104": {
-          "run_id": 41785255965,
-          "head": "f4582a29098144157787fc250265e9a39055eb64",
-          "conclusion": "failure",
-          "offline_passed": 6933,
-          "offline_failed": 4,
-          "root_cause": "EAGER_TEST_MODULE_SYS_MODULES_JSON_REPAIR_MAGICMOCK_GLOBAL_CONTAMINATION"
-        },
-        "ci105": {
-          "run_id": 41793577681,
-          "head": "a8f68223d1328874aa7b3d44c4abc565e1037714",
-          "conclusion": "success"
-        },
-        "github_443_transport_incident": "RESOLVED_BY_LATER_SUCCESSFUL_PUSH_AND_CI107"
+        "product5_operation_id": "global-policy-rates-usd-current-nosend-20261105-r001",
+        "product5_receipt_sha256": "d39eea2ab6d0f654ee7c9f4e401b4081cbd3d659147d08f9defeee8ad8726fec",
+        "ci104_failure_root": "EAGER_TEST_MODULE_SYS_MODULES_JSON_REPAIR_MAGICMOCK_GLOBAL_CONTAMINATION",
+        "github_transport_incidents": "RESOLVED_BY_LATER_SUCCESSFUL_NONFORCE_PUSH"
       }
     },
     "immutable_v25_sha256": "039ca6394baf9cf39494cc29f512802b114c8227f8c965723197a8df4b9de823",
     "full_v25_fact_ready": false,
-    "git_commit": "3583739d283a91fb6f8a5eba268d27f1bfec65d2",
+    "git_commit": "4aa12b2176f6d1a557d79dd2322ca933a93cca14",
     "git_push": true,
     "merge": false,
-    "source_update_decision": "KEEP_V3_553_NO_OP_BATCH_NEXT_MATERIAL_CHECKPOINT",
+    "source_update_decision": "KEEP_V3_553_BATCH_PRODUCT11_AT_NEXT_FORMAL_HANDOFF",
     "current_route_still_worth_continuing": "YES_KEEP_ONLY_DSA"
   },
   "current_market_breadth_candidate": {
@@ -537,7 +545,7 @@
     "program": "合法known-at数据→白盒证据→唯一canonical→完整交付→合法Outcome/PIT→独立校准→Shadow→显式Promotion，不自动交易",
     "product": "Global→CN Market/Breadth→Sector→ETF/Stock→7TFx8+quality+industry-specific valuation+volume-price phase+narrow Chan→four veto→FULL V2.5",
     "current_lane": "G0_CI100_ACCEPTED_WITH_B1_M2_PRODUCT_HOLD",
-    "current_milestone": "Source8 v3.545 physical PASS. Premium/execution implementation Head16963 and natural CI100 accepted; continuity projection pending. Capability28/72, source gaps44, Product0/72, V2.5 FACT_READY false.",
+    "current_milestone": "Source8 v3.553 physical PASS. Feature Head4aa12b and natural CI41974664150 accepted; Product11 same-operation runtime PASS. Capability33/72, source gaps39, Product11/72, V2.5 FACT_READY false.",
     "atomic_rule": "Existing Owner→actual consumer→strict receipt/source identity→independent RED/GREEN→legal nontrigger→rollback/proof ceiling; no directory-only or document-only completion."
   },
   "stage_ladder": [
@@ -546,14 +554,14 @@
       "scope": "准确origin/main、PR、required CI、可回滚commit身份",
       "exit": "PR所有阻断检查通过并经显式merge",
       "proof_ceiling": "GitHub代码基线，不证明真实数据或产品外部交付",
-      "local_state": "CI98_ACCEPTED_BASE_TYPED_SOURCE_CANDIDATE_PRECOMMIT_REMOTE_OPEN"
+      "local_state": "CI_ACCEPTED_FEATURE_HEAD_4AA12B_PRODUCT11_CHECKPOINT_LOCAL"
     },
     {
       "id": "B1_SOURCE_RIGHTS",
       "scope": "Product使用、存储、训练、再分发权利分别绑定当前operation、运行时source identity和精确上游条款",
       "exit": "同一as-of Stock+ETF取得可核上游条款证据与当前数据回执；未知权利保持SOURCE_IDENTITY_ONLY",
       "proof_ceiling": "CI80/82及后续Gate1-4回执证明接线与fail-closed消费；当前全域记账PASS不授予供应商真实Product/storage/training/redistribution权利，不证明两资产合法完整Product、历史PIT、策略、邮件交付或模型晋升",
-      "local_state": "TYPED_SOURCE_CAPABILITY28_GAP44_PRODUCT0_RIGHTS_STOP",
+      "local_state": "TYPED_SOURCE_CAPABILITY33_GAP39_PRODUCT11_FULL_DOMAIN_RIGHTS_STOP",
       "next_primary": true
     },
     {
@@ -971,13 +979,18 @@
     }
   },
   "current_runtime_checkpoint": {
-    "schema_version": "stock-dsa-current-runtime-checkpoint-v2",
-    "source_pair": "01/05 v3.545 PHYSICAL_EXACT8_PASS",
+    "schema_version": "stock-dsa-current-runtime-checkpoint-v3",
+    "source_pair": "01/05 v3.553 PHYSICAL_EXACT8_PASS",
     "accepted_remote_base": {
-      "head": "16963cee711392605b2515eef00e390802f5eeeb",
-      "ci_run_number": 100,
-      "ci_run_id": 41570430451,
-      "conclusion": "success"
+      "head": "4aa12b2176f6d1a557d79dd2322ca933a93cca14",
+      "ci_run_id": 41974664150,
+      "event": "pull_request",
+      "conclusion": "success",
+      "jobs_success": 6,
+      "jobs_skipped": 1,
+      "pr": 31,
+      "draft": true,
+      "merged": false
     },
     "candidate_identity": "RESOLVE_COMMIT_CONTAINING_THIS_FILE_FROM_GIT",
     "candidate_precommit_snapshot": {
@@ -986,7 +999,7 @@
       "untracked_paths": [],
       "staged_count": 0,
       "post_commit_worktree_expected_clean": true,
-      "scope": "CI100_CONTINUITY_PROJECTION_ONLY",
+      "scope": "PRODUCT11_MACHINE_CHECKPOINT_ONLY",
       "paths": [
         "docs/CHANGELOG.md",
         "docs/stock-dsa-roadmap.md",
@@ -995,53 +1008,17 @@
       ]
     },
     "local_regression": {
-      "focused_passed": 61,
-      "focused_failed": 0,
-      "full_related": {
-        "selected_modules": 46,
-        "passed": 1375,
-        "failed": 0,
-        "duration_seconds": 612.18,
-        "warnings": 2
-      },
-      "remote_ci": "CI100_SUCCESS_PREMIUM_EXECUTION_FUNCTIONAL_ACCEPTED_CONTINUITY_PENDING",
-      "process_only_environment_stubs": [
-        "fake_useragent",
-        "json_repair",
-        "markdown2",
-        "newspaper",
-        "lark_oapi",
-        "akshare",
-        "python-multipart"
-      ],
-      "litellm_local_cost_map_required_before_import": true,
-      "ci96_targeted_passed": 5,
-      "ci96_targeted_failed": 0,
-      "typed_source_focused": {
-        "passed": 5,
-        "failed": 0
-      },
-      "typed_source_related": {
-        "selected_modules": 10,
-        "passed": 583,
-        "failed": 0,
-        "duration_seconds": 611.5,
-        "warnings": 1
-      },
-      "premium_execution_focused": {
-        "passed": 6,
-        "failed": 0
-      },
-      "premium_execution_related": {
-        "selected_modules": 18,
-        "core_passed": 531,
-        "adjacent_passed": 271,
-        "passed": 802,
-        "failed": 0,
-        "duration_seconds": 597.1,
-        "warnings": 2,
-        "environment_recovery": "TWO_OPTIONAL_LARK_OAPI_TEST_SHAPE_STOPS_THEN_PROCESS_ONLY_COMPLETE_SDK_SHIM_GREEN"
-      }
+      "product11_same_operation": "PASS",
+      "product11_receipt_sha256": "34408b10972fda5b0abcf4d3495cb234621b7377da2b5f46501403ff879e06ac",
+      "bls_known_at_specific_passed": 8,
+      "bls_registry_b1_v25_stage_adjacent_passed": 258,
+      "sector_rs_source_specific_passed": 31,
+      "sector_rs_registry_b1_v25_stage_adjacent_passed": 281,
+      "checkpoint_stage_registry_b1_v25": "RUNNING_CURRENT_WIP",
+      "scopes_overlap_and_must_not_be_summed": true,
+      "py_compile": "PASS",
+      "flake8_critical": "PASS",
+      "git_diff_check": "PASS"
     },
     "seven_timeframe_eight_family": {
       "timeframe_carriers_implemented": true,
@@ -1056,19 +1033,25 @@
       "current_real_product_bound_56_cells_complete": false
     },
     "product_state": {
-      "current_reconstructible_product_ids": [],
+      "current_reconstructible_product_ids": [
+        "E_BASKET", "E_NAV_IOPV", "E_SHARES", "G_INFL_BREAKEVEN",
+        "G_USD_BROAD", "G_UST_NOMINAL", "G_UST_REAL", "G_US_POLICY",
+        "P_CODE_IDENTITY", "P_INDUSTRY", "S_CLASSIFICATION"
+      ],
+      "current_product_count": 11,
       "denominator": 72,
       "full_domain_product_ready": false,
       "global_market_sector_quality_valuation_etf_specific_complete": false,
       "stock_applicable_objects": 60,
       "etf_applicable_objects": 55,
-      "typed_or_real_source_capability_minimum": 28,
-      "without_complete_typed_source_chain": 44
+      "typed_or_real_source_capability_minimum": 33,
+      "without_complete_typed_source_chain": 39
     },
     "email_reader_state": {
       "old_empty_numeric_email_revoked": true,
       "current_fact_ready": false,
       "original_v25_immutable": true,
+      "current_v25_fact_summary_count": 11,
       "smtp_send": 0,
       "full_suite_product_objects": 72,
       "stock_applicable_objects": 60,
@@ -1076,37 +1059,39 @@
       "global_atomic_subfields_ready": 0,
       "global_atomic_subfields_total": 7
     },
-    "proof_ceiling": "REMOTE_CI100_FUNCTIONAL_ACCEPTED_CONTINUITY_PENDING_NOT_PRODUCT_DELIVERY_OR_LEARNING",
-    "failed_remote_parent": {
-      "head": "6651915ad2bc662fe45006639204a259bbce27c5",
-      "ci_run_number": 96,
-      "ci_run_id": 41402275878,
-      "conclusion": "failure",
-      "failed_tests": 3
-    }
+    "historical_predecessor": {
+      "head": "16963cee711392605b2515eef00e390802f5eeeb",
+      "ci_run_id": 41570430451,
+      "scope": "CI100_E_PREMIUM_P_EXEC_RISK_PARTIAL",
+      "current_authority": false
+    },
+    "proof_ceiling": "PRODUCT11_CURRENT_NO_SEND_AND_33_SOURCE_CAPABILITIES_NOT_FULL_DOMAIN_DELIVERY_OR_LEARNING"
   },
   "route_decision": {
-    "next_primary": "B1_M2_44_PROVIDER_BACKED_SOURCE_CHAIN_REENTRY",
-    "reason": "E_PREMIUM and P_EXEC_RISK partial typed chains are remotely accepted by CI100 with focused6, core531 and disjoint adjacent271. Capability remains28/72, gaps44 and Product0/72. Remaining audited gaps do not have honest same-run parents for another substitution-free zero-Provider promotion; next material progress requires one exact provider-backed typed source chain plus Rights-v2/current facts.",
+    "next_primary": "MARKET_OR_ETF_EXECUTION_PRODUCT_REENTRY",
+    "reason": "Product11 is now reconstructed in one operation and BLS/Sector engineering gates have natural CI. The largest parent-product gaps are CN Market0/18, ETF3/12 and Stock2/17; next work must add one official same-asof Product or material veto, not another correlated indicator or source-only shell.",
     "bounded_indicator_sub_lanes": [
-      "MONTHLY_RSI_HISTORY_IF_LEGAL",
-      "15M_CONFIRMATION",
-      "5M_EXECUTION_TIMING",
-      "MINUTE_VOLUME_AMOUNT_UNITS"
+      "RISK_REWARD_AFTER_EXECUTION_FACTS",
+      "VWAP_AFTER_COMPLETED_INTRADAY_VOLUME",
+      "ETF_SPECIFIC_AFTER_SPREAD_TRACKING_FEES"
     ],
     "deferred_until_product_trigger": [
-      "RISK_REWARD",
       "ADX_DMI",
       "BOLLINGER",
       "KDJ",
       "OBV_ADL",
       "MFI",
-      "VWAP_AVWAP_VOLUME_PROFILE",
+      "AVWAP_VOLUME_PROFILE",
       "WAVE",
-      "ETF_SPECIFIC",
       "GLOBAL",
       "BREADTH",
       "PROBABILITY"
+    ],
+    "closed_no_replay": [
+      "GLOBAL_PRODUCT5_REBUILD",
+      "CSI_SECTOR_DAILY_RS20_SOURCE_GATE",
+      "BLS_KNOWN_AT_CLOCK_ROOTFIX",
+      "MARKET_RANKING_STALE_REFRESH"
     ]
   },
   "mature_reuse_route": [
@@ -1610,7 +1595,7 @@
   },
   "current_real_data_readiness_audit": {
     "schema_version": "stock-dsa-real-data-readiness-audit-v1",
-    "audit_date": "2026-11-03",
+    "audit_date": "2026-11-05",
     "method_catalog": {
       "total": 43,
       "existing_reused": 30,
@@ -1626,13 +1611,13 @@
     },
     "product_data_objects": {
       "total": 72,
-      "current_product_admitted": 0,
+      "current_product_admitted": 11,
       "stock_applicable": 60,
       "etf_applicable": 55,
-      "typed_or_real_source_capability_minimum": 28,
-      "without_complete_typed_source_chain": 44,
-      "no_current_typed_producer": 22,
-      "consumer_or_partial_code_only": 19,
+      "typed_or_real_source_capability_minimum": 33,
+      "without_complete_typed_source_chain": 39,
+      "no_current_typed_producer": 18,
+      "consumer_or_partial_code_only": 18,
       "direct_snapshot_callable_not_typed_or_rights_admitted": 3
     },
     "typed_or_real_source_capability_ids": [
@@ -1643,7 +1628,11 @@
       "E_PRICE_1D",
       "E_PRICE_5M",
       "E_SHARES",
+      "G_INFL_BREAKEVEN",
+      "G_USD_BROAD",
+      "G_US_POLICY",
       "G_UST_NOMINAL",
+      "G_UST_REAL",
       "M_ASOF_UNIVERSE",
       "M_INDEX_BARS",
       "M_INDEX_CURRENT",
@@ -1663,7 +1652,8 @@
       "P_QUOTE_LIQUID",
       "P_SHARES_EVENTS",
       "P_VAL_RATIO",
-      "S_CLASSIFICATION"
+      "S_CLASSIFICATION",
+      "S_PRICES_RS"
     ],
     "global_atomic_subfields": {
       "total": 7,
@@ -1689,7 +1679,7 @@
         "backtest_results"
       ],
       "database_framework_missing": false,
-      "primary_blocker": "LAWFUL_TYPED_CURRENT_FACTS_AND_STORAGE_RIGHTS"
+      "primary_blocker": "CURRENT_PRODUCT_STORAGE_RIGHTS_AND_HISTORY_PIT_NOT_ADMITTED"
     },
     "email": {
       "template_rebuild_required": false,
@@ -1704,7 +1694,7 @@
       "all_real_values_possible_architecturally": true,
       "all_real_values_available_now": false
     },
-    "proof_ceiling": "FIVE_TYPED_DERIVED_SOURCE_CHAINS_LOCAL_PASS_NOT_CURRENT_PRODUCT_ADMISSION"
+    "proof_ceiling": "ELEVEN_CURRENT_PRODUCT_OBJECTS_IN_ONE_OPERATION_PLUS_THIRTY_THREE_SOURCE_CAPABILITIES_NOT_FULL_DOMAIN_READY"
   },
   "ci97_remote_acceptance": {
     "schema_version": "stock-dsa-ci97-remote-acceptance-v1",
