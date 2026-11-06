@@ -5116,6 +5116,18 @@ def _verified_data_object_source_scope(factor: Mapping) -> dict[str, dict]:
                 raise TraceabilityError(
                     "SSE_INDEX_CURRENT_SOURCE_OBSERVATION_INVALID:" + str(exc)
                 ) from exc
+        if dataset_id == "M_TURNOVER":
+            from data_provider.cn_exchange_turnover_source import (
+                CNExchangeTurnoverSourceError,
+                validate_cn_exchange_turnover_observation,
+            )
+            try:
+                validate_cn_exchange_turnover_observation(row)
+            except CNExchangeTurnoverSourceError as exc:
+                raise TraceabilityError(
+                    "CN_EXCHANGE_TURNOVER_SOURCE_OBSERVATION_INVALID:"
+                    + str(exc)
+                ) from exc
         result[dataset_id] = {
             "state": row["state"],
             "reason": ",".join(str(item) for item in row["reason_codes"]),

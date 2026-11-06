@@ -355,7 +355,7 @@
     "repository_url": "https://github.com/leeningzzu/dsa-market-research.git",
     "production_branch": "main",
     "development_branch": "feat/stock-dsa-m2-source-gates-v1",
-    "candidate_parent": "9a7713e9482b95340a58600273e4be892332e5a7",
+    "candidate_parent": "f084e8562ea8fc7b9564c541c537e618a2e40c89",
     "candidate_identity": "RESOLVE_COMMIT_CONTAINING_THIS_FILE_FROM_GIT",
     "commit_identity_command": "git log -1 --format=%H -- docs/stock-dsa-stage-baseline-v1.json",
     "verifier": "python scripts/verify_stock_dsa_reentry.py --json",
@@ -376,8 +376,8 @@
     "current_product_projection": {
       "latest_multi_object_operation_product_count": 13,
       "denominator": 72,
-      "market_atomic_product_count": 1,
-      "market_atomic_product_ids": ["M_INDEX_CURRENT"],
+      "market_atomic_product_count": 2,
+      "market_atomic_product_ids": ["M_INDEX_CURRENT", "M_TURNOVER"],
       "cross_operation_sum_forbidden": true,
       "full_domain_product_ready": false
     }
@@ -658,7 +658,7 @@
       "scope": "Product使用、存储、训练、再分发权利分别绑定当前operation、运行时source identity和精确上游条款",
       "exit": "同一as-of Stock+ETF取得可核上游条款证据与当前数据回执；未知权利保持SOURCE_IDENTITY_ONLY",
       "proof_ceiling": "CI80/82及后续Gate1-4回执证明接线与fail-closed消费；当前全域记账PASS不授予供应商真实Product/storage/training/redistribution权利，不证明两资产合法完整Product、历史PIT、策略、邮件交付或模型晋升",
-      "local_state": "TYPED_SOURCE_CAPABILITY34_GAP38_PRODUCT13_PLUS_SEPARATE_MARKET_ATOMIC1_FULL_DOMAIN_RIGHTS_STOP",
+      "local_state": "TYPED_SOURCE_CAPABILITY35_GAP37_PRODUCT13_PLUS_TWO_SEPARATE_MARKET_ATOMIC_CAPABILITIES_FULL_DOMAIN_RIGHTS_STOP",
       "next_primary": true
     },
     {
@@ -1076,7 +1076,7 @@
     }
   },
   "current_runtime_checkpoint": {
-    "schema_version": "stock-dsa-current-runtime-checkpoint-v5",
+    "schema_version": "stock-dsa-current-runtime-checkpoint-v6",
     "source_pair": "01/05 v3.556 PHYSICAL_EXACT8_PASS",
     "accepted_remote_base": {
       "head": "b8f5d9258b717cf08d9ad6590e6143ee7e0e15ce",
@@ -1091,9 +1091,9 @@
       "merged": false
     },
     "local_predecessor_checkpoint": {
-      "head": "9a7713e9482b95340a58600273e4be892332e5a7",
-      "scope": "EXTENDED35_AND_CROSS_ACCOUNT_REENTRY",
-      "remote_currentness": "UNKNOWN_NOT_PROVEN"
+      "head": "f084e8562ea8fc7b9564c541c537e618a2e40c89",
+      "scope": "M_INDEX_CURRENT_AND_CI_REENTRY_IDENTITY_ROOTFIX",
+      "remote_currentness": "CI_SCREENSHOTS_OBSERVED_BACKEND_GATE_FAILED"
     },
     "candidate_identity": "RESOLVE_COMMIT_CONTAINING_THIS_FILE_FROM_GIT",
     "local_regression": {
@@ -1110,7 +1110,14 @@
       "py_compile": "PASS",
       "ai_asset_check": "PASS",
       "git_diff_check": "PASS",
-      "reentry_verifier": "PASS"
+      "reentry_verifier": "PASS",
+      "ci_screenshot_rootfix_targeted_passed": 10,
+      "evidence_flywheel_full_passed": 64,
+      "cn_exchange_turnover_and_b1_passed": 60,
+      "integrated_reentry_stage_turnover_flywheel_passed": 112,
+      "market_b1_registry_v25_adjacent_passed": 331,
+      "actual_cn_exchange_turnover_operation": "PASS",
+      "local_full_offline_suite": "COLLECTION_BLOCKED_BY_UNINSTALLED_DECLARED_FAKE_USERAGENT_AND_MARKDOWN2_REMOTE_CI_REQUIRED"
     },
     "seven_timeframe_eight_family": {
       "timeframe_carriers_implemented": true,
@@ -1141,23 +1148,25 @@
         "S_CLASSIFICATION"
       ],
       "latest_multi_object_operation_product_count": 13,
-      "atomic_market_product_ids": ["M_INDEX_CURRENT"],
-      "atomic_market_product_count": 1,
+      "atomic_market_product_ids": ["M_INDEX_CURRENT", "M_TURNOVER"],
+      "atomic_market_product_count": 2,
+      "latest_atomic_market_operation_id": "cn-exchange-turnover-nosend-20261106T040925Z",
       "cross_operation_sum_forbidden": true,
       "denominator": 72,
       "full_domain_product_ready": false,
       "global_market_sector_quality_valuation_etf_specific_complete": false,
       "stock_applicable_objects": 60,
       "etf_applicable_objects": 55,
-      "typed_or_real_source_capability_minimum": 34,
-      "without_complete_typed_source_chain": 38
+      "typed_or_real_source_capability_minimum": 35,
+      "without_complete_typed_source_chain": 37
     },
     "email_reader_state": {
       "old_empty_numeric_email_revoked": true,
       "current_fact_ready": false,
       "original_v25_immutable": true,
       "latest_multi_object_v25_fact_summary_count": 13,
-      "atomic_market_v25_fact_summary_count": 1,
+      "atomic_market_v25_fact_summary_count": 2,
+      "cross_operation_render_forbidden": true,
       "smtp_send": 0,
       "full_suite_product_objects": 72,
       "stock_applicable_objects": 60,
@@ -1171,7 +1180,7 @@
       "scope": "PRODUCT11_CURRENT_OBSERVATION_CHECKPOINT",
       "current_authority": false
     },
-    "proof_ceiling": "M_INDEX_CURRENT_ACTUAL_CURRENT_NO_SEND_ATOMIC_PRODUCT_PLUS_PRODUCT13_PREDECESSOR_NOT_FULL_DOMAIN_DELIVERY_OR_LEARNING"
+    "proof_ceiling": "M_INDEX_CURRENT_AND_M_TURNOVER_SEPARATE_ACTUAL_CURRENT_NO_SEND_ATOMIC_PRODUCTS_PLUS_PRODUCT13_PREDECESSOR_NOT_FULL_DOMAIN_DELIVERY_OR_LEARNING"
   },
   "current_market_index_atomic_operation": {
     "schema_version": "stock-dsa-sse-index-current-actual-operation-v1",
@@ -1214,16 +1223,72 @@
     "training_or_promotion": 0,
     "proof_ceiling": "SSE_SELECTED_COMPLETED_INDEX_CLOSE_CURRENT_NO_SEND_ONLY_NOT_FULL_MARKET"
   },
+  "current_market_turnover_atomic_operation": {
+    "schema_version": "stock-dsa-cn-exchange-turnover-actual-operation-v1",
+    "state": "ACTUAL_CURRENT_OBSERVATION_PRODUCT_ADMITTED_PARTIAL_SCOPE",
+    "operation_id": "cn-exchange-turnover-nosend-20261106T040925Z",
+    "research_as_of": "2026-11-06T04:09:27.380167+00:00",
+    "dataset_id": "M_TURNOVER",
+    "market_atomic_product_count": 1,
+    "market_atomic_product_denominator": 18,
+    "cross_operation_sum_forbidden": true,
+    "authority_receipt_relative": "_authority/M_TURNOVER_cn-exchange-turnover-nosend-20261106T040925Z_RECEIPT.json",
+    "terms": {
+      "sse": {"uri": "https://www.sse.com.cn/home/legal/", "bytes": 28942, "sha256": "7442f73b132ae46702513abd5e67183b0baaca0c298db66d0337b0d6f2d606f1"},
+      "szse": {"uri": "https://www.szse.cn/application/laws/", "bytes": 10063, "sha256": "5398c463263421a98cbf90918dcaa16d6d70ef80f2052a9d0c19c1606ab27936"},
+      "bundle_evidence_hash": "c515e714baacfb586e5ffc3ab14eeee410c82c817c182ea5185c7f238ed9f713"
+    },
+    "sources": {
+      "sse": {"bytes": 1710, "sha256": "bd5e60b265601c87485a89754df08545ba5af4cdb5a61e87fea34fdb14e04d5e"},
+      "szse": {"bytes": 2220, "sha256": "7b18bfbf626c944a8447b4772ce3ef623baab23caff6c022578b899012b62297"},
+      "compound_content_sha256": "761d08e5aff6b05db1cc0896e253e63854fbfce9613a84df1ba61eb4f52990aa",
+      "source_identity_hash": "5129fc85e8c5663db19b1b06c1e4d655f825bfdc5d73b86d37a51fb34d8a21c6",
+      "source_observation_hash": "a66d14311a4335a989d7cc0fec48d25348b3b05eeb201ae4aaaa2c4350f325a0"
+    },
+    "facts": {
+      "trade_date": "2026-11-05",
+      "sse_stock_total_turnover_100m_cny": "9812.82",
+      "sse_a_share_turnover_100m_cny": "9811",
+      "sse_b_share_turnover_100m_cny": "1.82",
+      "sse_cdr_turnover_100m_cny": "0.18",
+      "szse_main_board_turnover_100m_cny": "5601.98",
+      "szse_chinext_turnover_100m_cny": "5793.94",
+      "szse_total_turnover_100m_cny": "11395.92",
+      "combined_two_exchange_stock_turnover_100m_cny": "21208.74",
+      "combined_two_exchange_stock_turnover_cny": 2120874000000,
+      "szse_scope_includes_depositary_receipts": true,
+      "bse_included": false,
+      "exact_all_a_turnover_admitted": false,
+      "breadth_denominator_admitted": false,
+      "turnover_rate_admitted": false,
+      "relative_volume_admitted": false
+    },
+    "source_fact_hash": "3912334bf4225b1e0e89d77d3626bc912443ce564fd37ec9ba7953c313af3337",
+    "admission_hash": "74e595456026a432a33236ea4f42715a41442b52d3eb438b877c9318606b096a",
+    "receipt_sha256": "79e1e7369cb2687164038022722fd12c59279b0d1cdef06200a64e5a03959ffe",
+    "product_admitted": true,
+    "storage_admitted": false,
+    "learning_admitted": false,
+    "historical_pit_eligible": false,
+    "redistribution_admitted": false,
+    "strategy_upgrade_authority": false,
+    "raw_source_persisted": false,
+    "business_db_writes": 0,
+    "notification_sends": 0,
+    "model_calls": 0,
+    "training_or_promotion": 0,
+    "proof_ceiling": "SSE_SZSE_OFFICIAL_TWO_EXCHANGE_TURNOVER_CURRENT_NO_SEND_ONLY_NOT_EXACT_ALL_A_BSE_BREADTH_OR_LEARNING"
+  },
   "route_decision": {
-    "next_primary": "MARKET_ALL_A_BSE_DENOMINATOR_AND_TURNOVER_GATE",
-    "reason": "M_INDEX_CURRENT now has an actual same-operation official SSE terms/source/Rights-v2/B1/Registry/V2.5 receipt. The remaining Market parent blocker is the completed-session SSE+SZSE+BSE security denominator, suspend states, breadth, turnover and limit facts; selected SSE index values cannot substitute those objects.",
+    "next_primary": "MARKET_ALL_A_BSE_DENOMINATOR_BREADTH_AND_LIMITS_GATE",
+    "reason": "M_INDEX_CURRENT and M_TURNOVER now each have separate actual same-operation official terms/source/Rights-v2/B1/Registry/V2.5 receipts. They cannot be summed with Product13 or each other as one run. The remaining Market parent blocker is the completed-session SSE+SZSE+BSE security denominator, suspend states, breadth, exact all-A/BSE turnover-rate semantics and limit facts.",
     "bounded_indicator_sub_lanes": [
       "RISK_REWARD_AFTER_EXECUTION_FACTS",
       "VWAP_AFTER_COMPLETED_INTRADAY_VOLUME",
       "ETF_SPECIFIC_AFTER_SPREAD_TRACKING_FEES"
     ],
     "remaining_complex_gates": [
-      "MARKET_ALL_A_BSE_DENOMINATOR_BREADTH_TURNOVER_AND_LIMITS",
+      "MARKET_ALL_A_BSE_DENOMINATOR_BREADTH_EXACT_TURNOVER_RATE_AND_LIMITS",
       "SECTOR_EFFECTIVE_MEMBERSHIP_BREADTH_TURNOVER_VALUATION",
       "ETF_PRICE_IOPV_SPREAD_TRACKING_AND_EXECUTION_VETO",
       "STOCK_FINANCIAL_VINTAGE_QUALITY_VALUATION_AND_EXECUTION",
@@ -1244,7 +1309,8 @@
       "BLS_KNOWN_AT_CLOCK_ROOTFIX",
       "MARKET_RANKING_STALE_REFRESH",
       "PRODUCT13_CODE_CONSUMER_CI",
-      "M_INDEX_CURRENT_OFFICIAL_SSE_CURRENT_OBSERVATION"
+      "M_INDEX_CURRENT_OFFICIAL_SSE_CURRENT_OBSERVATION",
+      "M_TURNOVER_OFFICIAL_SSE_SZSE_CURRENT_OBSERVATION"
     ],
     "next_chat_class": "SAME_OR_NEW_ACCOUNT_LOCAL_OR_GITHUB_REENTRY_V2",
     "source_update_decision": "KEEP_PHYSICAL_01_05_V3_556_NO_CHURN",
@@ -1263,6 +1329,8 @@
     "canonical_github_https_origin_optional_dot_git_and_trailing_slash_equivalent": true,
     "github_actions_pr_detached_checkout_requires_exact_sha_and_head_ref_when_remote_ref_absent": true,
     "ordinary_local_reentry_still_requires_real_feature_ref_or_exact_bundle": true,
+    "historical_trace_schema_identity_uses_frozen_manifest_hash_mapping_not_current_catalog_rebuild": true,
+    "m_turnover_two_exchange_value_does_not_grant_bse_all_a_breadth_turnover_rate_or_relative_volume": true,
     "static_counts_never_prove_runtime_ready": true,
     "runtime_method_receipts_required_for_strict_current_research": true,
     "mtf_screening_requires_strict_receipt_and_canonical_binding": true,

@@ -13,6 +13,7 @@ from src.services.data_object_admission import (
     compile_data_object_admission_view,
     seal_data_object_admission_receipt,
     seal_source_rights_evidence,
+    validate_b1_provider_preflight,
     validate_compiled_data_object_admission,
     validate_source_rights_evidence,
 )
@@ -595,6 +596,170 @@ def test_rights_terms_observed_after_research_asof_are_not_product_ready():
     )
     assert result["product_admitted"] is False
     assert "RIGHTS_EVIDENCE_AFTER_RESEARCH_ASOF" in result["reasons"]
+
+
+def _composite_rights_bundle() -> dict:
+    components = []
+    for provider, owner, uri, digest, observed in (
+        (
+            "SSEOfficialDailyTurnover",
+            "Shanghai Stock Exchange",
+            "https://www.sse.com.cn/home/legal/",
+            "1" * 64,
+            "2026-10-21T07:30:00+00:00",
+        ),
+        (
+            "SZSEOfficialDailyTurnover",
+            "Shenzhen Stock Exchange",
+            "https://www.szse.cn/application/laws/",
+            "2" * 64,
+            "2026-10-21T08:00:00+00:00",
+        ),
+    ):
+        clause = f"{provider} fixture permits bounded internal no-send research."
+        components.append(seal_source_rights_evidence({
+            "schema_version": "source-rights-evidence-v2",
+            "operation_id": NO_SEND_OPERATION_ID,
+            "intended_use": "NO_SEND_RESEARCH",
+            "provider_identity": provider,
+            "upstream_source_owner": owner,
+            "upstream_rights_state": "VERIFIED",
+            "dataset_id": "P_DAILY",
+            "consumer_scope": "STOCK_ASSET_RESEARCH",
+            "terms_uri": uri,
+            "terms_sha256": digest,
+            "terms_observed_at": observed,
+            "terms_scope": "OFFICIAL_PROVIDER_DATA_USE_STATEMENT",
+            "product_use_clause": clause,
+            "product_use_clause_sha256": hashlib.sha256(
+                clause.encode("utf-8")
+            ).hexdigest(),
+            "rights": {
+                "product_use": "ALLOWED",
+                "storage": "FORBIDDEN",
+                "training": "FORBIDDEN",
+                "redistribution": "FORBIDDEN",
+            },
+        }))
+    clause = "Intersection of independently observed SSE and SZSE no-send clauses."
+    return seal_source_rights_evidence({
+        "schema_version": "source-rights-evidence-bundle-v1",
+        "operation_id": NO_SEND_OPERATION_ID,
+        "intended_use": "NO_SEND_RESEARCH",
+        "provider_identity": "SSESZSEOfficialDailyTurnover",
+        "upstream_source_owner": "Shanghai Stock Exchange + Shenzhen Stock Exchange",
+        "upstream_rights_state": "VERIFIED",
+        "dataset_id": "P_DAILY",
+        "consumer_scope": "STOCK_ASSET_RESEARCH",
+        "terms_uris": tuple(item["terms_uri"] for item in components),
+        "terms_sha256s": tuple(item["terms_sha256"] for item in components),
+        "terms_observed_at": "2026-10-21T08:00:00+00:00",
+        "terms_scope": "COMPOSITE_OPERATION_MATCHED_UPSTREAM_TERMS",
+        "product_use_clause": clause,
+        "product_use_clause_sha256": hashlib.sha256(
+            clause.encode("utf-8")
+        ).hexdigest(),
+        "components": tuple(components),
+        "rights": {
+            "product_use": "ALLOWED",
+            "storage": "FORBIDDEN",
+            "training": "FORBIDDEN",
+            "redistribution": "FORBIDDEN",
+        },
+    })
+
+
+def test_composite_rights_bundle_preserves_each_upstream_terms_identity():
+    bundle = validate_source_rights_evidence(_composite_rights_bundle())
+    assert bundle["provider_identity"] == "SSESZSEOfficialDailyTurnover"
+    assert tuple(bundle["terms_uris"]) == (
+        "https://www.sse.com.cn/home/legal/",
+        "https://www.szse.cn/application/laws/",
+    )
+    assert len(bundle["components"]) == 2
+    assert bundle["rights"] == {
+        "product_use": "ALLOWED",
+        "storage": "FORBIDDEN",
+        "training": "FORBIDDEN",
+        "redistribution": "FORBIDDEN",
+    }
+    grant = validate_b1_provider_preflight(
+        bundle,
+        operation_id=NO_SEND_OPERATION_ID,
+        intended_use="NO_SEND_RESEARCH",
+        dataset_id="P_DAILY",
+        consumer_scope="STOCK_ASSET_RESEARCH",
+        research_as_of="2026-10-21T10:00:00+00:00",
+    )
+    assert grant["terms_observed_at"] == "2026-10-21T08:00:00+00:00"
+
+    receipt = _receipt(
+        include_rights_evidence=False,
+        provider_identity="SSESZSEOfficialDailyTurnover",
+    )
+    receipt["rights_evidence"] = bundle
+    receipt = seal_data_object_admission_receipt(receipt)
+    obligation = {
+        **OBLIGATION,
+        "provider_identity": "SSESZSEOfficialDailyTurnover",
+    }
+    compiled = compile_data_object_admission(
+        obligation,
+        receipt,
+        as_of="2026-10-21T10:30:00+00:00",
+        **NO_SEND_CONTEXT,
+    )
+    assert compiled["product_admitted"] is True
+    assert tuple(compiled["terms_uris"]) == tuple(bundle["terms_uris"])
+    assert compiled["terms_uri"] is None
+
+
+def test_composite_rights_bundle_rejects_scope_duplicate_and_intersection_tamper():
+    wrong_scope = _composite_rights_bundle()
+    wrong_scope["components"] = list(wrong_scope["components"])
+    wrong_scope["components"][1] = dict(wrong_scope["components"][1])
+    wrong_scope["components"][1]["dataset_id"] = "M_TURNOVER"
+    wrong_scope["components"][1] = seal_source_rights_evidence(
+        wrong_scope["components"][1]
+    )
+    wrong_scope = seal_source_rights_evidence(wrong_scope)
+    with pytest.raises(
+        DataObjectAdmissionError,
+        match="BUNDLE_COMPONENT_SCOPE_MISMATCH",
+    ):
+        validate_source_rights_evidence(wrong_scope)
+
+    duplicate = _composite_rights_bundle()
+    duplicate["components"] = list(duplicate["components"])
+    duplicate["components"][1] = dict(duplicate["components"][1])
+    duplicate["components"][1]["terms_uri"] = duplicate["components"][0]["terms_uri"]
+    duplicate["components"][1] = seal_source_rights_evidence(
+        duplicate["components"][1]
+    )
+    duplicate["terms_uris"] = tuple(
+        item["terms_uri"] for item in duplicate["components"]
+    )
+    duplicate["terms_sha256s"] = tuple(
+        item["terms_sha256"] for item in duplicate["components"]
+    )
+    duplicate = seal_source_rights_evidence(duplicate)
+    with pytest.raises(
+        DataObjectAdmissionError,
+        match="BUNDLE_COMPONENT_DUPLICATE",
+    ):
+        validate_source_rights_evidence(duplicate)
+
+    rights_tamper = _composite_rights_bundle()
+    rights_tamper["rights"] = {
+        **rights_tamper["rights"],
+        "storage": "ALLOWED",
+    }
+    rights_tamper = seal_source_rights_evidence(rights_tamper)
+    with pytest.raises(
+        DataObjectAdmissionError,
+        match="BUNDLE_RIGHTS_INTERSECTION_MISMATCH",
+    ):
+        validate_source_rights_evidence(rights_tamper)
 
 
 @pytest.mark.parametrize(

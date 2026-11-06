@@ -26,6 +26,7 @@ SCHEMA_VERSION = "data-object-admission-receipt-v1"
 CURRENT_OBSERVATION_SCHEMA_VERSION = "data-object-admission-receipt-v2"
 TEMPORAL_SCOPE_CURRENT_OBSERVATION = "CURRENT_OBSERVATION"
 RIGHTS_EVIDENCE_SCHEMA_VERSION = "source-rights-evidence-v2"
+RIGHTS_EVIDENCE_BUNDLE_SCHEMA_VERSION = "source-rights-evidence-bundle-v1"
 B1_RIGHTS_CONTEXT_SCHEMA_VERSION = "b1-operation-rights-context-v1"
 RIGHTS_EVIDENCE_PURPOSE_NO_SEND = "NO_SEND_RESEARCH"
 RIGHTS_EVIDENCE_PURPOSE_LEARNING = "LEARNING_RESEARCH"
@@ -39,6 +40,7 @@ RIGHTS_TERMS_SCOPES = frozenset({
     "UPSTREAM_DATASET_TERMS",
     "SIGNED_PROVIDER_CONTRACT",
     "SYNTHETIC_TEST_CONTRACT",
+    "COMPOSITE_OPERATION_MATCHED_UPSTREAM_TERMS",
 })
 _SOFTWARE_PACKAGE_METADATA_HOSTS = frozenset({
     "pypi.org",
@@ -113,6 +115,25 @@ _REQUIRED_RIGHTS_EVIDENCE_FIELDS = frozenset({
     "terms_scope",
     "product_use_clause",
     "product_use_clause_sha256",
+    "rights",
+    "evidence_hash",
+})
+_REQUIRED_RIGHTS_EVIDENCE_BUNDLE_FIELDS = frozenset({
+    "schema_version",
+    "operation_id",
+    "intended_use",
+    "provider_identity",
+    "upstream_source_owner",
+    "upstream_rights_state",
+    "dataset_id",
+    "consumer_scope",
+    "terms_uris",
+    "terms_sha256s",
+    "terms_observed_at",
+    "terms_scope",
+    "product_use_clause",
+    "product_use_clause_sha256",
+    "components",
     "rights",
     "evidence_hash",
 })
@@ -325,25 +346,63 @@ def seal_source_rights_evidence(payload: Mapping[str, Any]) -> dict[str, Any]:
     return body
 
 
-def validate_source_rights_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
-    if not isinstance(value, Mapping) or set(value) != _REQUIRED_RIGHTS_EVIDENCE_FIELDS:
+def _normalized_rights_claim(value: Any) -> dict[str, str]:
+    if not isinstance(value, Mapping) or set(value) != _REQUIRED_RIGHTS_FIELDS:
+        raise DataObjectAdmissionError("SOURCE_RIGHTS_EVIDENCE_RIGHTS_SCHEMA_MISMATCH")
+    normalized = {
+        key: _text(value.get(key)).upper()
+        for key in _REQUIRED_RIGHTS_FIELDS
+    }
+    if any(item not in RIGHTS_VALUES for item in normalized.values()):
+        raise DataObjectAdmissionError("SOURCE_RIGHTS_EVIDENCE_RIGHTS_VALUE_INVALID")
+    return normalized
+
+
+def _validate_product_use_clause(result: dict[str, Any]) -> None:
+    product_use_clause = _text(result.get("product_use_clause"))
+    if not product_use_clause or len(product_use_clause) > 1000:
+        raise DataObjectAdmissionError(
+            "SOURCE_RIGHTS_EVIDENCE_PRODUCT_USE_CLAUSE_INVALID"
+        )
+    expected_clause_hash = hashlib.sha256(
+        product_use_clause.encode("utf-8")
+    ).hexdigest()
+    if result.get("product_use_clause_sha256") != expected_clause_hash:
+        raise DataObjectAdmissionError(
+            "SOURCE_RIGHTS_EVIDENCE_PRODUCT_USE_CLAUSE_HASH_MISMATCH"
+        )
+    result["product_use_clause"] = product_use_clause
+
+
+def _validate_single_source_rights_evidence(
+    value: Mapping[str, Any],
+) -> dict[str, Any]:
+    if set(value) != _REQUIRED_RIGHTS_EVIDENCE_FIELDS:
         raise DataObjectAdmissionError("SOURCE_RIGHTS_EVIDENCE_SCHEMA_MISMATCH")
     result = dict(value)
     if result.get("schema_version") != RIGHTS_EVIDENCE_SCHEMA_VERSION:
         raise DataObjectAdmissionError("SOURCE_RIGHTS_EVIDENCE_VERSION_MISMATCH")
     for key in (
-        "operation_id", "intended_use", "provider_identity", "upstream_source_owner",
-        "upstream_rights_state", "dataset_id", "consumer_scope", "terms_uri",
-        "terms_observed_at",
+        "operation_id", "intended_use", "provider_identity",
+        "upstream_source_owner", "upstream_rights_state", "dataset_id",
+        "consumer_scope", "terms_uri", "terms_observed_at",
     ):
         if not _text(result.get(key)):
-            raise DataObjectAdmissionError("SOURCE_RIGHTS_EVIDENCE_FIELD_MISSING:" + key)
+            raise DataObjectAdmissionError(
+                "SOURCE_RIGHTS_EVIDENCE_FIELD_MISSING:" + key
+            )
     try:
         terms_parts = urlsplit(_text(result.get("terms_uri")))
         terms_host = (terms_parts.hostname or "").lower().rstrip(".")
         terms_path = (terms_parts.path or "").lower()
     except ValueError as exc:
-        raise DataObjectAdmissionError("SOURCE_RIGHTS_EVIDENCE_TERMS_URI_INVALID") from exc
+        raise DataObjectAdmissionError(
+            "SOURCE_RIGHTS_EVIDENCE_TERMS_URI_INVALID"
+        ) from exc
+    if terms_parts.scheme.lower() != "https" or not terms_host:
+        raise DataObjectAdmissionError(
+            "SOURCE_RIGHTS_EVIDENCE_TERMS_URI_INVALID"
+        )
     if any(
         terms_host == host or terms_host.endswith("." + host)
         for host in _SOFTWARE_PACKAGE_METADATA_HOSTS
@@ -353,11 +412,9 @@ def validate_source_rights_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
         )
     claimed_terms_scope = _text(result.get("terms_scope")).upper()
     provider_technical_doc = any(
-        terms_path.startswith(prefix) for prefix in _NON_TERMS_TECHNICAL_PATH_PREFIXES
+        terms_path.startswith(prefix)
+        for prefix in _NON_TERMS_TECHNICAL_PATH_PREFIXES
     )
-    # The official website's legacy mainContent route serves the same Markdown
-    # API-document files as /helpdocs/api/markdown/*.md. It is a technical-doc
-    # route, not a terms route, even though the query URL looks like a page.
     legacy_markdown_doc = (
         terms_path.rstrip("/") == "/maincontent"
         and "file=" in terms_parts.query.lower()
@@ -370,24 +427,22 @@ def validate_source_rights_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
         raise DataObjectAdmissionError(
             "SOURCE_RIGHTS_EVIDENCE_TECHNICAL_DOCUMENTATION_IS_NOT_DATA_TERMS"
         )
-    for key in ("terms_sha256", "product_use_clause_sha256", "evidence_hash"):
+    for key in (
+        "terms_sha256", "product_use_clause_sha256", "evidence_hash",
+    ):
         if not _is_sha256(result.get(key)):
-            raise DataObjectAdmissionError("SOURCE_RIGHTS_EVIDENCE_HASH_INVALID:" + key)
-    terms_scope = _text(result.get("terms_scope")).upper()
-    if terms_scope not in RIGHTS_TERMS_SCOPES:
-        raise DataObjectAdmissionError("SOURCE_RIGHTS_EVIDENCE_TERMS_SCOPE_INVALID")
-    product_use_clause = _text(result.get("product_use_clause"))
-    if not product_use_clause or len(product_use_clause) > 1000:
-        raise DataObjectAdmissionError("SOURCE_RIGHTS_EVIDENCE_PRODUCT_USE_CLAUSE_INVALID")
-    expected_clause_hash = hashlib.sha256(
-        product_use_clause.encode("utf-8")
-    ).hexdigest()
-    if result.get("product_use_clause_sha256") != expected_clause_hash:
+            raise DataObjectAdmissionError(
+                "SOURCE_RIGHTS_EVIDENCE_HASH_INVALID:" + key
+            )
+    terms_scope = claimed_terms_scope
+    if terms_scope not in RIGHTS_TERMS_SCOPES - {
+        "COMPOSITE_OPERATION_MATCHED_UPSTREAM_TERMS"
+    }:
         raise DataObjectAdmissionError(
-            "SOURCE_RIGHTS_EVIDENCE_PRODUCT_USE_CLAUSE_HASH_MISMATCH"
+            "SOURCE_RIGHTS_EVIDENCE_TERMS_SCOPE_INVALID"
         )
+    _validate_product_use_clause(result)
     result["terms_scope"] = terms_scope
-    result["product_use_clause"] = product_use_clause
     state = _text(result.get("upstream_rights_state")).upper()
     if state not in RIGHTS_EVIDENCE_STATES:
         raise DataObjectAdmissionError("SOURCE_RIGHTS_EVIDENCE_STATE_INVALID")
@@ -396,12 +451,7 @@ def validate_source_rights_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
     if intended_use not in RIGHTS_EVIDENCE_PURPOSES:
         raise DataObjectAdmissionError("SOURCE_RIGHTS_EVIDENCE_PURPOSE_INVALID")
     result["intended_use"] = intended_use
-    rights = result.get("rights")
-    if not isinstance(rights, Mapping) or set(rights) != _REQUIRED_RIGHTS_FIELDS:
-        raise DataObjectAdmissionError("SOURCE_RIGHTS_EVIDENCE_RIGHTS_SCHEMA_MISMATCH")
-    normalized_rights = {key: _text(rights.get(key)).upper() for key in _REQUIRED_RIGHTS_FIELDS}
-    if any(item not in RIGHTS_VALUES for item in normalized_rights.values()):
-        raise DataObjectAdmissionError("SOURCE_RIGHTS_EVIDENCE_RIGHTS_VALUE_INVALID")
+    normalized_rights = _normalized_rights_claim(result.get("rights"))
     result["rights"] = normalized_rights
     if terms_scope == "OFFICIAL_PROVIDER_DATA_USE_STATEMENT" and any(
         normalized_rights[key] != "FORBIDDEN"
@@ -411,10 +461,170 @@ def validate_source_rights_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
             "SOURCE_RIGHTS_EVIDENCE_STATEMENT_CANNOT_GRANT_SECONDARY_RIGHTS"
         )
     _parse_aware_datetime(result["terms_observed_at"])
-    expected_hash = sha256_payload({key: result[key] for key in result if key != "evidence_hash"})
+    expected_hash = sha256_payload({
+        key: result[key] for key in result if key != "evidence_hash"
+    })
     if result["evidence_hash"] != expected_hash:
         raise DataObjectAdmissionError("SOURCE_RIGHTS_EVIDENCE_HASH_MISMATCH")
     return result
+
+
+def _rights_intersection(
+    components: tuple[Mapping[str, Any], ...],
+) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for key in _REQUIRED_RIGHTS_FIELDS:
+        values = tuple(component["rights"][key] for component in components)
+        if len(set(values)) == 1:
+            result[key] = values[0]
+        elif "FORBIDDEN" in values:
+            result[key] = "FORBIDDEN"
+        elif all(value == "ALLOWED" for value in values):
+            result[key] = "ALLOWED"
+        elif all(value == "NOT_APPLICABLE" for value in values):
+            result[key] = "NOT_APPLICABLE"
+        else:
+            result[key] = "UNKNOWN"
+    return result
+
+
+def _validate_source_rights_evidence_bundle(
+    value: Mapping[str, Any],
+) -> dict[str, Any]:
+    if set(value) != _REQUIRED_RIGHTS_EVIDENCE_BUNDLE_FIELDS:
+        raise DataObjectAdmissionError(
+            "SOURCE_RIGHTS_EVIDENCE_BUNDLE_SCHEMA_MISMATCH"
+        )
+    result = dict(value)
+    if result.get("schema_version") != RIGHTS_EVIDENCE_BUNDLE_SCHEMA_VERSION:
+        raise DataObjectAdmissionError(
+            "SOURCE_RIGHTS_EVIDENCE_BUNDLE_VERSION_MISMATCH"
+        )
+    for key in (
+        "operation_id", "intended_use", "provider_identity",
+        "upstream_source_owner", "upstream_rights_state", "dataset_id",
+        "consumer_scope", "terms_observed_at",
+    ):
+        if not _text(result.get(key)):
+            raise DataObjectAdmissionError(
+                "SOURCE_RIGHTS_EVIDENCE_BUNDLE_FIELD_MISSING:" + key
+            )
+    if result.get("terms_scope") != (
+        "COMPOSITE_OPERATION_MATCHED_UPSTREAM_TERMS"
+    ):
+        raise DataObjectAdmissionError(
+            "SOURCE_RIGHTS_EVIDENCE_BUNDLE_TERMS_SCOPE_INVALID"
+        )
+    _validate_product_use_clause(result)
+    if not _is_sha256(result.get("product_use_clause_sha256")) or not _is_sha256(
+        result.get("evidence_hash")
+    ):
+        raise DataObjectAdmissionError(
+            "SOURCE_RIGHTS_EVIDENCE_BUNDLE_HASH_INVALID"
+        )
+    raw_components = result.get("components")
+    if (
+        not isinstance(raw_components, (list, tuple))
+        or not 2 <= len(raw_components) <= 8
+    ):
+        raise DataObjectAdmissionError(
+            "SOURCE_RIGHTS_EVIDENCE_BUNDLE_COMPONENTS_INVALID"
+        )
+    components: list[dict[str, Any]] = []
+    for raw_component in raw_components:
+        if (
+            not isinstance(raw_component, Mapping)
+            or raw_component.get("schema_version")
+            != RIGHTS_EVIDENCE_SCHEMA_VERSION
+        ):
+            raise DataObjectAdmissionError(
+                "SOURCE_RIGHTS_EVIDENCE_BUNDLE_COMPONENT_INVALID"
+            )
+        component = _validate_single_source_rights_evidence(raw_component)
+        for key in (
+            "operation_id", "intended_use", "dataset_id", "consumer_scope",
+        ):
+            if component[key] != result[key]:
+                raise DataObjectAdmissionError(
+                    "SOURCE_RIGHTS_EVIDENCE_BUNDLE_COMPONENT_SCOPE_MISMATCH"
+                )
+        if component["upstream_rights_state"] != "VERIFIED":
+            raise DataObjectAdmissionError(
+                "SOURCE_RIGHTS_EVIDENCE_BUNDLE_COMPONENT_UNVERIFIED"
+            )
+        components.append(component)
+    component_tuple = tuple(components)
+    providers = tuple(component["provider_identity"] for component in component_tuple)
+    terms_uris = tuple(component["terms_uri"] for component in component_tuple)
+    terms_sha256s = tuple(component["terms_sha256"] for component in component_tuple)
+    if len(set(providers)) != len(providers) or len(set(terms_uris)) != len(terms_uris):
+        raise DataObjectAdmissionError(
+            "SOURCE_RIGHTS_EVIDENCE_BUNDLE_COMPONENT_DUPLICATE"
+        )
+    if tuple(result.get("terms_uris") or ()) != terms_uris:
+        raise DataObjectAdmissionError(
+            "SOURCE_RIGHTS_EVIDENCE_BUNDLE_TERMS_URI_MISMATCH"
+        )
+    if tuple(result.get("terms_sha256s") or ()) != terms_sha256s:
+        raise DataObjectAdmissionError(
+            "SOURCE_RIGHTS_EVIDENCE_BUNDLE_TERMS_HASH_MISMATCH"
+        )
+    latest_terms = max(
+        _parse_aware_datetime(component["terms_observed_at"])
+        for component in component_tuple
+    ).isoformat()
+    if result["terms_observed_at"] != latest_terms:
+        raise DataObjectAdmissionError(
+            "SOURCE_RIGHTS_EVIDENCE_BUNDLE_TERMS_CLOCK_MISMATCH"
+        )
+    state = _text(result.get("upstream_rights_state")).upper()
+    if state != "VERIFIED":
+        raise DataObjectAdmissionError(
+            "SOURCE_RIGHTS_EVIDENCE_BUNDLE_STATE_INVALID"
+        )
+    intended_use = _text(result.get("intended_use"))
+    if intended_use not in RIGHTS_EVIDENCE_PURPOSES:
+        raise DataObjectAdmissionError(
+            "SOURCE_RIGHTS_EVIDENCE_BUNDLE_PURPOSE_INVALID"
+        )
+    result["upstream_rights_state"] = state
+    result["intended_use"] = intended_use
+    expected_rights = _rights_intersection(component_tuple)
+    normalized_rights = _normalized_rights_claim(result.get("rights"))
+    if normalized_rights != expected_rights:
+        raise DataObjectAdmissionError(
+            "SOURCE_RIGHTS_EVIDENCE_BUNDLE_RIGHTS_INTERSECTION_MISMATCH"
+        )
+    if (
+        intended_use == RIGHTS_EVIDENCE_PURPOSE_NO_SEND
+        and (
+            normalized_rights["product_use"] != "ALLOWED"
+            or normalized_rights["redistribution"] != "FORBIDDEN"
+        )
+    ):
+        raise DataObjectAdmissionError(
+            "SOURCE_RIGHTS_EVIDENCE_BUNDLE_NO_SEND_RIGHTS_INVALID"
+        )
+    result["rights"] = normalized_rights
+    result["components"] = component_tuple
+    result["terms_uris"] = terms_uris
+    result["terms_sha256s"] = terms_sha256s
+    expected_hash = sha256_payload({
+        key: result[key] for key in result if key != "evidence_hash"
+    })
+    if result["evidence_hash"] != expected_hash:
+        raise DataObjectAdmissionError(
+            "SOURCE_RIGHTS_EVIDENCE_BUNDLE_HASH_MISMATCH"
+        )
+    return result
+
+
+def validate_source_rights_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise DataObjectAdmissionError("SOURCE_RIGHTS_EVIDENCE_SCHEMA_MISMATCH")
+    if value.get("schema_version") == RIGHTS_EVIDENCE_BUNDLE_SCHEMA_VERSION:
+        return _validate_source_rights_evidence_bundle(value)
+    return _validate_single_source_rights_evidence(value)
 
 
 def validate_b1_rights_context(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -553,7 +763,16 @@ def validate_b1_provider_preflight(
     if (rights["rights"]["product_use"] != "ALLOWED"
         or rights["rights"]["redistribution"] != "FORBIDDEN"):
         raise DataObjectAdmissionError("B1_NO_SEND_PRODUCT_RIGHT_NOT_ADMITTED")
-    if not _text(rights["provider_identity"]) or not str(rights["terms_uri"]).startswith("https://"):
+    terms_uris = (
+        tuple(rights.get("terms_uris") or ())
+        if rights.get("schema_version") == RIGHTS_EVIDENCE_BUNDLE_SCHEMA_VERSION
+        else (rights.get("terms_uri"),)
+    )
+    if (
+        not _text(rights["provider_identity"])
+        or not terms_uris
+        or any(not str(uri or "").startswith("https://") for uri in terms_uris)
+    ):
         raise DataObjectAdmissionError("B1_PROVIDER_OR_TERMS_URI_INVALID")
     if isinstance(research_as_of, date) and not isinstance(research_as_of, datetime):
         raise DataObjectAdmissionError("B1_RESEARCH_ASOF_REQUIRES_INSTANT")
@@ -744,6 +963,7 @@ def compile_data_object_admission(
         "intended_use": None,
         "upstream_source_owner": None,
         "terms_uri": None,
+        "terms_uris": None,
         "rights_terms_observed_at": None,
         "historical_pit_eligible": False,
         "strategy_upgrade_authority": False,
@@ -1005,6 +1225,11 @@ def compile_data_object_admission(
         "observation_operation_id": normalized.get("observation_operation_id"),
         "upstream_source_owner": rights_evidence.get("upstream_source_owner") if isinstance(rights_evidence, Mapping) else None,
         "terms_uri": rights_evidence.get("terms_uri") if isinstance(rights_evidence, Mapping) else None,
+        "terms_uris": (
+            tuple(rights_evidence.get("terms_uris") or ())
+            if isinstance(rights_evidence, Mapping)
+            else None
+        ),
         "terms_scope": rights_evidence.get("terms_scope") if isinstance(rights_evidence, Mapping) else None,
         "product_use_clause_sha256": rights_evidence.get("product_use_clause_sha256") if isinstance(rights_evidence, Mapping) else None,
         "rights_terms_observed_at": rights_evidence.get("terms_observed_at") if isinstance(rights_evidence, Mapping) else None,

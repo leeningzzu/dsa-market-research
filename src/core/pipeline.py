@@ -2152,6 +2152,54 @@ class StockAnalysisPipeline:
         return deepcopy(observation)
 
 
+    def _ingest_b1_cn_exchange_turnover_responses(
+        self,
+        *,
+        sse_response_json: bytes,
+        szse_response_json: bytes,
+        sse_request_url: str,
+        szse_request_url: str,
+        expected_trade_date: str,
+        observed_at: datetime,
+    ) -> Dict[str, Any]:
+        """Bind official completed SSE+SZSE turnover to the existing B1 run.
+
+        The exact admitted value is the published two-exchange stock turnover.
+        It excludes BSE and does not grant exact all-A, breadth denominator,
+        turnover-rate, relative-volume, persistence, PIT or strategy authority.
+        """
+        context = self._bind_b1_run_context(persist=False)
+        if not isinstance(context, Mapping):
+            raise DataObjectAdmissionError(
+                "B1_CN_EXCHANGE_TURNOVER_OPERATION_NOT_BOUND"
+            )
+        from data_provider.cn_exchange_turnover_source import (
+            build_cn_exchange_turnover_observation,
+        )
+
+        observation = build_cn_exchange_turnover_observation(
+            sse_response_json,
+            szse_response_json,
+            sse_request_url=sse_request_url,
+            szse_request_url=szse_request_url,
+            expected_trade_date=expected_trade_date,
+            observed_at=observed_at,
+            b1_context=context,
+        )
+        shared = getattr(
+            self, "_b1_nonprice_shared_observations", {}
+        ) or {}
+        if "M_TURNOVER" in shared:
+            raise DataObjectAdmissionError(
+                "B1_CN_EXCHANGE_TURNOVER_SOURCE_ALREADY_BOUND"
+            )
+        self._b1_nonprice_shared_observations = {
+            **deepcopy(shared),
+            "M_TURNOVER": deepcopy(observation),
+        }
+        return deepcopy(observation)
+
+
     def _ingest_b1_sse_public_disclosure_responses(
         self, *,
         company_response_json: bytes,

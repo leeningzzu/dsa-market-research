@@ -30,7 +30,7 @@ REENTRY_ID = STOCK_DSA_LOCAL_GITHUB_REENTRY_V2
 - Canonical repository：`https://github.com/leeningzzu/dsa-market-research.git`
 - Production branch：`main`
 - 开发分支：`feat/stock-dsa-m2-source-gates-v1`
-- 最近已提交本地前驱：`9a7713e9482b95340a58600273e4be892332e5a7`
+- 当前候选的已提交父节点：`f084e8562ea8fc7b9564c541c537e618a2e40c89`
 - 当前 commit：必须运行 `git rev-parse HEAD` 与 `git log -1 --format=%H -- docs/stock-dsa-github-reentry.md` 现场解析
 - 原始 V2.5：125919 字节，SHA256 `039ca6394baf9cf39494cc29f512802b114c8227f8c965723197a8df4b9de823`
 - 接受的原机器图：149628 字节、775 边，SHA256 `b4f69f76807ac44bc0fea1a03f9aa38484b6083ca574a3699220b0564ac55aed`
@@ -54,6 +54,8 @@ python scripts/verify_stock_dsa_reentry.py --json
 
 任何 STOP 都必须按输出定位 Git、缺文件、计数、immutable hash 或文档漂移；禁止用旧聊天猜 current。
 
+已知 CI 根修复：GitHub HTTPS origin 仅将可选 `.git`/尾部 `/` 归一化；PR detached checkout 仍绑定精确 `GITHUB_SHA`/`GITHUB_HEAD_REF`。2026-10-05 历史 Ledger schema 身份按冻结 manifest→feature-hash 映射读取，不从当前指标目录重算，也不改写历史 payload。
+
 Canonical GitHub HTTPS origin 允许仓库 URL 有无 `.git` 后缀或尾部 `/` 的等价拼写，但 HTTPS、`github.com`、owner 与 repository 必须完全一致。GitHub Actions PR 可为 detached checkout 且没有 `origin/feature` 本地 ref；此时 verifier 只接受 `GITHUB_ACTIONS=true`、`GITHUB_SHA==HEAD` 与 `GITHUB_HEAD_REF` 精确匹配。普通本地或新账号 clone 仍必须有真实 feature ref，不能借 CI 环境变量绕过。
 
 ## 4. 同机新账号首条 Prompt
@@ -72,9 +74,9 @@ D:\StockResearchData\STOCK_DSA_CURRENT.json
 
 保持 DSA/daily_stock_analysis 为唯一 Production Shell；不建立第二数据库、调度器、报告或模型权威。原 V2.5 与原机器图保持不可变。Closed/Superseded 不重跑。
 
-当前已证明：35/35 技术数值叶、35/43 方法、189 方法－周期执行对、56/56 七周期×八族合同；最近多对象 operation 为 13/72，另有独立 M_INDEX_CURRENT atomic Product 1/18，禁止跨 operation 相加。完整 FACT_READY=false。
+当前已证明：35/35 技术数值叶、35/43 方法、189 方法－周期执行对、56/56 七周期×八族合同；最近多对象 operation 为 13/72，另有独立 `M_INDEX_CURRENT` 与 `M_TURNOVER` 两项 Market atomic capability，各自 operation 仅 1/18，禁止跨 operation 相加。完整 FACT_READY=false。
 
-唯一主路线：MARKET_ALL_A_BSE_DENOMINATOR_AND_TURNOVER_GATE。先闭合 SSE+SZSE+BSE 同日证券池、停牌和明确分母，再计算宽度、成交额/换手和涨跌停；指数成交额或单市场子集不得冒充全A。
+唯一主路线：MARKET_ALL_A_BSE_DENOMINATOR_BREADTH_AND_LIMITS_GATE。先闭合 SSE+SZSE+BSE 同日证券池、停牌和全A+BSE精确分母，再计算宽度、BSE补充成交、精确换手和涨跌停；指数成交额、单市场子集或沪深两所已发布总额不得冒充全A精确口径。
 
 未经明确授权不得 merge/main、force push、读取 Secret、发送通知、训练或 Promotion。默认执行器只用 WebCodex Local，不要求 GitHub 插件。
 ```
@@ -108,15 +110,17 @@ python scripts/verify_stock_dsa_reentry.py --json
 - 方法－周期执行对：189
 - 数据对象：76
 - 最近多对象 CURRENT operation：13/72
-- 独立 Market atomic：`M_INDEX_CURRENT` 1/18 PASS
-- 跨 operation 求和：禁止
+- 独立 Market atomic capabilities：`M_INDEX_CURRENT`、`M_TURNOVER`，各自 operation 1/18 PASS
+- 跨 operation 求和：禁止；不得宣称 14/72 或 15/72
 - 原 V2.5：`FACT_READY=false`
 
 `M_INDEX_CURRENT` 实际 operation 为 `sse-index-current-nosend-20261106T022408Z`。完成日 2026-11-05：上证指数 3689.91、上证50 2811.16、科创50 1286.68。它不准入 SZSE/BSE、全A宽度、全市场成交额、历史PIT、存储、训练或策略升级。
 
+`M_TURNOVER` 实际 operation 为 `cn-exchange-turnover-nosend-20261106T040925Z`。完成日 2026-11-05：上交所股票 9812.82 亿元、深交所 11395.92 亿元、两所合计 21208.74 亿元；深市口径含存托凭证且未拆 A/B/DR，不含北交所，不准入全A精确成交额、证券池分母、宽度、换手率、相对量、历史PIT、存储、训练或策略升级。回执 SHA256 为 `79e1e7369cb2687164038022722fd12c59279b0d1cdef06200a64e5a03959ffe`。
+
 剩余复杂关口：
 
-1. Market：沪深京完成日证券池、停牌、宽度、统一成交额/换手和涨跌停。
+1. Market：沪深京完成日证券池、停牌、全A+BSE精确分母、宽度、BSE补充成交、精确换手和涨跌停。
 2. Sector：有效期成员、行业指数、宽度、成交占比、Leader、估值和七周期。
 3. ETF：1d/5m、实际 IOPV、同刻 premium/spread、tracking、fees、流动性和执行 veto。
 4. Stock：1d/5m、财报发布/更正版本、质量成长、现金流/资产负债、行业估值和执行风险。

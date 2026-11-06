@@ -743,6 +743,19 @@ def _v25_data_object_fact_summary(
             + "；".join(parts)
             + "｜仅上交所所选指数；不代表深交所/北交所、全A宽度或全市场成交额"
         )
+    if dataset_id == "M_TURNOVER":
+        return (
+            f"沪深两市完成日成交额："
+            f"{_v25_plain(facts.get('trade_date'), '日期缺失')}｜"
+            f"上交所股票 {_v25_plain(facts.get('sse_stock_total_turnover_100m_cny'), '缺失')}亿元"
+            f"（A股 {_v25_plain(facts.get('sse_a_share_turnover_100m_cny'), '缺失')}亿元，"
+            f"B股 {_v25_plain(facts.get('sse_b_share_turnover_100m_cny'), '缺失')}亿元；"
+            f"CDR另列 {_v25_plain(facts.get('sse_cdr_turnover_100m_cny'), '缺失')}亿元）｜"
+            f"深交所 {_v25_plain(facts.get('szse_total_turnover_100m_cny'), '缺失')}亿元｜"
+            f"两市合计 {_v25_plain(facts.get('combined_two_exchange_stock_turnover_100m_cny'), '缺失')}亿元｜"
+            "深市官方口径包含存托凭证且未分离A/B/DR；不含北交所；"
+            "不等于全A精确成交额、全A+BSE分母、宽度、换手率或相对量"
+        )
     if dataset_id == "G_US_POLICY":
         return (
             f"美联储政策：{_v25_plain(facts.get('release_date'), '日期缺失')}｜"
