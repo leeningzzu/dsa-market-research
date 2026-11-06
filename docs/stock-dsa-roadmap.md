@@ -31,50 +31,56 @@ flowchart LR
 <!-- LOCAL_P012_CANDIDATE_END -->
 
 <!-- CURRENT_MASTER_CONTROL_START -->
-## 当前控制页：扩展指标闭合与 GitHub 无压缩续接（2026-11-06）
+## 当前控制页：本地权威续接、扩展指标与 M_INDEX_CURRENT 原子闭合（2026-11-06）
 
-CONTROL_ID = STOCK_DSA_MASTER_ROUTE_20261106_EXTENDED35_GITHUB_REENTRY_V1
+CONTROL_ID = STOCK_DSA_MASTER_ROUTE_20261106_M_INDEX_CURRENT_LOCAL_REENTRY_V2
 SOURCE_AUTHORITY = 2026-11-06 三次 Project Files inventory 均证明恰好 8 个唯一 Owner，01/05 物理 current 为 v3.556、其余六个稳定；生成 ZIP 和候选 Source 不是第九 Owner。工程期间不按小步频繁换 Source，只在 material closure 后按 01/05 配对 checkpoint。
-GIT_AUTHORITY = canonical repository `https://github.com/leeningzzu/dsa-market-research.git`；开发目标分支 `feat/stock-dsa-m2-source-gates-v1`，生产分支 `main`。本次候选父提交为 `b8f5d9258b717cf08d9ad6590e6143ee7e0e15ce`，其父为 Product13 代码 `ac3cce4c2f6ada5d7641a270dd29affa25760b35`。包含本控制页的 current commit 必须用 `git log -1 --format=%H -- docs/stock-dsa-roadmap.md` 现场解析，并重新核对远端分支；不得把旧 CI、旧聊天或 detached 目录名当作 current commit。
-GITHUB_REENTRY_CONTRACT = `docs/stock-dsa-github-reentry.md`；确定性校验入口为 `python scripts/verify_stock_dsa_reentry.py --json`。新账号只需 canonical GitHub checkout 即可恢复代码、测试、路线和开放关口；私人 Secret、Ledger、Outcome、PIT 数据和模型状态不进入 Public GitHub，缺失时保持 fail-closed。
+LOCAL_AUTHORITY = 本机唯一耐久根为 `D:\StockResearchData`；外部指针 `STOCK_DSA_CURRENT.json` 指向 canonical local repo，WebCodex 唯一可写 worktree 与该 repo 共用同一 Git common directory。它们是一个 Git 历史的耐久存储与可写视图，不是两套 Production Shell。
+GIT_AUTHORITY = canonical repository `https://github.com/leeningzzu/dsa-market-research.git`；开发目标分支 `feat/stock-dsa-m2-source-gates-v1`，生产分支 `main`。最近已提交本地前驱为 `9a7713e9482b95340a58600273e4be892332e5a7`；包含本控制页的 current commit 必须由 Git 现场解析。远端 feature/PR/CI currentness 仍须实际核验，不得用本地 commit 或缓存 remote ref 冒充远端接受。
+REENTRY_CONTRACT = `AGENTS.md` 为规则真源，`docs/stock-dsa-github-reentry.md` 为同机本地优先／跨机 GitHub 或 bundle 的恢复入口，确定性校验器为 `python scripts/verify_stock_dsa_reentry.py --json`。同机换账号无需搬运仓库或复述旧聊天。
 IMMUTABLES = 接受的原机器图 149628 字节/775 边/SHA256 `b4f69f76807ac44bc0fea1a03f9aa38484b6083ca574a3699220b0564ac55aed`；原 V2.5 125919 字节/SHA256 `039ca6394baf9cf39494cc29f512802b114c8227f8c965723197a8df4b9de823`，均不修改、不重生成。
 
 ### 0.1 当前真实闭合
 
 | 对象/关口 | 当前证明 | 严格边界 |
 |---|---|---|
-| GitHub 连续性 | AGENTS→Reentry→Roadmap→Stage JSON→Verifier 形成仓库内自描述恢复链 | commit/remote/CI 必须运行时重验；不携带私人 Secret、Ledger 或训练状态 |
+| 同机连续性 | `D:\StockResearchData` 耐久 repo + `STOCK_DSA_CURRENT.json` + 单一 WebCodex worktree + 仓库 `AGENTS.md/roadmap/stage/verifier` | 不依赖旧聊天；不同电脑仍需 exact GitHub feature 或完整 Git bundle |
+| GitHub 连续性 | AGENTS→Reentry→Roadmap→Stage JSON→Verifier 形成仓库内自描述恢复链 | 远端 commit/PR/CI 必须运行时重验；不携带私人 Secret、Ledger 或训练状态 |
+| Market M_INDEX_CURRENT | 同次真实 operation `sse-index-current-nosend-20261106T022408Z` 读取 SSE 法律声明与官方结构化响应，经 CURRENT_OBSERVATION v2→Rights-v2→B1→Registry→原 V2.5 准入上证指数/上证50/科创50完成日收盘 | 原子 Market Product 1/18；仅 SSE 所选指数，不代表 SZSE/BSE、全A宽度、全市场成交额、历史PIT或策略升级 |
 | Global 5 | `G_US_POLICY/G_UST_NOMINAL/G_UST_REAL/G_INFL_BREAKEVEN/G_USD_BROAD` 同次读取、原 Pipeline/B1/V2.5 准入 | CURRENT NO_SEND；无历史 PIT、存储、训练或策略权限 |
 | Stock 4 | `P_CODE_IDENTITY/P_INDUSTRY/P_DIVIDEND/P_SHARES_EVENTS` 经 SSE 官方同次响应准入 | 股本事件为 PARTIAL；2015 最近事件股本与 2026 当前总股本不一致 |
 | Sector 1 | `S_CLASSIFICATION` 为 SSE 披露的当前 CSRC 归属 | 不等于历史成员、行业宽度、成交占比、估值或七周期 Sector Product |
 | ETF 3 | `E_NAV_IOPV/E_SHARES/E_BASKET` 准入；510300 NAV、申赎单位和 PCF 篮子可核 | IOPV 仅发布标志；同刻数值、价格、点差、跟踪和执行 veto 未准入 |
-| Sector 日线 RS | 000032 相对 000001 完成 20 日白盒 RS，`S_PRICES_RS=PARTIAL` | 来源能力，不计入 13 个 Product；非七周期正式 Sector Product |
-| Market | `M_BASIC_BREADTH` 污染与旁路已关闭；官方 SSE 指数机器可读入口已观测 | Market Product 仍 0；无同日全 A+BSE 分母、停牌、统一成交口径和同次 Rights-v2 |
+| Sector 日线 RS | 000032 相对 000001 完成 20 日白盒 RS，`S_PRICES_RS=PARTIAL` | 来源能力，不计入 13 个多对象 Product；非七周期正式 Sector Product |
 
-同次 operation `global5-sse8-current-nosend-20261105-r001` 仍是 13 个跨资产去重 Product 的最近接受运行回执：Global 5、Market 0、Sector 1、ETF 3、Stock 4。回执 SHA256 `ce4fa1746e16e7c62d435b11c02f7868946d3d4d6f922bd0ce004458c5900231`；原始响应未持久化，业务 DB/Email/Telegram/模型/训练/Promotion 均为 0。
+`M_INDEX_CURRENT` 实际回执 SHA256 为 `5a90462a29b27b17bc8298166bf4df448f4ed3a3b0dbedb8be822c605b93efb6`；条款 28942 字节/SHA256 `7442f73b132ae46702513abd5e67183b0baaca0c298db66d0337b0d6f2d606f1`，指数响应 3458 字节/SHA256 `c61ea5a788ebfab8f9253bbbd1e964931e6c2fe2fbbbc1b4b60518aa25dcc4ed`。完成日 2026-11-05：上证指数 3689.91、上证50 2811.16、科创50 1286.68；原始响应未持久化，DB/通知/模型/训练/Promotion 均为 0。
 
-### 0.2 当前机器投影，不以算法替代 Product
+最近接受的多对象 operation `global5-sse8-current-nosend-20261105-r001` 仍为 13/72。新的 M_INDEX_CURRENT 是独立同次原子 operation，**禁止跨 operation 拼接后宣称 14/72**；下一次完整研究运行必须在同一 operation 重新取得所有所需来源，才能产生新的全局计数。
+
+### 0.2 当前机器投影，不以算法或跨 operation 求和替代 Product
 
 - 方法 Profile：**35/43（81.4%）**现有，8 延期；技术数值叶：**35/35（100%）**算法准入。
-- 新增 `ADX_DMI/BOLLINGER/KDJ/OBV_ADL/MFI` 共 11 个叶，覆盖月/周/日/60m/30m/15m/5m，绑定完成 bar、来源身份、量纲、warm-up、递归稳定性和独立方法回执。
+- `ADX_DMI/BOLLINGER/KDJ/OBV_ADL/MFI` 共 11 个补齐叶覆盖月/周/日/60m/30m/15m/5m，绑定完成 bar、来源身份、量纲、warm-up、递归稳定性和独立方法回执。
 - 七周期×八证据族：**56/56 合同**、189 个有效方法－周期执行对；不等于 56 格当前真实数据 READY。
-- typed/真实来源能力：**33/72（45.8%）**；完整来源链缺口 39。
-- 同次真实 CURRENT Product：**13/72（18.1%）**；Market 仍 0/18。
+- typed/真实来源能力最低 **34/72**；完整来源链缺口最多 38。
+- 最近多对象 CURRENT operation：**13/72（18.1%）**；独立 Market atomic：**1/18**，二者不得相加。
 - 原 V2.5 `full_domain_product_ready=false`、`FACT_READY=false`、SMTP/Telegram=0。
-- Ledger/Outcome/PIT/OOT/Logistic/LightGBM/校准/Shadow/Promotion 未因算法补齐而启动。
+- Ledger/Outcome/PIT/OOT/Logistic/LightGBM/校准/Shadow/Promotion 未因指数或算法补齐而启动。
 
 ### 0.3 父目标机器图与阶段距离
 
 ```mermaid
 flowchart LR
-  G0[G0 GitHub self-describing reentry] --> G1[G1 lawful CURRENT Product 13/72]
-  G1 --> GL[Global 5 PASS]
-  G1 --> MK[Market 0/18 OPEN]
-  G1 --> SC[Sector 1/7 + RS PARTIAL]
-  G1 --> ET[ETF 3/12 OPEN]
-  G1 --> ST[Stock 4/17 OPEN]
+  G0[G0 local/GitHub self-describing reentry] --> G1[G1 lawful CURRENT products]
+  G1 --> OP13[Latest multi-object operation 13/72]
+  G1 --> MK1[Market M_INDEX_CURRENT atomic 1/18 PASS]
+  OP13 --> GL[Global 5]
+  OP13 --> SC[Sector 1/7 + RS PARTIAL]
+  OP13 --> ET[ETF 3/12 OPEN]
+  OP13 --> ST[Stock 4/17 OPEN]
+  MK1 --> MKR[Market denominator/turnover/limits 17 objects remain]
   GL --> G3[G3 7TF×8: methods 35/43, leaves 35/35]
-  MK --> G3
+  MKR --> G3
   SC --> G3
   ET --> G3
   ST --> G3
@@ -83,44 +89,50 @@ flowchart LR
   G5 --> G6[G6 legal Ledger/PIT/OOT/calibration NOT_ADMITTED]
 ```
 
-接受的 149628 字节原机器图保持不可变；上图和 `docs/stock-dsa-stage-baseline-v1.json` 是当前代码投影。Stage 测试必须从 Registry 重新推导 43 方法、35/8 状态、56 格、76 数据对象和 immutable hashes，禁止手工改计数制造同步。
+接受的 149628 字节原机器图保持不可变；上图和 `docs/stock-dsa-stage-baseline-v1.json` 是当前代码/运行投影。Stage 测试必须从 Registry 与实际回执重新推导，禁止手工改计数制造同步。
 
 | 复杂关口 | 当前距离 | 完成条件 |
 |---|---|---|
-| Market regime | Product 0/18 | 同日完成 bar、SSE+SZSE+BSE 分母与状态、宽度/成交额/涨跌停/指数、Rights-v2 与原消费者同次闭合 |
+| Market regime | `M_INDEX_CURRENT` atomic PASS；其余 17/18 未闭合 | SSE+SZSE+BSE 同日证券池与停牌状态、宽度、统一成交额/换手、涨跌停、Rights-v2 和原消费者同次闭合 |
 | Sector | Product 1/7＋RS PARTIAL | 有效期成员、行业指数、宽度、成交占比、Leader、估值及七周期同一标准 |
 | ETF | Product 3/12 | 1d/5m、实际 IOPV、同刻 premium/spread、tracking/fees、流动性与执行 veto |
 | Stock | Product 4/17 | 1d/5m、财报发布版本、质量成长、现金流/资产负债、行业估值与执行风险 |
 | Canonical/Report | PARTIAL | 相关性去重、Data/Risk/Liquidity/Execution veto、全材料进入唯一 canonical 和原 V2.5 |
 | Learning | NOT_ADMITTED | 不可变 Ledger→成熟 Outcome→合法 PIT→OOT→Logistic→独立校准→冻结 Shadow→显式 Promotion |
 
-### 0.4 扩展指标 Closure
+### 0.4 本轮验收与反例
 
-`src/services/extended_indicator_service.py` 是唯一新增公式 Owner；它不抓取数据、不授予数据权利、不产生独立交易动作、不写 History/Ledger，也不创建第二指标框架。`volatility_momentum_service→Registry→7TF matrix→Factor→V2.5` 是唯一消费者链。ADX/KDJ 需要多起点递归稳定性；OBV/ADL/MFI 在成交量单位 UNKNOWN 时不输出；Bollinger 仅为价格离散包络，不自动成为触发信号。相关性按方向强度、价格包络、摆动动量和量流去重。
+- SSE 指数适配、Pipeline、Registry、B1 和 V2.5 独立正反测试：17/17 PASS。
+- CURRENT_OBSERVATION/B1/V2.5 相邻消费者：48/48 PASS。
+- 真实同次 operation：`product_admitted=true`；`storage/learning/historical_pit/strategy_upgrade=false`；`M_TURNOVER=false`、`M_BASIC_BREADTH=false`。
+- 原 V2.5 字节和 hash 不变；指数响应中的 `TRADE_AMT` 未进入事实或报告。
+- 前驱扩展指标 checkpoint 保持 447/447 PASS，不重跑 Closed-no-replay 关口。
 
-FINAL_RELATED_REGRESSION = 447_PASS_0_FAIL_DISTINCT_SELECTED_TEST_FILES；PY_COMPILE=PASS；AI_ASSET_CHECK=PASS；GIT_DIFF_CHECK=PASS；REENTRY_VERIFIER=PASS
-### 0.5 GitHub 无压缩续接
+### 0.5 新账号／新电脑的最短无损续接
 
-新账号/新电脑不得依赖旧 Chat 摘要。clone 后必须读取 `AGENTS.md` 与 `docs/stock-dsa-github-reentry.md`，执行 verifier，再读取本控制页和 Stage JSON。GitHub 中保存代码、测试、路线、机器投影、失败谱系、开放关口、不可变 hash 和首条启动 Prompt；Public GitHub 明确不保存 Secret、私人持仓、原始 Ledger/Outcome/PIT 数据、训练样本或模型状态。缺失的私人运行材料不会阻断代码续接，但会继续阻断相应 Product、PIT、训练和 Promotion。
+**同一电脑新账号：**让 WebCodex 读取 `D:\StockResearchData\STOCK_DSA_CURRENT.json`，绑定其中的 `canonical_local_repo`，读取仓库 `AGENTS.md`，运行 verifier，然后继续 `current_next_gate`。不需要下载 ZIP、不需要复制仓库、不需要复述旧聊天。
+
+**不同电脑：**从 canonical GitHub exact feature checkpoint clone；若远端尚未包含本地 checkpoint，则使用 `D:\StockResearchData\_authority` 中的完整 Git bundle 恢复。同一套 `AGENTS.md/roadmap/stage/verifier` 决定 current，聊天摘要不构成权威。
+
+Public GitHub/本地 bundle 保存开发所需的代码、测试、决策、失败谱系、路线和机器投影；Secret、私人持仓、原始 Ledger/Outcome/PIT、训练数据和模型状态不公开，缺失时相关关口保持 NOT_ADMITTED。这是合法缺失，不是信息压缩。
 
 ### 0.6 Role Review 与下一主路线
 
 | Role | 当前结论 | 处置 |
 |---|---|---|
-| PRODUCT | 13 个真实 CURRENT Product 保持；35/35 是算法闭合，不扩大 Product | 下一关仍为 Market 完成日父事实 |
-| DATA_MODEL | CURRENT/PIT 隔离与缺失 fail-closed 保持 | 不用晚观测、当前成员或示例值回填历史 |
+| PRODUCT | M_INDEX_CURRENT 原子闭合；最近多对象 operation 仍 13/72 | 下一关不再重复指数，转向沪深京完成日分母与统一成交口径 |
+| DATA_MODEL | CURRENT/PIT 隔离、operation 不拼接、缺失 fail-closed | 不用晚观测、当前成员或示例值回填历史 |
 | PROCESS_CONSUMER | 唯一 Pipeline/Registry/Factor/V2.5 | 不建第二 Shell、DB、scheduler、report 或模型权威 |
-| AUTHORITY_CURRENTNESS | Source8 v3.556；Git commit/remote/CI 运行时解析 | 新账号先 verifier，冲突即 STOP |
+| AUTHORITY_CURRENTNESS | Source8 v3.556；本地 D 盘 Git 与单一 worktree 已核；远端 UNKNOWN | 新账号先 verifier；远端必须重新实查 |
 | ENVIRONMENT | WebCodex Local 为默认执行器 | 不要求 GitHub 插件，不让用户搬日志或多文件 |
-| USER_BURDEN | 仓库自身携带恢复链 | 用户只需 clone/checkout，无需复述旧聊天 |
+| USER_BURDEN | 同机只绑定 D 盘指针；跨机 GitHub/bundle 二选一 | 用户无需重新解释项目历史 |
 
 CURRENT_ROUTE_STILL_WORTH_CONTINUING = YES_KEEP_ONLY_DSA
-NEXT_CHAT_CLASS = SAME_OR_NEW_ACCOUNT_GITHUB_REENTRY_V1
+NEXT_CHAT_CLASS = SAME_OR_NEW_ACCOUNT_LOCAL_OR_GITHUB_REENTRY_V2
 INSTRUCTIONS_UPDATE_DECISION = NO_DELTA_KEEP
 SOURCE_UPDATE_DECISION = KEEP_PHYSICAL_01_05_V3_556_NO_CHURN
-UNIQUE_NEXT_STEP = 在本 checkpoint 的本地验证、原子 commit 和普通非 force push 完成后，继续 `MARKET_COMPLETED_SESSION_PARENT_GATE`：先把官方 `M_INDEX_CURRENT` 数值通过 CURRENT_OBSERVATION v2→Rights-v2→B1→Registry→原 V2.5；随后才处理全 A+BSE 宽度与成交口径。缺权利或分母时仅 STOP 受影响对象，不停止其余独立 Lane。
-<!-- CURRENT_MASTER_CONTROL_END -->
-## 1. GitHub是后续工程基线
+UNIQUE_NEXT_STEP = 继续 `MARKET_ALL_A_BSE_DENOMINATOR_AND_TURNOVER_GATE`：先闭合 SSE+SZSE+BSE 同日证券池/停牌/分母，再计算宽度与统一成交口径；任何单市场或指数成交额都不得冒充全A。
+<!-- CURRENT_MASTER_CONTROL_END -->## 1. GitHub是后续工程基线
 
 所有可继续开发的能力必须进入当前公共仓库的功能分支，经Pull Request和阻断CI后才可成为新基线。禁止把长期能力只留在本地WIP、聊天摘要或Project Source中；也禁止直接把未经CI验证的WIP推到 `main`。
 

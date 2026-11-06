@@ -332,8 +332,9 @@
   "production_shell": "DSA/daily_stock_analysis",
   "continuity_entrypoints": {
     "agent_rules": "AGENTS.md#0-stock_dsa-连续实施入口",
-    "cross_account_github_reentry": "docs/stock-dsa-github-reentry.md",
-    "current_master_route": "docs/stock-dsa-roadmap.md#当前控制页扩展指标闭合与-github-无压缩续接2026-11-06",
+    "cross_account_reentry": "docs/stock-dsa-github-reentry.md",
+    "same_machine_pointer_convention": "EXTERNAL_STOCK_DSA_CURRENT_JSON_TO_CANONICAL_LOCAL_REPO",
+    "current_master_route": "docs/stock-dsa-roadmap.md#CURRENT_MASTER_CONTROL",
     "machine_guardrail": "docs/stock-dsa-stage-baseline-v1.json",
     "deterministic_reentry_verifier": "scripts/verify_stock_dsa_reentry.py",
     "required_read_order": [
@@ -343,19 +344,23 @@
       "docs/stock-dsa-stage-baseline-v1.json",
       "docs/CHANGELOG.md"
     ],
+    "same_machine_local_repo_preferred": true,
+    "different_machine_github_or_complete_bundle_required": true,
     "exact_git_and_ci_recheck_required": true,
     "feature_branch_plan_is_not_main_production": true,
     "old_chat_or_project_source_is_not_git_currentness": true
   },
   "github_reentry_contract": {
-    "schema_version": "stock-dsa-github-reentry-v1",
+    "schema_version": "stock-dsa-cross-account-reentry-v2",
     "repository_url": "https://github.com/leeningzzu/dsa-market-research.git",
     "production_branch": "main",
     "development_branch": "feat/stock-dsa-m2-source-gates-v1",
-    "candidate_parent": "b8f5d9258b717cf08d9ad6590e6143ee7e0e15ce",
+    "candidate_parent": "9a7713e9482b95340a58600273e4be892332e5a7",
     "candidate_identity": "RESOLVE_COMMIT_CONTAINING_THIS_FILE_FROM_GIT",
     "commit_identity_command": "git log -1 --format=%H -- docs/stock-dsa-stage-baseline-v1.json",
     "verifier": "python scripts/verify_stock_dsa_reentry.py --json",
+    "same_machine_local_pointer_supported": true,
+    "github_connector_required": false,
     "project_sources_required_for_code_reentry": false,
     "old_chat_required_for_code_reentry": false,
     "public_repo_contains_private_secrets_or_ledger": false,
@@ -369,9 +374,11 @@
       "technical_method_timeframe_targets": 189
     },
     "current_product_projection": {
-      "current_product_count": 13,
+      "latest_multi_object_operation_product_count": 13,
       "denominator": 72,
-      "market_product_count": 0,
+      "market_atomic_product_count": 1,
+      "market_atomic_product_ids": ["M_INDEX_CURRENT"],
+      "cross_operation_sum_forbidden": true,
       "full_domain_product_ready": false
     }
   },
@@ -634,8 +641,8 @@
   "vertical_alignment": {
     "program": "合法known-at数据→白盒证据→唯一canonical→完整交付→合法Outcome/PIT→独立校准→Shadow→显式Promotion，不自动交易",
     "product": "Global→CN Market/Breadth→Sector→ETF/Stock→7TFx8+quality+industry-specific valuation+volume-price phase+narrow Chan→four veto→FULL V2.5",
-    "current_lane": "G0_GITHUB_REENTRY_AND_G3_EXTENDED35_CLOSURE_TO_MARKET_PARENT_GATE",
-    "current_milestone": "Source8 v3.556 physical PASS. Remote feature parent b8f5d925 equals the pre-candidate HEAD. Product13/72 and Market0/18 remain; local algorithm projection is methods35/43, technical leaves35/35 and 189 method-timeframe targets. GitHub reentry is self-describing and verified at runtime; full V2.5 FACT_READY remains false.",
+    "current_lane": "G0_LOCAL_GITHUB_REENTRY_AND_G1_M_INDEX_CURRENT_ATOMIC_PASS_TO_MARKET_DENOMINATOR",
+    "current_milestone": "Source8 v3.556 physical PASS. Local durable Git root and one WebCodex worktree are reconciled. Latest multi-object operation remains Product13/72; separate official SSE M_INDEX_CURRENT atomic Product1/18 is admitted with no cross-operation sum. Algorithm projection remains methods35/43, technical leaves35/35 and 189 method-timeframe targets. Full V2.5 FACT_READY remains false.",
     "atomic_rule": "Existing Owner→actual consumer→strict receipt/source identity→independent RED/GREEN→legal nontrigger→rollback/proof ceiling; no directory-only, chat-only or document-only completion."
   },
   "stage_ladder": [
@@ -651,7 +658,7 @@
       "scope": "Product使用、存储、训练、再分发权利分别绑定当前operation、运行时source identity和精确上游条款",
       "exit": "同一as-of Stock+ETF取得可核上游条款证据与当前数据回执；未知权利保持SOURCE_IDENTITY_ONLY",
       "proof_ceiling": "CI80/82及后续Gate1-4回执证明接线与fail-closed消费；当前全域记账PASS不授予供应商真实Product/storage/training/redistribution权利，不证明两资产合法完整Product、历史PIT、策略、邮件交付或模型晋升",
-      "local_state": "TYPED_SOURCE_CAPABILITY33_GAP39_PRODUCT13_MARKET0_FULL_DOMAIN_RIGHTS_STOP",
+      "local_state": "TYPED_SOURCE_CAPABILITY34_GAP38_PRODUCT13_PLUS_SEPARATE_MARKET_ATOMIC1_FULL_DOMAIN_RIGHTS_STOP",
       "next_primary": true
     },
     {
@@ -1069,7 +1076,7 @@
     }
   },
   "current_runtime_checkpoint": {
-    "schema_version": "stock-dsa-current-runtime-checkpoint-v4",
+    "schema_version": "stock-dsa-current-runtime-checkpoint-v5",
     "source_pair": "01/05 v3.556 PHYSICAL_EXACT8_PASS",
     "accepted_remote_base": {
       "head": "b8f5d9258b717cf08d9ad6590e6143ee7e0e15ce",
@@ -1083,43 +1090,28 @@
       "draft": true,
       "merged": false
     },
-    "candidate_identity": "RESOLVE_COMMIT_CONTAINING_THIS_FILE_FROM_GIT",
-    "candidate_precommit_snapshot": {
-      "status_path_count": 23,
-      "tracked_modified_count": 18,
-      "untracked_paths": [
-        "docs/stock-dsa-github-reentry.md",
-        "scripts/verify_stock_dsa_reentry.py",
-        "src/services/extended_indicator_service.py",
-        "tests/test_extended_indicator_service.py",
-        "tests/test_stock_dsa_github_reentry.py"
-      ],
-      "staged_count": 0,
-      "post_commit_worktree_expected_clean": true,
-      "scope": "EXTENDED35_AND_GITHUB_CROSS_ACCOUNT_REENTRY_CHECKPOINT",
-      "paths_are_resolved_from_git_status_at_runtime": true
+    "local_predecessor_checkpoint": {
+      "head": "9a7713e9482b95340a58600273e4be892332e5a7",
+      "scope": "EXTENDED35_AND_CROSS_ACCOUNT_REENTRY",
+      "remote_currentness": "UNKNOWN_NOT_PROVEN"
     },
+    "candidate_identity": "RESOLVE_COMMIT_CONTAINING_THIS_FILE_FROM_GIT",
     "local_regression": {
       "product13_same_operation": "PASS_PREDECESSOR_NOT_REPLAYED",
       "product13_receipt_sha256": "ce4fa1746e16e7c62d435b11c02f7868946d3d4d6f922bd0ce004458c5900231",
-      "product13_code_ci_run_id": 41991363403,
-      "product13_code_ci_conclusion": "success",
-      "control_parent_ci_run_id": 41995009888,
-      "control_parent_ci_conclusion": "success",
-      "extended_indicator_specific_passed": 39,
-      "registry_passed": 142,
-      "factor_passed": 82,
-      "v25_stage_passed": 79,
-      "mtf_daily_binding_passed": 102,
-      "github_reentry_tests_passed": 3,
-      "selected_total_passed": 447,
+      "extended_indicator_checkpoint_selected_passed": 447,
+      "sse_index_current_vertical_passed": 17,
+      "current_observation_b1_v25_adjacent_passed": 48,
       "selected_failed": 0,
-      "selected_test_files_are_disjoint": true,
+      "registry_adjacent_passed": 142,
+      "factor_adjacent_passed": 82,
+      "market_report_adjacent_passed": 249,
       "scopes_overlap_and_must_not_be_summed": true,
       "py_compile": "PASS",
       "ai_asset_check": "PASS",
       "git_diff_check": "PASS",
-      "reentry_verifier": "PASS"    },
+      "reentry_verifier": "PASS"
+    },
     "seven_timeframe_eight_family": {
       "timeframe_carriers_implemented": true,
       "technical_matrix_cell_count": 56,
@@ -1133,7 +1125,7 @@
       "current_real_product_bound_56_cells_complete": false
     },
     "product_state": {
-      "current_reconstructible_product_ids": [
+      "latest_multi_object_operation_product_ids": [
         "E_BASKET",
         "E_NAV_IOPV",
         "E_SHARES",
@@ -1148,20 +1140,24 @@
         "P_SHARES_EVENTS",
         "S_CLASSIFICATION"
       ],
-      "current_product_count": 13,
+      "latest_multi_object_operation_product_count": 13,
+      "atomic_market_product_ids": ["M_INDEX_CURRENT"],
+      "atomic_market_product_count": 1,
+      "cross_operation_sum_forbidden": true,
       "denominator": 72,
       "full_domain_product_ready": false,
       "global_market_sector_quality_valuation_etf_specific_complete": false,
       "stock_applicable_objects": 60,
       "etf_applicable_objects": 55,
-      "typed_or_real_source_capability_minimum": 33,
-      "without_complete_typed_source_chain": 39
+      "typed_or_real_source_capability_minimum": 34,
+      "without_complete_typed_source_chain": 38
     },
     "email_reader_state": {
       "old_empty_numeric_email_revoked": true,
       "current_fact_ready": false,
       "original_v25_immutable": true,
-      "current_v25_fact_summary_count": 13,
+      "latest_multi_object_v25_fact_summary_count": 13,
+      "atomic_market_v25_fact_summary_count": 1,
       "smtp_send": 0,
       "full_suite_product_objects": 72,
       "stock_applicable_objects": 60,
@@ -1175,18 +1171,59 @@
       "scope": "PRODUCT11_CURRENT_OBSERVATION_CHECKPOINT",
       "current_authority": false
     },
-    "proof_ceiling": "PRODUCT13_CURRENT_NO_SEND_AND_33_SOURCE_CAPABILITIES_NOT_FULL_DOMAIN_DELIVERY_OR_LEARNING"
+    "proof_ceiling": "M_INDEX_CURRENT_ACTUAL_CURRENT_NO_SEND_ATOMIC_PRODUCT_PLUS_PRODUCT13_PREDECESSOR_NOT_FULL_DOMAIN_DELIVERY_OR_LEARNING"
+  },
+  "current_market_index_atomic_operation": {
+    "schema_version": "stock-dsa-sse-index-current-actual-operation-v1",
+    "state": "ACTUAL_CURRENT_OBSERVATION_PRODUCT_ADMITTED",
+    "operation_id": "sse-index-current-nosend-20261106T022408Z",
+    "research_as_of": "2026-11-06T02:24:08.241173+00:00",
+    "dataset_id": "M_INDEX_CURRENT",
+    "market_atomic_product_count": 1,
+    "market_atomic_product_denominator": 18,
+    "cross_operation_sum_with_product13_forbidden": true,
+    "terms": {
+      "uri": "https://www.sse.com.cn/home/legal/",
+      "bytes": 28942,
+      "sha256": "7442f73b132ae46702513abd5e67183b0baaca0c298db66d0337b0d6f2d606f1",
+      "terms_scope": "OFFICIAL_PROVIDER_DATA_USE_STATEMENT"
+    },
+    "source": {
+      "uri": "https://query.sse.com.cn/commonQuery.do?sqlId=COMMON_SSE_SJ_SZZS_ZDZSJYBBXXX&isPagination=false",
+      "bytes": 3458,
+      "sha256": "c61ea5a788ebfab8f9253bbbd1e964931e6c2fe2fbbbc1b4b60518aa25dcc4ed",
+      "trade_date": "2026-11-05",
+      "indices": [
+        {"index_code": "000001", "index_abbr": "上证指数", "close_point": "3689.91"},
+        {"index_code": "000016", "index_abbr": "上证50", "close_point": "2811.16"},
+        {"index_code": "000688", "index_abbr": "科创50", "close_point": "1286.68"}
+      ]
+    },
+    "receipt_sha256": "5a90462a29b27b17bc8298166bf4df448f4ed3a3b0dbedb8be822c605b93efb6",
+    "product_admitted": true,
+    "storage_admitted": false,
+    "learning_admitted": false,
+    "historical_pit_eligible": false,
+    "strategy_upgrade_authority": false,
+    "m_turnover_product_admitted": false,
+    "m_basic_breadth_product_admitted": false,
+    "raw_source_persisted": false,
+    "business_db_writes": 0,
+    "notification_sends": 0,
+    "model_calls": 0,
+    "training_or_promotion": 0,
+    "proof_ceiling": "SSE_SELECTED_COMPLETED_INDEX_CLOSE_CURRENT_NO_SEND_ONLY_NOT_FULL_MARKET"
   },
   "route_decision": {
-    "next_primary": "MARKET_COMPLETED_SESSION_PARENT_GATE",
-    "reason": "GitHub reentry and the 35/35 technical algorithm projection remove chat continuity and formula gaps. The largest remaining parent-product blocker is CN Market0/18; next work must bind official completed-session index facts and then full SSE+SZSE+BSE breadth/turnover with operation-specific Rights-v2, or STOP only the affected object.",
+    "next_primary": "MARKET_ALL_A_BSE_DENOMINATOR_AND_TURNOVER_GATE",
+    "reason": "M_INDEX_CURRENT now has an actual same-operation official SSE terms/source/Rights-v2/B1/Registry/V2.5 receipt. The remaining Market parent blocker is the completed-session SSE+SZSE+BSE security denominator, suspend states, breadth, turnover and limit facts; selected SSE index values cannot substitute those objects.",
     "bounded_indicator_sub_lanes": [
       "RISK_REWARD_AFTER_EXECUTION_FACTS",
       "VWAP_AFTER_COMPLETED_INTRADAY_VOLUME",
       "ETF_SPECIFIC_AFTER_SPREAD_TRACKING_FEES"
     ],
     "remaining_complex_gates": [
-      "MARKET_COMPLETED_SESSION_REGIME_AND_ALL_A_BSE_DENOMINATOR",
+      "MARKET_ALL_A_BSE_DENOMINATOR_BREADTH_TURNOVER_AND_LIMITS",
       "SECTOR_EFFECTIVE_MEMBERSHIP_BREADTH_TURNOVER_VALUATION",
       "ETF_PRICE_IOPV_SPREAD_TRACKING_AND_EXECUTION_VETO",
       "STOCK_FINANCIAL_VINTAGE_QUALITY_VALUATION_AND_EXECUTION",
@@ -1206,9 +1243,10 @@
       "CSI_SECTOR_DAILY_RS20_SOURCE_GATE",
       "BLS_KNOWN_AT_CLOCK_ROOTFIX",
       "MARKET_RANKING_STALE_REFRESH",
-      "PRODUCT13_CODE_CONSUMER_CI"
+      "PRODUCT13_CODE_CONSUMER_CI",
+      "M_INDEX_CURRENT_OFFICIAL_SSE_CURRENT_OBSERVATION"
     ],
-    "next_chat_class": "SAME_OR_NEW_ACCOUNT_GITHUB_REENTRY_V1",
+    "next_chat_class": "SAME_OR_NEW_ACCOUNT_LOCAL_OR_GITHUB_REENTRY_V2",
     "source_update_decision": "KEEP_PHYSICAL_01_05_V3_556_NO_CHURN",
     "github_connector_required": false,
     "webcodex_local_default_executor": true

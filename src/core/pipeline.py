@@ -2104,6 +2104,54 @@ class StockAnalysisPipeline:
         }
         return deepcopy(observation)
 
+    def _ingest_b1_sse_index_current_response(
+        self,
+        *,
+        response_json: bytes,
+        request_url: str,
+        expected_trade_date: str,
+        observed_at: datetime,
+        required_index_codes: Tuple[str, ...] = (
+            "000001", "000016", "000688",
+        ),
+    ) -> Dict[str, Any]:
+        """Bind official completed SSE index closes to the existing B1 run.
+
+        The source is caller-supplied and remains in memory. It grants no
+        breadth, turnover, historical PIT, persistence, learning or strategy
+        authority; Registry/Rights-v2 still decide Product admission.
+        """
+        context = self._bind_b1_run_context(persist=False)
+        if not isinstance(context, Mapping):
+            raise DataObjectAdmissionError(
+                "B1_SSE_INDEX_CURRENT_OPERATION_NOT_BOUND"
+            )
+        from data_provider.sse_index_current_source import (
+            build_sse_index_current_observation,
+        )
+
+        observation = build_sse_index_current_observation(
+            response_json,
+            request_url=request_url,
+            expected_trade_date=expected_trade_date,
+            observed_at=observed_at,
+            b1_context=context,
+            required_index_codes=required_index_codes,
+        )
+        shared = getattr(
+            self, "_b1_nonprice_shared_observations", {}
+        ) or {}
+        if "M_INDEX_CURRENT" in shared:
+            raise DataObjectAdmissionError(
+                "B1_SSE_INDEX_CURRENT_SOURCE_ALREADY_BOUND"
+            )
+        self._b1_nonprice_shared_observations = {
+            **deepcopy(shared),
+            "M_INDEX_CURRENT": deepcopy(observation),
+        }
+        return deepcopy(observation)
+
+
     def _ingest_b1_sse_public_disclosure_responses(
         self, *,
         company_response_json: bytes,

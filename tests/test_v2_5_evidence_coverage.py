@@ -33,6 +33,9 @@ from tests.test_evidence_traceability_registry import (  # noqa: F401
     native_summary,
     native_summary_with_mtf,
 )
+from tests.test_sse_index_current_source import (  # noqa: F401
+    _factor_with_admitted_index,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -148,6 +151,43 @@ def test_current_sse_share_events_v25_fact_never_silences_parent_reconciliation(
     assert "事件 15条" in fact
     if latest_total != current_total:
         assert "勾稽已完成" not in fact
+
+
+def test_sse_index_current_product_reaches_original_v25_without_market_overclaim():
+    factor, observation, _b1 = _factor_with_admitted_index()
+    factor["evidence_traceability"] = reg.build_runtime_trace(factor)
+    factor["investor_brief"] = _build_asset_research_brief_v1(
+        SimpleNamespace(current_price=None), factor,
+    )
+    binding = canonical_factor_binding(factor)
+    factor["canonical_decision_identity"] = binding
+    factor["investor_brief"]["canonical_binding"] = dict(binding)
+
+    summary = v25._v25_data_object_fact_summary(
+        "M_INDEX_CURRENT", observation["facts"],
+    )
+    assert "上证指数(000001) 3689.91点" in summary
+    assert "上证50(000016) 2811.16点" in summary
+    assert "科创50(000688) 1286.68点" in summary
+    assert "不代表深交所/北交所、全A宽度或全市场成交额" in summary
+    assert "999999.99" not in summary
+
+    projected = render_v2_5_dynamic_no_send(
+        [_v25_result(factor=factor, code="600519", name="贵州茅台")],
+        report_date="2026-11-06",
+    )
+    receipt = projected["receipt"]
+    assert receipt["results"][0]["current_product_admitted_count"] == 1
+    objects = {
+        row["id"]: row
+        for row in receipt["whole_scope_projection"]["data_object_projections"]
+    }
+    assert objects["M_INDEX_CURRENT"]["state"] == "READY"
+    assert objects["M_TURNOVER"]["state"] != "READY"
+    assert objects["M_BASIC_BREADTH"]["state"] != "READY"
+    assert summary in projected["html"]
+    assert "999999.99" not in projected["html"]
+    assert receipt["all_input_facts_product_ready"] is False
 
 
 def test_semantic_slots_preserve_the_independent_accepted_contract():

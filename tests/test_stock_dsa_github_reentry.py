@@ -43,6 +43,7 @@ def test_repository_owned_reentry_verifier_passes_without_old_chat_or_project_so
         "methods_deferred": 8,
         "product_count": 13,
         "product_denominator": 72,
+        "atomic_market_product_count": 1,
     }
     assert payload["facts"]["v25"] == {
         "bytes": 125919,

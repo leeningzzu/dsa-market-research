@@ -6,12 +6,13 @@
 
 ## 0. STOCK_DSA 连续实施入口
 
-涉及股票／ETF主线的 material action，按以下顺序读取：`docs/stock-dsa-github-reentry.md` → `docs/stock-dsa-roadmap.md` 顶部 `CURRENT_MASTER_CONTROL` → `docs/stock-dsa-stage-baseline-v1.json`。前者是跨账号／跨电脑的 GitHub 恢复入口，后两者分别是人类路线图和机器可读阶段投影；它们都不是第二个 Production Shell、Project Source 或运行证明。
+`AGENTS.md` 是仓库内 AI／Agent 协作规则的唯一真源。涉及股票／ETF主线的 material action，按以下顺序读取：`docs/stock-dsa-github-reentry.md` → `docs/stock-dsa-roadmap.md` 顶部 `CURRENT_MASTER_CONTROL` → `docs/stock-dsa-stage-baseline-v1.json` → `docs/CHANGELOG.md` 的 `[Unreleased]`。这些入口分别给出恢复步骤、人类路线、机器投影与最近变更；都不是第二个 Production Shell、Project Source 或运行证明。
+
+同一台电脑换账号时，优先使用安装根的外部 `STOCK_DSA_CURRENT.json` 指针绑定其 `canonical_local_repo`，再由 WebCodex 创建或复用同一 Git common directory 下的唯一可写 worktree；不得把耐久主工作树、WebCodex worktree和GitHub clone误判为三套权威。当前 Windows 安装的耐久根是 `D:\StockResearchData`，该路径是本机安装事实，不是公共仓库的跨机器默认值。
 
 继续实施前必须重新核对实际 `origin / branch / HEAD / worktree / PR / CI`，并执行 `python scripts/verify_stock_dsa_reentry.py --json`。功能分支计划不能冒充 `main`，旧聊天、目录名、缓存 remote ref 或 Project Source 版本不能替代 exact Git 与运行证据。静态方法数、数据对象数和图节点只证明覆盖义务，实际 READY/PARTIAL 必须来自当前运行回执。若 Git 事实与路线文档冲突，以实际 Git 和运行证据为准，并在同一变更中修正文档。
 
-新账号或新电脑只允许从 canonical repository 的 current feature checkpoint 恢复代码开发；Public GitHub 不存放 Secret、私人 Ledger／Outcome／训练数据、模型状态或用户持仓。缺少这些私人运行材料时保持相应 Product、PIT、训练和 Promotion 为 UNKNOWN/NOT_ADMITTED，不得用聊天摘要或示例值补齐。
-
+同机新账号可从 `D:\StockResearchData` 的 canonical local repository 无损继续代码开发；新电脑则从 canonical GitHub exact feature checkpoint 或仓库保存的完整 Git bundle 恢复。Public GitHub 不存放 Secret、私人 Ledger／Outcome／训练数据、模型状态或用户持仓。缺少这些私人运行材料时保持相应 Product、PIT、训练和 Promotion 为 UNKNOWN/NOT_ADMITTED，不得用聊天摘要或示例值补齐。
 ## 1. 硬规则
 
 - 遵循现有目录边界：

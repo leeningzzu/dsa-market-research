@@ -726,6 +726,23 @@ def _v25_data_object_fact_summary(
     """Render bounded admitted non-price facts without dumping source rows."""
     if not isinstance(facts, Mapping) or not facts:
         return ""
+    if dataset_id == "M_INDEX_CURRENT":
+        indices = facts.get("indices")
+        if not isinstance(indices, (list, tuple)) or not indices:
+            return ""
+        parts = []
+        for item in indices:
+            if not isinstance(item, Mapping):
+                return ""
+            code = _v25_plain(item.get("index_code"), "代码缺失")
+            name = _v25_plain(item.get("index_abbr"), "名称缺失")
+            close = _v25_plain(item.get("close_point"), "收盘缺失")
+            parts.append(f"{name}({code}) {close}点")
+        return (
+            f"上交所完成日指数：{_v25_plain(facts.get('trade_date'), '日期缺失')}｜"
+            + "；".join(parts)
+            + "｜仅上交所所选指数；不代表深交所/北交所、全A宽度或全市场成交额"
+        )
     if dataset_id == "G_US_POLICY":
         return (
             f"美联储政策：{_v25_plain(facts.get('release_date'), '日期缺失')}｜"

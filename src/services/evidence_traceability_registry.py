@@ -5105,6 +5105,17 @@ def _verified_data_object_source_scope(factor: Mapping) -> dict[str, dict]:
                 validate_market_breadth_observation(row)
             except ValueError as exc:
                 raise TraceabilityError("BREADTH_SOURCE_OBSERVATION_INVALID:" + str(exc)) from exc
+        if dataset_id == "M_INDEX_CURRENT":
+            from data_provider.sse_index_current_source import (
+                SSEIndexCurrentSourceError,
+                validate_sse_index_current_observation,
+            )
+            try:
+                validate_sse_index_current_observation(row)
+            except SSEIndexCurrentSourceError as exc:
+                raise TraceabilityError(
+                    "SSE_INDEX_CURRENT_SOURCE_OBSERVATION_INVALID:" + str(exc)
+                ) from exc
         result[dataset_id] = {
             "state": row["state"],
             "reason": ",".join(str(item) for item in row["reason_codes"]),

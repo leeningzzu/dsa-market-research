@@ -30,6 +30,8 @@ REQUIRED_PATHS = (
     "src/services/evidence_traceability_registry.py",
     "src/services/extended_indicator_service.py",
     "tests/test_extended_indicator_service.py",
+    "data_provider/sse_index_current_source.py",
+    "tests/test_sse_index_current_source.py",
     V25_RELATIVE,
 )
 
@@ -117,19 +119,23 @@ def verify(
                 "01/05 v3.556 PHYSICAL_EXACT8_PASS",
             ),
             "product_count": (
-                _nested(baseline, "current_runtime_checkpoint", "product_state", "current_product_count"),
+                _nested(baseline, "current_runtime_checkpoint", "product_state", "latest_multi_object_operation_product_count"),
                 13,
             ),
             "product_denominator": (
                 _nested(baseline, "current_runtime_checkpoint", "product_state", "denominator"),
                 72,
             ),
-            "market_product_count": (
-                _nested(baseline, "github_reentry_contract", "current_product_projection", "market_product_count"),
-                0,
+            "market_atomic_product_count": (
+                _nested(baseline, "github_reentry_contract", "current_product_projection", "market_atomic_product_count"),
+                1,
+            ),
+            "market_index_atomic_state": (
+                _nested(baseline, "current_market_index_atomic_operation", "state"),
+                "ACTUAL_CURRENT_OBSERVATION_PRODUCT_ADMITTED",
             ),
             "reentry_doc": (
-                _nested(baseline, "continuity_entrypoints", "cross_account_github_reentry"),
+                _nested(baseline, "continuity_entrypoints", "cross_account_reentry"),
                 "docs/stock-dsa-github-reentry.md",
             ),
             "reentry_verifier": (
@@ -149,10 +155,13 @@ def verify(
             "methods_existing": _nested(baseline, "immutable_contracts", "methods_existing_reused"),
             "methods_deferred": _nested(baseline, "immutable_contracts", "methods_deferred_with_owner"),
             "product_count": _nested(
-                baseline, "current_runtime_checkpoint", "product_state", "current_product_count"
+                baseline, "current_runtime_checkpoint", "product_state", "latest_multi_object_operation_product_count"
             ),
             "product_denominator": _nested(
                 baseline, "current_runtime_checkpoint", "product_state", "denominator"
+            ),
+            "atomic_market_product_count": _nested(
+                baseline, "current_runtime_checkpoint", "product_state", "atomic_market_product_count"
             ),
         }
 
@@ -161,11 +170,11 @@ def verify(
         roadmap = roadmap_path.read_text(encoding="utf-8")
         required_markers = (
             "CURRENT_MASTER_CONTROL_START",
-            "STOCK_DSA_MASTER_ROUTE_20261106_EXTENDED35_GITHUB_REENTRY_V1",
+            "STOCK_DSA_MASTER_ROUTE_20261106_M_INDEX_CURRENT_LOCAL_REENTRY_V2",
             "方法 Profile：**35/43（81.4%）**",
             "技术数值叶：**35/35（100%）**算法准入",
-            "同次真实 CURRENT Product：**13/72（18.1%）**",
-            "Market 仍 0/18",
+            "最近多对象 CURRENT operation：**13/72（18.1%）**",
+            "独立 Market atomic：**1/18**",
             "docs/stock-dsa-github-reentry.md",
         )
         missing_markers = [marker for marker in required_markers if marker not in roadmap]
