@@ -77,6 +77,7 @@ local/
 run.sh
 
 verify_*.py
+!scripts/verify_stock_dsa_reentry.py
 
 # ignore Claude workspace artifacts, but keep shared repo skills versioned
 .claude/*

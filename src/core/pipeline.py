@@ -124,6 +124,9 @@ from src.services.volatility_momentum_service import (
     rsi_startup_comparison_required_bars,
     atr_startup_comparison_required_bars,
 )
+from src.services.extended_indicator_service import (
+    READY_OBSERVATIONS as EXTENDED_INDICATOR_READY_OBSERVATIONS,
+)
 from src.services.pattern_trigger_service import build_pattern_trigger_context
 from src.services.business_valuation_service import (
     compile_business_valuation,
@@ -258,6 +261,11 @@ def _current_method_required_bars() -> Dict[str, Any]:
         "VOLATILITY_TR_SMA": MOMENTUM_READY_OBSERVATIONS,
         "CONFIRMED_DIVERGENCE": MOMENTUM_READY_OBSERVATIONS,
         "ATR_WILDER": atr_startup_comparison_required_bars(),
+        "ADX_DMI": EXTENDED_INDICATOR_READY_OBSERVATIONS,
+        "BOLLINGER": EXTENDED_INDICATOR_READY_OBSERVATIONS,
+        "KDJ": EXTENDED_INDICATOR_READY_OBSERVATIONS,
+        "OBV_ADL": EXTENDED_INDICATOR_READY_OBSERVATIONS,
+        "MFI": EXTENDED_INDICATOR_READY_OBSERVATIONS,
         "CUP_HANDLE": PRIOR_TREND_WINDOW + CUP_MAX_DURATION_SESSIONS,
         "DOUBLE_BOTTOM": PRIOR_TREND_WINDOW + DOUBLE_BOTTOM_MAX_SEPARATION_SESSIONS,
         "VCP": PATTERN_MIN_OBSERVATIONS,
@@ -4050,6 +4058,10 @@ class StockAnalysisPipeline:
                 market=market,
                 trend_result=canonical_trend_result,
                 price_structure_context=price_structure_context,
+                source_identity_hash=completed_history_identity.get(
+                    "data_snapshot_identity"
+                ),
+                volume_unit=completed_history_identity.get("volume_unit"),
             )
             pattern_trigger_context = build_pattern_trigger_context(
                 stock_code=code,
@@ -5986,6 +5998,21 @@ class StockAnalysisPipeline:
                 },
                 **common,
             )
+            extended_indicators = volatility_momentum_context.get(
+                "extended_indicators"
+            )
+            if isinstance(extended_indicators, dict):
+                receipts["EXTRA_INDICATORS"] = build_method_execution_receipt(
+                    "EXTRA_INDICATORS",
+                    output=extended_indicators,
+                    timeframe="daily",
+                    upstream_hashes={
+                        "volatility_momentum_context": optional_hash(
+                            volatility_momentum_context
+                        ),
+                    },
+                    **common,
+                )
         if isinstance(pattern_trigger_context, dict):
             receipts["PATTERN"] = build_method_execution_receipt(
                 "PATTERN",

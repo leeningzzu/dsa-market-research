@@ -582,6 +582,7 @@ def _build_intraday_timeframe(
         target_bar_end=local_bar_end.iloc[-1],
         source_identity_hash=identity["identity_hash"],
         trend_result=trend_result,
+        volume_unit=identity.get("volume_unit"),
         price_structure_context=price_structure,
         macd_startup=macd_startup,
         rsi_startup=rsi_startup,
@@ -1634,6 +1635,7 @@ def _build_higher_timeframe(
         target_bar_end=latest_bar_date,
         source_identity_hash=daily_source_identity_hash,
         trend_result=trend_result,
+        volume_unit=daily_volume_unit,
         price_structure_context=structure,
         macd_startup=macd_startup,
         rsi_startup=rsi_startup,
@@ -1853,6 +1855,8 @@ def build_multi_timeframe_structure_context(
         market=market,
         trend_result=daily_trend_result,
         price_structure_context=daily_structure,
+        source_identity_hash=daily_source_identity_hash,
+        volume_unit=daily_volume_unit,
     )
     relative_strength_inputs = (
         dict(timeframe_relative_strength_contexts)

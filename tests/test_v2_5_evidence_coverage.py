@@ -392,10 +392,20 @@ def test_product_coverage_exposes_only_current_intraday_context_families():
         assert cost["data_rights_admitted"] is False
         assert cost["independent_action_authority"] is False
         assert rows["detail.timeframe.price_structure"]["timeframe_states"][timeframe] == "DATA_INSUFFICIENT"
-        # A typed minute carrier alone is not Pattern evidence. Without a
-        # confirmed source-bound pivot, Pattern remains DATA_INSUFFICIENT; the
-        # dedicated 30m candlestick positive below proves the legal trigger.
-        assert rows["detail.timeframe.pattern_trigger"]["timeframe_states"][timeframe] == "DATA_INSUFFICIENT"
+        # Bollinger is source-bound descriptive envelope evidence, not a
+        # candlestick/structure trigger. The family is visible but remains
+        # nonrendered and has no independent action authority.
+        assert rows["detail.timeframe.pattern_trigger"]["timeframe_states"][timeframe] == "EVIDENCE_AVAILABLE"
+        methods = {
+            row["method_id"]: row
+            for row in next(
+                cell for cell in factor["evidence_traceability"]["timeframe_family_matrix"]["cells"]
+                if (cell["timeframe"], cell["family"]) == (timeframe, "PATTERN")
+            )["method_coverage"]
+        }
+        assert methods["BOLLINGER"]["state"] == "READY"
+        assert methods["CANDLESTICK"]["state"] == "MISSING"
+        assert methods["BOLLINGER"]["independent_action_authority"] is False
     assert coverage["foundation_evidence_receipt"]["policy"]["independent_action_authority"] is False
     assert all(row["projection_state"] == "NOT_RENDERED" for row in rows.values())
 
@@ -441,7 +451,9 @@ def test_product_coverage_rejects_unknown_intraday_volume_without_erasing_price_
         assert rows["detail.timeframe.momentum_divergence"]["timeframe_states"][timeframe] == "EVIDENCE_AVAILABLE"
         assert rows["detail.timeframe.cost_structure"]["timeframe_states"][timeframe] == "DATA_INSUFFICIENT"
         assert rows["detail.timeframe.price_structure"]["timeframe_states"][timeframe] == "DATA_INSUFFICIENT"
-        assert rows["detail.timeframe.pattern_trigger"]["timeframe_states"][timeframe] == "DATA_INSUFFICIENT"
+        # Unknown volume blocks OBV/ADL/MFI and cost/supply, but does not erase
+        # the price-only Bollinger envelope.
+        assert rows["detail.timeframe.pattern_trigger"]["timeframe_states"][timeframe] == "EVIDENCE_AVAILABLE"
 
     assert all(row["projection_state"] == "NOT_RENDERED" for row in rows.values())
 
@@ -468,9 +480,9 @@ def test_product_coverage_binds_effective_7tf_eight_family_foundation_receipt():
     coverage = compile_product_coverage(factor)
     foundation = coverage["foundation_evidence_receipt"]
 
-    assert foundation["target_method_timeframe_pairs"] == 172
-    assert foundation["declared_execution_pairs"] == 34
-    assert foundation["effective_execution_pairs"] == 136 + 3 * 6 == 154
+    assert foundation["target_method_timeframe_pairs"] == 207
+    assert foundation["declared_execution_pairs"] == 69
+    assert foundation["effective_execution_pairs"] == 189
     assert foundation["all_56_cells_executable"] is True
     assert foundation["regime_shared_projection_count"] == 7
     assert foundation["matrix_cell_count"] == 56
@@ -596,6 +608,12 @@ def test_v25_all_seven_timeframes_consume_their_own_verified_numeric_family_leav
                     "roc_20_completed_bars_pct": i + 3.125,
                 },
                 "volatility": {"atr_wilder_14": i + 0.75},
+                "extended_indicators": {"values": {
+                    "adx": 20 + i, "plus_di": 30 + i, "minus_di": 10 + i,
+                    "bollinger_upper": 140 + i, "bollinger_lower": 80 + i,
+                    "kdj_k": 60 + i, "kdj_d": 50 + i, "kdj_j": 80 + i,
+                    "obv": 100000 + i, "adl": 50000 + i, "mfi": 55 + i,
+                }},
             },
             "pattern_trigger": {
                 "status": "READY", "primary_pattern": {
@@ -633,6 +651,13 @@ def test_v25_all_seven_timeframes_consume_their_own_verified_numeric_family_leav
         assert f"ROC20%={i + 3.125}" in reader
         assert f"形态=SYNTHETIC_{timeframe}" in reader
         assert "DIF=" in reader and "RSI6=" in reader and "ATR14=" in reader
+        assert f"ADX14={20 + i}" in reader
+        assert f"+DI14={30 + i}" in reader and f"-DI14={10 + i}" in reader
+        assert f"KDJ-K={60 + i}" in reader and f"KDJ-D={50 + i}" in reader
+        assert f"KDJ-J={80 + i}" in reader
+        assert f"OBV={100000 + i}" in reader and f"ADL={50000 + i}" in reader
+        assert f"MFI14={55 + i}" in reader
+        assert f"BOLL上轨={140 + i}" in reader and f"BOLL下轨={80 + i}" in reader
     # A forged/missing method receipt hides the numerical family, even if the
     # source object and product flag still claim READY.
     damaged = deepcopy(material)

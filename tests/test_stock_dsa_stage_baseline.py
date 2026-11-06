@@ -35,6 +35,8 @@ from src.services.evidence_traceability_registry import (
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE_PATH = ROOT / "docs" / "stock-dsa-stage-baseline-v1.json"
 V25_PATH = ROOT / "templates" / "v2_5" / "STOCK_DSA_V2_5_PRODUCTION_MAIL_BASELINE_R001.html"
+REENTRY_PATH = ROOT / "docs" / "stock-dsa-github-reentry.md"
+REENTRY_VERIFIER_PATH = ROOT / "scripts" / "verify_stock_dsa_reentry.py"
 
 
 def _baseline() -> dict:
@@ -115,12 +117,11 @@ def test_current_global_observation_candidate_separates_product_from_pit() -> No
     assert current["git_commit"] == "ac3cce4c2f6ada5d7641a270dd29affa25760b35"
     assert current["git_push"] is True and current["merge"] is False
     roadmap = (ROOT / "docs" / "stock-dsa-roadmap.md").read_text(encoding="utf-8")
-    assert "Product13同次真实准入" in roadmap
-    assert "同次真实CURRENT Product：**13/72（18.1%）**" in roadmap
-    assert "AUTO_RETROSPECTIVE_BEFORE_USER_REMINDER=NO" in roadmap
-    assert (
-        "SOURCE_UPDATE_DECISION = "
-        "PREPARE_PAIRED_01_05_V3_554_AFTER_PRODUCT13_CONTROL_CHECKPOINT_CI"
+    assert "STOCK_DSA_MASTER_ROUTE_20261106_EXTENDED35_GITHUB_REENTRY_V1" in roadmap
+    assert "同次真实 CURRENT Product：**13/72（18.1%）**" in roadmap
+    assert "GITHUB_REENTRY_CONTRACT = `docs/stock-dsa-github-reentry.md`" in roadmap
+    assert (        "SOURCE_UPDATE_DECISION = "
+        "KEEP_PHYSICAL_01_05_V3_556_NO_CHURN"
         in roadmap
     )
 
@@ -179,9 +180,32 @@ def test_stage_baseline_is_derived_from_the_existing_machine_graph() -> None:
     assert baseline["production_shell"] == "DSA/daily_stock_analysis"
     continuity = baseline["continuity_entrypoints"]
     assert continuity["agent_rules"].startswith("AGENTS.md#0-")
+    assert continuity["cross_account_github_reentry"] == "docs/stock-dsa-github-reentry.md"
     assert continuity["current_master_route"].startswith("docs/stock-dsa-roadmap.md#")
+    assert continuity["deterministic_reentry_verifier"] == "scripts/verify_stock_dsa_reentry.py"
+    assert continuity["required_read_order"][:2] == [
+        "AGENTS.md", "docs/stock-dsa-github-reentry.md",
+    ]
     assert continuity["exact_git_and_ci_recheck_required"] is True
     assert continuity["feature_branch_plan_is_not_main_production"] is True
+    assert continuity["old_chat_or_project_source_is_not_git_currentness"] is True
+    reentry = baseline["github_reentry_contract"]
+    assert reentry["schema_version"] == "stock-dsa-github-reentry-v1"
+    assert reentry["repository_url"] == "https://github.com/leeningzzu/dsa-market-research.git"
+    assert reentry["development_branch"] == "feat/stock-dsa-m2-source-gates-v1"
+    assert reentry["candidate_parent"] == "b8f5d9258b717cf08d9ad6590e6143ee7e0e15ce"
+    assert reentry["project_sources_required_for_code_reentry"] is False
+    assert reentry["old_chat_required_for_code_reentry"] is False
+    assert reentry["public_repo_contains_private_secrets_or_ledger"] is False
+    assert reentry["current_algorithm_projection"] == {
+        "method_profiles": 43,
+        "methods_existing_reused": 35,
+        "methods_deferred_with_owner": 8,
+        "technical_numeric_leaves_admitted": 35,
+        "technical_numeric_leaves_total": 35,
+        "technical_method_timeframe_targets": 189,
+    }
+    assert REENTRY_PATH.is_file() and REENTRY_VERIFIER_PATH.is_file()
     readiness = baseline["runtime_method_window_readiness"]
     assert readiness["schema_version"] == "asset-timeframe-method-window-readiness-v1"
     assert readiness["first_vertical_slice"] == "MTF_MOMENTUM_CONTEXT_MACD_RSI"
@@ -193,8 +217,8 @@ def test_stage_baseline_is_derived_from_the_existing_machine_graph() -> None:
     assert locked["accepted_machine_graph_sha256"] == ACCEPTED_DATA_OBJECT_GRAPH_SHA256
     assert locked["requirements"] == len(ACCEPTED_REQUIREMENT_ROLES) == 26
     assert locked["method_profiles"] == len(policy["methods"]) == 43
-    assert locked["methods_existing_reused"] == states["EXISTING_REUSED"] == 30
-    assert locked["methods_deferred_with_owner"] == states["DEFERRED_WITH_OWNER_AND_REENTRY"] == 13
+    assert locked["methods_existing_reused"] == states["EXISTING_REUSED"] == 35
+    assert locked["methods_deferred_with_owner"] == states["DEFERRED_WITH_OWNER_AND_REENTRY"] == 8
     assert locked["strategy_bindings"] == len(STRATEGY_BINDINGS) == 13
     assert locked["technical_matrix_cells"] == len(trace["timeframe_family_matrix"]["cells"]) == 56
     assert locked["data_obligations"] == len(trace["complete_research_universe"]["data_objects"]) == 76
@@ -441,54 +465,60 @@ def test_current_control_rejects_historical_product_and_email_geometry_substitut
     baseline = _baseline()
     current = baseline["current_runtime_checkpoint"]
 
-    assert current["schema_version"] == "stock-dsa-current-runtime-checkpoint-v3"
-    assert current["source_pair"] == "01/05 v3.553 PHYSICAL_EXACT8_PASS"
+    assert current["schema_version"] == "stock-dsa-current-runtime-checkpoint-v4"
+    assert current["source_pair"] == "01/05 v3.556 PHYSICAL_EXACT8_PASS"
     accepted = current["accepted_remote_base"]
-    assert accepted["head"] == "ac3cce4c2f6ada5d7641a270dd29affa25760b35"
-    assert accepted["ci_run_id"] == 41991363403
+    assert accepted["head"] == "b8f5d9258b717cf08d9ad6590e6143ee7e0e15ce"
+    assert accepted["parent"] == "ac3cce4c2f6ada5d7641a270dd29affa25760b35"
+    assert accepted["ci_run_id"] == 41995009888
     assert accepted["event"] == "pull_request"
     assert accepted["conclusion"] == "success"
     assert (accepted["jobs_success"], accepted["jobs_skipped"]) == (6, 1)
     assert accepted["draft"] is True and accepted["merged"] is False
     assert current["candidate_identity"] == "RESOLVE_COMMIT_CONTAINING_THIS_FILE_FROM_GIT"
     snapshot = current["candidate_precommit_snapshot"]
-    assert snapshot["status_path_count"] == 4
-    assert snapshot["tracked_modified_count"] == 4
-    assert snapshot["untracked_paths"] == []
+    assert snapshot["status_path_count"] == 23
+    assert snapshot["tracked_modified_count"] == 18
+    assert set(snapshot["untracked_paths"]) == {
+        "docs/stock-dsa-github-reentry.md",
+        "scripts/verify_stock_dsa_reentry.py",
+        "src/services/extended_indicator_service.py",
+        "tests/test_extended_indicator_service.py",
+        "tests/test_stock_dsa_github_reentry.py",
+    }
     assert snapshot["staged_count"] == 0
     assert snapshot["post_commit_worktree_expected_clean"] is True
-    assert snapshot["scope"] == "PRODUCT13_PARENT_ROUTE_CONTROL_CHECKPOINT"
-    assert snapshot["paths"] == [
-        "docs/CHANGELOG.md",
-        "docs/stock-dsa-roadmap.md",
-        "docs/stock-dsa-stage-baseline-v1.json",
-        "tests/test_stock_dsa_stage_baseline.py",
-    ]
+    assert snapshot["scope"] == "EXTENDED35_AND_GITHUB_CROSS_ACCOUNT_REENTRY_CHECKPOINT"
+    assert snapshot["paths_are_resolved_from_git_status_at_runtime"] is True
     local = current["local_regression"]
-    assert local["product13_same_operation"] == "PASS"
+    assert local["product13_same_operation"] == "PASS_PREDECESSOR_NOT_REPLAYED"
     assert local["product13_receipt_sha256"] == (
         "ce4fa1746e16e7c62d435b11c02f7868946d3d4d6f922bd0ce004458c5900231"
     )
     assert local["product13_code_ci_run_id"] == 41991363403
-    assert local["product13_code_ci_conclusion"] == "success"
-    assert local["product13_registry_b1_factor_v25_stage_adjacent_passed"] == 355
-    assert local["checkpoint_stage_registry_b1_v25"] == (
-        "355_PASS_AFTER_PRODUCT13_CONTROL_EDIT"
-    )
-    assert local["bls_known_at_specific_passed"] == 8
-    assert local["bls_registry_b1_v25_stage_adjacent_passed"] == 258
-    assert local["sector_rs_source_specific_passed"] == 31
-    assert local["sector_rs_registry_b1_v25_stage_adjacent_passed"] == 281
+    assert local["control_parent_ci_run_id"] == 41995009888
+    assert local["extended_indicator_specific_passed"] == 39
+    assert local["registry_passed"] == 142
+    assert local["factor_passed"] == 82
+    assert local["v25_stage_passed"] == 79
+    assert local["mtf_daily_binding_passed"] == 102
+    assert local["github_reentry_tests_passed"] == 3
+    assert local["selected_total_passed"] == 447
+    assert local["selected_failed"] == 0
+    assert local["selected_test_files_are_disjoint"] is True
     assert local["scopes_overlap_and_must_not_be_summed"] is True
-
+    assert local["py_compile"] == "PASS"
+    assert local["ai_asset_check"] == "PASS"
+    assert local["git_diff_check"] == "PASS"
+    assert local["reentry_verifier"] == "PASS"
     matrix = current["seven_timeframe_eight_family"]
     assert matrix == {
         "timeframe_carriers_implemented": True,
         "technical_matrix_cell_count": 56,
         "method_profile_count": 43,
-        "methods_existing_reused": 30,
-        "methods_deferred_with_owner": 13,
-        "technical_method_timeframe_targets": 154,
+        "methods_existing_reused": 35,
+        "methods_deferred_with_owner": 8,
+        "technical_method_timeframe_targets": 189,
         "all_56_cells_executable": True,
         "regime_cross_timeframe_vote_counting": False,
         "relative_strength_full_bar_grid_required": True,
@@ -509,18 +539,27 @@ def test_current_control_rejects_historical_product_and_email_geometry_substitut
     assert email["smtp_send"] == 0
 
     roadmap = (ROOT / "docs" / "stock-dsa-roadmap.md").read_text(encoding="utf-8")
-    assert "CONTROL_ID = STOCK_DSA_MASTER_ROUTE_20261105_PRODUCT13_GLOBAL5_SSE8_CURRENT_ACCEPTED" in roadmap
-    assert "同次真实CURRENT Product：**13/72（18.1%）**" in roadmap
+    assert "CONTROL_ID = STOCK_DSA_MASTER_ROUTE_20261106_EXTENDED35_GITHUB_REENTRY_V1" in roadmap
+    assert "同次真实 CURRENT Product：**13/72（18.1%）**" in roadmap
     assert "full_domain_product_ready=false" in roadmap
-    assert "历史PIT" in roadmap and "绝不倒灌" in roadmap
-    assert "SOURCE_UPDATE_DECISION = PREPARE_PAIRED_01_05_V3_554_AFTER_PRODUCT13_CONTROL_CHECKPOINT_CI" in roadmap
-    assert "行业分类→适用方法→所需数据" not in roadmap
-    assert "本次Material Checkpoint先以exact repo、真实运行回执和自然CI为权威" in roadmap
-
+    assert "绝不倒灌历史" not in roadmap or "CURRENT" in roadmap
+    assert "SOURCE_UPDATE_DECISION = KEEP_PHYSICAL_01_05_V3_556_NO_CHURN" in roadmap
+    assert "实际Files inventory均证明Project Source恰好8个唯一Owner" not in roadmap
+    assert "方法 Profile：**35/43（81.4%）**" in roadmap
+    assert "技术数值叶：**35/35（100%）**算法准入" in roadmap
+    assert "189 个有效方法－周期执行对" in roadmap
+    assert "docs/stock-dsa-github-reentry.md" in roadmap
+    assert "scripts/verify_stock_dsa_reentry.py --json" in roadmap
     regression = baseline["regression_policy"]
     assert regression["historical_operation_admission_never_backfills_current_runtime"] is True
     assert regression["html_geometry_never_proves_reader_visible_numeric_leaves"] is True
     assert regression["reader_numeric_leaf_audit_required"] is True
+    assert regression[
+        "extended_indicators_require_source_identity_completed_bars_volume_units_and_method_receipts"
+    ] is True
+    assert regression[
+        "extended_indicators_never_grant_product_strategy_pit_learning_or_independent_votes"
+    ] is True
     assert regression["industry_route_plan_required_before_business_valuation"] is True
     assert regression["distribution_or_markdown_veto_requires_strict_method_receipt"] is True
     assert regression["accumulation_or_washout_never_independently_upgrades_action"] is True
@@ -836,7 +875,11 @@ def test_indicator_backlog_is_subordinate_to_the_current_product_route() -> None
         "VWAP_AFTER_COMPLETED_INTRADAY_VOLUME",
         "ETF_SPECIFIC_AFTER_SPREAD_TRACKING_FEES",
     ]
-    assert "WAVE" in decision["deferred_until_product_trigger"]
+    assert decision["deferred_until_product_trigger"] == [
+        "AVWAP_VOLUME_PROFILE", "WAVE", "GLOBAL", "BREADTH", "PROBABILITY",
+    ]
+    for method_id in ("ADX_DMI", "BOLLINGER", "KDJ", "OBV_ADL", "MFI"):
+        assert method_id not in decision["deferred_until_product_trigger"]
     assert "CHAN_WAVE" not in decision["deferred_until_product_trigger"]
     assert _baseline()["regression_policy"]["static_counts_never_prove_runtime_ready"] is True
 
@@ -847,16 +890,16 @@ def test_current_real_data_readiness_audit_separates_capability_product_database
     assert audit["audit_date"] == "2026-11-05"
     assert audit["method_catalog"] == {
         "total": 43,
-        "existing_reused": 30,
-        "deferred_with_owner": 13,
-        "technical_matrix_methods": 25,
+        "existing_reused": 35,
+        "deferred_with_owner": 8,
+        "technical_matrix_methods": 30,
         "asset_layer_methods": 4,
         "research_shadow_methods": 1,
     }
     assert audit["numeric_metric_leaves"] == {
         "total": 35,
-        "algorithm_admitted": 24,
-        "method_not_admitted": 11,
+        "algorithm_admitted": 35,
+        "method_not_admitted": 0,
     }
     objects = audit["product_data_objects"]
     assert objects["total"] == 72
@@ -936,9 +979,9 @@ def test_multi_level_goal_graph_capabilities_role_review_and_github_continuity_a
     assert closure["seven_timeframe_eight_family"] == {
         "matrix_cells": 56,
         "method_profiles": 43,
-        "existing_reused": 30,
-        "deferred": 13,
-        "effective_execution_pairs": 154,
+        "existing_reused": 35,
+        "deferred": 8,
+        "effective_execution_pairs": 189,
         "all_cells_executable": True,
     }
     assert closure["product_admission"] == "0_OF_72_UNCHANGED"

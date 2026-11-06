@@ -160,7 +160,7 @@ VALID_BINDING_TIMEFRAMES = frozenset({"asset", "daily", "multi", *TIMEFRAMES})
 VALID_METRIC_TIMEFRAMES = frozenset({"daily", "weekly", "monthly"})
 VALID_METRIC_UNITS = frozenset({
     "PRICE_BASIS_CURRENCY", "PRICE_BASIS_CURRENCY_PROXY", "ratio", "pct",
-    "annualized_pct", "index_0_100", "METHOD_NOT_ADMITTED",
+    "annualized_pct", "index_0_100", "SOURCE_VOLUME_UNITS", "METHOD_NOT_ADMITTED",
 })
 
 # This accepted contract is intentionally independent from the candidate tuples
@@ -171,7 +171,7 @@ ACCEPTED_REQUIREMENT_ROLES = frozenset({
     ("PATTERN", "ADMITTED"), ("MTF", "ADMITTED"),
     ("QUALITY", "ADMITTED"), ("VALUATION", "ADMITTED"), ("DISTRIBUTION", "ADMITTED"),
     ("RISK_REWARD", "DEFERRED"), ("CANDLESTICK", "ADMITTED"),
-    ("EXTRA_INDICATORS", "DEFERRED"), ("AVWAP_PROFILE", "DEFERRED"),
+    ("EXTRA_INDICATORS", "ADMITTED"), ("AVWAP_PROFILE", "DEFERRED"),
     ("CHAN", "ADMITTED"), ("WAVE", "DEFERRED"), ("ETF_SPECIFIC", "DEFERRED"),
     ("GLOBAL", "DEFERRED"), ("BREADTH", "DEFERRED"), ("PROBABILITY", "DEFERRED"),
     ("INTRADAY_60m", "DEFERRED"), ("INTRADAY_30m", "DEFERRED"),
@@ -1266,6 +1266,21 @@ EVIDENCE_BINDINGS = (
         reentry="CURRENT_ROUTE_INPUT_AND_SOURCE_ADMISSION",
         ledger=False,
     ),
+    EvidenceBinding(
+        "EXTRA_INDICATORS",
+        "volatility_momentum_evidence.context.extended_indicators",
+        "src/services/extended_indicator_service.py",
+        "build_extended_indicator_context",
+        ("date", "open", "high", "low", "close", "volume", "data_source"),
+        "ALGORITHM_VERSION",
+        "READY_OBSERVATIONS",
+        "extended_ohlcv_indicators",
+        timeframe="daily",
+        asset_routes=("STOCK", "ETF"),
+        implementation_state="EXISTING_REUSED",
+        reentry="SOURCE_BOUND_COMPLETED_BAR_EXTENDED_INDICATORS",
+        ledger=False,
+    ),
     EvidenceBinding("MTF", "multi_timeframe_structure_context", "src/services/multi_timeframe_structure_service.py", "build_multi_timeframe_structure_context", ("date", "open", "high", "low", "close", "volume", "data_source"), "ALGORITHM_VERSION", "TREND_MIN_BARS", "nested_price_structure", "multi"),
 )
 
@@ -1279,7 +1294,6 @@ DEFERRED_BINDINGS = tuple(
                     timeframe=tf, implementation_state="DEFERRED_WITH_OWNER_AND_REENTRY", reentry=reentry, ledger=False)
     for rid, path, owner, fields, group, tf, reentry in (
         ("RISK_REWARD", "risk_reward_evidence", "FACTOR:execution", ("entry", "stop", "cost", "execution_identity"), "execution", "asset", "ACCEPTED_RISK_REWARD_RESOLVER"),
-        ("EXTRA_INDICATORS", "extended_indicator_evidence", "FACTOR:VolatilityMomentum", ("date", "open", "high", "low", "close", "volume"), "same_swing_momentum", "daily", "ADX_DMI_BOLLINGER_OBV_ADL_MFI_KDJ_INDEPENDENT_ADMISSION"),
         ("AVWAP_PROFILE", "anchored_cost_evidence", "FACTOR:CostStructure", ("anchor", "price_volume_distribution"), "price_volume_cost", "asset", "ANCHOR_AND_PRICE_VOLUME_METHOD_NOT_DAILY_PROXY"),
         ("WAVE", "wave_evidence", "FACTOR:WaveShadow", ("date", "open", "high", "low", "close"), "confirmed_price_swing", "multi", "RESEARCH_SHADOW_ONLY"),
         ("ETF_SPECIFIC", "etf_specific_evidence", "FACTOR:ETF", ("nav", "nav_at", "shares", "bid", "ask", "tracking_error"), "etf_execution", "asset", "ETF_DATA_IDENTITY_AND_METHOD_ADMISSION"),
@@ -1479,25 +1493,25 @@ METHOD_WINDOW_PROFILES = (
     ),
     MethodWindowProfile(
         "ADX_DMI", "EXTRA_INDICATORS",
-        ("FIXED_ROLLING", "RECURSIVE_WARMUP"), TIMEFRAMES, (),
-        "DEFERRED_WITH_OWNER_AND_REENTRY",
+        ("FIXED_ROLLING", "RECURSIVE_WARMUP"), TIMEFRAMES, TIMEFRAMES,
+        "EXISTING_REUSED",
     ),
     MethodWindowProfile(
         "BOLLINGER", "EXTRA_INDICATORS",
-        ("FIXED_ROLLING",), TIMEFRAMES, (), "DEFERRED_WITH_OWNER_AND_REENTRY",
+        ("FIXED_ROLLING",), TIMEFRAMES, TIMEFRAMES, "EXISTING_REUSED",
     ),
     MethodWindowProfile(
         "KDJ", "EXTRA_INDICATORS",
-        ("FIXED_ROLLING", "RECURSIVE_WARMUP"), TIMEFRAMES, (),
-        "DEFERRED_WITH_OWNER_AND_REENTRY",
+        ("FIXED_ROLLING", "RECURSIVE_WARMUP"), TIMEFRAMES, TIMEFRAMES,
+        "EXISTING_REUSED",
     ),
     MethodWindowProfile(
         "OBV_ADL", "EXTRA_INDICATORS",
-        ("RECURSIVE_WARMUP",), TIMEFRAMES, (), "DEFERRED_WITH_OWNER_AND_REENTRY",
+        ("FIXED_ROLLING",), TIMEFRAMES, TIMEFRAMES, "EXISTING_REUSED",
     ),
     MethodWindowProfile(
         "MFI", "EXTRA_INDICATORS",
-        ("FIXED_ROLLING",), TIMEFRAMES, (), "DEFERRED_WITH_OWNER_AND_REENTRY",
+        ("FIXED_ROLLING",), TIMEFRAMES, TIMEFRAMES, "EXISTING_REUSED",
     ),
     MethodWindowProfile(
         "VWAP", "AVWAP_PROFILE",
@@ -1610,12 +1624,16 @@ SOURCE_BOUND_CLASSICAL_PATTERN_METHOD_IDS = frozenset({
 SOURCE_BOUND_MOMENTUM_METHOD_IDS = frozenset({
     "ROC", "VOLATILITY_TR_SMA", "ATR_WILDER", "CONFIRMED_DIVERGENCE",
 })
+SOURCE_BOUND_EXTENDED_METHOD_IDS = frozenset({
+    "ADX_DMI", "BOLLINGER", "KDJ", "OBV_ADL", "MFI",
+})
 SOURCE_BOUND_TIMEFRAME_METHOD_IDS = (
     SOURCE_BOUND_SUPPLY_METHOD_IDS
     | SOURCE_BOUND_COST_METHOD_IDS
     | SOURCE_BOUND_PATTERN_METHOD_IDS
     | SOURCE_BOUND_CLASSICAL_PATTERN_METHOD_IDS
     | SOURCE_BOUND_MOMENTUM_METHOD_IDS
+    | SOURCE_BOUND_EXTENDED_METHOD_IDS
     | SOURCE_BOUND_RECURSIVE_METHOD_IDS
     | SOURCE_BOUND_RELATIVE_STRENGTH_METHOD_IDS
 )
@@ -1637,6 +1655,11 @@ _METHOD_CURRENT_EXECUTION_OVERRIDES = {
     "VOLATILITY_TR_SMA": TIMEFRAMES,
     "ATR_WILDER": TIMEFRAMES,
     "CONFIRMED_DIVERGENCE": TIMEFRAMES,
+    "ADX_DMI": TIMEFRAMES,
+    "BOLLINGER": TIMEFRAMES,
+    "KDJ": TIMEFRAMES,
+    "OBV_ADL": TIMEFRAMES,
+    "MFI": TIMEFRAMES,
     "MTF_MA_LEVEL_ALIGNMENT": ("monthly", "weekly", "60m", "30m", "15m", "5m"),
     "MTF_MOMENTUM_CONTEXT": ("monthly", "weekly", "60m", "30m", "15m", "5m"),
     "MTF_PRICE_STRUCTURE": NON_DAILY_TECHNICAL_TIMEFRAMES,
@@ -1734,8 +1757,13 @@ METRIC_BINDINGS = tuple(
      "kind": "number", "unit": "PRICE_BASIS_CURRENCY", "timeframe": tf}
     for tf in ("monthly", "weekly") for ma in ("ma5", "ma10", "ma20")
 ) + tuple(
-    {"id": "daily." + name, "requirement_id": "EXTRA_INDICATORS", "path": "extended_indicator_evidence." + name,
-     "kind": "number", "unit": "METHOD_NOT_ADMITTED", "timeframe": "daily"}
+    {"id": "daily." + name, "requirement_id": "EXTRA_INDICATORS",
+     "path": "volatility_momentum_evidence.context.extended_indicators.values." + name,
+     "kind": "number", "unit": (
+         "PRICE_BASIS_CURRENCY" if name in {"bollinger_upper", "bollinger_lower"}
+         else "SOURCE_VOLUME_UNITS" if name in {"obv", "adl"}
+         else "index_0_100"
+     ), "timeframe": "daily"}
     for name in ("adx", "plus_di", "minus_di", "bollinger_upper", "bollinger_lower", "kdj_k", "kdj_d", "kdj_j", "obv", "adl", "mfi")
 )
 
@@ -1903,7 +1931,7 @@ def _validate_method_window_profiles(
                 elif profile.method_id in SOURCE_BOUND_TIMEFRAME_METHOD_IDS:
                     if profile.requirement_id not in {
                         "TREND_RS", "SUPPLY", "COST", "CANDLESTICK",
-                        "MOMENTUM", "PATTERN",
+                        "MOMENTUM", "PATTERN", "EXTRA_INDICATORS",
                     }:
                         raise TraceabilityError("SOURCE_BOUND_METHOD_PARENT_MISMATCH:" + profile.method_id)
                 else:
@@ -2368,7 +2396,7 @@ def _receipt_state(binding: EvidenceBinding, value: Mapping, receipt: Any) -> tu
     if body.get("output_hash") != digest(observed_output):
         return False, "METHOD_RECEIPT_OUTPUT_MISMATCH"
     if (
-        binding.requirement_id in {"SUPPLY", "DISTRIBUTION", "COST", "STRUCTURE", "CHAN", "MOMENTUM", "PATTERN", "CANDLESTICK", "MTF"}
+        binding.requirement_id in {"SUPPLY", "DISTRIBUTION", "COST", "STRUCTURE", "CHAN", "MOMENTUM", "EXTRA_INDICATORS", "PATTERN", "CANDLESTICK", "MTF"}
         and isinstance(observed_output, Mapping)
     ):
         for key, receipt_key in (("stock_code", "stock_code"), ("market", "market"), ("target_date", "target_date")):
@@ -2376,7 +2404,7 @@ def _receipt_state(binding: EvidenceBinding, value: Mapping, receipt: Any) -> tu
             claimed = str(body.get(receipt_key) or "").strip().lower()
             if observed and observed != claimed:
                 return False, "METHOD_RECEIPT_" + key.upper() + "_MISMATCH"
-    if binding.requirement_id in {"SUPPLY", "DISTRIBUTION", "COST", "STRUCTURE", "CHAN", "MOMENTUM", "PATTERN", "CANDLESTICK", "MTF"}:
+    if binding.requirement_id in {"SUPPLY", "DISTRIBUTION", "COST", "STRUCTURE", "CHAN", "MOMENTUM", "EXTRA_INDICATORS", "PATTERN", "CANDLESTICK", "MTF"}:
         identity = body.get("input_identity")
         if not isinstance(identity, Mapping) or not identity.get("data_snapshot_identity"):
             return False, "METHOD_INPUT_IDENTITY_MISSING"
@@ -2424,6 +2452,33 @@ def _receipt_state(binding: EvidenceBinding, value: Mapping, receipt: Any) -> tu
             str(upstream.get("price_structure_context") or "")
         ) != 64:
             return False, "CHAN_UPSTREAM_IDENTITY_MISSING"
+    if binding.requirement_id == "EXTRA_INDICATORS":
+        methods = value.get("methods")
+        values = value.get("values")
+        if (
+            value.get("schema_version") != "extended-indicator-evidence-v1"
+            or value.get("completed_bar_only") is not True
+            or value.get("status") not in {"READY", "PARTIAL"}
+            or not isinstance(methods, Mapping)
+            or set(methods) != SOURCE_BOUND_EXTENDED_METHOD_IDS
+            or not isinstance(values, Mapping)
+            or value.get("independent_action_authority") is not False
+            or value.get("strategy_admitted") is not False
+            or value.get("learning_admitted") is not False
+            or value.get("historical_pit_eligible") is not False
+        ):
+            return False, "EXTENDED_INDICATOR_OUTPUT_INVALID"
+        if any(
+            not isinstance(method, Mapping)
+            or method.get("independent_action_authority") is not False
+            for method in methods.values()
+        ):
+            return False, "EXTENDED_INDICATOR_METHOD_SCOPE_INVALID"
+        parents = body.get("upstream_hashes")
+        if not isinstance(parents, Mapping) or len(
+            str(parents.get("volatility_momentum_context") or "")
+        ) != 64:
+            return False, "EXTENDED_INDICATOR_PARENT_HASH_MISSING"
     if binding.requirement_id == "TREND_RS":
         valid, reason = _validate_trend_rs_receipt(value, body)
         if not valid:
@@ -2725,6 +2780,57 @@ def _mtf_method_matrix_state(method_id: str, factor: Mapping, timeframe: str, fa
             if not isinstance(session, Mapping) or session.get("session_count", 0) < 10:
                 return "PARTIAL", "TIMEFRAME_RECURSIVE_COMPLETED_SESSION_NOT_PROVEN"
         return "READY", "TIMEFRAME_NATIVE_RECURSIVE_SOURCE_BOUND"
+    if method_id in SOURCE_BOUND_EXTENDED_METHOD_IDS:
+        container = frame.get("volatility_momentum")
+        evidence = (
+            container.get("extended_indicators")
+            if isinstance(container, Mapping) else None
+        )
+        if not isinstance(evidence, Mapping):
+            return "MISSING", "TIMEFRAME_EXTENDED_INDICATOR_EVIDENCE_MISSING"
+        identity_hash = str(evidence.get("source_identity_hash") or "")
+        expected_identity_hash = str(
+            frame.get("intraday_identity_hash")
+            if timeframe in {"60m", "30m", "15m", "5m"}
+            else frame.get("source_identity_hash")
+            or at(factor, "multi_timeframe_structure_context.data_snapshot_identity")
+            or ""
+        )
+        if len(identity_hash) != 64 or identity_hash != expected_identity_hash:
+            return "UNKNOWN", "TIMEFRAME_EXTENDED_SOURCE_IDENTITY_MISMATCH"
+        if (
+            evidence.get("timeframe") != timeframe
+            or evidence.get("completed_bar_only") is not True
+            or evidence.get("independent_action_authority") is not False
+            or evidence.get("strategy_admitted") is not False
+            or evidence.get("learning_admitted") is not False
+            or evidence.get("historical_pit_eligible") is not False
+        ):
+            return "UNKNOWN", "TIMEFRAME_EXTENDED_SCOPE_INVALID"
+        methods = evidence.get("methods")
+        method = methods.get(method_id) if isinstance(methods, Mapping) else None
+        if not isinstance(method, Mapping):
+            return "MISSING", "TIMEFRAME_EXTENDED_METHOD_MISSING"
+        state = str(method.get("status") or "UNKNOWN")
+        if state != "READY":
+            return (
+                state if state in TIMEFRAME_FAMILY_MATRIX_STATES else "UNKNOWN",
+                str(method.get("reason") or "TIMEFRAME_EXTENDED_METHOD_NOT_READY"),
+            )
+        values = method.get("values")
+        expected_keys = {
+            "ADX_DMI": {"adx", "plus_di", "minus_di"},
+            "BOLLINGER": {"bollinger_upper", "bollinger_lower"},
+            "KDJ": {"kdj_k", "kdj_d", "kdj_j"},
+            "OBV_ADL": {"obv", "adl"},
+            "MFI": {"mfi"},
+        }[method_id]
+        if not isinstance(values, Mapping) or set(values) != expected_keys or not all(
+            isinstance(value, Real) and not isinstance(value, bool)
+            and math.isfinite(float(value)) for value in values.values()
+        ):
+            return "UNKNOWN", "TIMEFRAME_EXTENDED_NUMERIC_VALUES_INVALID"
+        return "READY", "TIMEFRAME_EXTENDED_SOURCE_BOUND_READY"
     if method_id in SOURCE_BOUND_SUPPLY_METHOD_IDS:
         evidence = frame.get("supply_demand")
         if not isinstance(evidence, Mapping):
@@ -6459,12 +6565,12 @@ def compile_foundation_evidence_receipt(
         if tuple(row.get("declared_execution_timeframes") or ())
         != tuple(row.get("current_execution_timeframes") or ())
     )
-    # Historical accepted local predecessor: 136 effective pairs / 19
-    # overrides. MACD, RSI and the existing Relative Strength owner each gain
-    # six explicit non-daily execution seams. Missing benchmark inputs remain
-    # MISSING; the 43-method catalogue and immutable Golden stay fixed.
+    # Accepted current engineering scope: 35 existing methods, including the
+    # five source-bound extended OHLCV methods across all seven timeframes.
+    # The original 43-method catalogue and immutable V2.5 Golden stay fixed;
+    # effective execution never implies current Product data or an extra vote.
     if (len(technical), target_pairs, declared_pairs, effective_pairs, len(override_rows)) != (
-        25, 172, 34, 136 + 3 * 6, 19 + 3,
+        30, 207, 69, 189, 22,
     ):
         raise TraceabilityError("FOUNDATION_EFFECTIVE_METHOD_SCOPE_MISMATCH")
 

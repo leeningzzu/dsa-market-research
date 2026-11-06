@@ -18,6 +18,9 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 
 from data_provider.daily_data_identity import bind_verified_daily_source_view
+from src.services.extended_indicator_service import (
+    build_extended_indicator_context,
+)
 
 
 VOLATILITY_MOMENTUM_SCHEMA_VERSION = "volatility-momentum-v2"
@@ -71,7 +74,10 @@ def _normalize_history(history: Any, *, target_date: date) -> pd.DataFrame:
     frame = frame.dropna(subset=required)
     frame = frame[frame["date"] <= target_date]
     frame = frame.sort_values("date").drop_duplicates(subset=["date"], keep="last")
-    columns = required + (["data_source"] if "data_source" in frame.columns else [])
+    if "volume" in frame.columns:
+        frame["volume"] = pd.to_numeric(frame["volume"], errors="coerce")
+    columns = required + (["volume"] if "volume" in frame.columns else [])
+    columns += (["data_source"] if "data_source" in frame.columns else [])
     result = frame[columns].reset_index(drop=True)
     return bind_verified_daily_source_view(history, result)
 
@@ -517,6 +523,7 @@ def _empty_payload(base: Dict[str, Any], *, status: str, reason: str, observatio
         "observations": observations,
         "volatility": {"status": "MISSING"},
         "momentum": {"status": "MISSING"},
+        "extended_indicators": {"status": "MISSING", "reason": reason},
         "confirmed_divergence": {"status": "MISSING", "state": "NONE", "signals": []},
         "process_diagnostics": {"status": "MISSING", "classification_authority": "NONE"},
         "historical_replay_eligible": False,
@@ -534,6 +541,7 @@ def build_completed_timeframe_volatility_momentum_context(
     price_structure_context: Any,
     macd_startup: Any,
     rsi_startup: Any,
+    volume_unit: Optional[str] = None,
     market: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Reuse existing momentum owners on one typed completed-bar resolution.
@@ -567,6 +575,7 @@ def build_completed_timeframe_volatility_momentum_context(
             "observations": observations,
             "volatility": {"status": "MISSING"},
             "momentum": {"status": "MISSING"},
+            "extended_indicators": {"status": "MISSING", "reason": reason},
             "confirmed_divergence": {
                 "status": "MISSING", "state": "NONE", "signals": [],
             },
@@ -676,6 +685,15 @@ def build_completed_timeframe_volatility_momentum_context(
         "window_unit": "COMPLETED_BARS",
         "status": "READY" if len(frame) >= READY_OBSERVATIONS else "PARTIAL",
     })
+    extended_indicators = build_extended_indicator_context(
+        stock_code=stock_code,
+        bars=frame,
+        timeframe=timeframe,
+        target_bar_end=target,
+        source_identity_hash=source_identity_hash,
+        volume_unit=volume_unit,
+        market=market,
+    )
     status = "READY" if (
         len(frame) >= READY_OBSERVATIONS
         and momentum["status"] == "READY"
@@ -702,6 +720,7 @@ def build_completed_timeframe_volatility_momentum_context(
             "rsi": rsi_receipt,
             "atr_wilder": atr_receipt,
         },
+        "extended_indicators": extended_indicators,
         "confirmed_divergence": divergence,
         "process_diagnostics": process,
     }
@@ -715,6 +734,8 @@ def build_volatility_momentum_context(
     market: Optional[str] = None,
     trend_result: Any = None,
     price_structure_context: Any = None,
+    source_identity_hash: Optional[str] = None,
+    volume_unit: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build daily volatility/momentum evidence without fetching or action authority."""
     base = {
@@ -842,6 +863,15 @@ def build_volatility_momentum_context(
     }
     process = _process_diagnostics(close)
     process["status"] = "READY" if len(frame) >= READY_OBSERVATIONS else "PARTIAL"
+    extended_indicators = build_extended_indicator_context(
+        stock_code=stock_code,
+        bars=frame,
+        timeframe="daily",
+        target_bar_end=target_date,
+        source_identity_hash=source_identity_hash,
+        volume_unit=volume_unit,
+        market=market,
+    )
     structure_target = (
         str(price_structure_context.get("target_date") or "")
         if isinstance(price_structure_context, dict)
@@ -896,6 +926,7 @@ def build_volatility_momentum_context(
         "volatility": volatility,
         "momentum": momentum,
         "recursive_startup_admission": recursive,
+        "extended_indicators": extended_indicators,
         "confirmed_divergence": divergence,
         "process_diagnostics": process,
         "historical_replay_eligible": status == "READY",

@@ -430,7 +430,7 @@ def test_gate4_fail_closed_package_evaluates_four_veto_lanes_and_one_canonical()
     assert package["independent_action_authority"] is False
     assert package["score_or_probability_authority"] is False
     assert package["correlation_dedup"]["status"] == "VERIFIED"
-    assert package["correlation_dedup"]["group_count"] == 16
+    assert package["correlation_dedup"]["group_count"] == 17
     assert set(package["vetoes"]) == {
         "DATA", "RISK", "LIQUIDITY", "EXECUTION",
     }

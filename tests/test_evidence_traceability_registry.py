@@ -344,6 +344,12 @@ def test_method_window_policy_view_is_complete_manifest_bound_and_non_mutating()
         "ROC", "VOLATILITY_TR_SMA", "ATR_WILDER", "CONFIRMED_DIVERGENCE",
     ):
         assert methods[method_id]["current_execution_timeframes"] == reg.TIMEFRAMES
+    for method_id in ("ADX_DMI", "BOLLINGER", "KDJ", "OBV_ADL", "MFI"):
+        assert methods[method_id]["leaf_implementation_state"] == "EXISTING_REUSED"
+        assert methods[method_id]["current_execution_timeframes"] == reg.TIMEFRAMES
+        assert methods[method_id]["canonical_path"] == (
+            "volatility_momentum_evidence.context.extended_indicators"
+        )
     assert methods["ATR_WILDER"]["canonical_path"] == "volatility_momentum_evidence"
     assert methods["CHAN"]["window_classes"] == (
         "VARIABLE_STRUCTURE", "INCREMENTAL_STATE_MACHINE",
@@ -394,10 +400,10 @@ def test_method_window_policy_view_is_complete_manifest_bound_and_non_mutating()
     }
     # Explicit manifest-version refreeze for accepted source-bound Quality/Valuation
     # owners; historical pre-admission digests remain in Git. V2.5 is unchanged.
-    assert reg.digest(pre_intraday_manifest) == "a27f1bd77baec12b37c62179d3a15db5f7047506a36dbe4c31f033a771155dd9"
-    assert reg.MANIFEST_HASH == "f0bbecdc5d5bad05e7a9e5268834c9b6ac0ebb57a6ea877112e7690b3b84e323"
+    assert reg.digest(pre_intraday_manifest) == "a5ef7ee87e72ee6348ce5f4ae9210aa16a9a9e2161454eea2e383a83b6bae109"
+    assert reg.MANIFEST_HASH == "ef13cfd8625cfcd90a518f4704f2cdafdaace0345d9356bf687d971c864289da"
     assert reg.MANIFEST_HASH == manifest_before == reg.digest(reg.manifest_document())
-    assert reg.digest(reg.METRIC_BINDINGS) == metrics_before == "ac2e214238229453592464d99ed6341651f7d232c9339da66d2fec7fc4d6729a"
+    assert reg.digest(reg.METRIC_BINDINGS) == metrics_before == "dd73563e4183845fca8d4d4e3a19183aaf024e7a4c2256cfddde1ce0a075bef1"
     assert not any(
         any(token in metric["id"] for token in ("slope", "compression", "release", "cross"))
         for metric in reg.METRIC_BINDINGS
@@ -460,19 +466,31 @@ def test_timeframe_family_matrix_is_exact_56_cells_and_keeps_deferred_methods_vi
     assert set(matrix["timeframes"]) == set(reg.TIMEFRAMES)
     assert set(matrix["families"]) == set(reg.TECHNICAL_EVIDENCE_FAMILIES)
     daily_supply = cells[("daily", "SUPPLY")]
-    assert daily_supply["state"] == "READY"
+    assert daily_supply["state"] == "PARTIAL"
     assert {item["method_id"] for item in daily_supply["method_coverage"] if item["state"] == "READY"} >= {
         "SUPPLY_RELATIVE_VOLUME", "SUPPLY_DIRECTIONAL_VOLUME", "SUPPLY_CMF",
     }
+    daily_supply_states = {
+        item["method_id"]: item["state"] for item in daily_supply["method_coverage"]
+    }
+    assert daily_supply_states["OBV_ADL"] == "UNKNOWN"
+    assert daily_supply_states["MFI"] == "UNKNOWN"
     weekly_supply = cells[("weekly", "SUPPLY")]
     assert weekly_supply["state"] == "MISSING"
     daily_momentum = cells[("daily", "MOMENTUM")]
-    assert daily_momentum["state"] == "READY"
+    assert daily_momentum["state"] == "PARTIAL"
     method_states = {item["method_id"]: item["state"] for item in daily_momentum["method_coverage"]}
     assert method_states["MACD"] == "READY"
     assert method_states["ATR_WILDER"] == "READY"
-    assert method_states["ADX_DMI"] == "NOT_ADMITTED"
-    assert method_states["KDJ"] == "NOT_ADMITTED"
+    assert method_states["ADX_DMI"] == "UNKNOWN"
+    assert method_states["KDJ"] == "UNKNOWN"
+    daily_pattern = cells[("daily", "PATTERN")]
+    assert daily_pattern["state"] == "PARTIAL"
+    pattern_states = {
+        item["method_id"]: item["state"] for item in daily_pattern["method_coverage"]
+    }
+    assert pattern_states["CANDLESTICK"] == "READY"
+    assert pattern_states["BOLLINGER"] == "UNKNOWN"
     weekly_momentum = cells[("weekly", "MOMENTUM")]
     weekly_states = {item["method_id"]: item["state"] for item in weekly_momentum["method_coverage"]}
     # The method is admitted on weekly bars, but this no-MTF fixture has no
@@ -899,17 +917,28 @@ def test_forged_supply_and_cost_values_without_timeframe_source_carrier_remain_u
         "multi_timeframe_structure_context": {"timeframes": {"30m": frame}},
     })
     cells = {(row["timeframe"], row["family"]): row for row in matrix["cells"]}
+    original_ids = {
+        "SUPPLY_RELATIVE_VOLUME", "SUPPLY_DIRECTIONAL_VOLUME", "SUPPLY_CMF",
+        "COST_ROLLING_REFERENCE",
+    }
     for family in ("SUPPLY", "COST"):
         methods = [
             row for row in cells[("30m", family)]["method_coverage"]
             if row["method_id"] in reg.SOURCE_BOUND_TIMEFRAME_METHOD_IDS
         ]
         assert methods
-        assert all(row["state"] == "UNKNOWN" for row in methods)
-        assert all(row["reason"] == "TIMEFRAME_SOURCE_CARRIER_UNBOUND" for row in methods)
+        original = [row for row in methods if row["method_id"] in original_ids]
+        extended = [row for row in methods if row["method_id"] in {"OBV_ADL", "MFI"}]
+        assert all(row["state"] == "UNKNOWN" for row in original)
+        assert all(row["reason"] == "TIMEFRAME_SOURCE_CARRIER_UNBOUND" for row in original)
         assert all(
             row["runtime_source_binding"]["runtime_source_bound"] is False
-            for row in methods
+            for row in original
+        )
+        assert all(row["state"] == "MISSING" for row in extended)
+        assert all(
+            row["reason"] == "TIMEFRAME_EXTENDED_INDICATOR_EVIDENCE_MISSING"
+            for row in extended
         )
 
 
@@ -2176,16 +2205,15 @@ def test_foundation_receipt_separates_raw_declared_effective_and_runtime_states(
     receipt = reg.compile_foundation_evidence_receipt(factor)
 
     assert receipt["method_profile_count"] == 43
-    assert receipt["existing_method_count"] == 30
-    assert receipt["deferred_method_count"] == 13
-    assert receipt["technical_existing_method_count"] == 25
-    assert receipt["target_method_timeframe_pairs"] == 172
-    assert receipt["declared_execution_pairs"] == 34
-    # CI93->technical-foundation predecessor: 136 effective/19 overrides.
-    # MACD, RSI and Relative Strength gain six explicit non-daily seams each;
-    # missing benchmark inputs stay MISSING and never become Product facts.
-    assert receipt["effective_execution_pairs"] == 136 + 3 * 6 == 154
-    assert len(receipt["effective_override_rows"]) == 19 + 3 == 22
+    assert receipt["existing_method_count"] == 35
+    assert receipt["deferred_method_count"] == 8
+    assert receipt["technical_existing_method_count"] == 30
+    assert receipt["target_method_timeframe_pairs"] == 207
+    assert receipt["declared_execution_pairs"] == 69
+    # Five source-bound extended methods add exact seven-timeframe execution
+    # while preserving the existing 22 effective override rows.
+    assert receipt["effective_execution_pairs"] == 189
+    assert len(receipt["effective_override_rows"]) == 22
     assert receipt["all_56_cells_executable"] is True
     assert receipt["regime_shared_projection_count"] == 7
     assert receipt["matrix_implementation_receipt"]["executable_cell_count"] == 56
@@ -3142,7 +3170,19 @@ def test_mtf_execution_exposes_source_bound_supply_and_fail_closed_untyped_cost(
     assert cells[("weekly", "MOMENTUM")]["reason"] == "CURRENT_METHOD_STATE_UNKNOWN"
     assert cells[("weekly", "TREND_RS")]["state"] == "PARTIAL"
     assert cells[("weekly", "MTF")]["state"] == "READY"
-    assert cells[("weekly", "SUPPLY")]["state"] == "READY"
+    assert cells[("weekly", "SUPPLY")]["state"] == "PARTIAL"
+    weekly_supply_methods = {
+        row["method_id"]: row for row in cells[("weekly", "SUPPLY")]["method_coverage"]
+    }
+    for method_id in (
+        "SUPPLY_RELATIVE_VOLUME", "SUPPLY_DIRECTIONAL_VOLUME", "SUPPLY_CMF",
+    ):
+        assert weekly_supply_methods[method_id]["state"] == "READY"
+    assert weekly_supply_methods["OBV_ADL"]["state"] == "UNKNOWN"
+    assert weekly_supply_methods["MFI"]["state"] == "UNKNOWN"
+    assert weekly_supply_methods["OBV_ADL"]["reason"] == (
+        "TIMEFRAME_EXTENDED_SOURCE_IDENTITY_MISMATCH"
+    )
     assert cells[("weekly", "COST")]["state"] == "UNKNOWN"
     assert cells[("weekly", "PATTERN")]["state"] == "UNKNOWN"
     weekly_candle = next(
@@ -3265,10 +3305,18 @@ def test_current_intraday_context_keeps_unconfirmed_structure_and_trigger_unadmi
         assert cells[(timeframe, "MOMENTUM")]["state"] == "PARTIAL"
         assert cells[(timeframe, "MTF")]["state"] == "PARTIAL"
         assert cells[(timeframe, "COST")]["state"] == "PARTIAL"
-        # Four descriptive pivot owners exist; absent confirmation is MISSING,
-        # not READY or a strategy trigger.
+        # Confirmed structure and trigger owners remain MISSING. Bollinger is a
+        # source-bound descriptive envelope, so PATTERN is only PARTIAL and
+        # gains no independent trigger authority.
         assert cells[(timeframe, "STRUCTURE")]["state"] == "MISSING"
-        assert cells[(timeframe, "PATTERN")]["state"] == "MISSING"
+        assert cells[(timeframe, "PATTERN")]["state"] == "PARTIAL"
+        pattern_methods = {
+            row["method_id"]: row
+            for row in cells[(timeframe, "PATTERN")]["method_coverage"]
+        }
+        assert pattern_methods["BOLLINGER"]["state"] == "READY"
+        assert pattern_methods["BOLLINGER"]["independent_action_authority"] is False
+        assert pattern_methods["CANDLESTICK"]["state"] == "MISSING"
         regime = cells[(timeframe, "REGIME")]
         assert regime["state"] == "UNKNOWN"
         assert regime["projection_scope"] == "SHARED_ASSET_CONTEXT"

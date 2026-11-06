@@ -44,17 +44,53 @@ def ensure_file_exists(path: Path, description: str) -> None:
         fail(f"{description} is missing: {path.relative_to(ROOT)}")
 
 
+def _git_symlink_target(path: Path) -> str | None:
+    relative = path.relative_to(ROOT).as_posix()
+    index = subprocess.run(
+        ["git", "ls-files", "-s", "--", relative],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    rows = [row.strip() for row in index.stdout.splitlines() if row.strip()]
+    if index.returncode != 0 or len(rows) != 1:
+        return None
+    fields = rows[0].split(maxsplit=3)
+    if len(fields) != 4 or fields[0] != "120000":
+        return None
+    blob = subprocess.run(
+        ["git", "cat-file", "-p", fields[1]],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    return blob.stdout.strip() if blob.returncode == 0 else None
+
+
 def ensure_symlink() -> None:
     ensure_file_exists(AGENTS, "canonical AGENTS.md")
     if not CLAUDE.exists():
         fail("CLAUDE.md is missing")
-    if not CLAUDE.is_symlink():
-        fail("CLAUDE.md must be a symlink to AGENTS.md")
+    if CLAUDE.is_symlink():
+        target = CLAUDE.readlink().as_posix()
+        if target != "AGENTS.md":
+            fail(f"CLAUDE.md must point to AGENTS.md, found: {target}")
+        return
 
-    target = Path(CLAUDE.readlink())
-    if target != Path("AGENTS.md"):
-        fail(f"CLAUDE.md must point to AGENTS.md, found: {target}")
-
+    # Git keeps the canonical 120000 symlink even when Windows checks it out as
+    # a regular file under core.symlinks=false.  Accept only that exact index
+    # identity and exact materialized link text; a tracked ordinary file still
+    # fails closed.
+    git_target = _git_symlink_target(CLAUDE)
+    materialized_target = CLAUDE.read_text(encoding="utf-8").strip()
+    if git_target != "AGENTS.md" or materialized_target != "AGENTS.md":
+        fail("CLAUDE.md must be the Git symlink 120000 -> AGENTS.md")
 
 def ensure_copilot_entry() -> None:
     ensure_file_exists(COPILOT, "repository Copilot instructions")

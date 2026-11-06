@@ -1865,6 +1865,17 @@ def _v25_timeframe_leaf_payload(
         "rsi_24": at(period_vm, "momentum.rsi.rsi_24"),
         "roc_20_pct": at(period_vm, "momentum.roc_20_completed_bars_pct"),
         "atr_wilder_14": at(period_vm, "volatility.atr_wilder_14"),
+        "adx": at(period_vm, "extended_indicators.values.adx"),
+        "plus_di": at(period_vm, "extended_indicators.values.plus_di"),
+        "minus_di": at(period_vm, "extended_indicators.values.minus_di"),
+        "bollinger_upper": at(period_vm, "extended_indicators.values.bollinger_upper"),
+        "bollinger_lower": at(period_vm, "extended_indicators.values.bollinger_lower"),
+        "kdj_k": at(period_vm, "extended_indicators.values.kdj_k"),
+        "kdj_d": at(period_vm, "extended_indicators.values.kdj_d"),
+        "kdj_j": at(period_vm, "extended_indicators.values.kdj_j"),
+        "obv": at(period_vm, "extended_indicators.values.obv"),
+        "adl": at(period_vm, "extended_indicators.values.adl"),
+        "mfi": at(period_vm, "extended_indicators.values.mfi"),
         "primary_pattern_type": at(period_pattern, "primary_pattern.pattern_type"),
         "primary_pattern_lifecycle": at(period_pattern, "primary_pattern.lifecycle"),
         "candlestick_state": at(period_pattern, "candlestick.status"),
@@ -1924,6 +1935,50 @@ def _v25_timeframe_leaf_payload(
                 factor,
                 "volatility_momentum_evidence.context.volatility.atr_wilder_14",
             ),
+            "adx": at(
+                factor,
+                "volatility_momentum_evidence.context.extended_indicators.values.adx",
+            ),
+            "plus_di": at(
+                factor,
+                "volatility_momentum_evidence.context.extended_indicators.values.plus_di",
+            ),
+            "minus_di": at(
+                factor,
+                "volatility_momentum_evidence.context.extended_indicators.values.minus_di",
+            ),
+            "bollinger_upper": at(
+                factor,
+                "volatility_momentum_evidence.context.extended_indicators.values.bollinger_upper",
+            ),
+            "bollinger_lower": at(
+                factor,
+                "volatility_momentum_evidence.context.extended_indicators.values.bollinger_lower",
+            ),
+            "kdj_k": at(
+                factor,
+                "volatility_momentum_evidence.context.extended_indicators.values.kdj_k",
+            ),
+            "kdj_d": at(
+                factor,
+                "volatility_momentum_evidence.context.extended_indicators.values.kdj_d",
+            ),
+            "kdj_j": at(
+                factor,
+                "volatility_momentum_evidence.context.extended_indicators.values.kdj_j",
+            ),
+            "obv": at(
+                factor,
+                "volatility_momentum_evidence.context.extended_indicators.values.obv",
+            ),
+            "adl": at(
+                factor,
+                "volatility_momentum_evidence.context.extended_indicators.values.adl",
+            ),
+            "mfi": at(
+                factor,
+                "volatility_momentum_evidence.context.extended_indicators.values.mfi",
+            ),
             "primary_pattern_type": at(
                 factor,
                 "pattern_trigger_evidence.context.primary_pattern.pattern_type",
@@ -1954,7 +2009,7 @@ def _v25_timeframe_leaf_payload(
         ),
         "SUPPLY": (
             "volume_status", "volume_ratio_5bar", "relative_volume_20d",
-            "directional_volume_balance", "cmf_20",
+            "directional_volume_balance", "cmf_20", "obv", "adl", "mfi",
         ),
         "COST": ("cost_reference_20", "cost_reference_60"),
         "STRUCTURE": (
@@ -1966,11 +2021,13 @@ def _v25_timeframe_leaf_payload(
             "macd_startup_reason", "rsi_status", "rsi_values",
             "rsi_startup_state", "rsi_startup_reason", "macd_dif",
             "macd_dea", "macd_bar", "rsi_6", "rsi_12", "rsi_24",
-            "roc_20_pct", "atr_wilder_14",
+            "roc_20_pct", "atr_wilder_14", "adx", "plus_di", "minus_di",
+            "kdj_k", "kdj_d", "kdj_j",
         ),
         "PATTERN": (
             "pattern_status", "pattern_reason", "primary_pattern_type",
             "primary_pattern_lifecycle", "candlestick_state",
+            "bollinger_upper", "bollinger_lower",
         ),
     }
     for family, fields in family_fields.items():
@@ -1998,6 +2055,8 @@ def _v25_timeframe_leaf_payload(
             "volume_ratio_5bar": ("SUPPLY_RELATIVE_VOLUME",),
             "directional_volume_balance": ("SUPPLY_DIRECTIONAL_VOLUME",),
             "cmf_20": ("SUPPLY_CMF",),
+            "obv": ("OBV_ADL",), "adl": ("OBV_ADL",),
+            "mfi": ("MFI",),
         },
         "COST": {
             "cost_reference_20": ("COST_ROLLING_REFERENCE",),
@@ -2015,6 +2074,13 @@ def _v25_timeframe_leaf_payload(
             "rsi_12": ("RSI",), "rsi_24": ("RSI",),
             "roc_20_pct": ("ROC",),
             "atr_wilder_14": ("ATR_WILDER",),
+            "adx": ("ADX_DMI",), "plus_di": ("ADX_DMI",),
+            "minus_di": ("ADX_DMI",),
+            "kdj_k": ("KDJ",), "kdj_d": ("KDJ",), "kdj_j": ("KDJ",),
+        },
+        "PATTERN": {
+            "bollinger_upper": ("BOLLINGER",),
+            "bollinger_lower": ("BOLLINGER",),
         },
     }
     matrix_cells = at(material, "trace.timeframe_family_matrix.cells") or ()
@@ -2133,6 +2199,7 @@ def _v25_timeframe_leaf_text(payload: Mapping) -> str:
         ("20日量比" if payload.get("timeframe") == "daily" else "20根量比", "relative_volume_20d"),
         ("方向量", "directional_volume_balance"),
         ("CMF20", "cmf_20"),
+        ("OBV", "obv"), ("ADL", "adl"), ("MFI14", "mfi"),
     ):
         number = _v25_number(payload.get(key))
         if number is not None:
@@ -2164,6 +2231,8 @@ def _v25_timeframe_leaf_text(payload: Mapping) -> str:
         ("DIF", "macd_dif"), ("DEA", "macd_dea"), ("BAR", "macd_bar"),
         ("RSI6", "rsi_6"), ("RSI12", "rsi_12"), ("RSI24", "rsi_24"),
         ("ROC20%", "roc_20_pct"), ("ATR14", "atr_wilder_14"),
+        ("ADX14", "adx"), ("+DI14", "plus_di"), ("-DI14", "minus_di"),
+        ("KDJ-K", "kdj_k"), ("KDJ-D", "kdj_d"), ("KDJ-J", "kdj_j"),
     ):
         number = _v25_number(payload.get(key))
         if number is not None:
@@ -2183,6 +2252,11 @@ def _v25_timeframe_leaf_text(payload: Mapping) -> str:
         f"RSI启动={payload.get('rsi_startup_state') or 'UNKNOWN'}"
     )
     parts.append("波动/动量 " + "；".join(momentum_bits))
+    bollinger_bits = []
+    for label, key in (("BOLL上轨", "bollinger_upper"), ("BOLL下轨", "bollinger_lower")):
+        number = _v25_number(payload.get(key))
+        if number is not None:
+            bollinger_bits.append(f"{label}={number}")
     pattern_bits = [
         value for value in (
             f"形态={payload.get('primary_pattern_type')}" if payload.get("primary_pattern_type") else None,
@@ -2191,6 +2265,7 @@ def _v25_timeframe_leaf_text(payload: Mapping) -> str:
             f"周期形态={payload.get('pattern_status')}" if payload.get("pattern_status") else None,
         ) if value
     ]
+    pattern_bits.extend(bollinger_bits)
     parts.append("形态/触发 " + ("；".join(pattern_bits) if pattern_bits else "ALGORITHM_GAP"))
     parts.append(
         "多周期/来源 "
@@ -2231,6 +2306,9 @@ def _v25_reader_numeric_leaf_audit(payload: Mapping, rendered_text: str) -> dict
     numeric("SUPPLY", volume_label, payload.get("relative_volume_20d"))
     numeric("SUPPLY", "方向量", payload.get("directional_volume_balance"))
     numeric("SUPPLY", "CMF20", payload.get("cmf_20"))
+    numeric("SUPPLY", "OBV", payload.get("obv"))
+    numeric("SUPPLY", "ADL", payload.get("adl"))
+    numeric("SUPPLY", "MFI14", payload.get("mfi"))
     numeric("COST", "成本20", payload.get("cost_reference_20"))
     numeric("COST", "成本60", payload.get("cost_reference_60"))
     for label, key in (("现价", "current_close"), ("支撑", "nearest_support"),
@@ -2240,8 +2318,12 @@ def _v25_reader_numeric_leaf_audit(payload: Mapping, rendered_text: str) -> dict
         ("DIF", "macd_dif"), ("DEA", "macd_dea"), ("BAR", "macd_bar"),
         ("RSI6", "rsi_6"), ("RSI12", "rsi_12"), ("RSI24", "rsi_24"),
         ("ROC20%", "roc_20_pct"), ("ATR14", "atr_wilder_14"),
+        ("ADX14", "adx"), ("+DI14", "plus_di"), ("-DI14", "minus_di"),
+        ("KDJ-K", "kdj_k"), ("KDJ-D", "kdj_d"), ("KDJ-J", "kdj_j"),
     ):
         numeric("MOMENTUM", label, payload.get(key))
+    numeric("PATTERN", "BOLL上轨", payload.get("bollinger_upper"))
+    numeric("PATTERN", "BOLL下轨", payload.get("bollinger_lower"))
     if not admitted:
         forbidden = (
             "SMA ", "MA斜率% ", "相对比率变化%=", "超额收益百分点=",
@@ -2249,7 +2331,9 @@ def _v25_reader_numeric_leaf_audit(payload: Mapping, rendered_text: str) -> dict
             "20日量比=", "20根量比=",
                      "方向量=", "CMF20=", "成本20=", "成本60=", "现价=",
                      "支撑=", "压力=", "DIF=", "DEA=", "BAR=", "RSI6=",
-                     "RSI12=", "RSI24=", "ROC20%=", "ATR14=")
+                     "RSI12=", "RSI24=", "ROC20%=", "ATR14=", "ADX14=",
+                     "+DI14=", "-DI14=", "KDJ-K=", "KDJ-D=", "KDJ-J=",
+                     "OBV=", "ADL=", "MFI14=", "BOLL上轨=", "BOLL下轨=")
         if any(token in rendered_text for token in forbidden):
             raise TraceabilityError("V25_READER_UNADMITTED_LEAF_VISIBLE")
         return {"input_numeric_count": 0, "visible_numeric_count": 0,

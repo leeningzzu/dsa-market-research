@@ -1650,7 +1650,7 @@ def test_native_zero_model_record_writes_only_the_admitted_temp_db_surfaces(
         assert gate4["state"] == "VETOED"
         assert gate4["canonical_action_authority"] is True
         assert gate4["correlation_dedup"]["status"] == "VERIFIED"
-        assert gate4["correlation_dedup"]["group_count"] == 16
+        assert gate4["correlation_dedup"]["group_count"] == 17
         assert set(gate4["vetoes"]) == {
             "DATA", "RISK", "LIQUIDITY", "EXECUTION",
         }

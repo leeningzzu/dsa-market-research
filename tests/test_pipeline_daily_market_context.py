@@ -865,7 +865,7 @@ def test_b5_month_week_recursive_momentum_components_drive_real_daily_fetch_hori
     macd = owner.macd_startup_comparison_required_bars()
     rsi = rsi_startup_comparison_required_bars()
     assert current["source_only_timeframe_required_bars"] == {
-        "daily": 268, "weekly": 40, "monthly": 40,
+        "daily": 268, "weekly": 160, "monthly": 160,
     }
     assert current["mtf_recursive_comparison_required_bars"] == {
         "MACD_STARTUP_COMPARISON": macd,
@@ -892,15 +892,15 @@ def test_b5_early_asof_partial_calendar_keeps_legal_ma_and_structure_nontrigger(
     early = owner._current_daily_window_plan(
         market="cn", target_date=date(2012, 10, 12),
     )
-    assert early["source_only_timeframe_required_bars"]["monthly"] == 40
-    assert early["timeframe_required_bars"]["monthly"] == 156
+    assert early["source_only_timeframe_required_bars"]["monthly"] == 160
+    assert early["timeframe_required_bars"]["monthly"] == 160
     assert early["mtf_recursive_calendar_status"]["monthly"] == {
         "RSI_STARTUP_COMPARISON": "CALENDAR_HISTORY_OUT_OF_RANGE",
         "ATR_STARTUP_COMPARISON": "ACQUISITION_PLANNED",
         "MACD_STARTUP_COMPARISON": "ACQUISITION_PLANNED",
     }
     assert early["timeframe_required_bars"]["weekly"] >= owner.rsi_startup_comparison_required_bars()
-    assert early["start_date"] == date(1999, 10, 8)
+    assert early["start_date"] == date(1999, 6, 1)
     # An independently routed 2-bar candlestick may not inherit monthly
     # oscillators or demand 11+ years of data.
     candlestick = next(row for row in compile_method_window_policy_view()["methods"]
@@ -1166,11 +1166,10 @@ def test_b5_seven_timeframe_indicator_windows_keep_method_specific_inputs() -> N
         market="cn", target_date=date(2026, 10, 12),
     )
     assert higher["source_only_timeframe_required_bars"] == {
-        "daily": 268, "weekly": 40, "monthly": 40,
+        "daily": 268, "weekly": 160, "monthly": 160,
     }
-    # The dynamic historical XSHG calendar now reaches the lawful 268-month
-    # RSI comparison window.  Source-only W/M remains the declared 40-bar
-    # carrier; the effective recursive consumer expands the shared request.
+    # The five extended OHLCV methods require 160 source bars on every routed
+    # timeframe. Recursive RSI remains the longest effective W/M consumer.
     assert higher["timeframe_required_bars"] == {
         "daily": 268, "weekly": 268, "monthly": 268,
     }
@@ -1198,6 +1197,8 @@ def test_b5_seven_timeframe_indicator_windows_keep_method_specific_inputs() -> N
         assert methods["MACD_FORMULA_MINIMUM"] == 35
         assert methods["MACD_STARTUP_COMPARISON"] == 4 * (26 + 9)
         assert methods["RSI_STARTUP_COMPARISON"] == 268
+        for method_id in ("ADX_DMI", "BOLLINGER", "KDJ", "OBV_ADL", "MFI"):
+            assert methods[method_id] == 160
     # Changes to the native MACD owner, not magic constants, change the horizon.
     with patch.object(owner.StockTrendAnalyzer, "MACD_SIGNAL", 17):
         longer = owner._current_intraday_window_plan()
@@ -1471,7 +1472,7 @@ def test_daily_window_plan_is_method_and_timeframe_driven_not_magic_days() -> No
         target_date=target,
     )
     assert current["source_only_timeframe_required_bars"] == {
-        "daily": 268, "weekly": 40, "monthly": 40,
+        "daily": 268, "weekly": 160, "monthly": 160,
     }
     assert current["timeframe_required_bars"] == {
         "daily": 268, "weekly": 268, "monthly": 268,
@@ -1480,6 +1481,9 @@ def test_daily_window_plan_is_method_and_timeframe_driven_not_magic_days() -> No
     assert current["start_date"] == date(2004, 6, 1)
     assert current["method_required_bars"]["daily"]["CUP_HANDLE"] == 110
     assert current["method_required_bars"]["monthly"]["MA_COMPRESSION_RELEASE"] == 40
+    for method_id in ("ADX_DMI", "BOLLINGER", "KDJ", "OBV_ADL", "MFI"):
+        assert current["method_required_bars"]["weekly"][method_id] == 160
+        assert current["method_required_bars"]["monthly"][method_id] == 160
     assert current["method_window_classes"]["daily"]["CUP_HANDLE"] == (
         "VARIABLE_STRUCTURE",
     )
