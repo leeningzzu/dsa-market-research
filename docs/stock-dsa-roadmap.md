@@ -36,7 +36,7 @@ flowchart LR
 CONTROL_ID = STOCK_DSA_MASTER_ROUTE_20261106_M_INDEX_CURRENT_LOCAL_REENTRY_V2
 SOURCE_AUTHORITY = 2026-11-06 三次 Project Files inventory 均证明恰好 8 个唯一 Owner，01/05 物理 current 为 v3.556、其余六个稳定；生成 ZIP 和候选 Source 不是第九 Owner。工程期间不按小步频繁换 Source，只在 material closure 后按 01/05 配对 checkpoint。
 LOCAL_AUTHORITY = 本机唯一耐久根为 `D:\StockResearchData`；外部指针 `STOCK_DSA_CURRENT.json` 指向 canonical local repo，WebCodex 唯一可写 worktree 与该 repo 共用同一 Git common directory。它们是一个 Git 历史的耐久存储与可写视图，不是两套 Production Shell。
-GIT_AUTHORITY = canonical repository `https://github.com/leeningzzu/dsa-market-research.git`；开发目标分支 `feat/stock-dsa-m2-source-gates-v1`，生产分支 `main`。最近已提交本地前驱为 `9a7713e9482b95340a58600273e4be892332e5a7`；包含本控制页的 current commit 必须由 Git 现场解析。远端 feature/PR/CI currentness 仍须实际核验，不得用本地 commit 或缓存 remote ref 冒充远端接受。
+GIT_AUTHORITY = canonical repository `https://github.com/leeningzzu/dsa-market-research.git`；开发目标分支 `feat/stock-dsa-m2-source-gates-v1`，生产分支 `main`。当前耐久分支提交和远端 feature 均须由 Git 现场解析；GitHub HTTPS origin 仅允许可选 `.git`/尾部 `/` 的等价拼写，host/owner/repo 必须严格一致。GitHub Actions PR detached checkout 缺 remote-tracking ref 时，只允许用精确 `GITHUB_SHA==HEAD` 与 `GITHUB_HEAD_REF` 证明该次 CI checkout，不得把它冒充新账号 clone 的远端 feature currentness。
 REENTRY_CONTRACT = `AGENTS.md` 为规则真源，`docs/stock-dsa-github-reentry.md` 为同机本地优先／跨机 GitHub 或 bundle 的恢复入口，确定性校验器为 `python scripts/verify_stock_dsa_reentry.py --json`。同机换账号无需搬运仓库或复述旧聊天。
 IMMUTABLES = 接受的原机器图 149628 字节/775 边/SHA256 `b4f69f76807ac44bc0fea1a03f9aa38484b6083ca574a3699220b0564ac55aed`；原 V2.5 125919 字节/SHA256 `039ca6394baf9cf39494cc29f512802b114c8227f8c965723197a8df4b9de823`，均不修改、不重生成。
 

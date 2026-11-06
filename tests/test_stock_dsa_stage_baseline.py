@@ -545,6 +545,15 @@ def test_current_control_rejects_historical_product_and_email_geometry_substitut
     assert "docs/stock-dsa-github-reentry.md" in roadmap
     assert "scripts/verify_stock_dsa_reentry.py --json" in roadmap
     regression = baseline["regression_policy"]
+    assert regression[
+        "canonical_github_https_origin_optional_dot_git_and_trailing_slash_equivalent"
+    ] is True
+    assert regression[
+        "github_actions_pr_detached_checkout_requires_exact_sha_and_head_ref_when_remote_ref_absent"
+    ] is True
+    assert regression[
+        "ordinary_local_reentry_still_requires_real_feature_ref_or_exact_bundle"
+    ] is True
     assert regression["historical_operation_admission_never_backfills_current_runtime"] is True
     assert regression["html_geometry_never_proves_reader_visible_numeric_leaves"] is True
     assert regression["reader_numeric_leaf_audit_required"] is True

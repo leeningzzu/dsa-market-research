@@ -54,6 +54,8 @@ python scripts/verify_stock_dsa_reentry.py --json
 
 任何 STOP 都必须按输出定位 Git、缺文件、计数、immutable hash 或文档漂移；禁止用旧聊天猜 current。
 
+Canonical GitHub HTTPS origin 允许仓库 URL 有无 `.git` 后缀或尾部 `/` 的等价拼写，但 HTTPS、`github.com`、owner 与 repository 必须完全一致。GitHub Actions PR 可为 detached checkout 且没有 `origin/feature` 本地 ref；此时 verifier 只接受 `GITHUB_ACTIONS=true`、`GITHUB_SHA==HEAD` 与 `GITHUB_HEAD_REF` 精确匹配。普通本地或新账号 clone 仍必须有真实 feature ref，不能借 CI 环境变量绕过。
+
 ## 4. 同机新账号首条 Prompt
 
 ```text

@@ -1260,6 +1260,9 @@
     "NO_PARALLEL_SHELL_DATABASE_SCHEDULER_OR_REPORT_AUTHORITY"
   ],
   "regression_policy": {
+    "canonical_github_https_origin_optional_dot_git_and_trailing_slash_equivalent": true,
+    "github_actions_pr_detached_checkout_requires_exact_sha_and_head_ref_when_remote_ref_absent": true,
+    "ordinary_local_reentry_still_requires_real_feature_ref_or_exact_bundle": true,
     "static_counts_never_prove_runtime_ready": true,
     "runtime_method_receipts_required_for_strict_current_research": true,
     "mtf_screening_requires_strict_receipt_and_canonical_binding": true,

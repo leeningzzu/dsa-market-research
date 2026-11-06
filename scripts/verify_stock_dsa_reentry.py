@@ -9,10 +9,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 EXPECTED_ORIGIN = "https://github.com/leeningzzu/dsa-market-research.git"
 FEATURE_BRANCH = "feat/stock-dsa-m2-source-gates-v1"
@@ -55,6 +57,48 @@ def _nested(document: dict[str, Any], *keys: str) -> Any:
             return None
         value = value[key]
     return value
+
+
+def _normalized_repository_url(value: object) -> str:
+    """Normalize only the harmless GitHub HTTPS spelling difference."""
+    text = str(value or "").strip()
+    parsed = urlsplit(text)
+    if (
+        parsed.scheme.lower() == "https"
+        and (parsed.hostname or "").lower() == "github.com"
+        and parsed.username is None
+        and parsed.password is None
+        and parsed.port is None
+        and not parsed.query
+        and not parsed.fragment
+    ):
+        path = parsed.path.rstrip("/")
+        if path.lower().endswith(".git"):
+            path = path[:-4]
+        return f"https://github.com{path}"
+    return text.rstrip("/")
+
+
+def _github_actions_feature_checkout(head: str | None) -> dict[str, str] | None:
+    """Return exact PR-checkout identity when no remote-tracking ref exists."""
+    if str(os.environ.get("GITHUB_ACTIONS") or "").lower() != "true":
+        return None
+    github_sha = str(os.environ.get("GITHUB_SHA") or "").strip().lower()
+    github_head_ref = str(os.environ.get("GITHUB_HEAD_REF") or "").strip()
+    github_ref = str(os.environ.get("GITHUB_REF") or "").strip()
+    normalized_head = str(head or "").strip().lower()
+    if (
+        len(github_sha) != 40
+        or any(char not in "0123456789abcdef" for char in github_sha)
+        or github_sha != normalized_head
+        or github_head_ref != FEATURE_BRANCH
+    ):
+        return None
+    return {
+        "github_sha": github_sha,
+        "github_head_ref": github_head_ref,
+        "github_ref": github_ref,
+    }
 
 
 def verify(
@@ -213,13 +257,22 @@ def verify(
             )
 
     origin_result = _git(root, "remote", "get-url", "origin")
+    expected_origin_normalized = _normalized_repository_url(expected_origin)
     if origin_result.returncode != 0:
         fail("ORIGIN_UNAVAILABLE", stderr=str(origin_result.stderr).strip())
         origin = None
+        origin_normalized = None
     else:
         origin = str(origin_result.stdout).strip()
-        if origin != expected_origin:
-            fail("ORIGIN_MISMATCH", actual=origin, expected=expected_origin)
+        origin_normalized = _normalized_repository_url(origin)
+        if origin_normalized != expected_origin_normalized:
+            fail(
+                "ORIGIN_MISMATCH",
+                actual=origin,
+                expected=expected_origin,
+                actual_normalized=origin_normalized,
+                expected_normalized=expected_origin_normalized,
+            )
 
     head_result = _git(root, "rev-parse", "HEAD")
     head = str(head_result.stdout).strip() if head_result.returncode == 0 else None
@@ -241,19 +294,35 @@ def verify(
     remote_ref_name = f"refs/remotes/origin/{FEATURE_BRANCH}"
     feature_result = _git(root, "rev-parse", "--verify", remote_ref_name)
     feature_ref = str(feature_result.stdout).strip() if feature_result.returncode == 0 else None
+    github_actions_checkout = _github_actions_feature_checkout(head)
+    feature_verification = None
     if require_feature_ref:
-        if not feature_ref:
+        if feature_ref and head == feature_ref:
+            feature_verification = "REMOTE_TRACKING_REF_EXACT"
+        elif github_actions_checkout is not None:
+            feature_verification = "GITHUB_ACTIONS_PR_CHECKOUT_EXACT_EVENT_IDENTITY"
+        elif not feature_ref:
             fail("FEATURE_REMOTE_REF_UNAVAILABLE", ref=remote_ref_name)
-        elif head != feature_ref:
+        else:
             fail("HEAD_FEATURE_REF_MISMATCH", head=head, feature_ref=feature_ref)
+    elif feature_ref and head == feature_ref:
+        feature_verification = "REMOTE_TRACKING_REF_EXACT"
+    elif github_actions_checkout is not None:
+        feature_verification = "GITHUB_ACTIONS_PR_CHECKOUT_EXACT_EVENT_IDENTITY"
     elif not feature_ref:
         warn("FEATURE_REMOTE_REF_UNAVAILABLE", ref=remote_ref_name)
+    else:
+        warn("HEAD_FEATURE_REF_MISMATCH", head=head, feature_ref=feature_ref)
 
     facts["git"] = {
         "origin": origin,
+        "origin_normalized": origin_normalized,
+        "expected_origin_normalized": expected_origin_normalized,
         "head": head,
         "branch": branch or "DETACHED",
         "feature_remote_ref": feature_ref,
+        "feature_verification": feature_verification,
+        "github_actions_checkout": github_actions_checkout,
         "dirty_entry_count": len(dirty_paths),
     }
     return {
