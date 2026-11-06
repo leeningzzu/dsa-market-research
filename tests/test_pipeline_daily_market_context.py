@@ -6,7 +6,7 @@ from __future__ import annotations
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -16,11 +16,75 @@ from data_provider.intraday_data_identity import (
     attach_intraday_data_identity,
     build_intraday_data_identity,
 )
+from data_provider.daily_data_identity import (
+    attach_daily_data_identity,
+    build_daily_data_identity,
+    canonical_identity_json,
+)
 
 from src.analyzer import GeminiAnalyzer
+from src.core import pipeline as pipeline_owner
 from src.core.pipeline import StockAnalysisPipeline
 from src.enums import ReportType
 from src.services.daily_market_context import DailyMarketContext
+
+
+def _typed_daily_frame(
+    sessions,
+    *,
+    code: str = "600519",
+    requested_start: str | None = None,
+    requested_end: str | None = None,
+    observed_at: datetime | None = None,
+) -> pd.DataFrame:
+    normalized = [value.date() if hasattr(value, "date") else value for value in sessions]
+    frame = pd.DataFrame([
+        {
+            "date": value,
+            "open": 10.0 + index,
+            "high": 11.0 + index,
+            "low": 9.0 + index,
+            "close": 10.5 + index,
+            "volume": 1000.0 + index,
+            "amount": 10500.0 + index,
+            "pct_chg": 0.1 + index,
+            "data_source": "BaostockFetcher",
+        }
+        for index, value in enumerate(normalized)
+    ])
+    identity = build_daily_data_identity(
+        frame,
+        provider_identity="BaostockFetcher",
+        provider_route="unit.daily.provider",
+        actual_response_branch="unit:qfq",
+        requested_adjustment_basis="qfq",
+        observed_adjustment_basis="qfq",
+        basis_evidence="unit-test",
+        requested_start=requested_start or normalized[0].isoformat(),
+        requested_end=requested_end or normalized[-1].isoformat(),
+        currency="CNY",
+        volume_unit="share",
+        amount_unit="CNY",
+        identity_state="OBSERVED",
+        observed_at=observed_at or datetime.now(timezone.utc),
+        instrument=code,
+    )
+    attach_daily_data_identity(frame, identity)
+    return frame
+
+
+def _typed_daily_rows(frame: pd.DataFrame, *, code: str = "600519"):
+    identity = frame.attrs["daily_data_identity"]
+    identity_json = canonical_identity_json(identity)
+    return [
+        SimpleNamespace(
+            code=code,
+            **record,
+            data_identity_json=identity_json,
+            data_identity_hash=identity["identity_hash"],
+        )
+        for record in frame.to_dict("records")
+    ]
 
 
 def _pipeline_config(*, daily_market_context_enabled: bool) -> SimpleNamespace:
@@ -72,6 +136,145 @@ def _market_context() -> DailyMarketContext:
         summary="大盘退潮，高风险，建议观望，仓位上限30%。",
         risk_tags=["high_risk", "low_position_cap"],
         source="analysis_history",
+    )
+
+
+def test_gate4_runtime_context_projects_quote_and_completed_5m_without_new_authority() -> None:
+    quote = SimpleNamespace(
+        source=SimpleNamespace(value="fixture_quote"),
+        price=10.5,
+        volume=100000.0,
+        amount=1050000.0,
+        turnover_rate=1.2,
+        stale=False,
+    )
+    mtf = {
+        "timeframes": {
+            "5m": {
+                "status": "READY",
+                "completed_bar_only": True,
+                "observations": 48,
+                "completed_through": "2026-10-23",
+                "source_alignment": {"status": "SINGLE_SOURCE"},
+            },
+        },
+    }
+
+    context = StockAnalysisPipeline._build_gate4_runtime_context(
+        realtime_quote=quote,
+        multi_timeframe_structure_context=mtf,
+        asset_type="stock",
+    )
+
+    assert context == {
+        "schema_version": "gate4-runtime-context-v1",
+        "liquidity": {
+            "source": "fixture_quote",
+            "price": 10.5,
+            "volume": 100000.0,
+            "amount": 1050000.0,
+            "turnover_rate": 1.2,
+            "stale": False,
+        },
+        "execution": {
+            "status": "READY",
+            "completed_bar_only": True,
+            "source_alignment_state": "SINGLE_SOURCE",
+            "observations": 48,
+            "completed_through": "2026-10-23",
+        },
+        "etf_specific": {"status": "NOT_APPLICABLE"},
+        "independent_action_authority": False,
+    }
+
+
+def test_final_factor_consumer_forwards_gate4_runtime_context() -> None:
+    pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+    pipeline.p0_bounded_trial = False
+    pipeline.config = SimpleNamespace(report_language="zh")
+    result = SimpleNamespace(name="贵州茅台", report_language="zh", dashboard={})
+    quote = SimpleNamespace(
+        source=SimpleNamespace(value="fixture_quote"),
+        price=10.5,
+        volume=100000.0,
+        amount=1050000.0,
+        turnover_rate=1.2,
+        stale=False,
+    )
+    mtf = {
+        "timeframes": {
+            "5m": {
+                "status": "READY",
+                "completed_bar_only": True,
+                "observations": 48,
+                "completed_through": "2026-10-23",
+                "source_alignment": {"status": "SINGLE_SOURCE"},
+            },
+        },
+    }
+    summary = {"canonical_decision": {"public_action": "avoid"}}
+
+    with patch(
+        "src.core.pipeline.SearchService.is_index_or_etf",
+        return_value=False,
+    ), patch(
+        "src.core.pipeline.build_stock_factor_decision_summary",
+        return_value=summary,
+    ) as builder, patch(
+        "src.core.pipeline.apply_canonical_decision_to_result",
+    ), patch(
+        "src.core.pipeline.assert_canonical_consumer_consistency",
+    ):
+        pipeline._attach_factor_decision_summary(
+            result,
+            code="600519",
+            trend_result=SimpleNamespace(),
+            fundamental_context=None,
+            chip_data=None,
+            multi_timeframe_structure_context=mtf,
+            method_execution_receipts={},
+            realtime_quote=quote,
+        )
+
+    assert result.dashboard["factor_decision"] is summary
+    gate4 = builder.call_args.kwargs["gate4_context"]
+    assert gate4["liquidity"]["source"] == "fixture_quote"
+    assert gate4["execution"]["status"] == "READY"
+    assert gate4["execution"]["source_alignment_state"] == "SINGLE_SOURCE"
+    assert gate4["independent_action_authority"] is False
+
+
+def test_pipeline_compiles_industry_route_before_business_valuation():
+    from tests.test_business_valuation_service import _admission, _base
+
+    request = _base(
+        "BANK",
+        inputs={"book_value_per_share": 12.0},
+        assumptions={"pb_low": 0.7, "pb_high": 1.2},
+    )
+    request.pop("industry_route_plan")
+    context = {
+        "industry_valuation_route_input": {
+            "asset_id": "600519", "asset_type": "stock",
+            "classification_standard": "TEST_INDUSTRY_STANDARD",
+            "classification_version": "2026Q3", "industry_code": "J66",
+            "industry_name": "Banking", "industry_family": "BANKING",
+            "profitability_state": "PROFITABLE",
+            "published_at": "2026-10-20T08:00:00+00:00",
+            "effective_from": "2026-09-30", "as_of": "2026-10-21T10:00:00+00:00",
+            "classification_admission": _admission("P_INDUSTRY"),
+        },
+        "business_valuation_input": request,
+    }
+    compiled = StockAnalysisPipeline._compile_business_valuation_context(
+        context, target_date=date(2026, 10, 21),
+    )
+    assert compiled["industry_valuation_route"]["status"] == "READY"
+    assert compiled["industry_valuation_route"]["route_id"] == "BANK"
+    assert compiled["business_valuation"]["status"] == "READY"
+    assert compiled["business_valuation"]["route_id"] == "BANK"
+    assert compiled["business_valuation"]["industry_route_plan"]["route_plan_hash"] == (
+        compiled["industry_valuation_route"]["route_plan_hash"]
     )
 
 
@@ -461,13 +664,25 @@ def test_daily_and_minute_recursive_owner_require_distinct_readiness_windows() -
     )
 
 
+def _monthly_macd_only_plan(target: date):
+    """Isolate the bounded MACD extension seam from shared RSI/ATR windows."""
+    from src.core import pipeline as owner
+
+    rows = pipeline_owner.compile_method_window_policy_view()["methods"]
+    selected = tuple(
+        row for row in rows
+        if row["method_id"] in {"MTF_MOMENTUM_CONTEXT", "MACD"}
+    )
+    return owner._current_daily_window_plan(
+        market="cn", target_date=target, method_rows=selected,
+    )
+
+
 def test_b5_monthly_macd_drift_proposes_bounded_native_35_bar_extensions_not_global_220() -> None:
     """A numeric DRIFT is the only legitimate trigger for a source-only extension."""
     from src.core import pipeline as owner
 
-    base = owner._current_daily_window_plan(
-        market="cn", target_date=date(2026, 10, 12),
-    )
+    base = _monthly_macd_only_plan(date(2026, 10, 12))
     first = base["timeframe_required_bars"]["monthly"]
     assert first == owner.macd_startup_comparison_required_bars()
     receipt = {
@@ -503,9 +718,7 @@ def test_b5_monthly_macd_actual_near_tolerance_can_propose_one_signal_period_ref
     """The third and last read uses current MACD signal bars, never magic 220."""
     from src.core import pipeline as owner
 
-    base = owner._current_daily_window_plan(
-        market="cn", target_date=date(2026, 10, 12),
-    )
+    base = _monthly_macd_only_plan(date(2026, 10, 12))
     native = {
         "method_owner": "StockTrendAnalyzer._calculate_macd",
         "status": "UNKNOWN",
@@ -571,9 +784,7 @@ def test_b5_monthly_macd_ready_or_forged_receipt_never_requeries_source() -> Non
     """A caller flag cannot make unrelated or already READY evidence request more data."""
     from src.core import pipeline as owner
 
-    base = owner._current_daily_window_plan(
-        market="cn", target_date=date(2026, 10, 12),
-    )
+    base = _monthly_macd_only_plan(date(2026, 10, 12))
     template = {
         "method_owner": "StockTrendAnalyzer._calculate_macd",
         "status": "UNKNOWN",
@@ -609,25 +820,26 @@ def test_b5_monthly_macd_calendar_and_non_mtf_method_do_not_erase_ma_source() ->
     from src.core import pipeline as owner
     from src.services.evidence_traceability_registry import compile_method_window_policy_view
 
-    early = owner._current_daily_window_plan(
-        market="cn", target_date=date(2012, 10, 12),
-    )
+    early_target = date(2006, 11, 30)
+    early = _monthly_macd_only_plan(early_target)
+    first = early["timeframe_required_bars"]["monthly"]
+    increment = owner.StockTrendAnalyzer.MACD_SLOW + owner.StockTrendAnalyzer.MACD_SIGNAL
     receipt = {
         "method_owner": "StockTrendAnalyzer._calculate_macd",
         "status": "UNKNOWN",
         "reason": "MACD_MULTI_START_NUMERIC_OR_STATE_DRIFT",
-        "observations": 40,
-        "required_observations": 140,
+        "observations": first + increment,
+        "required_observations": owner.macd_startup_comparison_required_bars(),
         "readiness_scope": "OBSERVED_COMPLETED_PREFIXES_ONLY",
     }
     no_calendar = owner._next_bounded_monthly_macd_window(
-        base_plan=early, target_date=date(2012, 10, 12),
-        receipt=receipt, attempted_monthly_bars=(40,),
+        base_plan=early, target_date=early_target,
+        receipt=receipt,
+        attempted_monthly_bars=(first, first + increment),
     )
     assert no_calendar["status"] == "NO_EXTENSION"
-    assert no_calendar["reason"] == "NATIVE_RECURSIVE_STARTUP_NOT_AVAILABLE"
-    assert early["source_only_timeframe_required_bars"]["monthly"] == 40
-
+    assert no_calendar["reason"] == "EXCHANGE_CALENDAR_EXTENSION_UNAVAILABLE"
+    assert early["source_only_timeframe_required_bars"]["monthly"] == 26
     candle = next(row for row in compile_method_window_policy_view()["methods"]
                   if row["method_id"] == "CANDLESTICK")
     no_mtf = owner._current_daily_window_plan(
@@ -653,26 +865,24 @@ def test_b5_month_week_recursive_momentum_components_drive_real_daily_fetch_hori
     macd = owner.macd_startup_comparison_required_bars()
     rsi = rsi_startup_comparison_required_bars()
     assert current["source_only_timeframe_required_bars"] == {
-        "daily": 268, "weekly": 40, "monthly": 40,
+        "daily": 268, "weekly": 160, "monthly": 160,
     }
     assert current["mtf_recursive_comparison_required_bars"] == {
         "MACD_STARTUP_COMPARISON": macd,
         "RSI_STARTUP_COMPARISON": rsi,
+        "ATR_STARTUP_COMPARISON": 156,
     }
     assert current["timeframe_required_bars"] == {
-        "daily": 268, "weekly": rsi, "monthly": macd,
+        "daily": 268, "weekly": rsi, "monthly": rsi,
     }
-    assert current["mtf_recursive_calendar_status"]["weekly"] == {
-        "MACD_STARTUP_COMPARISON": "ACQUISITION_PLANNED",
-        "RSI_STARTUP_COMPARISON": "ACQUISITION_PLANNED",
-    }
-    assert current["mtf_recursive_calendar_status"]["monthly"] == {
-        "MACD_STARTUP_COMPARISON": "ACQUISITION_PLANNED",
-        "RSI_STARTUP_COMPARISON": "CALENDAR_HISTORY_OUT_OF_RANGE",
-    }
-    assert current["start_by_timeframe"]["monthly"] == date(2015, 2, 2)
-    assert current["start_date"] == date(2015, 2, 2)
-
+    for timeframe in ("weekly", "monthly"):
+        assert current["mtf_recursive_calendar_status"][timeframe] == {
+            "RSI_STARTUP_COMPARISON": "ACQUISITION_PLANNED",
+            "ATR_STARTUP_COMPARISON": "ACQUISITION_PLANNED",
+            "MACD_STARTUP_COMPARISON": "ACQUISITION_PLANNED",
+        }
+    assert current["start_by_timeframe"]["monthly"] == date(2004, 6, 1)
+    assert current["start_date"] == date(2004, 6, 1)
 
 def test_b5_early_asof_partial_calendar_keeps_legal_ma_and_structure_nontrigger() -> None:
     """An older as-of cannot turn unavailable 140-month MACD into total study failure."""
@@ -682,15 +892,15 @@ def test_b5_early_asof_partial_calendar_keeps_legal_ma_and_structure_nontrigger(
     early = owner._current_daily_window_plan(
         market="cn", target_date=date(2012, 10, 12),
     )
-    assert early["source_only_timeframe_required_bars"]["monthly"] == 40
-    assert early["timeframe_required_bars"]["monthly"] == 40
+    assert early["source_only_timeframe_required_bars"]["monthly"] == 160
+    assert early["timeframe_required_bars"]["monthly"] == 160
     assert early["mtf_recursive_calendar_status"]["monthly"] == {
-        "MACD_STARTUP_COMPARISON": "CALENDAR_HISTORY_OUT_OF_RANGE",
         "RSI_STARTUP_COMPARISON": "CALENDAR_HISTORY_OUT_OF_RANGE",
+        "ATR_STARTUP_COMPARISON": "ACQUISITION_PLANNED",
+        "MACD_STARTUP_COMPARISON": "ACQUISITION_PLANNED",
     }
-    assert early["timeframe_required_bars"]["weekly"] >= owner.macd_startup_comparison_required_bars()
-    assert early["start_date"] <= date(2009, 6, 1)
-
+    assert early["timeframe_required_bars"]["weekly"] >= owner.rsi_startup_comparison_required_bars()
+    assert early["start_date"] == date(1999, 6, 1)
     # An independently routed 2-bar candlestick may not inherit monthly
     # oscillators or demand 11+ years of data.
     candlestick = next(row for row in compile_method_window_policy_view()["methods"]
@@ -699,7 +909,12 @@ def test_b5_early_asof_partial_calendar_keeps_legal_ma_and_structure_nontrigger(
         market="cn", target_date=date(2026, 10, 12),
         method_rows=(candlestick,),
     )
-    assert bounded["timeframe_required_bars"] == {"daily": 2, "weekly": 0, "monthly": 0}
+    assert bounded["source_only_timeframe_required_bars"] == {
+        "daily": 2, "weekly": 0, "monthly": 0,
+    }
+    assert bounded["timeframe_required_bars"] == {
+        "daily": 2, "weekly": 2, "monthly": 2,
+    }
     assert bounded["mtf_recursive_comparison_required_bars"] == {}
     assert bounded["mtf_recursive_calendar_status"] == {}
 
@@ -714,9 +929,8 @@ def test_b5_native_rsi_warmup_change_replans_weekly_without_fake_monthly_ready()
         )
     assert changed["mtf_recursive_comparison_required_bars"]["RSI_STARTUP_COMPARISON"] == 300
     assert changed["timeframe_required_bars"]["weekly"] == 300
-    assert changed["timeframe_required_bars"]["monthly"] == owner.macd_startup_comparison_required_bars()
-    assert changed["mtf_recursive_calendar_status"]["monthly"]["RSI_STARTUP_COMPARISON"] == "CALENDAR_HISTORY_OUT_OF_RANGE"
-
+    assert changed["timeframe_required_bars"]["monthly"] == 300
+    assert changed["mtf_recursive_calendar_status"]["monthly"]["RSI_STARTUP_COMPARISON"] == "ACQUISITION_PLANNED"
 
 def test_b5_monthly_recursive_window_is_consumed_by_real_fetch_entry_without_db_rights_bypass() -> None:
     """The real Pipeline-to-fetcher seam consumes the owner plan, then vendor DB veto holds."""
@@ -724,15 +938,20 @@ def test_b5_monthly_recursive_window_is_consumed_by_real_fetch_entry_without_db_
 
     target = date(2026, 10, 12)
     pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+    plan = pipeline_owner._current_daily_window_plan(
+        market="cn", target_date=target,
+    )
     pipeline.fetcher_manager = MagicMock()
     pipeline.fetcher_manager.get_stock_name.return_value = "SYNTHETIC_STOCK"
     pipeline._resolve_resume_target_date = MagicMock(return_value=target)
     pipeline.db = MagicMock()
     pipeline.db.has_today_data.return_value = False
-    frame = pd.DataFrame([{
-        "date": target, "open": 10., "high": 11., "low": 9.,
-        "close": 10.5, "volume": 1000., "amount": 10500.,
-    }])
+    frame = _typed_daily_frame(
+        [target],
+        requested_start=plan["start_date"].isoformat(),
+        requested_end=target.isoformat(),
+        observed_at=datetime(2026, 10, 12, 16, 0, tzinfo=timezone.utc),
+    )
     pipeline.fetcher_manager.get_daily_data.return_value = (
         frame, "BaostockFetcher",
     )
@@ -749,10 +968,18 @@ def test_b5_monthly_recursive_window_is_consumed_by_real_fetch_entry_without_db_
         )
     )
     succeeded, error = pipeline.fetch_and_save_stock_data("600519")
-    assert succeeded is False
-    assert error and "SOURCE_STORAGE_RIGHTS_NOT_ADMITTED" in error
+    assert succeeded is True
+    assert error is None
+    admitted = pipeline._get_run_local_daily_history(
+        code="600519", target_date=target,
+    )
+    assert admitted is not None
+    assert admitted.attrs["dsa_daily_acquisition_receipt"][
+        "persistence_status"
+    ] == "RIGHTS_NOT_ADMITTED_RUN_LOCAL_ONLY"
     pipeline.fetcher_manager.get_daily_data.assert_called_once_with(
-        "600519", start_date="2015-02-02", end_date="2026-10-12",
+        "600519", start_date=plan["start_date"].isoformat(),
+        end_date="2026-10-12",
     )
     writer._run_write_transaction.assert_not_called()
 
@@ -781,14 +1008,31 @@ def test_b5_latest_only_sqlite_cache_cannot_hide_new_recursive_history_window() 
             pipeline.fetcher_manager = MagicMock()
             pipeline.fetcher_manager.get_stock_name.return_value = "SYNTHETIC"
             pipeline._resolve_resume_target_date = MagicMock(return_value=target)
+            plan = pipeline_owner._current_daily_window_plan(
+                market="cn", target_date=target,
+            )
+            provider_bar = _typed_daily_frame(
+                [target],
+                requested_start=plan["start_date"].isoformat(),
+                requested_end=target.isoformat(),
+                observed_at=datetime(2026, 10, 12, 16, 0, tzinfo=timezone.utc),
+            )
             pipeline.fetcher_manager.get_daily_data.return_value = (
-                one_bar, "BaostockFetcher",
+                provider_bar, "BaostockFetcher",
             )
             succeeded, error = pipeline.fetch_and_save_stock_data("600519")
-            assert succeeded is False
-            assert "SOURCE_STORAGE_RIGHTS_NOT_ADMITTED" in (error or "")
+            assert succeeded is True
+            assert error is None
+            admitted = pipeline._get_run_local_daily_history(
+                code="600519", target_date=target,
+            )
+            assert admitted is not None
+            assert admitted.attrs["dsa_daily_acquisition_receipt"][
+                "persistence_status"
+            ] == "RIGHTS_NOT_ADMITTED_RUN_LOCAL_ONLY"
             pipeline.fetcher_manager.get_daily_data.assert_called_once_with(
-                "600519", start_date="2015-02-02", end_date="2026-10-12",
+                "600519", start_date=plan["start_date"].isoformat(),
+                end_date="2026-10-12",
             )
             # B1 true vendor-rights gate is still in the actual writer.
             with db.get_session() as session:
@@ -799,30 +1043,45 @@ def test_b5_latest_only_sqlite_cache_cannot_hide_new_recursive_history_window() 
 
 
 def test_b5_full_completed_session_cache_keeps_lawful_no_provider_call() -> None:
-    """A truly complete source window still qualifies for fast resume."""
+    """Only a content-bound typed complete source window qualifies for resume."""
     import exchange_calendars as xcals
 
     target = date(2026, 10, 12)
-    calendar = xcals.get_calendar("XSHG")
+    plan = pipeline_owner._current_daily_window_plan(
+        market="cn", target_date=target,
+    )
+    calendar = xcals.get_calendar(
+        "XSHG", start=plan["start_date"] - timedelta(days=31)
+    )
     sessions = [
         value.date()
-        for value in calendar.sessions_in_range(
-            date(2015, 2, 2), target,
-        )
+        for value in calendar.sessions_in_range(plan["start_date"], target)
     ]
-    assert sessions[0] == date(2015, 2, 2) and sessions[-1] == target
+    assert sessions[0] == plan["start_date"] and sessions[-1] == target
     pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
     pipeline.db = MagicMock()
     pipeline.db.has_today_data.return_value = True
-    pipeline.db.get_data_range.return_value = [
-        SimpleNamespace(date=value) for value in sessions
-    ]
+    cached_frame = _typed_daily_frame(
+        sessions,
+        requested_start=sessions[0].isoformat(),
+        requested_end=target.isoformat(),
+        observed_at=datetime(2026, 10, 12, 16, 0, tzinfo=timezone.utc),
+    )
+    pipeline.db.get_data_range.return_value = _typed_daily_rows(cached_frame)
     pipeline.fetcher_manager = MagicMock()
+    pipeline.fetcher_manager.get_stock_name.return_value = "SYNTHETIC"
     pipeline._resolve_resume_target_date = MagicMock(return_value=target)
     result = pipeline.fetch_and_save_stock_data("600519")
     assert result == (True, None)
     pipeline.fetcher_manager.get_daily_data.assert_not_called()
     pipeline.db.save_daily_data.assert_not_called()
+    admitted = pipeline._get_run_local_daily_history(
+        code="600519", target_date=target,
+    )
+    assert admitted is not None
+    assert admitted.attrs["dsa_daily_acquisition_receipt"][
+        "request_evidence_status"
+    ] == "VERIFIED_LAWFUL_CACHE_HIT"
 
 
 def test_b5_missing_internal_completed_session_does_not_fake_cache_coverage() -> None:
@@ -830,10 +1089,15 @@ def test_b5_missing_internal_completed_session_does_not_fake_cache_coverage() ->
     import exchange_calendars as xcals
 
     target = date(2026, 10, 12)
+    plan = pipeline_owner._current_daily_window_plan(
+        market="cn", target_date=target,
+    )
+    calendar = xcals.get_calendar(
+        "XSHG", start=plan["start_date"] - timedelta(days=31)
+    )
     sessions = [
-        value.date() for value in xcals.get_calendar("XSHG").sessions_in_range(
-            date(2015, 2, 2), target,
-        )
+        value.date()
+        for value in calendar.sessions_in_range(plan["start_date"], target)
     ]
     sessions.pop(200)
     pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
@@ -850,9 +1114,48 @@ def test_b5_missing_internal_completed_session_does_not_fake_cache_coverage() ->
     result = pipeline.fetch_and_save_stock_data("600519")
     assert result[0] is False and "获取数据为空" in (result[1] or "")
     pipeline.fetcher_manager.get_daily_data.assert_called_once_with(
-        "600519", start_date="2015-02-02", end_date="2026-10-12",
+        "600519", start_date=plan["start_date"].isoformat(),
+        end_date="2026-10-12",
     )
     pipeline.db.save_daily_data.assert_not_called()
+
+
+def test_b5_intraday_window_plan_covers_every_current_minute_method_owner() -> None:
+    """Every current 5/15/30/60m technical consumer owns an explicit window."""
+    from src.core import pipeline as owner
+
+    plan = owner._current_intraday_window_plan()
+    rows = owner.compile_method_window_policy_view()["methods"]
+    requirements = owner._current_method_required_bars()
+    minute_timeframes = ("5m", "15m", "30m", "60m")
+
+    for timeframe in minute_timeframes:
+        expected = {
+            str(row["method_id"])
+            for row in rows
+            if row.get("leaf_implementation_state") == "EXISTING_REUSED"
+            and row.get("consumer_scope") == "TECHNICAL_MATRIX"
+            and timeframe in tuple(row.get("current_execution_timeframes") or ())
+        }
+        actual = plan["method_required_bars_by_timeframe"][timeframe]
+        assert expected <= set(actual), (timeframe, sorted(expected - set(actual)))
+        for method_id in expected:
+            requirement = requirements[method_id]
+            expected_bars = (
+                requirement.get(timeframe, requirement.get("*"))
+                if isinstance(requirement, dict)
+                else requirement
+            )
+            assert actual[method_id] == expected_bars
+        assert expected <= set(plan["method_window_classes_by_timeframe"][timeframe])
+
+    all_required = [
+        value
+        for values in plan["method_required_bars_by_timeframe"].values()
+        for value in values.values()
+    ]
+    assert plan["admission_target_required_bars"] == max(all_required)
+    assert plan["unresolved_current_minute_methods"] == []
 
 
 def test_b5_seven_timeframe_indicator_windows_keep_method_specific_inputs() -> None:
@@ -863,10 +1166,17 @@ def test_b5_seven_timeframe_indicator_windows_keep_method_specific_inputs() -> N
         market="cn", target_date=date(2026, 10, 12),
     )
     assert higher["source_only_timeframe_required_bars"] == {
-        "daily": 268, "weekly": 40, "monthly": 40,
+        "daily": 268, "weekly": 160, "monthly": 160,
     }
+    # The five extended OHLCV methods require 160 source bars on every routed
+    # timeframe. Recursive RSI remains the longest effective W/M consumer.
     assert higher["timeframe_required_bars"] == {
-        "daily": 268, "weekly": 268, "monthly": 140,
+        "daily": 268, "weekly": 268, "monthly": 268,
+    }
+    assert higher["mtf_recursive_calendar_status"]["monthly"] == {
+        "RSI_STARTUP_COMPARISON": "ACQUISITION_PLANNED",
+        "ATR_STARTUP_COMPARISON": "ACQUISITION_PLANNED",
+        "MACD_STARTUP_COMPARISON": "ACQUISITION_PLANNED",
     }
     assert higher["method_required_bars"]["daily"]["CUP_HANDLE"] == 110
     assert higher["method_required_bars"]["daily"]["DOUBLE_BOTTOM"] == 90
@@ -887,6 +1197,8 @@ def test_b5_seven_timeframe_indicator_windows_keep_method_specific_inputs() -> N
         assert methods["MACD_FORMULA_MINIMUM"] == 35
         assert methods["MACD_STARTUP_COMPARISON"] == 4 * (26 + 9)
         assert methods["RSI_STARTUP_COMPARISON"] == 268
+        for method_id in ("ADX_DMI", "BOLLINGER", "KDJ", "OBV_ADL", "MFI"):
+            assert methods[method_id] == 160
     # Changes to the native MACD owner, not magic constants, change the horizon.
     with patch.object(owner.StockTrendAnalyzer, "MACD_SIGNAL", 17):
         longer = owner._current_intraday_window_plan()
@@ -957,8 +1269,11 @@ def test_b5_completed_18_sessions_preserve_short_methods_but_not_140_bar_macd() 
     sessions = [bar.date() for bar in calendar.sessions_window(end, -18)]
     assert len(sessions) == 18
     pipeline = _intraday_pipeline_for_helper()
+    selected_sessions = 18
     pipeline.fetcher_manager._call_fetcher_method.return_value = (
-        _pipeline_canonical_5m(sessions[-10:])
+        _pipeline_canonical_5m(
+            sessions[-10:], requested_start=sessions[-selected_sessions],
+        )
     )
     with patch(
         "src.core.pipeline.resolve_latest_completed_session_fail_closed",
@@ -975,12 +1290,59 @@ def test_b5_completed_18_sessions_preserve_short_methods_but_not_140_bar_macd() 
     pipeline.fetcher_manager._call_fetcher_method.assert_called_once_with(
         pipeline.fetcher_manager._get_fetcher_by_name.return_value,
         "get_intraday_data", "600519",
-        start_date=sessions[-10].isoformat(),
+        start_date=sessions[-selected_sessions].isoformat(),
         end_date=sessions[-1].isoformat(), frequency="5",
     )
     assert {key: len(value) for key, value in result.items()} == {
         "5m": 480, "15m": 160, "30m": 80, "60m": 40,
     }
+
+
+def test_b5_provider_returns_39_complete_sessions_preserves_native_dynamic_candidate() -> None:
+    """A real 39-session completed suffix must not collapse to ten or become MISSING.
+
+    One provider call requests 67 sessions, but the source returns a genuine
+    complete 39-session suffix with the *original request identity*. All
+    four derived carriers must keep those observed bars, not fabricate 67.
+    """
+    import exchange_calendars as xcals
+
+    calendar = xcals.get_calendar("XSHG")
+    end = calendar.date_to_session(date(2026, 10, 8))
+    sessions = [bar.date() for bar in calendar.sessions_window(end, -67)]
+    plan = pipeline_owner._current_intraday_window_plan()
+    assert 39 in plan["candidate_session_windows"]
+    returned = _pipeline_canonical_5m(
+        sessions[-39:], requested_start=sessions[0],
+    )
+    pipeline = _intraday_pipeline_for_helper()
+    pipeline.fetcher_manager._call_fetcher_method.return_value = returned
+    with patch(
+        "src.core.pipeline.resolve_latest_completed_session_fail_closed",
+        return_value=sessions[-1],
+    ), patch(
+        "src.core.pipeline.SearchService.is_index_or_etf",
+        return_value=False,
+    ):
+        actual = pipeline._load_current_stock_intraday_timeframes(
+            code="600519", stock_name="SYNTHETIC", market="cn",
+            target_date=sessions[-1],
+            completed_daily_history=pd.DataFrame({"date": sessions}),
+        )
+    pipeline.fetcher_manager._call_fetcher_method.assert_called_once_with(
+        pipeline.fetcher_manager._get_fetcher_by_name.return_value,
+        "get_intraday_data", "600519",
+        start_date=sessions[0].isoformat(),
+        end_date=sessions[-1].isoformat(), frequency="5",
+    )
+    assert {key: len(value) for key, value in actual.items()} == {
+        "5m": 1872, "15m": 624, "30m": 312, "60m": 156,
+    }
+    receipt = actual["5m"].attrs["dsa_intraday_acquisition_receipt"]
+    assert receipt["requested_session_count"] == 67
+    assert receipt["admitted_session_count"] == 39
+    assert receipt["returned_base_bars"] == 1872
+    assert receipt["provider_method_call_count"] == 1
 
 
 def test_b5_provider_returns_exact_verified_short_suffix_of_long_request() -> None:
@@ -1070,8 +1432,12 @@ def test_b5_missing_older_sessions_does_not_erase_complete_short_window() -> Non
     assert len(valid_eighteen) == 18
     assert with_one_older_gap[-10:] == valid_eighteen[-10:]
     pipeline = _intraday_pipeline_for_helper()
+    selected_sessions = 17
     pipeline.fetcher_manager._call_fetcher_method.return_value = (
-        _pipeline_canonical_5m(valid_eighteen[-10:])
+        _pipeline_canonical_5m(
+            valid_eighteen[-10:],
+            requested_start=valid_eighteen[-selected_sessions],
+        )
     )
     with patch(
         "src.core.pipeline.resolve_latest_completed_session_fail_closed",
@@ -1088,7 +1454,7 @@ def test_b5_missing_older_sessions_does_not_erase_complete_short_window() -> Non
     pipeline.fetcher_manager._call_fetcher_method.assert_called_once_with(
         pipeline.fetcher_manager._get_fetcher_by_name.return_value,
         "get_intraday_data", "600519",
-        start_date=valid_eighteen[-10].isoformat(),
+        start_date=valid_eighteen[-selected_sessions].isoformat(),
         end_date=valid_eighteen[-1].isoformat(), frequency="5",
     )
     assert {key: len(value) for key, value in frames.items()} == {
@@ -1106,15 +1472,18 @@ def test_daily_window_plan_is_method_and_timeframe_driven_not_magic_days() -> No
         target_date=target,
     )
     assert current["source_only_timeframe_required_bars"] == {
-        "daily": 268, "weekly": 40, "monthly": 40,
+        "daily": 268, "weekly": 160, "monthly": 160,
     }
     assert current["timeframe_required_bars"] == {
-        "daily": 268, "weekly": 268, "monthly": 140,
+        "daily": 268, "weekly": 268, "monthly": 268,
     }
-    assert current["start_by_timeframe"]["monthly"] == date(2015, 2, 2)
-    assert current["start_date"] == date(2015, 2, 2)
+    assert current["start_by_timeframe"]["monthly"] == date(2004, 6, 1)
+    assert current["start_date"] == date(2004, 6, 1)
     assert current["method_required_bars"]["daily"]["CUP_HANDLE"] == 110
     assert current["method_required_bars"]["monthly"]["MA_COMPRESSION_RELEASE"] == 40
+    for method_id in ("ADX_DMI", "BOLLINGER", "KDJ", "OBV_ADL", "MFI"):
+        assert current["method_required_bars"]["weekly"][method_id] == 160
+        assert current["method_required_bars"]["monthly"][method_id] == 160
     assert current["method_window_classes"]["daily"]["CUP_HANDLE"] == (
         "VARIABLE_STRUCTURE",
     )
@@ -1133,13 +1502,20 @@ def test_daily_window_plan_is_method_and_timeframe_driven_not_magic_days() -> No
         target_date=target,
         method_rows=(candlestick,),
     )
-    assert minimal["timeframe_required_bars"] == {
-        "daily": 2,
-        "weekly": 0,
-        "monthly": 0,
+    assert minimal["source_only_timeframe_required_bars"] == {
+        "daily": 2, "weekly": 0, "monthly": 0,
     }
-    assert minimal["start_date"] == date(2026, 10, 9)
+    assert minimal["timeframe_required_bars"] == {
+        "daily": 2, "weekly": 2, "monthly": 2,
+    }
+    assert minimal["method_required_bars"]["daily"]["CANDLESTICK"] == 2
+    assert minimal["method_required_bars"]["weekly"]["CANDLESTICK"] == 2
+    assert minimal["method_required_bars"]["monthly"]["CANDLESTICK"] == 2
+    assert minimal["mtf_recursive_comparison_required_bars"] == {}
+    assert minimal["mtf_recursive_calendar_status"] == {}
 
+
+    assert minimal["start_date"] == date(2026, 8, 3)
     cup = next(row for row in rows if row["method_id"] == "CUP_HANDLE")
     monthly_cup = pipeline_module._current_daily_window_plan(
         market="cn",

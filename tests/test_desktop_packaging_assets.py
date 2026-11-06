@@ -39,9 +39,20 @@ class DesktopPackagingAssetsTestCase(unittest.TestCase):
 
         self.assertIn("--collect-data akshare", macos_script)
         self.assertIn("'--collect-data', 'akshare'", windows_script)
+        self.assertIn("_internal/akshare/data/calendar.json", macos_script)
+        self.assertIn("_internal\\akshare\\data\\calendar.json", windows_script)
         self.assertIn("_internal/akshare/file_fold/calendar.json", macos_script)
         self.assertIn("_internal\\akshare\\file_fold\\calendar.json", windows_script)
-
+        self.assertLess(
+            macos_script.index("_internal/akshare/data/calendar.json"),
+            macos_script.index("_internal/akshare/file_fold/calendar.json"),
+        )
+        self.assertLess(
+            windows_script.index("_internal\\akshare\\data\\calendar.json"),
+            windows_script.index("_internal\\akshare\\file_fold\\calendar.json"),
+        )
+        self.assertIn("Packaged AkShare calendar data not found", windows_script)
+        self.assertIn("packaged AkShare calendar data not found", macos_script)
 
 if __name__ == "__main__":
     unittest.main()

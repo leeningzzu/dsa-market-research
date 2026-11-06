@@ -162,6 +162,59 @@ class TestV25BaselineTransport(unittest.TestCase):
         self.assertEqual(len(decoded_html), BASELINE_BYTES)
         self.assertEqual(hashlib.sha256(decoded_html).hexdigest(), BASELINE_SHA256)
 
+    def test_dynamic_v25_no_send_bundle_roundtrip_preserves_projected_html(self):
+        from src.services.v2_5_evidence_coverage import (
+            render_v2_5_dynamic_no_send,
+        )
+
+        module = _isolated_email_sender_module()
+        sender = module.EmailSender(
+            SimpleNamespace(
+                email_sender="dynamic@example.invalid",
+                email_password="OFFLINE_ONLY",
+                email_receivers=["review@example.invalid"],
+                email_sender_name="DSA offline dynamic acceptance",
+                stock_email_groups=[],
+            )
+        )
+        projected = render_v2_5_dynamic_no_send(
+            [], report_date="2026-10-23",
+        )
+        expected = projected["html"].encode("utf-8")
+        OfflineSMTP.captured = []
+
+        with (
+            mock.patch.object(module.smtplib, "SMTP_SSL", OfflineSMTP),
+            mock.patch.object(module.smtplib, "SMTP", OfflineSMTP),
+            mock.patch(
+                "socket.create_connection",
+                side_effect=AssertionError("NETWORK_FORBIDDEN"),
+            ),
+        ):
+            self.assertTrue(sender.send_to_email(
+                "完整文本回退",
+                subject="V2.5 dynamic offline acceptance",
+                html_content=projected["html"],
+            ))
+
+        self.assertEqual(len(OfflineSMTP.captured), 1)
+        message = BytesParser(policy=policy.default).parsebytes(
+            OfflineSMTP.captured[0]
+        )
+        html_parts = [
+            part for part in message.walk()
+            if part.get_content_type() == "text/html"
+        ]
+        self.assertEqual(len(html_parts), 1)
+        decoded = html_parts[0].get_payload(decode=True)
+        self.assertEqual(decoded, expected)
+        self.assertEqual(
+            hashlib.sha256(decoded).hexdigest(),
+            projected["receipt"]["output_sha256"],
+        )
+        self.assertTrue(projected["receipt"]["no_send"])
+        self.assertFalse(projected["receipt"]["delivery_authority"])
+
     def test_transport_module_does_not_import_dynamic_renderer(self):
         import src.services.v2_5_baseline_transport as transport
 

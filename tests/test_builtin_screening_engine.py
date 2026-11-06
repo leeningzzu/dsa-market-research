@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import call, patch
 
 import pandas as pd
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient as FastAPITestClient
 
@@ -123,6 +124,143 @@ def test_screening_config_reads_snapshot_cache_ttl() -> None:
     assert config.snapshot_cache_ttl_seconds == 120.0
 
 
+def _typed_etf_screening_history(code: str, end_price: float) -> pd.DataFrame:
+    from data_provider.daily_data_identity import (
+        attach_daily_data_identity,
+        build_daily_data_identity,
+    )
+
+    dates = pd.bdate_range("2026-01-02", periods=70)
+    close = pd.Series([
+        100.0 + (end_price - 100.0) * i / (len(dates) - 1)
+        for i in range(len(dates))
+    ])
+    frame = pd.DataFrame({
+        "date": dates,
+        "open": close - 0.1,
+        "high": close + 0.6,
+        "low": close - 0.5,
+        "close": close,
+        "volume": [1_000_000.0 + i * 100 for i in range(len(dates))],
+        "data_source": ["Fetcher"] * len(dates),
+    })
+    identity = build_daily_data_identity(
+        frame,
+        provider_identity="Fetcher",
+        provider_route="synthetic-etf-peer-screening",
+        actual_response_branch="synthetic_qfq",
+        requested_adjustment_basis="qfq",
+        observed_adjustment_basis="qfq",
+        basis_evidence="SYNTHETIC_TEST_EXPLICIT",
+        requested_start=dates[0].date().isoformat(),
+        requested_end=dates[-1].date().isoformat(),
+        currency="CNY",
+        volume_unit="share",
+        amount_unit="CNY",
+        identity_state="OBSERVED",
+        instrument=code,
+    )
+    frame = attach_daily_data_identity(frame, identity)
+    frame.attrs["daily_source"] = "Fetcher"
+    return frame
+
+
+def test_screening_dsa_history_normalization_rebinds_only_verified_identity():
+    from data_provider.daily_data_identity import (
+        extract_daily_data_identity,
+        verified_observed_daily_frame_provider,
+    )
+    from src.services import screening_service
+
+    original = _typed_etf_screening_history("510300", 140.0)
+    normalized = screening_service._normalize_dsa_daily_history(original)
+    identity = extract_daily_data_identity(normalized, strict=True)
+    assert identity["provider_identity"] == "Fetcher"
+    assert identity["observed_adjustment_basis"] == "qfq"
+    assert identity["instrument"] == "510300"
+    assert normalized["data_source"].nunique() == 1
+    assert normalized.iloc[-1]["date"] == original.iloc[-1]["date"].strftime("%Y-%m-%d")
+
+    stale = original.copy()
+    stale.loc[stale.index[-1], "close"] += 99.0
+    assert verified_observed_daily_frame_provider(stale) is None
+    rejected = screening_service._normalize_dsa_daily_history(stale)
+    assert extract_daily_data_identity(rejected, strict=True) is None
+    assert verified_observed_daily_frame_provider(rejected) is None
+
+
+def test_etf_daily_enrichment_reuses_one_bounded_history_fetch_for_peer_rs():
+    from src.services.screening.daily import enrich_daily_features
+
+    histories = {
+        "510300": _typed_etf_screening_history("510300", 140.0),
+        "510050": _typed_etf_screening_history("510050", 110.0),
+        "159919": _typed_etf_screening_history("159919", 130.0),
+        "510500": _typed_etf_screening_history("510500", 120.0),
+    }
+    calls: list[str] = []
+
+    def fetch(code: str, **_kwargs) -> pd.DataFrame:
+        calls.append(code)
+        return histories[code].copy()
+
+    candidates = pd.DataFrame({
+        "code": list(histories),
+        "name": ["沪深300", "上证50", "沪深300同类", "中证500"],
+    })
+    result = enrich_daily_features(
+        candidates,
+        max_rows=4,
+        lookback_days=120,
+        source="host",
+        history_fetcher=fetch,
+        asset_type="etf",
+        etf_peer_min_count=3,
+    )
+
+    assert sorted(calls) == sorted(histories)
+    assert len(calls) == 4
+    assert set(result["etf_peer_rs_status"]) == {"READY"}
+    best = result.set_index("code").loc["510300"]
+    assert best["etf_peer_rs_rank"] == 1
+    assert best["etf_peer_rs_rank_denominator"] == 4
+    assert best["etf_peer_rs_percentile"] == 100.0
+    assert best["etf_peer_rs_preference_rank"] == 1
+    assert bool(best["etf_peer_rs_focus_eligible"]) is True
+    assert result.attrs["etf_peer_rs_ready_count"] == 4
+    assert result.attrs["etf_peer_rs_provider_query_count"] == 0
+
+    equal_score = result.assign(screen_score=50.0)
+    ordered = screening_pipeline._sort_screened_candidates(equal_score)
+    assert ordered.iloc[0]["code"] == "510300"
+
+
+def test_etf_peer_rs_untyped_histories_fail_closed_without_preference_rank():
+    from src.services.screening.daily import enrich_daily_features
+
+    histories = {
+        code: _typed_etf_screening_history(code, end).copy()
+        for code, end in {
+            "510300": 140.0, "510050": 110.0,
+            "159919": 130.0, "510500": 120.0,
+        }.items()
+    }
+    for frame in histories.values():
+        frame.attrs.clear()
+
+    result = enrich_daily_features(
+        pd.DataFrame({"code": list(histories)}),
+        max_rows=4,
+        history_fetcher=lambda code, **_kwargs: histories[code].copy(),
+        asset_type="etf",
+        etf_peer_min_count=3,
+    )
+    assert set(result["etf_peer_rs_status"]) == {"UNKNOWN"}
+    assert result["etf_peer_rs_preference_rank"].isna().all()
+    assert not result["etf_peer_rs_focus_eligible"].any()
+    assert result.attrs["etf_peer_rs_ready_count"] == 0
+
+
 def test_pipeline_passes_daily_history_cache_settings_to_enrichment(monkeypatch) -> None:
     snapshot_df = pd.DataFrame(
         [
@@ -200,6 +338,7 @@ def test_pipeline_passes_daily_history_cache_settings_to_enrichment(monkeypatch)
     assert captured["cache_dir"] == Path("/tmp/daily-history-cache")
     assert captured["cache_ttl_seconds"] == 6 * 60 * 60
     assert captured["history_fetcher"] is history_fetcher
+    assert captured["asset_type"] == "stock"
     assert result.daily_enriched is True
 
 

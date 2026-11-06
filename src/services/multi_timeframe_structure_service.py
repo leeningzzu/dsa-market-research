@@ -4,8 +4,9 @@
 The service reuses the existing daily history owner, StockTrendAnalyzer and
 confirmed daily Pivot/Swing owner. Weekly/monthly bars are deterministic OHLCV
 aggregates of completed daily bars. Optional canonical 5m/15m/30m/60m inputs
-may contribute descriptive Trend/MA/Volume/MACD/RSI context only; timestamp-aware
-intraday Price Structure/Pattern and independent action authority remain blocked.
+may contribute source-bound Trend/RS, Supply, Cost, Structure, Momentum, Pattern
+and MTF technical context. Pattern evidence is descriptive and replay-safe;
+independent trigger/action authority remains blocked.
 """
 
 from __future__ import annotations
@@ -14,9 +15,10 @@ from datetime import date, datetime
 from hashlib import sha256
 import json
 import math
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Mapping, Optional
 
 import pandas as pd
+import numpy as np
 
 from data_provider.daily_data_identity import (
     DAILY_DATA_IDENTITY_FRAME_ATTR,
@@ -31,15 +33,36 @@ from data_provider.intraday_data_identity import (
 )
 
 from src.core.trading_calendar import resolve_completed_timeframe_bar_date
-from src.services.intraday_bar_service import IntradayBarError, validate_complete_cn_5m_sessions
+from src.services.intraday_bar_service import (
+    IntradayBarError,
+    aggregate_completed_intraday_bars,
+    validate_complete_cn_5m_sessions,
+    validate_derived_complete_cn_sessions,
+)
 
 from src.services.price_structure_service import (
     build_confirmed_intraday_structure_context,
     build_price_structure_context,
 )
 from src.services.pit_identity import build_completed_history_identity
-from src.services.evidence_traceability_registry import describe_macd_state
-from src.services.volatility_momentum_service import _rsi_startup_stability
+from src.services.evidence_traceability_registry import (
+    INTRADAY_CONTEXT_METHOD_IDS,
+    SOURCE_BOUND_TIMEFRAME_METHOD_IDS,
+    describe_macd_state,
+)
+from src.services.volatility_momentum_service import (
+    _rsi_startup_stability,
+    build_completed_timeframe_volatility_momentum_context,
+    build_volatility_momentum_context,
+)
+from src.services.supply_demand_service import build_supply_demand_context
+from src.services.cost_structure_service import build_completed_timeframe_bar_reference
+from src.services.candlestick_pattern_service import (
+    build_completed_timeframe_candlestick_context,
+)
+from src.services.pattern_trigger_service import (
+    build_completed_timeframe_pattern_context,
+)
 
 
 SCHEMA_VERSION = "multi-timeframe-structure-v1"
@@ -55,7 +78,9 @@ _CONFIG = {
     "cross_run_persistence_policy": CROSS_RUN_PERSISTENCE_POLICY,
     "weekly_period": "W-FRI",
     "monthly_period": "M",
-    "intraday_policy": "OPTIONAL_CANONICAL_PARTIAL_TREND_MA_ONLY",
+    "intraday_policy": (
+        "OPTIONAL_CANONICAL_SOURCE_BOUND_7FAMILY_TECHNICAL_CONTEXT_NO_ACTION"
+    ),
 }
 CONFIG_HASH = sha256(
     json.dumps(_CONFIG, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -108,13 +133,28 @@ _ROLE = {
 }
 
 INTRADAY_EVIDENCE_SCHEMA_VERSION = "intraday-timeframe-evidence-v1"
-INTRADAY_EVIDENCE_ALGORITHM_VERSION = "canonical-intraday-trend-ma-confirmed-60m-30m-structure-v3"
+INTRADAY_EVIDENCE_ALGORITHM_VERSION = (
+    "canonical-intraday-source-bound-7family-technical-context-v5"
+)
+_CURRENT_INTRADAY_TECHNICAL_METHOD_IDS = tuple(sorted(
+    SOURCE_BOUND_TIMEFRAME_METHOD_IDS | INTRADAY_CONTEXT_METHOD_IDS
+))
 _INTRADAY_EVIDENCE_CONFIG = {
     "schema_version": INTRADAY_EVIDENCE_SCHEMA_VERSION,
     "algorithm_version": INTRADAY_EVIDENCE_ALGORITHM_VERSION,
-    "admitted_methods": ["TREND", "MA", "VOLUME", "MACD", "RSI"],
-    "price_structure": "CONFIRMED_60M_BRIDGE_AND_30M_CONTEXT_ONLY",
-    "pattern_trigger": "NOT_ADMITTED",
+    "current_method_ids": list(_CURRENT_INTRADAY_TECHNICAL_METHOD_IDS),
+    "carrier_aliases": [
+        "TREND", "MA", "VOLUME", "PRICE_STRUCTURE",
+    ],
+    "technical_families": [
+        "TREND_RS", "SUPPLY", "COST", "STRUCTURE",
+        "MOMENTUM", "PATTERN", "MTF",
+    ],
+    "price_structure": "CONFIRMED_60M_30M_15M_5M_CONTEXT_ONLY",
+    "pattern_evidence": (
+        "SOURCE_BOUND_TECHNICAL_CONTEXT_NO_INDEPENDENT_TRIGGER"
+    ),
+    "trigger_authority": "NOT_ADMITTED",
     "independent_action_authority": False,
 }
 INTRADAY_EVIDENCE_CONFIG_HASH = sha256(
@@ -255,6 +295,74 @@ def _admitted_recursive_trend_projection(
     return trend
 
 
+def _missing_relative_strength_context(timeframe: str, reason: str) -> Dict[str, Any]:
+    return {
+        "schema_version": "timeframe-relative-strength-v1",
+        "family": "trend_relative_strength",
+        "status": "MISSING",
+        "reason": reason,
+        "timeframe": timeframe,
+        "relative": {},
+        "input_identity": {},
+        "data_quality": {},
+        "independent_action_authority": False,
+        "strategy_admitted": False,
+        "learning_admitted": False,
+        "data_rights_admitted": False,
+    }
+
+
+def _admit_timeframe_relative_strength_context(
+    value: Any,
+    *,
+    timeframe: str,
+) -> Dict[str, Any]:
+    """Admit a caller-supplied RS result or publish explicit missingness."""
+    if not isinstance(value, Mapping):
+        return _missing_relative_strength_context(
+            timeframe, "TIMEFRAME_RELATIVE_STRENGTH_CONTEXT_MISSING",
+        )
+    context = dict(value)
+    declared_timeframe = str(context.get("timeframe") or timeframe)
+    if declared_timeframe != timeframe:
+        return {
+            **_missing_relative_strength_context(
+                timeframe, "TIMEFRAME_RELATIVE_STRENGTH_TIMEFRAME_MISMATCH",
+            ),
+            "status": "UNKNOWN",
+        }
+    state = str(context.get("status") or "UNKNOWN").upper()
+    if state not in {"READY", "PARTIAL", "MISSING", "UNKNOWN", "NOT_SUPPORTED"}:
+        state = "UNKNOWN"
+    context.update({
+        "status": state,
+        "timeframe": timeframe,
+        "independent_action_authority": False,
+        "strategy_admitted": False,
+        "learning_admitted": False,
+        "data_rights_admitted": False,
+    })
+    if state in {"READY", "PARTIAL"}:
+        identity = context.get("input_identity")
+        quality = context.get("data_quality")
+        if (
+            not isinstance(identity, Mapping)
+            or not isinstance(quality, Mapping)
+            or quality.get("source_alignment") != "MATCHED"
+        ):
+            return {
+                **_missing_relative_strength_context(
+                    timeframe, "TIMEFRAME_RELATIVE_STRENGTH_SOURCE_IDENTITY_UNPROVEN",
+                ),
+                "status": "UNKNOWN",
+            }
+    context.setdefault("reason", "TIMEFRAME_RELATIVE_STRENGTH_STATE_UNSPECIFIED")
+    context.setdefault("relative", {})
+    context.setdefault("input_identity", {})
+    context.setdefault("data_quality", {})
+    return context
+
+
 def _build_intraday_timeframe(
     *,
     key: str,
@@ -264,6 +372,7 @@ def _build_intraday_timeframe(
     trend_analyzer: Any,
     snapshot_observed_at: Optional[datetime],
     daily_adjustment_basis: Optional[str] = None,
+    relative_strength_context: Any = None,
 ) -> Dict[str, Any]:
     if not isinstance(bars, pd.DataFrame) or bars.empty:
         return _empty_timeframe(
@@ -367,27 +476,36 @@ def _build_intraday_timeframe(
     # Existing 5m closed-session verifier, not a parallel data registry.
     # A correctly typed 5m frame alone does not prove complete sessions or units.
     completed_source_session_receipt = None
-    if key == "5m":
-        try:
+    try:
+        if key == "5m":
             session_receipt = validate_complete_cn_5m_sessions(
                 bars,
                 expected_session_dates=sorted(set(local_bar_end.dt.date.tolist())),
             )
-        except (IntradayBarError, ValueError, TypeError):
-            session_receipt = None
-        if isinstance(session_receipt, dict) and session_receipt.get("session_count", 0) >= 10:
-            completed_source_session_receipt = {
-                **session_receipt,
-                "provider_identity": identity["provider_identity"],
-                "observed_adjustment_basis": identity["observed_adjustment_basis"],
-                "identity_state": identity["identity_state"],
-                "content_sha256": identity["content_sha256"],
-                "currency": identity["currency"],
-                "volume_unit": identity["volume_unit"],
-                "amount_unit": identity["amount_unit"],
-                "observed_at": identity["observed_at"],
-                "available_at_max": identity["available_at_max"],
-            }
+        else:
+            # Only a fully validated parent 5m session set may certify an
+            # exact 15/30/60m derivation. Never inherit a mere typed hash.
+            session_receipt = validate_derived_complete_cn_sessions(
+                bars, timeframe=key,
+            )
+    except (IntradayBarError, ValueError, TypeError, AttributeError):
+        session_receipt = None
+    if isinstance(session_receipt, dict) and session_receipt.get("session_count", 0) >= 10:
+        completed_source_session_receipt = {
+            **session_receipt,
+            "provider_identity": identity["provider_identity"],
+            "provider_route": identity["provider_route"],
+            "observed_adjustment_basis": identity["observed_adjustment_basis"],
+            "identity_state": identity["identity_state"],
+            "content_sha256": identity["content_sha256"],
+            "currency": identity["currency"],
+            "volume_unit": identity["volume_unit"],
+            "amount_unit": identity["amount_unit"],
+            "observed_at": identity["observed_at"],
+            "available_at_max": identity["available_at_max"],
+            "revision": str(identity.get("revision") or "UNKNOWN"),
+            "vintage": str(identity.get("vintage") or "UNKNOWN"),
+        }
     # The price-only methods remain available without a volume unit, but the
     # legacy analyzer's volume labels are not evidence until the source unit is typed.
     recent_reference_volume = analyzer_frame["volume"].iloc[-6:-1]
@@ -410,31 +528,94 @@ def _build_intraday_timeframe(
     trend = _admitted_recursive_trend_projection(
         trend, macd_startup=macd_startup, rsi_startup=rsi_startup,
     )
-    price_structure = (
-        build_confirmed_intraday_structure_context(
-            analyzer_frame.assign(available_at=frame["available_at"]),
-            timeframe=key,
-        )
-        if key in {"60m", "30m"}
-        else {
-            "status": "MISSING",
-            "reason": "INTRADAY_PRICE_STRUCTURE_NOT_ADMITTED",
-            "summary": None,
-            "independent_action_authority": False,
-        }
+    price_structure = build_confirmed_intraday_structure_context(
+        analyzer_frame.assign(available_at=frame["available_at"]),
+        timeframe=key,
     )
-    if key in {"60m", "30m"}:
-        price_structure["intraday_identity_hash"] = identity["identity_hash"]
+    price_structure["intraday_identity_hash"] = identity["identity_hash"]
+    price_structure["target_bar_end"] = local_bar_end.iloc[-1].isoformat()
     ma_structure = build_ma_structure_evidence(
         analyzer_frame,
         timeframe=key,
         trend_result=trend_result if volume_evidence_ready else None,
         structure_context={},
     )
+    supply_demand = build_supply_demand_context(
+        stock_code=stock_code,
+        history=analyzer_frame,
+        target_date=target_date,
+        timeframe=key,
+    )
+    # The numerical 20-bar calculation is not a substitute for validated
+    # completed exchange sessions, typed volume units, or source rights.
+    if supply_demand.get("status") == "READY" and identity.get("volume_unit") != "share":
+        # Volume-derived methods cannot retain even partial numerical authority
+        # when the provider unit is unknown.
+        supply_demand = {
+            **supply_demand,
+            "status": "UNKNOWN",
+            "reason": "INTRADAY_VOLUME_UNIT_NOT_ADMITTED",
+        }
+    elif supply_demand.get("status") == "READY" and completed_source_session_receipt is None:
+        supply_demand = {
+            **supply_demand,
+            "status": "PARTIAL",
+            "reason": "SOURCE_SESSION_COMPLETENESS_NOT_PROVEN_FOR_FAMILY",
+        }
+    cost_reference = build_completed_timeframe_bar_reference(
+        bars=analyzer_frame,
+        timeframe=key,
+        target_date=target_date,
+        source_identity_hash=identity["identity_hash"],
+        volume_unit=identity.get("volume_unit"),
+    )
+    if cost_reference.get("status") == "READY" and completed_source_session_receipt is None:
+        cost_reference = {
+            **cost_reference,
+            "status": "PARTIAL",
+            "reason": "SOURCE_SESSION_COMPLETENESS_NOT_PROVEN_FOR_COST",
+        }
+    volatility_momentum = build_completed_timeframe_volatility_momentum_context(
+        stock_code=stock_code,
+        bars=analyzer_frame,
+        timeframe=key,
+        target_bar_end=local_bar_end.iloc[-1],
+        source_identity_hash=identity["identity_hash"],
+        trend_result=trend_result,
+        volume_unit=identity.get("volume_unit"),
+        price_structure_context=price_structure,
+        macd_startup=macd_startup,
+        rsi_startup=rsi_startup,
+    )
+    pattern_trigger = build_completed_timeframe_pattern_context(
+        stock_code=stock_code,
+        history=analyzer_frame,
+        timeframe=key,
+        target_bar_end=local_bar_end.iloc[-1],
+        price_structure_context=price_structure,
+        supply_demand_context=supply_demand,
+        source_identity_hash=identity["identity_hash"],
+        evidence_available_at=identity.get("available_at_max"),
+    )
+    candlestick = pattern_trigger.get("candlestick", {})
     has_partial = (
         trend is not None
         or ma_structure.get("status") in {"READY", "PARTIAL"}
         or price_structure.get("status") == "READY"
+    )
+    # Evidence completeness and trigger authority are separate clocks. A
+    # source-bound, confirmed price/MA bridge may be technically complete
+    # while the legacy status remains PARTIAL for conservative execution.
+    evidence_state = (
+        "READY"
+        if (
+            completed_source_session_receipt is not None
+            and identity.get("volume_unit") == "share"
+            and isinstance(trend, dict)
+            and ma_structure.get("status") == "READY"
+            and price_structure.get("status") == "READY"
+        )
+        else "PARTIAL" if has_partial else "MISSING"
     )
     summary = _human_summary(trend, {}, ma_structure)
     if isinstance(trend, dict) and macd_startup["status"] != "READY":
@@ -450,14 +631,15 @@ def _build_intraday_timeframe(
             rsi_signal = str(trend.get("rsi_signal") or "").strip()
             if rsi_signal and rsi_signal != "数据不足":
                 summary = "；".join(item for item in (summary, rsi_signal) if item)
-    if key in {"60m", "30m"} and price_structure.get("status") == "READY":
+    if price_structure.get("status") == "READY":
         summary = "；".join(filter(None, (
-            summary, price_structure.get("summary"), f"{key}形态和独立交易触发尚未准入",
+            summary, price_structure.get("summary"),
+            f"{key}仅有确认结构上下文；形态和独立交易触发仍缺少可核依据",
         )))
-    elif summary and key in {"60m", "30m"}:
-        summary += f"；{key}尚无已确认枢轴，形态和交易触发仍未准入"
     elif summary:
-        summary += "；分钟价格结构/形态尚未准入"
+        summary += f"；{key}尚无已确认枢轴，形态和独立交易触发仍缺少可核依据"
+    if candlestick.get("summary"):
+        summary = "；".join(filter(None, (summary, candlestick.get("summary"))))
 
     return {
         "schema_version": INTRADAY_EVIDENCE_SCHEMA_VERSION,
@@ -465,13 +647,14 @@ def _build_intraday_timeframe(
         "config_hash": INTRADAY_EVIDENCE_CONFIG_HASH,
         "status": "PARTIAL" if has_partial else "MISSING",
         "reason": (
-            ("INTRADAY_CONFIRMED_30M_STRUCTURE_CONTEXT_ONLY"
-             if key == "30m" else "INTRADAY_CONFIRMED_60M_BRIDGE_CONTEXT_ONLY")
-            if key in {"60m", "30m"} and price_structure.get("status") == "READY"
+            f"INTRADAY_CONFIRMED_{key.upper()}_STRUCTURE_CONTEXT_ONLY"
+            if price_structure.get("status") == "READY"
             else "INTRADAY_TREND_MA_PARTIAL_CURRENT"
             if has_partial
             else "INTRADAY_WARMUP_INSUFFICIENT"
         ),
+        "evidence_state": evidence_state,
+        "trigger_authority_state": "NOT_ADMITTED",
         "role": _ROLE[key],
         "timeframe": key,
         "completed_bar_only": True,
@@ -479,23 +662,43 @@ def _build_intraday_timeframe(
         "observations": int(len(analyzer_frame)),
         "source_alignment": alignment,
         "intraday_identity_hash": identity["identity_hash"],        **({"completed_source_session_receipt": completed_source_session_receipt}
-           if key == "5m" and completed_source_session_receipt is not None else {}),
+           if completed_source_session_receipt is not None else {}),
         "macd_startup_stability": macd_startup,
         "rsi_startup_stability": rsi_startup,
         "trend": trend or {"status": "MISSING", "reason": "WARMUP_INSUFFICIENT"},
         "ma_structure": ma_structure,
         "price_structure": price_structure,
-        "pattern_trigger": {
-            "status": "MISSING",
-            "reason": "INTRADAY_PATTERN_NOT_ADMITTED",
-            "summary": None,
-        },
+        "supply_demand": supply_demand,
+        "cost_bar_reference": cost_reference,
+        "volatility_momentum": volatility_momentum,
+        "pattern_trigger": pattern_trigger,
         "summary": summary,
+        "relative_strength": _admit_timeframe_relative_strength_context(
+            relative_strength_context, timeframe=key,
+        ),
         "admitted_methods": [
             "TREND", "MA", *(["VOLUME"] if volume_evidence_ready else []),
             *(["MACD"] if macd_startup["status"] == "READY" else []),
             *(["RSI"] if rsi_startup["status"] == "READY" else []),
             *(["PRICE_STRUCTURE"] if price_structure.get("status") == "READY" else []),
+            *(["CANDLESTICK"] if candlestick.get("status") == "READY" else []),
+            *(["ROC"] if any(
+                volatility_momentum.get("momentum", {}).get(key_name) is not None
+                for key_name in ("roc_20_completed_bars_pct", "roc_60_completed_bars_pct")
+            ) else []),
+            *(["VOLATILITY_TR_SMA"] if (
+                volatility_momentum.get("volatility", {}).get(
+                    "true_range_sma_20_completed_bars_pct"
+                ) is not None
+            ) else []),
+            *(["ATR_WILDER"] if (
+                volatility_momentum.get("volatility", {}).get(
+                    "atr_wilder_admission", {}
+                ).get("status") == "READY"
+            ) else []),
+            *(["CONFIRMED_DIVERGENCE"] if (
+                volatility_momentum.get("confirmed_divergence", {}).get("status") == "READY"
+            ) else []),
         ],
         "independent_action_authority": False,
         "strategy_admitted": False,
@@ -686,6 +889,24 @@ def _ma_release_confirmation(
     return confirmed, structure_state or None, volume_status or None
 
 
+def _ma_cross_event_reader_label(value: Any) -> str:
+    """Translate one deterministic MA event code without changing its audit identity."""
+    event = str(value or "").strip()
+    parts = event.split("_")
+    if (
+        len(parts) == 4
+        and parts[0].startswith("MA")
+        and parts[1] == "CROSS"
+        and parts[2] in {"ABOVE", "BELOW"}
+        and parts[3].startswith("MA")
+        and parts[0][2:].isdigit()
+        and parts[3][2:].isdigit()
+    ):
+        direction = "上穿" if parts[2] == "ABOVE" else "下穿"
+        return f"{parts[0][2:]}期均线{direction}{parts[3][2:]}期均线"
+    return event
+
+
 def _ma_state_summary(evidence: Dict[str, Any]) -> Optional[str]:
     state = str(evidence.get("state") or "")
     ordering = str(evidence.get("ordering") or "MIXED")
@@ -707,7 +928,12 @@ def _ma_state_summary(evidence: Dict[str, Any]) -> Optional[str]:
     if state == "FAILED_RELEASE":
         return "此前均线释放未能延续，需等待新的结构确认"
     if evidence.get("cross_events"):
-        return f"均线发生{'/'.join(evidence['cross_events'])}，仅作趋势上下文，不单独构成方向确认"
+        reader_events = [
+            _ma_cross_event_reader_label(item)
+            for item in evidence["cross_events"]
+            if str(item or "").strip()
+        ]
+        return f"均线发生{'、'.join(reader_events)}，仅作趋势上下文，不单独构成方向确认"
     return None
 
 
@@ -918,6 +1144,45 @@ def build_ma_structure_evidence(
             "reason": "COMPRESSION_CONTEXT_WARMUP_INSUFFICIENT",
         }
 
+    # Each adjacent MA pair was previously compared again for every 20-bar
+    # lifecycle window. Count it once per completed bar; prefix differences
+    # preserve the exact original inclusive window and zero-crossing rules.
+    ma5_values = frame["MA5"].to_numpy(copy=False)
+    ma10_values = frame["MA10"].to_numpy(copy=False)
+    ma20_values = frame["MA20"].to_numpy(copy=False)
+    crossing_prefix = [0] * (observations + 1)
+    comparison_prefix = [0] * (observations + 1)
+    for bar_index in range(1, observations):
+        crossings = 0
+        comparisons = 0
+        for fast, slow in ((ma5_values, ma10_values), (ma10_values, ma20_values)):
+            prev_fast, prev_slow = fast[bar_index - 1], slow[bar_index - 1]
+            curr_fast, curr_slow = fast[bar_index], slow[bar_index]
+            if any(pd.isna(value) for value in (
+                prev_fast, prev_slow, curr_fast, curr_slow,
+            )):
+                continue
+            comparisons += 1
+            prev_diff = float(prev_fast) - float(prev_slow)
+            curr_diff = float(curr_fast) - float(curr_slow)
+            if (prev_diff <= 0 < curr_diff) or (prev_diff >= 0 > curr_diff):
+                crossings += 1
+        crossing_prefix[bar_index + 1] = crossing_prefix[bar_index] + crossings
+        comparison_prefix[bar_index + 1] = comparison_prefix[bar_index] + comparisons
+
+    spread_pct_values = frame["bundle_spread_pct"].to_numpy(copy=False)
+    spread_abs_values = frame["bundle_spread_abs"].to_numpy(copy=False)
+    # The exact 20-bar lagged quantiles are native rolling operations, not
+    # fresh pandas quantile scans inside every historical lifecycle bar.
+    # Keep the same linear interpolation and forbid current-bar lookahead.
+    threshold_pct_at_bar = frame["bundle_spread_pct"].shift(1).rolling(
+        MA_COMPRESSION_REFERENCE_WINDOW,
+        min_periods=MA_COMPRESSION_REFERENCE_WINDOW,
+    ).quantile(MA_COMPRESSION_QUANTILE)
+    threshold_abs_at_bar = frame["bundle_spread_abs"].shift(1).rolling(
+        MA_COMPRESSION_REFERENCE_WINDOW,
+        min_periods=MA_COMPRESSION_REFERENCE_WINDOW,
+    ).quantile(MA_COMPRESSION_QUANTILE)
     lifecycle: list[Dict[str, Any]] = []
     for index in range(MA_COMPRESSION_READY_BARS - 1, len(frame)):
         row = frame.iloc[index]
@@ -941,10 +1206,10 @@ def build_ma_structure_evidence(
         if pd.notna(long_value):
             ma_values[f"ma{MA_OPTIONAL_LONG_PERIOD}"] = float(long_value)
         current_spread = float(row["bundle_spread_pct"])
-        threshold = float(prior.quantile(MA_COMPRESSION_QUANTILE))
+        threshold = float(threshold_pct_at_bar.iloc[index])
         historical_percentile = float((prior <= current_spread).mean() * 100.0)
         current_spread_abs = float(row["bundle_spread_abs"])
-        threshold_abs = float(prior_abs.quantile(MA_COMPRESSION_QUANTILE))
+        threshold_abs = float(threshold_abs_at_bar.iloc[index])
         historical_percentile_abs = float(
             (prior_abs <= current_spread_abs).mean() * 100.0
         )
@@ -965,24 +1230,11 @@ def build_ma_structure_evidence(
         )
         previous_row = frame.iloc[index - 1] if index > 0 else None
         cross_events = _ma_cross_events(row, previous_row)
-        cross_window = frame.iloc[
-            index - MA_COMPRESSION_REFERENCE_WINDOW:index + 1
-        ]
-        cross_count = 0
-        comparison_count = 0
-        for pair_index in range(1, len(cross_window)):
-            pair_previous = cross_window.iloc[pair_index - 1]
-            pair_current = cross_window.iloc[pair_index]
-            for fast, slow in (("MA5", "MA10"), ("MA10", "MA20")):
-                if pd.isna(pair_previous[fast]) or pd.isna(pair_previous[slow]):
-                    continue
-                if pd.isna(pair_current[fast]) or pd.isna(pair_current[slow]):
-                    continue
-                comparison_count += 1
-                prev_diff = float(pair_previous[fast]) - float(pair_previous[slow])
-                curr_diff = float(pair_current[fast]) - float(pair_current[slow])
-                if (prev_diff <= 0 < curr_diff) or (prev_diff >= 0 > curr_diff):
-                    cross_count += 1
+        # Pair events in rows [index-W+1, index] are the same W
+        # comparisons performed by the original W+1-row cross_window.
+        cross_start = index - MA_COMPRESSION_REFERENCE_WINDOW + 1
+        cross_count = crossing_prefix[index + 1] - crossing_prefix[cross_start]
+        comparison_count = comparison_prefix[index + 1] - comparison_prefix[cross_start]
         crossing_density = (
             float(cross_count / comparison_count)
             if comparison_count
@@ -1006,18 +1258,21 @@ def build_ma_structure_evidence(
             * 100.0
         )
 
-        persistence = 0
-        for back_index in range(index, -1, -1):
-            spread = frame.iloc[back_index]["bundle_spread_pct"]
-            spread_abs = frame.iloc[back_index]["bundle_spread_abs"]
-            if (
-                pd.isna(spread)
-                or pd.isna(spread_abs)
-                or float(spread) > threshold
-                or float(spread_abs) > threshold_abs
-            ):
-                break
-            persistence += 1
+        # The threshold belongs to this bar (not to earlier bars). Find
+        # the most recent violating bar against this exact threshold in
+        # NumPy instead of rebuilding pandas rows in a backwards Python loop.
+        invalid_history = (
+            pd.isna(spread_pct_values[:index + 1])
+            | pd.isna(spread_abs_values[:index + 1])
+            | (spread_pct_values[:index + 1] > threshold)
+            | (spread_abs_values[:index + 1] > threshold_abs)
+        )
+        last_invalid = np.flatnonzero(invalid_history)
+        persistence = (
+            index - int(last_invalid[-1])
+            if last_invalid.size
+            else index + 1
+        )
 
         previous = lifecycle[-1] if lifecycle and lifecycle[-1]["index"] == index - 1 else None
         low_spread = (
@@ -1270,6 +1525,9 @@ def _empty_timeframe(key: str, *, status: str, reason: str) -> Dict[str, Any]:
         "reason": reason,
         "role": _ROLE[key],
         "summary": None,
+        "relative_strength": _missing_relative_strength_context(
+            key, "TIMEFRAME_RELATIVE_STRENGTH_CONTEXT_MISSING",
+        ),
         "independent_action_authority": False,
     }
 
@@ -1284,6 +1542,9 @@ def _build_higher_timeframe(
     target_date: date,
     daily_frame: pd.DataFrame,
     trend_analyzer: Any,
+    daily_source_identity_hash: Optional[str] = None,
+    daily_volume_unit: Optional[str] = None,
+    relative_strength_context: Any = None,
 ) -> Dict[str, Any]:
     completed_through = resolve_completed_timeframe_bar_date(market, target_date, timeframe)
     if completed_through is None:
@@ -1304,6 +1565,7 @@ def _build_higher_timeframe(
         "latest_bar_date": latest_bar_date.isoformat(),
         "observations": int(len(bars)),
         "source_alignment": _source_alignment(bars),
+        "source_identity_hash": daily_source_identity_hash,
         "algorithm_version": ALGORITHM_VERSION,
         "config_hash": CONFIG_HASH,
         "independent_action_authority": False,
@@ -1331,6 +1593,11 @@ def _build_higher_timeframe(
         target_date=latest_bar_date,
         market=market,
     )
+    structure = {
+        **structure,
+        "timeframe": key,
+        "source_identity_hash": daily_source_identity_hash,
+    }
     trend_result = None
     trend = None
     if len(bars) >= TREND_MIN_BARS:
@@ -1348,6 +1615,43 @@ def _build_higher_timeframe(
         trend_result=trend_result,
         structure_context=structure,
     )
+    supply_demand = build_supply_demand_context(
+        stock_code=stock_code,
+        history=bars,
+        target_date=latest_bar_date,
+        timeframe=key,
+    )
+    cost_reference = build_completed_timeframe_bar_reference(
+        bars=bars,
+        timeframe=key,
+        target_date=latest_bar_date,
+        source_identity_hash=daily_source_identity_hash,
+        volume_unit=daily_volume_unit,
+    )
+    volatility_momentum = build_completed_timeframe_volatility_momentum_context(
+        stock_code=stock_code,
+        bars=bars,
+        timeframe=key,
+        target_bar_end=latest_bar_date,
+        source_identity_hash=daily_source_identity_hash,
+        trend_result=trend_result,
+        volume_unit=daily_volume_unit,
+        price_structure_context=structure,
+        macd_startup=macd_startup,
+        rsi_startup=rsi_startup,
+        market=market,
+    )
+    pattern_trigger = build_completed_timeframe_pattern_context(
+        stock_code=stock_code,
+        history=bars,
+        timeframe=key,
+        target_bar_end=latest_bar_date,
+        market=market,
+        price_structure_context=structure,
+        supply_demand_context=supply_demand,
+        source_identity_hash=daily_source_identity_hash,
+    )
+    candlestick = pattern_trigger.get("candlestick", {})
     structure_ready = structure.get("status") == "READY"
     trend_ready = trend is not None
     if trend_ready and structure_ready:
@@ -1365,12 +1669,21 @@ def _build_higher_timeframe(
         "rsi_startup_stability": rsi_startup,
         "ma_structure": ma_structure,
         "price_structure": structure,
-        "summary": _human_summary(trend, structure, ma_structure),
+        "supply_demand": supply_demand,
+        "cost_bar_reference": cost_reference,
+        "volatility_momentum": volatility_momentum,
+        "pattern_trigger": pattern_trigger,
+        "relative_strength": _admit_timeframe_relative_strength_context(
+            relative_strength_context, timeframe=key,
+        ),
+        "summary": ";".join(filter(None, (
+            _human_summary(trend, structure, ma_structure),
+            candlestick.get("summary"),
+        ))) or None,
         "historical_replay_eligible": bool(
             structure.get("historical_replay_eligible") and status in {"READY", "PARTIAL"}
         ),
     }
-
 
 def build_multi_timeframe_structure_context(
     *,
@@ -1383,6 +1696,8 @@ def build_multi_timeframe_structure_context(
     daily_price_structure_context: Any = None,
     snapshot_observed_at: Optional[datetime] = None,
     intraday_timeframes: Optional[Dict[str, Any]] = None,
+    daily_relative_strength_context: Any = None,
+    timeframe_relative_strength_contexts: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build one coverage-aware M/W/D carrier plus optional canonical intraday context."""
     base = {
@@ -1507,6 +1822,48 @@ def build_multi_timeframe_structure_context(
         if daily_trend_result is not None else None,
         macd_startup=daily_macd, rsi_startup=daily_rsi,
     )
+    typed_daily = extract_daily_data_identity(history, strict=False)
+    admitted_daily_identity = (
+        typed_daily if isinstance(typed_daily, dict)
+        and not base.get("price_identity_reasons") else None
+    )
+    daily_source_identity_hash = (
+        admitted_daily_identity.get("identity_hash")
+        if admitted_daily_identity is not None else None
+    )
+    daily_volume_unit = (
+        admitted_daily_identity.get("volume_unit")
+        if admitted_daily_identity is not None else None
+    )
+    daily_cost_reference = build_completed_timeframe_bar_reference(
+        bars=frame,
+        timeframe="daily",
+        target_date=target_date,
+        source_identity_hash=daily_source_identity_hash,
+        volume_unit=daily_volume_unit,
+    )
+    daily_supply_demand = build_supply_demand_context(
+        stock_code=stock_code,
+        history=frame,
+        target_date=target_date,
+        timeframe="daily",
+    )
+    daily_volatility_momentum = build_volatility_momentum_context(
+        stock_code=stock_code,
+        history=frame,
+        target_date=target_date,
+        market=market,
+        trend_result=daily_trend_result,
+        price_structure_context=daily_structure,
+        source_identity_hash=daily_source_identity_hash,
+        volume_unit=daily_volume_unit,
+    )
+    relative_strength_inputs = (
+        dict(timeframe_relative_strength_contexts)
+        if isinstance(timeframe_relative_strength_contexts, Mapping)
+        else {}
+    )
+
     daily = {
         "status": "READY"
         if daily_trend_result is not None and alignment["status"] == "SINGLE_SOURCE"
@@ -1521,13 +1878,20 @@ def build_multi_timeframe_structure_context(
         "latest_bar_date": target_date.isoformat(),
         "observations": int(len(frame)),
         "source_alignment": alignment,
+        "source_identity_hash": daily_source_identity_hash,
         "trend": {"status": "READY", "direction": daily_direction}
         if daily_trend_result is not None
         else {"status": "MISSING"},
         "ma_structure": daily_ma_structure,
         "price_structure": daily_structure,
+        "supply_demand": daily_supply_demand,
+        "cost_bar_reference": daily_cost_reference,
+        "volatility_momentum": daily_volatility_momentum,
         "macd_startup_stability": daily_macd,
         "rsi_startup_stability": daily_rsi,
+        "relative_strength": _admit_timeframe_relative_strength_context(
+            daily_relative_strength_context, timeframe="daily",
+        ),
         "summary": _human_summary(
             daily_trend_projection,
             daily_structure,
@@ -1548,6 +1912,9 @@ def build_multi_timeframe_structure_context(
         target_date=target_date,
         daily_frame=frame,
         trend_analyzer=trend_analyzer,
+        daily_source_identity_hash=daily_source_identity_hash,
+        daily_volume_unit=daily_volume_unit,
+        relative_strength_context=relative_strength_inputs.get("monthly"),
     )
     weekly = _build_higher_timeframe(
         key="weekly",
@@ -1558,6 +1925,9 @@ def build_multi_timeframe_structure_context(
         target_date=target_date,
         daily_frame=frame,
         trend_analyzer=trend_analyzer,
+        daily_source_identity_hash=daily_source_identity_hash,
+        daily_volume_unit=daily_volume_unit,
+        relative_strength_context=relative_strength_inputs.get("weekly"),
     )
 
     intraday_inputs = intraday_timeframes if isinstance(intraday_timeframes, dict) else {}
@@ -1574,10 +1944,10 @@ def build_multi_timeframe_structure_context(
                 if not base.get("price_identity_reasons")
                 else None
             ),
+            relative_strength_context=relative_strength_inputs.get(key),
         )
         for key in ("60m", "30m", "15m", "5m")
     }
-
     directions = []
     for item in (monthly, weekly, daily):
         trend = item.get("trend") if isinstance(item, dict) else None
@@ -1624,3 +1994,226 @@ def build_multi_timeframe_structure_context(
         if ready_high
         else False,
     }
+
+
+FORMAL_CN_MARKET_INDEX_7TF_SCHEMA_VERSION = "formal-cn-market-index-7tf-v1"
+
+
+def build_formal_cn_market_index_7tf_context(
+    *,
+    index_code: str,
+    daily_source_frame: Any,
+    five_minute_source_frame: Any,
+    target_date: date,
+    snapshot_observed_at: datetime,
+    trend_analyzer: Any,
+    daily_window_plan: Mapping[str, Any],
+    intraday_window_plan: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Bind one formal CN index to the existing 7TF method consumers.
+
+    The function is a thin run-local adapter over existing source validators,
+    aggregators, MTF and Registry owners. It does not create a proxy, storage
+    permission, strategy vote, PIT history or a second market-analysis shell.
+    """
+    from data_provider.baostock_fetcher import (
+        verify_cn_index_completed_close_source_frame,
+    )
+    from data_provider.cn_index_minute_source import (
+        verify_cn_index_completed_5m_source_frame,
+    )
+    from src.services.evidence_traceability_registry import (
+        compile_mtf_method_window_readiness_trace,
+        digest,
+    )
+
+    code = str(index_code or "").strip()
+    target = target_date.isoformat() if isinstance(target_date, date) else ""
+    base = {
+        "schema_version": FORMAL_CN_MARKET_INDEX_7TF_SCHEMA_VERSION,
+        "source_code": code,
+        "target_date": target,
+        "status": "UNKNOWN",
+        "reason": "FORMAL_MARKET_7TF_INPUT_NOT_ADMITTED",
+        "timeframes": {},
+        "method_window_readiness_trace": None,
+        "daily_source_observation": None,
+        "minute_source_observation": None,
+        "source_data_rights": "UNKNOWN",
+        "volume_unit": "UNKNOWN",
+        "amount_unit": "UNKNOWN",
+        "historical_pit_eligible": False,
+        "independent_source_value_admitted": False,
+        "strategy_upgrade_authority": False,
+        "storage_admitted": False,
+        "learning_admitted": False,
+    }
+
+    def finish(value: Dict[str, Any]) -> Dict[str, Any]:
+        result = dict(value)
+        result["context_hash"] = digest(result)
+        return result
+
+    if (
+        code not in {"sh.000001", "sh.000300"}
+        or not isinstance(target_date, date)
+        or not isinstance(snapshot_observed_at, datetime)
+        or snapshot_observed_at.tzinfo is None
+        or snapshot_observed_at.utcoffset() is None
+        or not isinstance(daily_window_plan, Mapping)
+        or not isinstance(intraday_window_plan, Mapping)
+    ):
+        return finish(base)
+
+    try:
+        daily_observation = verify_cn_index_completed_close_source_frame(
+            daily_source_frame, trade_date=target,
+        )
+        minute_observation = verify_cn_index_completed_5m_source_frame(
+            five_minute_source_frame, trade_date=target,
+        )
+        if (
+            daily_observation.get("source_code") != code
+            or minute_observation.get("source_code") != code
+        ):
+            raise ValueError("FORMAL_MARKET_INDEX_INSTRUMENT_MISMATCH")
+        for observation in (daily_observation, minute_observation):
+            observed = datetime.fromisoformat(str(observation.get("observed_at") or ""))
+            if (
+                observed.tzinfo is None
+                or observed.utcoffset() is None
+                or observed > snapshot_observed_at
+            ):
+                raise ValueError("FORMAL_MARKET_INDEX_OBSERVED_AFTER_SNAPSHOT")
+
+        history = daily_source_frame.copy()
+        history["date"] = pd.to_datetime(history["date"], errors="raise").dt.date
+        history["data_source"] = daily_observation["provider_identity"]
+        history = history.sort_values("date", kind="stable").reset_index(drop=True)
+        daily_trend_result = (
+            trend_analyzer.analyze(history.copy(), code)
+            if len(history) >= TREND_MIN_BARS
+            else None
+        )
+        daily_structure = build_price_structure_context(
+            stock_code=code,
+            history=history,
+            target_date=target_date,
+            market="cn",
+        )
+        intraday_timeframes: Dict[str, Any] = {
+            "5m": five_minute_source_frame,
+        }
+        for timeframe in ("15m", "30m", "60m"):
+            intraday_timeframes[timeframe] = aggregate_completed_intraday_bars(
+                five_minute_source_frame,
+                target_timeframe=timeframe,
+            )
+
+        mtf = build_multi_timeframe_structure_context(
+            stock_code=code,
+            history=history,
+            target_date=target_date,
+            market="cn",
+            trend_analyzer=trend_analyzer,
+            daily_trend_result=daily_trend_result,
+            daily_price_structure_context=daily_structure,
+            snapshot_observed_at=snapshot_observed_at,
+            intraday_timeframes=intraday_timeframes,
+        )
+        trace = compile_mtf_method_window_readiness_trace(
+            asset_route="MARKET",
+            instrument=code,
+            target_date=target_date,
+            daily_window_plan=daily_window_plan,
+            intraday_window_plan=intraday_window_plan,
+            multi_timeframe_structure_context=mtf,
+            formal_market_source_frames={
+                "daily": daily_source_frame,
+                **intraday_timeframes,
+            },
+        )
+        if trace.get("reason") == "FORMAL_MARKET_SOURCE_BINDING_INVALID":
+            raise ValueError("FORMAL_MARKET_SOURCE_BINDING_INVALID")
+
+        timeframe_projection = {}
+        for timeframe in ("monthly", "weekly", "daily", "60m", "30m", "15m", "5m"):
+            item = mtf.get("timeframes", {}).get(timeframe, {})
+            timeframe_projection[timeframe] = {
+                "status": item.get("status"),
+                "reason": item.get("reason"),
+                "observations": item.get("observations"),
+                "summary": item.get("summary"),
+                "completed_through": item.get("completed_through"),
+                "latest_bar_date": item.get("latest_bar_date"),
+                "latest_bar_end": item.get("latest_bar_end"),
+            }
+        return finish({
+            **base,
+            "status": trace.get("status") or "UNKNOWN",
+            "reason": trace.get("reason") or "METHOD_WINDOW_READINESS_UNKNOWN",
+            "timeframes": timeframe_projection,
+            "multi_timeframe_structure_context": mtf,
+            "method_window_readiness_trace": trace,
+            "daily_source_observation": daily_observation,
+            "minute_source_observation": minute_observation,
+        })
+    except (
+        ValueError, TypeError, KeyError, AttributeError, IndexError,
+        IntradayBarError,
+    ):
+        return finish({**base, "reason": "FORMAL_MARKET_SOURCE_BINDING_INVALID"})
+
+
+def verify_formal_cn_market_index_7tf_context(value: Any) -> Dict[str, Any]:
+    """Verify the same-run formal-index projection without upgrading its authority."""
+    from src.services.evidence_traceability_registry import digest
+
+    if not isinstance(value, Mapping):
+        raise ValueError("FORMAL_MARKET_7TF_CONTEXT_INVALID")
+    required = {
+        "schema_version", "source_code", "target_date", "status", "reason",
+        "timeframes", "multi_timeframe_structure_context",
+        "method_window_readiness_trace", "daily_source_observation",
+        "minute_source_observation", "source_data_rights", "volume_unit",
+        "amount_unit", "historical_pit_eligible",
+        "independent_source_value_admitted", "strategy_upgrade_authority",
+        "storage_admitted", "learning_admitted", "context_hash",
+    }
+    if set(value) != required:
+        raise ValueError("FORMAL_MARKET_7TF_CONTEXT_INVALID")
+    payload = {key: item for key, item in value.items() if key != "context_hash"}
+    if value.get("context_hash") != digest(payload):
+        raise ValueError("FORMAL_MARKET_7TF_CONTEXT_HASH_MISMATCH")
+    if (
+        value.get("schema_version") != FORMAL_CN_MARKET_INDEX_7TF_SCHEMA_VERSION
+        or value.get("source_code") not in {"sh.000001", "sh.000300"}
+        or value.get("source_data_rights") != "UNKNOWN"
+        or value.get("volume_unit") != "UNKNOWN"
+        or value.get("amount_unit") != "UNKNOWN"
+        or value.get("historical_pit_eligible") is not False
+        or value.get("independent_source_value_admitted") is not False
+        or value.get("strategy_upgrade_authority") is not False
+        or value.get("storage_admitted") is not False
+        or value.get("learning_admitted") is not False
+    ):
+        raise ValueError("FORMAL_MARKET_7TF_CONTEXT_AUTHORITY_INVALID")
+    mtf = value.get("multi_timeframe_structure_context")
+    trace = value.get("method_window_readiness_trace")
+    if (
+        not isinstance(mtf, Mapping)
+        or not isinstance(trace, Mapping)
+        or mtf.get("stock_code") != value.get("source_code")
+        or mtf.get("target_date") != value.get("target_date")
+        or trace.get("asset_route") != "MARKET"
+        or trace.get("instrument") != value.get("source_code")
+        or trace.get("target_date") != value.get("target_date")
+        or trace.get("strategy_admitted") is not False
+        or trace.get("learning_admitted") is not False
+        or trace.get("storage_admitted") is not False
+    ):
+        raise ValueError("FORMAL_MARKET_7TF_CONTEXT_BINDING_INVALID")
+    trace_payload = {key: item for key, item in trace.items() if key != "trace_hash"}
+    if trace.get("trace_hash") != digest(trace_payload):
+        raise ValueError("FORMAL_MARKET_7TF_TRACE_HASH_MISMATCH")
+    return dict(value)

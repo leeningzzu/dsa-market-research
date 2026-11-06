@@ -41,14 +41,16 @@ _HISTORICAL_PRE_WILDER_MANIFEST_HASH = (
 _HISTORICAL_PRE_WILDER_FEATURE_HASH = (
     "d4ec2a286f4ef153d96b0cd3777a8fd540adc715df164427459aab55a9c757df"
 )
-_HISTORICAL_ADDED_WILDER_METRICS = frozenset({
-    "daily.atr_wilder14",
-    "daily.atr_wilder14_pct",
-})
 
 
 def traced_feature_schema_hash(manifest_hash: str) -> str:
-    """Bind each archived numeric schema to its own verified frozen manifest."""
+    """Bind each archived numeric schema to its own verified frozen manifest.
+
+    Historical schema identities are immutable receipts, not projections of the
+    current metric catalog. The 2026-10-05 pair was independently recovered from
+    its producing commit and Ledger bytes; return that exact hash instead of
+    rebuilding old paths or method owners from today's ``METRIC_BINDINGS``.
+    """
     normalized_manifest_hash = str(manifest_hash or "").strip().lower()
     if (
         len(normalized_manifest_hash) != 64
@@ -56,26 +58,14 @@ def traced_feature_schema_hash(manifest_hash: str) -> str:
     ):
         raise ValueError("manifest_hash must be exact 64-hex")
 
-    bindings = METRIC_BINDINGS
     if normalized_manifest_hash == _HISTORICAL_PRE_WILDER_MANIFEST_HASH:
-        bindings = tuple(
-            metric for metric in METRIC_BINDINGS
-            if metric["id"] not in _HISTORICAL_ADDED_WILDER_METRICS
-        )
-        if len(bindings) != 33:
-            raise ValueError("frozen historical metric binding count drift")
+        return _HISTORICAL_PRE_WILDER_FEATURE_HASH
 
-    result = digest({
+    return digest({
         "schema_version": TRACE_FEATURE_SCHEMA_VERSION,
         "manifest_hash": normalized_manifest_hash,
-        "metrics": bindings,
+        "metrics": METRIC_BINDINGS,
     })
-    if (
-        normalized_manifest_hash == _HISTORICAL_PRE_WILDER_MANIFEST_HASH
-        and result != _HISTORICAL_PRE_WILDER_FEATURE_HASH
-    ):
-        raise ValueError("frozen historical feature schema identity drift")
-    return result
 
 
 TRACE_FEATURE_SCHEMA_HASH = traced_feature_schema_hash(MANIFEST_HASH)

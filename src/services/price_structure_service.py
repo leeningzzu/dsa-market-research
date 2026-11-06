@@ -16,6 +16,8 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
+from data_provider.daily_data_identity import bind_verified_daily_source_view
+
 
 PRICE_STRUCTURE_SCHEMA_VERSION = "price-structure-v1"
 PIVOT_ALGORITHM_VERSION = "confirmed-pivot-v2"
@@ -51,7 +53,8 @@ def _normalize_history(history: Any, *, target_date: date) -> pd.DataFrame:
     frame = frame[frame["date"] <= target_date]
     frame = frame.sort_values("date").drop_duplicates(subset=["date"], keep="last")
     columns = required + (["data_source"] if "data_source" in frame.columns else [])
-    return frame[columns].reset_index(drop=True)
+    result = frame[columns].reset_index(drop=True)
+    return bind_verified_daily_source_view(history, result)
 
 
 def _source_alignment(frame: pd.DataFrame) -> Dict[str, Any]:
@@ -300,12 +303,13 @@ def _public_pivot(pivot: Dict[str, Any]) -> Dict[str, Any]:
 def build_confirmed_intraday_structure_context(
     frame: pd.DataFrame, *, timeframe: str,
 ) -> Dict[str, Any]:
-    """One confirmed-pivot producer for completed 60m/30m descriptive context.
+    """One confirmed-pivot producer for completed 60m/30m/15m/5m context.
 
     MTF admission owns clock, source, price basis and complete-bar verification.
-    No strategy trigger, historical PIT or independent action is granted.
+    Lower-timeframe pivots remain descriptive context only: they never create a
+    strategy trigger, historical PIT label, learning feature or action authority.
     """
-    if timeframe not in {"60m", "30m"}:
+    if timeframe not in {"60m", "30m", "15m", "5m"}:
         raise ValueError("UNSUPPORTED_CONFIRMED_INTRADAY_STRUCTURE_TIMEFRAME")
     base = {
         "schema_version": PRICE_STRUCTURE_SCHEMA_VERSION,
@@ -382,7 +386,7 @@ def build_confirmed_intraday_structure_context(
 
 
 def build_confirmed_30m_structure_context(frame: pd.DataFrame) -> Dict[str, Any]:
-    """Legacy 30m alias; both intervals share one identical pivot algorithm."""
+    """Legacy 30m alias; all admitted intraday intervals share this algorithm."""
     return build_confirmed_intraday_structure_context(frame, timeframe="30m")
 
 

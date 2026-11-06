@@ -35,7 +35,12 @@ def _frame() -> pd.DataFrame:
     )
 
 
-def _identity(frame: pd.DataFrame) -> dict:
+def _identity(
+    frame: pd.DataFrame,
+    *,
+    revision: str | None = None,
+    vintage: str | None = None,
+) -> dict:
     return build_intraday_data_identity(
         frame,
         provider_identity="BaostockFetcher",
@@ -56,6 +61,8 @@ def _identity(frame: pd.DataFrame) -> dict:
         identity_state="OBSERVED",
         observed_at=datetime(2026, 9, 23, 2, 0, tzinfo=timezone.utc),
         source_rows_sha256="a" * 64,
+        revision=revision,
+        vintage=vintage,
     )
 
 
@@ -70,6 +77,26 @@ def test_intraday_identity_round_trip_keeps_unknown_units_explicit() -> None:
     assert extracted["amount_unit"] == "UNKNOWN"
     assert extracted["available_at_max"].endswith("+08:00")
     assert canonical_intraday_identity_json(identity)
+
+
+def test_intraday_revision_and_vintage_are_optional_but_hash_bound() -> None:
+    frame = _frame()
+    unversioned = _identity(frame)
+    versioned = _identity(
+        frame,
+        revision="SYNTHETIC_INTRADAY_REVISION_1",
+        vintage="2026-09-23T02:00:00+00:00",
+    )
+    assert "revision" not in unversioned
+    assert "vintage" not in unversioned
+    assert versioned["revision"] == "SYNTHETIC_INTRADAY_REVISION_1"
+    assert versioned["vintage"] == "2026-09-23T02:00:00+00:00"
+    assert versioned["identity_hash"] != unversioned["identity_hash"]
+
+    tampered = dict(versioned)
+    tampered["vintage"] = "2026-09-24T02:00:00+00:00"
+    with pytest.raises(IntradayDataIdentityError, match="hash mismatch"):
+        attach_intraday_data_identity(frame.copy(), tampered)
 
 
 def test_intraday_identity_tamper_fails_hash_validation() -> None:

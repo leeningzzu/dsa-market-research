@@ -180,14 +180,23 @@ try {
 }
 
 Write-Host 'Verifying packaged AkShare calendar data...'
-$packagedAkshareCalendar = Join-Path 'dist\backend\stock_analysis' '_internal\akshare\file_fold\calendar.json'
-if (-not (Test-Path $packagedAkshareCalendar)) {
-  $packagedAkshareCalendar = Join-Path 'dist\backend\stock_analysis' 'akshare\file_fold\calendar.json'
+$packagedAkshareCalendarCandidates = @(
+  (Join-Path 'dist\backend\stock_analysis' '_internal\akshare\data\calendar.json')
+  (Join-Path 'dist\backend\stock_analysis' 'akshare\data\calendar.json')
+  (Join-Path 'dist\backend\stock_analysis' '_internal\akshare\file_fold\calendar.json')
+  (Join-Path 'dist\backend\stock_analysis' 'akshare\file_fold\calendar.json')
+)
+$packagedAkshareCalendar = $null
+foreach ($candidate in $packagedAkshareCalendarCandidates) {
+  if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+    $packagedAkshareCalendar = $candidate
+    break
+  }
 }
-if (-not (Test-Path $packagedAkshareCalendar)) {
+if (-not $packagedAkshareCalendar) {
   throw 'Packaged AkShare calendar data not found under dist\backend\stock_analysis.'
 }
-
+Write-Host "Found packaged AkShare calendar data at $packagedAkshareCalendar"
 Write-Host 'Verifying static asset references (packaged)...'
 $packagedStatic = Join-Path 'dist\backend\stock_analysis' '_internal\static'
 if (-not (Test-Path $packagedStatic)) {

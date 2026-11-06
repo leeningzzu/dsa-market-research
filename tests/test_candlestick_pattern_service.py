@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import pandas as pd
 
-from src.services.candlestick_pattern_service import build_candlestick_pattern_context
+from src.services.candlestick_pattern_service import (
+    build_candlestick_pattern_context,
+    build_completed_timeframe_candlestick_context,
+)
 
 
 def _history(periods: int = 18, *, source: str = "Fetcher") -> pd.DataFrame:
@@ -81,6 +84,145 @@ def _supply(history: pd.DataFrame, *, state: str = "BALANCED") -> dict:
         "target_date": pd.to_datetime(history.iloc[-1]["date"]).date().isoformat(),
         "state": state,
     }
+
+
+def _completed_30m_history() -> pd.DataFrame:
+    times = pd.date_range(
+        "2026-10-28 09:30", periods=10, freq="30min", tz="Asia/Shanghai",
+    )
+    close = [104.0, 103.5, 103.0, 102.5, 102.8, 103.0, 103.2, 102.0, 103.4, 104.0]
+    frame = pd.DataFrame({
+        "date": times,
+        "open": [value - 0.1 for value in close],
+        "high": [value + 0.5 for value in close],
+        "low": [value - 0.5 for value in close],
+        "close": close,
+        "volume": [1000.0 + index * 10 for index in range(len(times))],
+        "data_source": ["FixtureFetcher"] * len(times),
+    })
+    frame.loc[7, ["open", "close", "high", "low"]] = [103.0, 102.0, 103.4, 101.8]
+    frame.loc[8, ["open", "close", "high", "low"]] = [101.8, 103.4, 103.6, 101.4]
+    frame.loc[9, ["open", "close", "high", "low"]] = [103.5, 104.0, 104.2, 103.2]
+    return frame
+
+
+def _completed_30m_structure(history: pd.DataFrame, *, target_index: int = -1) -> dict:
+    target = pd.Timestamp(history.iloc[target_index]["date"]).tz_convert("UTC")
+    origin = pd.Timestamp(history.iloc[3]["date"]).tz_convert("UTC")
+    confirmed = pd.Timestamp(history.iloc[5]["date"]).tz_convert("UTC")
+    source = "FixtureFetcher"
+    return {
+        "schema_version": "price-structure-v1",
+        "status": "READY",
+        "timeframe": "30m",
+        "completed_bar_only": True,
+        "target_bar_end": target.isoformat(),
+        "intraday_identity_hash": "a" * 64,
+        "historical_replay_eligible": False,
+        "source_alignment": {
+            "status": "SINGLE_SOURCE",
+            "sources": [source],
+            "rows_complete": True,
+            "observations": target_index % len(history) + 1,
+        },
+        "pivots": [{
+            "kind": "LOW", "price": 101.5,
+            "origin_time": origin.isoformat(),
+            "confirmed_at": confirmed.isoformat(),
+            "confirmed_available_at": confirmed.isoformat(),
+            "provisional": False,
+            "algorithm_version": "confirmed-pivot-v2",
+            "config_hash": "price-structure-config",
+            "invalidation": {"state": "ACTIVE", "triggered_at": None},
+        }],
+        "swings": [{
+            "direction": "DOWN",
+            "origin_time": pd.Timestamp(history.iloc[0]["date"]).tz_convert("UTC").isoformat(),
+            "confirmed_at": confirmed.isoformat(),
+            "confirmed_available_at": confirmed.isoformat(),
+            "start_kind": "HIGH", "start_price": 105.0,
+            "end_kind": "LOW", "end_price": 101.5,
+            "provisional": False,
+        }],
+        "structure_event": {"state": "NONE", "provisional": False},
+    }
+
+
+def test_completed_30m_candlestick_preserves_timestamp_lifecycle_and_no_authority():
+    history = _completed_30m_history()
+    target = pd.Timestamp(history.iloc[-1]["date"]).tz_convert("UTC")
+    result = build_completed_timeframe_candlestick_context(
+        stock_code="600519", history=history, timeframe="30m",
+        target_bar_end=target, market="cn",
+        price_structure_context=_completed_30m_structure(history),
+        supply_demand_context={
+            "status": "READY", "target_date": target.date().isoformat(),
+            "state": "BALANCED",
+        },
+        source_identity_hash="a" * 64,
+    )
+    event = next(item for item in result["events"] if item["event_type"] == "BULLISH_ENGULFING")
+    assert result["status"] == "READY"
+    assert result["timeframe"] == "30m"
+    assert result["end_bar_end"] == target.isoformat()
+    assert event["origin_time"].endswith("05:30:00+00:00")
+    assert event["lifecycle"] == "CONFIRMED"
+    assert event["confirmed_at"] == target.isoformat()
+    assert event["independent_action_authority"] is False
+    assert result["historical_replay_eligible"] is False
+    assert result["strategy_admitted"] is False
+    assert result["learning_admitted"] is False
+    assert "30m" in (result["summary"] or "")
+
+
+def test_completed_30m_prefix_future_perturbation_and_duplicate_timestamp_fail_closed():
+    history = _completed_30m_history()
+    prefix = history.iloc[:9].copy()
+    target = pd.Timestamp(prefix.iloc[-1]["date"]).tz_convert("UTC")
+    kwargs = dict(
+        stock_code="600519", timeframe="30m", target_bar_end=target, market="cn",
+        price_structure_context=_completed_30m_structure(prefix),
+        supply_demand_context={"status": "READY", "target_date": target.date().isoformat(), "state": "BALANCED"},
+        source_identity_hash="a" * 64,
+    )
+    forming = build_completed_timeframe_candlestick_context(history=prefix, **kwargs)
+    future = history.copy()
+    future.loc[9, "close"] = 110.0
+    still_forming = build_completed_timeframe_candlestick_context(history=future, **kwargs)
+    assert forming["primary_event"] == still_forming["primary_event"]
+    assert forming["primary_event"]["lifecycle"] == "FORMING"
+    assert forming["primary_event"]["confirmed_at"] is None
+
+    duplicated = history.copy()
+    duplicated.loc[duplicated.index[-1], "date"] = duplicated.iloc[-2]["date"]
+    rejected = build_completed_timeframe_candlestick_context(
+        history=duplicated,
+        **{**kwargs, "target_bar_end": pd.Timestamp(history.iloc[-2]["date"]).tz_convert("UTC")},
+    )
+    assert rejected["status"] == "UNKNOWN"
+    assert rejected["reason"] == "TIMEFRAME_BAR_TIMESTAMP_DUPLICATE"
+
+
+def test_completed_30m_provisional_or_future_confirmed_pivot_is_not_admitted():
+    history = _completed_30m_history()
+    target = pd.Timestamp(history.iloc[-1]["date"]).tz_convert("UTC")
+    structure = _completed_30m_structure(history)
+    structure["pivots"][0]["provisional"] = True
+    provisional = build_completed_timeframe_candlestick_context(
+        stock_code="600519", history=history, timeframe="30m", target_bar_end=target,
+        price_structure_context=structure, source_identity_hash="a" * 64,
+    )
+    assert provisional["status"] == "UNKNOWN"
+    assert provisional["reason"] == "PRICE_STRUCTURE_PIVOT_PROVENANCE_INVALID"
+
+    structure = _completed_30m_structure(history)
+    structure["pivots"][0]["confirmed_at"] = (target + pd.Timedelta(minutes=30)).isoformat()
+    future = build_completed_timeframe_candlestick_context(
+        stock_code="600519", history=history, timeframe="30m", target_bar_end=target,
+        price_structure_context=structure, source_identity_hash="a" * 64,
+    )
+    assert future["status"] == "UNKNOWN"
+    assert future["reason"] == "PRICE_STRUCTURE_FUTURE_CONFIRMATION"
 
 
 def test_bullish_engulfing_at_confirmed_support_has_replay_safe_lifecycle():

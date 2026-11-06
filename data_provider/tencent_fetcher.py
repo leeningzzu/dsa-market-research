@@ -107,6 +107,7 @@ class TencentFetcher(BaseFetcher):
             volume_unit="share",
             amount_unit="CNY",
             identity_state=identity_state,
+            instrument=stock_code,
         )
         attach_daily_data_identity(df, identity)
         return df
@@ -209,9 +210,28 @@ def _format_tencent_date(date_text: str) -> Optional[str]:
         return None
 
 
-def _lots_to_shares(volume: Any) -> Any:
+def normalize_tencent_kline_volume(volume: Any, *, symbol: str) -> Any:
+    """Normalize Tencent qfqday/day volume to shares, respecting source units.
+
+    The independently reviewed a-stock-data v3.10.1 source contract records
+    688/689 STAR-market K-lines in SHARES; other recognized SH/SZ K-lines use
+    LOTS (100 shares). This is a unit normalizer, not a data-rights grant.
+    """
+    identity = str(symbol or "").strip().lower()
+    if not (len(identity) == 8 and identity[:2] in {"sh", "sz"}
+            and identity[2:].isdigit()):
+        raise DataFetchError("TENCENT_KLINE_VOLUME_SYMBOL_UNSUPPORTED")
+    # The current DSA price route is STOCK/ETF only. Index volumes and
+    # convertible-bond ten-certificate lots cannot be reinterpreted through
+    # the 100-share equity/ETF denominator.
+    if identity.startswith((
+        "sh000", "sz399", "sh110", "sh111", "sh113", "sh118",
+        "sz123", "sz127", "sz128",
+    )):
+        raise DataFetchError("TENCENT_KLINE_VOLUME_UNSUPPORTED_ASSET")
+    factor = 1 if identity.startswith(("sh688", "sh689")) else 100
     try:
-        return float(volume) * 100
+        return float(volume) * factor
     except (TypeError, ValueError):
         return volume
 
@@ -245,7 +265,7 @@ def _extract_kline_rows_with_branch(
                 "close": row[2],
                 "high": row[3],
                 "low": row[4],
-                "volume": _lots_to_shares(row[5]),
+                "volume": normalize_tencent_kline_volume(row[5], symbol=symbol),
                 "amount": amount,
             }
         )

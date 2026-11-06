@@ -152,6 +152,28 @@ class _CloseTimeCalendar(_FakeCalendar):
         return pd.Timestamp(local_close).tz_convert("UTC")
 
 
+def test_dynamic_xshg_268_month_calendar_uses_real_sessions_without_lookahead():
+    """Historical schedule construction is not a provider data grant."""
+    target = date(2026, 10, 12)
+    planned = trading_calendar.resolve_required_daily_history_start_fail_closed(
+        "cn", target, {"daily": 61, "weekly": 100, "monthly": 268},
+    )
+    assert planned is not None
+    assert planned["start_date"] == date(2004, 6, 1)
+    actual = trading_calendar.resolve_session_range_fail_closed(
+        "cn", planned["start_date"], target,
+    )
+    assert actual is not None and actual[0] == date(2004, 6, 1)
+    assert actual[-1] == target
+    assert date(2026, 9, 25) not in actual
+    assert date(2026, 9, 28) in actual
+    assert len(actual) > 268
+    # A weekday that was explicitly closed cannot become an endpoint.
+    assert trading_calendar.resolve_session_range_fail_closed(
+        "cn", date(2026, 9, 25), date(2026, 9, 28),
+    ) is None
+
+
 class OutcomeSessionResolutionTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self.calendar = _FakeCalendar(
@@ -1019,6 +1041,102 @@ class MarketPhaseContextTestCase(unittest.TestCase):
 
         self.assertEqual(ctx.phase, trading_calendar.MarketPhase.UNKNOWN)
         self.assertIn("calendar_error", ctx.warnings)
+
+
+class ObservedSessionCalendarSourceTestCase(unittest.TestCase):
+    @staticmethod
+    def _source(target: date = date(2026, 10, 28)):
+        sessions = [
+            value.date()
+            for value in pd.bdate_range(date(2001, 1, 2), target)
+        ]
+        return trading_calendar.build_observed_session_calendar_source(
+            market="cn",
+            provider_identity="BaostockFetcher",
+            provider_route="baostock.query_trade_dates",
+            requested_start=date(2001, 1, 1),
+            requested_end=target,
+            observed_at=datetime(2026, 10, 29, 4, 30, tzinfo=timezone.utc),
+            available_at=datetime(2026, 10, 29, 4, 30, tzinfo=timezone.utc),
+            source_content_sha256="a" * 64,
+            revision="observed-response-sha256:" + "a" * 64,
+            vintage="2026-10-29T04:30:00+00:00",
+            sessions=sessions,
+        )
+
+    def test_observed_provider_sessions_extend_exact_268_month_plan(self):
+        target = date(2026, 10, 28)
+        source = self._source(target)
+        plan = (
+            trading_calendar.
+            resolve_required_daily_history_start_from_observed_sessions_fail_closed(
+                "cn", target,
+                {"daily": 268, "weekly": 268, "monthly": 268},
+                source,
+            )
+        )
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan["start_by_timeframe"]["monthly"], date(2004, 6, 1))
+        self.assertEqual(plan["start_date"], date(2004, 6, 1))
+        self.assertEqual(plan["limiting_timeframes"], ("monthly",))
+        self.assertEqual(
+            plan["calendar_source_identity"]["source_identity_hash"],
+            source["source_identity_hash"],
+        )
+        self.assertFalse(source["historical_pit_eligible"])
+        self.assertFalse(source["storage_admitted"])
+
+    def test_observed_session_range_is_exact_and_hash_tamper_fails_closed(self):
+        target = date(2026, 10, 28)
+        source = self._source(target)
+        start = date.fromisoformat(source["sessions"][-20])
+        selected = trading_calendar.resolve_session_range_from_observed_sessions_fail_closed(
+            source, start, target,
+        )
+        self.assertEqual(selected[0], start)
+        self.assertEqual(selected[-1], target)
+        self.assertEqual(len(selected), 20)
+
+        tampered = dict(source)
+        tampered["sessions"] = tuple(source["sessions"][:-2]) + (
+            source["sessions"][-1],
+        )
+        tampered["session_count"] -= 1
+        self.assertIsNone(
+            trading_calendar.resolve_session_range_from_observed_sessions_fail_closed(
+                tampered, start, target,
+            )
+        )
+
+    def test_future_covered_source_cannot_plan_an_earlier_target(self):
+        target = date(2026, 10, 28)
+        future_source = self._source(date(2026, 10, 29))
+        self.assertIsNone(
+            trading_calendar.
+            resolve_required_daily_history_start_from_observed_sessions_fail_closed(
+                "cn", target,
+                {"daily": 40, "weekly": 40, "monthly": 268},
+                future_source,
+            )
+        )
+
+    def test_duplicate_sessions_are_rejected_before_identity_sealing(self):
+        with self.assertRaisesRegex(
+            ValueError, "OBSERVED_SESSION_CALENDAR_SOURCE_CONTENT_INVALID",
+        ):
+            trading_calendar.build_observed_session_calendar_source(
+                market="cn",
+                provider_identity="BaostockFetcher",
+                provider_route="baostock.query_trade_dates",
+                requested_start=date(2026, 10, 27),
+                requested_end=date(2026, 10, 28),
+                observed_at=datetime(2026, 10, 29, tzinfo=timezone.utc),
+                available_at=datetime(2026, 10, 29, tzinfo=timezone.utc),
+                source_content_sha256="b" * 64,
+                revision="observed-response-sha256:" + "b" * 64,
+                vintage="2026-10-29T00:00:00+00:00",
+                sessions=(date(2026, 10, 27), date(2026, 10, 27)),
+            )
 
 
 class ComputeEffectiveRegionTestCase(unittest.TestCase):

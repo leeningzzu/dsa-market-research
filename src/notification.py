@@ -302,20 +302,23 @@ def _canonical_conclusion_for_result(
         return ""
     return str(brief.get("one_line_conclusion") or "").strip()
 
-def _format_etf_asset_specific_items(brief: Dict[str, Any]) -> List[str]:
-    """Render only proven ETF-specific trading-quality facts without adding authority."""
-    if str(brief.get("asset_type") or "").strip().lower() != "etf":
-        return []
+def _format_asset_specific_items(brief: Dict[str, Any]) -> List[str]:
+    """Render exact typed asset facts without adding Product/action authority."""
+    asset_type = str(brief.get("asset_type") or "").strip().lower()
     asset_specific = brief.get("asset_specific") or {}
     if not isinstance(asset_specific, dict):
         return []
-
+    rows = (
+        (
+            ("premium_discount", "折溢价"),
+            ("liquidity_spread", "买卖价差"),
+            ("tracking_quality", "跟踪质量"),
+        )
+        if asset_type == "etf"
+        else (("execution_risk", "执行风险"),)
+    )
     rendered: List[str] = []
-    for key, label in (
-        ("premium_discount", "折溢价"),
-        ("liquidity_spread", "买卖价差"),
-        ("tracking_quality", "跟踪质量"),
-    ):
+    for key, label in rows:
         item = asset_specific.get(key) or {}
         if not isinstance(item, dict):
             continue
@@ -648,6 +651,8 @@ def _append_complete_research_universe_appendix(
                     state_text = state_labels.get(
                         str(item.get("state") or ""), "尚未证实"
                     )
+                if requirement_id == "CHAN" and contract_role != "DEFERRED":
+                    state_text += "；窄适配（NOT_FULL_CZSC）"
                 method_ids = tuple(
                     str(value) for value in item.get("method_ids", ()) if value
                 )
@@ -713,6 +718,50 @@ def _append_complete_research_universe_appendix(
                         f"；来源观测于{item['source_observed_at']}"
                         f"；来源身份：{item['source_identity_hash']}"
                     )
+                elif (
+                    state in {"READY", "PARTIAL"}
+                    and item.get("independent_source_value_admitted") is True
+                    and item.get("strategy_upgrade_authority") is False
+                    and item.get("source_observed_at")
+                    and item.get("source_identity_hash")
+                    and item.get("source_fact_hash")
+                    and item.get("source_observation_hash")
+                ):
+                    # A typed, tamper-evident source/derived fact may be shown as
+                    # observed evidence while Product, rights, storage, PIT,
+                    # learning and strategy authority remain separate gates.
+                    state_text = (
+                        f"{state}／typed来源事实及方法回执已核；不等于Product准入"
+                        f"；原因：{item.get('reason') or 'UNKNOWN'}"
+                        f"；来源：{item.get('provider_identity') or 'UNKNOWN'}"
+                        f"；完成至：{item.get('completed_through') or 'UNKNOWN'}"
+                        f"；实际观测于：{item['source_observed_at']}"
+                        f"；来源身份：{item['source_identity_hash']}"
+                        "；数据权利、存储、历史PIT、训练和策略升级资格未证明"
+                    )
+                elif (
+                    state == "PARTIAL"
+                    and item.get("dataset_id") in {
+                        "M_INDEX_CURRENT", "M_INDEX_BARS",
+                        "E_PRICE_1D", "E_PRICE_5M",
+                    }
+                    and item.get("source_data_rights") == "UNKNOWN"
+                    and item.get("independent_source_value_admitted") is False
+                    and item.get("strategy_upgrade_authority") is False
+                    and item.get("source_observed_at")
+                    and item.get("source_identity_hash")
+                ):
+                    # Same verified 76-object trace; do not hide source-only
+                    # M2/ETF progress as UNKNOWN or promote it to indicators.
+                    state_text = (
+                        "PARTIAL／来源身份有界可追；仅来源收据不构成独立策略数值，具体指标就绪以原生回执为准"
+                        f"；原因：{item.get('reason') or 'UNKNOWN'}"
+                        f"；来源：{item.get('provider_identity') or 'UNKNOWN'}"
+                        f"；完成至：{item.get('completed_through') or 'UNKNOWN'}"
+                        f"；实际观测于：{item['source_observed_at']}"
+                        f"；来源身份：{item['source_identity_hash']}"
+                        "；数据权利、历史PIT和训练资格未证明"
+                    )
                 else:
                     state_text = (
                         "当前资产路径不适用"
@@ -766,6 +815,40 @@ def _render_complete_research_universe_appendix_for_results(
     return "\n".join(blocks).strip()
 
 
+def _append_quality_valuation_material(lines: List[str], brief: Dict[str, Any]) -> None:
+    """Render already-bound asset material; never derive a score or action."""
+    quality = brief.get("quality") or {}
+    if isinstance(quality, dict):
+        status = str(quality.get("status") or "").strip().upper()
+        summary = str(quality.get("summary") or "").strip()
+        uncertainty = str(quality.get("uncertainty") or "").strip()
+        label = str(quality.get("label") or "质量成长").strip() or "质量成长"
+        if status == "NOT_APPLICABLE":
+            if uncertainty:
+                lines.append(f"**{label}**: {uncertainty}")
+        elif summary or uncertainty or status in {"MISSING", "NOT_ADMITTED"}:
+            text = summary or "数据不足"
+            if uncertainty:
+                text += f"（不确定性：{uncertainty}）"
+            lines.append(f"**{label}**: {text}")
+
+    valuation = brief.get("valuation") or {}
+    if isinstance(valuation, dict):
+        valuation_parts = [
+            str(valuation.get("bucket") or "").strip(),
+            str(valuation.get("summary") or "").strip(),
+        ]
+        valuation_parts = [item for item in valuation_parts if item]
+        uncertainty = str(valuation.get("uncertainty") or "").strip()
+        status = str(valuation.get("status") or "").strip().upper()
+        if valuation_parts or uncertainty or status in {"MISSING", "NOT_ADMITTED"}:
+            valuation_text = "｜".join(valuation_parts) if valuation_parts else "数据不足"
+            if uncertainty:
+                valuation_text += f"（不确定性：{uncertainty}）"
+            valuation_label = str(valuation.get("label") or "估值").strip() or "估值"
+            lines.append(f"**{valuation_label}**: {valuation_text}")
+
+
 def _append_investor_brief_block(lines: List[str], factor: Any, report_language: str) -> bool:
     """Render the DAILY-FIRST investor brief without deriving new evidence or actions."""
     brief = _get_valid_investor_brief(factor, report_language)
@@ -804,24 +887,16 @@ def _append_investor_brief_block(lines: List[str], factor: Any, report_language:
         if isinstance(price_value, (int, float)) or str(price_value or "").strip():
             lines.append(f"**当前价格**: {price_value}")
 
-    valuation = brief.get("valuation") or {}
-    if isinstance(valuation, dict):
-        valuation_parts = [
-            str(valuation.get("bucket") or "").strip(),
-            str(valuation.get("summary") or "").strip(),
-        ]
-        valuation_parts = [item for item in valuation_parts if item]
-        uncertainty = str(valuation.get("uncertainty") or "").strip()
-        if valuation_parts or uncertainty:
-            valuation_text = "｜".join(valuation_parts) if valuation_parts else "数据不足"
-            if uncertainty:
-                valuation_text += f"（不确定性：{uncertainty}）"
-            valuation_label = str(valuation.get("label") or "估值").strip() or "估值"
-            lines.append(f"**{valuation_label}**: {valuation_text}")
+    _append_quality_valuation_material(lines, brief)
 
-    etf_specific_items = _format_etf_asset_specific_items(brief)
-    if etf_specific_items:
-        lines.append(f"**ETF专属交易质量**: {'｜'.join(etf_specific_items)}")
+    asset_specific_items = _format_asset_specific_items(brief)
+    if asset_specific_items:
+        heading = (
+            "ETF专属交易质量"
+            if str(brief.get("asset_type") or "").lower() == "etf"
+            else "执行风险实测边界"
+        )
+        lines.append(f"**{heading}**: {'｜'.join(asset_specific_items)}")
 
     key_levels = brief.get("key_levels") or {}
     if isinstance(key_levels, dict):
@@ -974,13 +1049,14 @@ def _append_missing_factor_material(lines: List[str], factor: Any) -> None:
     if isinstance(sections, dict):
         for key in (
             "market_sector_regime", "trend_relative_strength",
-            "supply_demand_volume_price", "price_structure", "valuation",
+            "supply_demand_volume_price", "price_structure", "quality_growth", "valuation",
             "cost_structure", "trend", "volume_price", "momentum", "pattern_trigger",
         ):
             add(f"研究证据/{key}", sections.get(key))
     for key, label in (
         ("action_condition", "操作条件"),
         ("invalidation_condition", "失效条件"),
+        ("quality_growth", "质量成长"),
         ("valuation", "估值前提"),
         ("cost_structure", "成本/筹码口径"),
     ):
@@ -1015,24 +1091,16 @@ def _append_investor_notification_block(
         if value is not None and str(value).strip():
             lines.append(f"**当前价格**: {value}")
 
-    valuation = brief.get("valuation") or {}
-    if isinstance(valuation, dict):
-        valuation_parts = [
-            str(valuation.get("bucket") or "").strip(),
-            str(valuation.get("summary") or "").strip(),
-        ]
-        valuation_parts = [item for item in valuation_parts if item]
-        uncertainty = str(valuation.get("uncertainty") or "").strip()
-        if valuation_parts or uncertainty:
-            valuation_text = "｜".join(valuation_parts) if valuation_parts else "数据不足"
-            if uncertainty:
-                valuation_text += f"（不确定性：{uncertainty}）"
-            valuation_label = str(valuation.get("label") or "估值").strip() or "估值"
-            lines.append(f"**{valuation_label}**: {valuation_text}")
+    _append_quality_valuation_material(lines, brief)
 
-    etf_specific_items = _format_etf_asset_specific_items(brief)
-    if etf_specific_items:
-        lines.append(f"**ETF专属交易质量**: {'｜'.join(etf_specific_items)}")
+    asset_specific_items = _format_asset_specific_items(brief)
+    if asset_specific_items:
+        heading = (
+            "ETF专属交易质量"
+            if str(brief.get("asset_type") or "").lower() == "etf"
+            else "执行风险实测边界"
+        )
+        lines.append(f"**{heading}**: {'｜'.join(asset_specific_items)}")
 
     coverage_text = str(brief.get("coverage_text") or "").strip()
     if coverage_text:
@@ -1174,6 +1242,7 @@ def _append_factor_decision_block(lines: List[str], factor: Any, report_language
     action_condition = str(factor.get("action_condition") or "").strip()
     invalidation = str(factor.get("invalidation_condition") or "").strip()
     valuation = str(factor.get("valuation") or "").strip()
+    quality_growth = str(factor.get("quality_growth") or "").strip()
     cost_structure = str(factor.get("cost_structure") or "").strip()
     risk_notes = factor.get("risk_notes") or []
 
@@ -1201,6 +1270,8 @@ def _append_factor_decision_block(lines: List[str], factor: Any, report_language
         lines.append(f"**操作条件**: {action_condition}")
     if invalidation:
         lines.append(f"**失效条件**: {invalidation}")
+    if quality_growth:
+        lines.append(f"**{quality_growth}**")
     if valuation:
         lines.append(f"**{valuation}**")
     if cost_structure:
@@ -2601,6 +2672,48 @@ class NotificationService(
             return "\n".join(lines).strip(), list(results)
 
         return "", list(results)
+
+    def build_v2_5_dynamic_no_send(
+        self,
+        results: List[AnalysisResult],
+        report_date: Optional[str] = None,
+    ) -> dict:
+        """Build the original V2.5 rich HTML in memory without delivering it.
+
+        The deterministic canonical remains the sole fact authority. The
+        accepted Golden frame is read and verified by the coverage owner;
+        Notification only adds the existing full text fallback and subject.
+        """
+        from src.services.v2_5_evidence_coverage import (
+            render_v2_5_dynamic_no_send,
+        )
+
+        projected = render_v2_5_dynamic_no_send(
+            results,
+            report_date=report_date,
+        )
+        if results:
+            text_content = self.generate_dashboard_report(
+                results,
+                report_date=report_date,
+            )
+        else:
+            date_text = report_date or datetime.now().strftime("%Y-%m-%d")
+            text_content = (
+                f"# {date_text} DSA完整研究\n\n"
+                "当前没有已绑定研究对象；请以HTML中的全域缺失状态为准。"
+            )
+        subject = self.build_research_email_subject(results, report_date)
+        if not subject:
+            date_text = report_date or datetime.now().strftime("%Y-%m-%d")
+            subject = f"【DSA完整研究｜{date_text}】市场、AUTO与自选"
+        return {
+            "subject": subject,
+            "text_content": text_content,
+            "html_content": projected["html"],
+            "receipt": projected["receipt"],
+            "no_send": True,
+        }
 
     def generate_dashboard_report(
         self,

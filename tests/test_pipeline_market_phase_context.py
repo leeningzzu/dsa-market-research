@@ -251,6 +251,45 @@ class PipelineMarketPhaseContextTestCase(unittest.TestCase):
             current_time=frozen_time,
         )
 
+    def test_run_preserves_live_and_replay_observation_clock_with_native_worker(self):
+        pipeline = _make_pipeline()
+        pipeline.p0_bounded_trial = False
+        pipeline.max_workers = 1
+        pipeline.config.single_stock_notify = False
+        pipeline.config.report_type = "simple"
+        pipeline.config.analysis_delay = 0
+        pipeline._resolve_resume_target_date = MagicMock(return_value=date(2026, 3, 26))
+        pipeline.fetch_and_save_stock_data = MagicMock(return_value=(True, None))
+        pipeline.analyze_stock = MagicMock(return_value=_analysis_result())
+        pipeline._save_local_report = MagicMock()
+
+        # A run-generated reference time controls the common target session,
+        # but MUST NOT masquerade as a historically frozen observation time.
+        live_results = pipeline.run(stock_codes=["600519"], send_notification=False)
+        self.assertEqual(len(live_results), 1)
+        live_fetch = pipeline.fetch_and_save_stock_data.call_args.kwargs
+        live_analyze = pipeline.analyze_stock.call_args.kwargs
+        self.assertFalse(live_fetch["observation_time_frozen"])
+        self.assertFalse(live_analyze["observation_time_frozen"])
+        self.assertEqual(live_fetch["current_time"], live_analyze["current_time"])
+        self.assertIsNotNone(live_fetch["current_time"])
+
+        # Explicit replay timestamps remain frozen without requiring a
+        # redundant new keyword at either original callable boundary.
+        pipeline.fetch_and_save_stock_data.reset_mock()
+        pipeline.analyze_stock.reset_mock()
+        frozen_time = datetime(2026, 3, 27, 10, 0)
+        replay_results = pipeline.run(
+            stock_codes=["600519"], send_notification=False, current_time=frozen_time,
+        )
+        self.assertEqual(len(replay_results), 1)
+        replay_fetch = pipeline.fetch_and_save_stock_data.call_args.kwargs
+        replay_analyze = pipeline.analyze_stock.call_args.kwargs
+        self.assertEqual(replay_fetch["current_time"], frozen_time)
+        self.assertEqual(replay_analyze["current_time"], frozen_time)
+        self.assertNotIn("observation_time_frozen", replay_fetch)
+        self.assertNotIn("observation_time_frozen", replay_analyze)
+
     def test_legacy_analysis_artifacts_helper_maps_full_pipeline_fields(self):
         pipeline = _make_pipeline(agent_mode=False, save_context_snapshot=True)
         pipeline.query_source = "api"

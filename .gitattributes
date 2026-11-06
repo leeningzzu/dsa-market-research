@@ -41,3 +41,6 @@ Makefile text eol=lf
 *.crt binary
 *.key binary
 *.p12 binary
+
+# Accepted Email original is byte-exact, including newlines, on every OS.
+/templates/v2_5/STOCK_DSA_V2_5_PRODUCTION_MAIL_BASELINE_R001.html -text

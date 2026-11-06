@@ -18,6 +18,34 @@ _FACTOR_COLUMNS = {
     "theme_heat": "factor_theme_heat_score",
     "topic_alignment": "factor_topic_alignment_score",
 }
+# Ranking formulas keep their existing deterministic fallbacks for the broad
+# L2 pool. This independent receipt prevents those fallback values from being
+# promoted into FOCUS authority. It proves input completeness only—not source
+# rights, seven-timeframe readiness, probability, or canonical action.
+_FACTOR_INPUT_REQUIREMENTS = {
+    "value": (("pe_ratio",), ("pb_ratio",)),
+    "liquidity": (("amount",),),
+    "momentum": (("change_pct",), ("change_60d", "signal_score", "macd_status")),
+    "reversal": (("change_pct",), ("change_60d", "rsi_status")),
+    "activity": (("volume_ratio",), ("turnover_rate",)),
+    "stability": (
+        ("change_pct",),
+        ("volatility_20d_pct", "max_drawdown_20d_pct", "atr_20_pct", "daily_quality_score"),
+    ),
+    "size": (("total_mv",),),
+    "theme_heat": ((
+        "board_heat_score", "industry_heat_score", "concept_heat_score",
+        "industry_change_pct",
+    ),),
+    "topic_alignment": (("industry", "concepts"), ("board_heat_summary",)),
+}
+_POSITIVE_INPUTS = frozenset({
+    "pe_ratio", "pb_ratio", "amount", "volume_ratio", "turnover_rate",
+    "volatility_20d_pct", "atr_20_pct", "daily_quality_score", "total_mv",
+    "board_heat_score", "industry_heat_score", "concept_heat_score",
+})
+
+
 _DEFAULT_SCORING_PROFILE = {
     "momentum_base": 60.0,
     "momentum_intraday_slope": 5.0,
@@ -107,7 +135,58 @@ def compute_screen_scores(df: pd.DataFrame, config: ScreeningConfig) -> pd.DataF
 
     result["screen_score"] = result["screen_score"].clip(0, 100)
 
+    readiness = _compile_factor_input_readiness(result, tuple(weights))
+    for column in readiness.columns:
+        result[column] = readiness[column]
+
     return result
+
+
+def _compile_factor_input_readiness(
+    frame: pd.DataFrame,
+    active_factors: tuple[str, ...],
+) -> pd.DataFrame:
+    rows = []
+    for _, row in frame.iterrows():
+        imputed_factors: list[str] = []
+        missing_inputs: list[str] = []
+        for factor in active_factors:
+            groups = _FACTOR_INPUT_REQUIREMENTS.get(factor, ())
+            factor_missing = []
+            for alternatives in groups:
+                if not any(_screen_input_present(row, field) for field in alternatives):
+                    factor_missing.append("|".join(alternatives))
+            if factor_missing:
+                imputed_factors.append(factor)
+                missing_inputs.extend(
+                    factor + ":" + group for group in factor_missing
+                )
+        complete = not imputed_factors
+        rows.append({
+            "screen_score_input_state": (
+                "OBSERVED_COMPLETE" if complete else "IMPUTED_PARTIAL"
+            ),
+            "screen_score_missing_inputs": tuple(missing_inputs),
+            "screen_score_imputed_factors": tuple(imputed_factors),
+            "screen_score_focus_eligible": complete,
+            "screen_score_readiness_scope": (
+                "INPUT_COMPLETENESS_ONLY_NOT_SOURCE_RIGHTS_OR_7TF"
+            ),
+        })
+    return pd.DataFrame(rows, index=frame.index)
+
+
+def _screen_input_present(row: pd.Series, field: str) -> bool:
+    value = row.get(field)
+    if value is None or value is pd.NA:
+        return False
+    if field in {"macd_status", "rsi_status", "industry", "concepts", "board_heat_summary"}:
+        text = str(value).strip()
+        return bool(text and text.lower() not in {"nan", "none", "<na>"})
+    numeric = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+    if pd.isna(numeric):
+        return False
+    return float(numeric) > 0 if field in _POSITIVE_INPUTS else True
 
 
 def factor_score_columns() -> dict[str, str]:

@@ -11,13 +11,29 @@ Neither block represents actual holder acquisition records or institutional inte
 from __future__ import annotations
 
 from datetime import date
+from hashlib import sha256
+import json
 from typing import Any, Dict, Optional
 
 import pandas as pd
 
+from data_provider.daily_data_identity import bind_verified_daily_source_view
+
 
 COST_STRUCTURE_SCHEMA_VERSION = "cost-structure-v1"
 REFERENCE_WINDOWS = (20, 60)
+ALGORITHM_VERSION = "cost-structure-bar-reference-v1"
+_CONFIG = {
+    "algorithm_version": ALGORITHM_VERSION,
+    "reference_windows": REFERENCE_WINDOWS,
+    "bar_reference_method": "HLC3_VOLUME_WEIGHTED_COMPLETED_DAILY_BARS",
+    "provider_snapshot_authority": "CURRENT_ONLY",
+    "completed_bar_only": True,
+    "institutional_intent_inferred": False,
+}
+CONFIG_HASH = sha256(
+    json.dumps(_CONFIG, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+).hexdigest()
 
 
 def _safe_float(value: Any) -> Optional[float]:
@@ -47,7 +63,8 @@ def _normalize_history(history: Any, *, target_date: date) -> pd.DataFrame:
     frame = frame[frame["date"] <= target_date]
     frame = frame.sort_values("date").drop_duplicates(subset=["date"], keep="last")
     columns = required + (["data_source"] if "data_source" in frame.columns else [])
-    return frame[columns].reset_index(drop=True)
+    result = frame[columns].reset_index(drop=True)
+    return bind_verified_daily_source_view(history, result)
 
 
 def _bar_window(frame: pd.DataFrame, *, sessions: int) -> Dict[str, Any]:
@@ -252,6 +269,10 @@ def build_cost_structure_context(
             "schema_version": COST_STRUCTURE_SCHEMA_VERSION,
             "family": "cost_structure",
             "status": "UNKNOWN",
+            "completed_bar_only": True,
+            "algorithm_version": ALGORITHM_VERSION,
+            "config_hash": CONFIG_HASH,
+            "effective_parameters": dict(_CONFIG),
             "reason": "TARGET_DATE_UNKNOWN",
             "stock_code": stock_code,
             "market": str(market or "").lower() or None,
@@ -317,6 +338,9 @@ def build_cost_structure_context(
         "schema_version": COST_STRUCTURE_SCHEMA_VERSION,
         "family": "cost_structure",
         "status": status,
+        "algorithm_version": ALGORITHM_VERSION,
+        "config_hash": CONFIG_HASH,
+        "effective_parameters": dict(_CONFIG),
         "reason": reason,
         "stock_code": stock_code,
         "market": str(market or "").lower() or None,
@@ -332,4 +356,98 @@ def build_cost_structure_context(
         "institutional_intent_inferred": False,
         "hard_veto": False,
         "independent_action_authority": False,
+    }
+
+def build_completed_timeframe_bar_reference(
+    *,
+    bars: Any,
+    timeframe: str,
+    target_date: date,
+    source_identity_hash: Optional[str],
+    volume_unit: Optional[str],
+) -> Dict[str, Any]:
+    """Reuse the accepted 20/60 HLC3×volume formula on completed TF bars.
+
+    The MTF parent is responsible for exchange-session completion and typed
+    content-identity verification. This bounded numerical function must never
+    claim provider chip/holder cost, PIT, legal data rights or strategy action.
+    """
+    def not_ready(status: str, reason: str) -> Dict[str, Any]:
+        return {
+            "schema_version": COST_STRUCTURE_SCHEMA_VERSION,
+            "timeframe": timeframe,
+            "status": status,
+            "reason": reason,
+            "completed_bar_only": True,
+            "window_20": {},
+            "window_60": {},
+            "independent_action_authority": False,
+            "data_rights_admitted": False,
+            "historical_replay_eligible": False,
+        }
+
+    if timeframe not in {"daily", "weekly", "monthly", "5m", "15m", "30m", "60m"}:
+        return not_ready("UNKNOWN", "TIMEFRAME_UNSUPPORTED")
+    if volume_unit != "share":
+        return not_ready("UNKNOWN", "VOLUME_UNIT_NOT_ADMITTED")
+    if not isinstance(source_identity_hash, str) or (
+        len(source_identity_hash) != 64
+        or any(char not in "0123456789abcdef" for char in source_identity_hash)
+    ):
+        return not_ready("UNKNOWN", "TYPED_SOURCE_IDENTITY_MISSING")
+    required = {"date", "high", "low", "close", "volume", "data_source"}
+    if not isinstance(bars, pd.DataFrame) or bars.empty or not required.issubset(bars.columns):
+        return not_ready("MISSING", "COMPLETED_BAR_INPUT_MISSING")
+    if not isinstance(target_date, date):
+        return not_ready("UNKNOWN", "TARGET_DATE_INVALID")
+    frame = bars[list(required)].copy()
+    frame["date"] = pd.to_datetime(frame["date"], errors="coerce", utc=True)
+    if frame["date"].isna().any():
+        return not_ready("UNKNOWN", "BAR_TIMESTAMP_INVALID")
+    if frame["date"].duplicated().any() or not frame["date"].is_monotonic_increasing:
+        return not_ready("UNKNOWN", "BAR_TIME_DUPLICATE_OR_OUT_OF_ORDER")
+    if any(stamp.date() > target_date for stamp in frame["date"]):
+        return not_ready("UNKNOWN", "FUTURE_BAR_NOT_ADMITTED")
+    if frame["date"].iloc[-1].date() != target_date:
+        return not_ready("MISSING", "TARGET_COMPLETED_BAR_MISSING")
+    source_values = frame["data_source"].map(lambda x: str(x or "").strip())
+    if not bool((source_values != "").all()) or source_values.nunique() != 1:
+        return not_ready("UNKNOWN", "SOURCE_ALIGNMENT_UNPROVEN")
+    for column in ("high", "low", "close", "volume"):
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    if frame[["high", "low", "close", "volume"]].isna().any().any():
+        return not_ready("UNKNOWN", "OHLCV_INVALID")
+    frame = frame.sort_values("date", kind="stable").reset_index(drop=True)
+    results = {}
+    for completed_bars in (20, 60):
+        reference = _bar_window(frame, sessions=completed_bars)
+        reference = dict(reference)
+        reference["window_completed_bars"] = reference.pop("window_sessions")
+        if reference.get("status") == "READY":
+            reference["method"] = "HLC3_VOLUME_WEIGHTED_COMPLETED_TIMEFRAME_BARS"
+        results["window_" + str(completed_bars)] = reference
+    status = (
+        "READY" if results["window_60"]["status"] == "READY"
+        else "PARTIAL" if results["window_20"]["status"] == "READY"
+        else "UNKNOWN" if any(value["status"] == "UNKNOWN" for value in results.values())
+        else "MISSING"
+    )
+    return {
+        "schema_version": COST_STRUCTURE_SCHEMA_VERSION,
+        "timeframe": timeframe,
+        "status": status,
+        "reason": "BAR_REFERENCE_20_60_COMPLETE" if status == "READY"
+                  else "BAR_REFERENCE_20_ONLY" if status == "PARTIAL"
+                  else "INVALID_OR_INSUFFICIENT_COMPLETED_BARS",
+        "completed_bar_only": True,
+        "algorithm_version": ALGORITHM_VERSION,
+        "config_hash": CONFIG_HASH,
+        "source_identity_hash": source_identity_hash,
+        "volume_unit": volume_unit,
+        "semantics": "BAR_DERIVED_REFERENCE_PRICE_NOT_HOLDER_COST",
+        "window_20": results["window_20"],
+        "window_60": results["window_60"],
+        "independent_action_authority": False,
+        "data_rights_admitted": False,
+        "historical_replay_eligible": False,
     }

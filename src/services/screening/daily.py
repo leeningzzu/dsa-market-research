@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import threading
@@ -19,6 +20,10 @@ import pandas as pd
 import requests
 
 from src.services.screening.source_guard import call_with_timeout, parse_source_timeout_seconds
+from src.services.relative_strength_service import (
+    DEFAULT_HORIZON_SESSIONS,
+    compute_etf_peer_relative_strength_context,
+)
 
 _DAILY_FEATURE_DEFAULTS = {
     "daily_data_points": pd.NA,
@@ -47,6 +52,18 @@ _DAILY_FEATURE_DEFAULTS = {
     "daily_source": "",
 }
 _DAILY_ENRICH_MAX_WORKERS = 1
+_ETF_PEER_RS_DEFAULTS = {
+    "etf_peer_rs_status": "",
+    "etf_peer_rs_reason": "",
+    "etf_peer_rs_state": "",
+    "etf_peer_rs_rank": pd.NA,
+    "etf_peer_rs_rank_denominator": pd.NA,
+    "etf_peer_rs_percentile": pd.NA,
+    "etf_peer_rs_universe_hash": "",
+    "etf_peer_rs_preference_rank": pd.NA,
+    "etf_peer_rs_focus_eligible": False,
+    "etf_peer_rs_authority": "PREFERENCE_ONLY_NO_ACTION_OR_PROBABILITY",
+}
 _DAILY_HISTORY_CACHE_VERSION = 1
 _DAILY_HISTORY_CACHE_TTL_SECONDS = 24 * 60 * 60
 _SOURCE_HEALTH_FAILURE_THRESHOLD = 3
@@ -57,6 +74,51 @@ _BAOSTOCK_LOCK = threading.Lock()
 _BAOSTOCK_OUTAGE_ERROR: str | None = None
 _SOURCE_HEALTH: dict[str, dict[str, object]] = {}
 _SOURCE_HEALTH_LOCK = threading.Lock()
+
+
+DAILY_FEATURE_WINDOW_VERSION = "screening-daily-feature-window-v1"
+_DAILY_FEATURE_REQUIRED_BARS = {
+    "change_60d": 61,
+    "ma60": 60,
+    "macd_status": 35,
+    "rsi14": 15,
+    "shape_20d_with_prior_bar": 21,
+    "daily_quality": 60,
+    "volatility_20d": 21,
+    "atr_20": 21,
+}
+
+
+def compile_daily_feature_window(*, asset_type: str) -> dict[str, object]:
+    """Return the current deterministic screening feature history contract.
+
+    This compiles the bars actually consumed by ``compute_daily_features`` and
+    ETF peer RS. It is not the deep 7TF window, a Product data grant, or proof
+    that a bounded candidate cap is full-universe equivalent.
+    """
+    route = str(asset_type or "stock").strip().lower()
+    if route not in {"stock", "etf"}:
+        raise ValueError("DAILY_FEATURE_WINDOW_ASSET_TYPE_UNSUPPORTED")
+    components = dict(_DAILY_FEATURE_REQUIRED_BARS)
+    if route == "etf":
+        components["etf_peer_relative_strength"] = (
+            DEFAULT_HORIZON_SESSIONS + 1
+        )
+    required = max(components.values())
+    identity = {
+        "schema_version": DAILY_FEATURE_WINDOW_VERSION,
+        "asset_type": route,
+        "components": components,
+        "required_bars": required,
+        "completed_daily_bar_only": True,
+        "scope": "SCREENING_FEATURE_INPUT_ONLY_NOT_7TF_OR_PRODUCT",
+    }
+    identity["window_hash"] = hashlib.sha256(
+        json.dumps(
+            identity, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+    ).hexdigest()
+    return identity
 
 
 def enrich_daily_features(
@@ -70,13 +132,17 @@ def enrich_daily_features(
     cache_ttl_seconds: float | None = None,
     max_workers: int | None = None,
     history_fetcher: Callable[..., pd.DataFrame] | None = None,
+    asset_type: str = "stock",
+    etf_peer_min_count: int = 3,
 ) -> pd.DataFrame:
     """Attach daily technical features to the first ``max_rows`` candidates.
 
     This intentionally runs after broad snapshot filtering; it is not a full
     market historical-data pass. ``history_fetcher`` is a request-scoped
     override; callers can reuse host data capabilities without replacing this
-    module's process-global ``fetch_daily_history`` function.
+    module's process-global ``fetch_daily_history`` function. For the bounded
+    ETF route the exact same fetched histories may also produce a deterministic
+    peer-RS tie-break; this adds no second provider request and no action score.
     """
     if df.empty or max_rows <= 0:
         return df.copy()
@@ -87,6 +153,7 @@ def enrich_daily_features(
     daily_quality_flag_counts: dict[str, int] = {}
     daily_source_order_notes: list[str] = []
     daily_source_health: dict[str, object] = {}
+    histories_by_code: dict[str, pd.DataFrame] = {}
     success_count = 0
     fetch_history = history_fetcher or fetch_daily_history
     selected_index = list(result.index[:max_rows])
@@ -98,7 +165,12 @@ def enrich_daily_features(
         code = raw_code.zfill(6) if raw_code.isdigit() else raw_code
         fetch_requests.append((idx, code))
 
-    def fetch_one(request: tuple[object, str]) -> tuple[object, dict[str, object], str | None, dict[str, object]]:
+    def fetch_one(
+        request: tuple[object, str],
+    ) -> tuple[
+        object, str, dict[str, object], str | None,
+        dict[str, object], pd.DataFrame | None,
+    ]:
         idx, code = request
         try:
             hist = fetch_history(
@@ -117,12 +189,15 @@ def enrich_daily_features(
                 "daily_source_order_notes": list(hist.attrs.get("daily_source_order_notes", []) or []),
                 "daily_source_health": dict(hist.attrs.get("daily_source_health", {}) or {}),
             }
-            return idx, features, None, metadata
+            return idx, code, features, None, metadata, hist
         except Exception as exc:
             features = dict(_DAILY_FEATURE_DEFAULTS)
             features["daily_quality_score"] = 0.0
             features["daily_quality_flags"] = "fetch_failed"
-            return idx, features, f"{code}: {exc}", {"daily_quality_flags": "fetch_failed"}
+            return (
+                idx, code, features, f"{code}: {exc}",
+                {"daily_quality_flags": "fetch_failed"}, None,
+            )
 
     if len(fetch_requests) <= 1:
         fetched_rows = [fetch_one(request) for request in fetch_requests]
@@ -131,7 +206,7 @@ def enrich_daily_features(
         with ThreadPoolExecutor(max_workers=worker_limit) as executor:
             fetched_rows = list(executor.map(fetch_one, fetch_requests))
 
-    for idx, features, error, metadata in fetched_rows:
+    for idx, code, features, error, metadata, history in fetched_rows:
         for flag in str(metadata.get("daily_quality_flags") or "").split(";"):
             if flag:
                 daily_quality_flag_counts[flag] = daily_quality_flag_counts.get(flag, 0) + 1
@@ -151,15 +226,112 @@ def enrich_daily_features(
             source_health = metadata.get("daily_source_health")
             if isinstance(source_health, dict):
                 daily_source_health.update(source_health)
+        if not error and isinstance(history, pd.DataFrame) and not history.empty:
+            histories_by_code[code] = history
         for key, value in features.items():
             result.at[idx, key] = value
 
+    normalized_asset_type = str(asset_type or "stock").strip().lower()
+    if normalized_asset_type == "etf":
+        result = _attach_etf_peer_relative_strength(
+            result,
+            histories_by_code=histories_by_code,
+            selected_index=selected_index,
+            min_peer_count=etf_peer_min_count,
+        )
+    elif normalized_asset_type != "stock":
+        raise ValueError(f"Unsupported daily enrichment asset_type: {asset_type!r}")
     result.attrs["daily_errors"] = daily_errors
     result.attrs["daily_success_count"] = success_count
     result.attrs["daily_source_counts"] = daily_source_counts
     result.attrs["daily_quality_flag_counts"] = daily_quality_flag_counts
     result.attrs["daily_source_order_notes"] = daily_source_order_notes
     result.attrs["daily_source_health"] = daily_source_health
+    return result
+
+
+def _attach_etf_peer_relative_strength(
+    frame: pd.DataFrame,
+    *,
+    histories_by_code: dict[str, pd.DataFrame],
+    selected_index: list[object],
+    min_peer_count: int,
+) -> pd.DataFrame:
+    """Attach source-bound ETF peer RS to one already bounded candidate pool.
+
+    The histories were fetched by ``enrich_daily_features`` for ordinary daily
+    features. This consumer performs zero additional provider calls and only
+    supplies a deterministic tie-break/focus eligibility receipt.
+    """
+    result = frame
+    for column, default in _ETF_PEER_RS_DEFAULTS.items():
+        if column not in result.columns:
+            if default is pd.NA:
+                result[column] = pd.Series(pd.NA, index=result.index, dtype="object")
+            else:
+                result[column] = default
+
+    status_counts: dict[str, int] = {}
+    ready_count = 0
+    for idx in selected_index:
+        raw_code = str(result.at[idx, "code"] if "code" in result.columns else "").strip()
+        code = raw_code.zfill(6) if raw_code.isdigit() else raw_code
+        target_history = histories_by_code.get(code)
+        if not isinstance(target_history, pd.DataFrame) or target_history.empty:
+            continue
+        dates = pd.to_datetime(target_history.get("date"), errors="coerce").dropna()
+        if dates.empty:
+            result.at[idx, "etf_peer_rs_status"] = "UNKNOWN"
+            result.at[idx, "etf_peer_rs_reason"] = "TARGET_DATE_INVALID"
+            status_counts["UNKNOWN"] = status_counts.get("UNKNOWN", 0) + 1
+            continue
+        target_date = dates.max().date()
+        peers = {
+            peer_code: history
+            for peer_code, history in histories_by_code.items()
+            if peer_code != code
+        }
+        context = compute_etf_peer_relative_strength_context(
+            etf_code=code,
+            market="cn",
+            target_history=target_history,
+            peer_histories=peers,
+            target_date=target_date,
+            min_peer_count=max(int(min_peer_count), 1),
+        )
+        status = str(context.get("status") or "UNKNOWN").upper()
+        reason = str(context.get("reason") or "ETF_PEER_RS_UNKNOWN")
+        relative = context.get("relative") if isinstance(context.get("relative"), dict) else {}
+        universe = (
+            context.get("peer_universe")
+            if isinstance(context.get("peer_universe"), dict) else {}
+        )
+        result.at[idx, "etf_peer_rs_status"] = status
+        result.at[idx, "etf_peer_rs_reason"] = reason
+        result.at[idx, "etf_peer_rs_state"] = str(relative.get("state") or "")
+        result.at[idx, "etf_peer_rs_universe_hash"] = str(
+            universe.get("universe_hash") or ""
+        )
+        for column, key in (
+            ("etf_peer_rs_rank", "rank"),
+            ("etf_peer_rs_rank_denominator", "rank_denominator"),
+            ("etf_peer_rs_percentile", "percentile"),
+        ):
+            value = relative.get(key)
+            if value is not None:
+                result.at[idx, column] = value
+        if status == "READY" and relative.get("rank") is not None:
+            result.at[idx, "etf_peer_rs_preference_rank"] = int(relative["rank"])
+            result.at[idx, "etf_peer_rs_focus_eligible"] = True
+            ready_count += 1
+        status_counts[status] = status_counts.get(status, 0) + 1
+
+    result.attrs["etf_peer_rs_status_counts"] = status_counts
+    result.attrs["etf_peer_rs_ready_count"] = ready_count
+    result.attrs["etf_peer_rs_provider_query_count"] = 0
+    result.attrs["etf_peer_rs_scope"] = (
+        "BOUNDED_DAILY_ENRICHED_POOL_TIE_BREAK_ONLY_NOT_FULL_UNIVERSE_OR_ACTION"
+    )
     return result
 
 
@@ -551,6 +723,9 @@ def _fetch_daily_tencent(code: str, *, lookback_days: int) -> pd.DataFrame:
     amount is not always present, so it is exposed as ``NA`` when absent to keep
     the common daily schema stable.
     """
+    # Keep non-Tencent screening paths independent of the provider package
+    # and its optional adapters; there is still exactly one volume Owner.
+    from data_provider.tencent_fetcher import normalize_tencent_kline_volume
     symbol = _to_tencent_code(code)
     count = max(int(lookback_days), 30)
     response = requests.get(
@@ -582,7 +757,7 @@ def _fetch_daily_tencent(code: str, *, lookback_days: int) -> pd.DataFrame:
             "close": row[2],
             "high": row[3],
             "low": row[4],
-            "volume": row[5],
+            "volume": normalize_tencent_kline_volume(row[5], symbol=symbol),
             "amount": row[6] if len(row) > 6 else pd.NA,
         })
     if not normalized_rows:
@@ -1060,19 +1235,24 @@ def _range_pct(df: pd.DataFrame) -> float | None:
 
 
 def _volume_ratio_20d(df: pd.DataFrame) -> float | None:
-    if "volume" not in df.columns:
-        return None
-    volume = pd.to_numeric(df["volume"], errors="coerce")
-    if len(volume) < 2 or pd.isna(volume.iloc[-1]):
-        return None
-    previous = volume.iloc[:-1].tail(20).dropna()
-    if previous.empty:
-        return None
-    base = float(previous.mean())
-    if base <= 0:
-        return None
-    return float(volume.iloc[-1]) / base
+    """Last completed bar divided by the **exact prior 20** completed bars.
 
+    A sparse 2/19-bar mean is not a 20-bar statistic. The caller must still
+    prove source identity, completed XSHG sessions and lawful data rights.
+    """
+    if "volume" not in df.columns or len(df) < 21:
+        return None
+    volume = pd.to_numeric(df["volume"], errors="coerce").tail(21)
+    if volume.isna().any():
+        return None
+    values = [float(value) for value in volume]
+    if any(not math.isfinite(value) or value < 0 for value in values):
+        return None
+    base = sum(values[:-1]) / 20.0
+    if not math.isfinite(base) or base <= 0:
+        return None
+    result = values[-1] / base
+    return result if math.isfinite(result) else None
 
 def _volatility_20d_pct(close: pd.Series) -> float | None:
     values = pd.to_numeric(close, errors="coerce").dropna()

@@ -5,7 +5,10 @@ from types import SimpleNamespace
 
 import pandas as pd
 
-from src.services.cost_structure_service import build_cost_structure_context
+from src.services.cost_structure_service import (
+    build_completed_timeframe_bar_reference,
+    build_cost_structure_context,
+)
 
 
 def _history(periods: int = 70, *, source: str | None = "Fetcher") -> pd.DataFrame:
@@ -42,6 +45,48 @@ def _chip(*, date: str, source: str = "Fetcher", low70: float = 100.0, high70: f
     )
 
 
+
+def test_non_daily_cost_uses_exact_completed_bar_volume_weighted_hlc3():
+    bars = _history(60)
+    morning = pd.date_range("2026-10-27 09:35", periods=24, freq="5min", tz="Asia/Shanghai")
+    afternoon = pd.date_range("2026-10-27 13:05", periods=24, freq="5min", tz="Asia/Shanghai")
+    next_morning = pd.date_range("2026-10-28 09:35", periods=12, freq="5min", tz="Asia/Shanghai")
+    bars["date"] = morning.append(afternoon).append(next_morning)
+    independent_reference = float((
+        (bars["high"] + bars["low"] + bars["close"]) / 3 * bars["volume"]
+    ).sum() / bars["volume"].sum())
+    result = build_completed_timeframe_bar_reference(
+        bars=bars, timeframe="5m", target_date=bars.iloc[-1]["date"].date(),
+        source_identity_hash="a" * 64, volume_unit="share",
+    )
+    assert result["status"] == "READY"
+    assert result["window_60"]["window_completed_bars"] == 60
+    assert result["window_60"]["rolling_reference_price"] == round(independent_reference, 6)
+    assert result["window_20"]["window_completed_bars"] == 20
+    assert result["window_60"]["semantics"] == "BAR_DERIVED_REFERENCE_PRICE_NOT_HOLDER_COST"
+    assert result["independent_action_authority"] is False
+    assert result["data_rights_admitted"] is False
+    assert "window_sessions" not in str(result)
+
+
+def test_non_daily_cost_denies_untyped_volume_source_and_duplicate_bar():
+    bars = _history(60)
+    ends = pd.date_range("2026-10-28 09:35", periods=60, freq="5min", tz="Asia/Shanghai")
+    bars["date"] = ends
+    kwargs = dict(bars=bars, timeframe="5m", target_date=ends[-1].date())
+    assert build_completed_timeframe_bar_reference(
+        **kwargs, source_identity_hash=None, volume_unit="share",
+    )["status"] == "UNKNOWN"
+    assert build_completed_timeframe_bar_reference(
+        **kwargs, source_identity_hash="a"*64, volume_unit="UNKNOWN",
+    )["status"] == "UNKNOWN"
+    duplicate = bars.copy()
+    duplicate.loc[duplicate.index[-1], "date"] = duplicate.iloc[-2]["date"]
+    assert build_completed_timeframe_bar_reference(
+        bars=duplicate, timeframe="5m", target_date=ends[-1].date(),
+        source_identity_hash="a"*64, volume_unit="share",
+    )["status"] == "UNKNOWN"
+
 def test_completed_20_60_bar_reference_is_ready_and_not_holder_cost():
     history = _history()
     target = history.iloc[-1]["date"].date()
@@ -63,6 +108,9 @@ def test_completed_20_60_bar_reference_is_ready_and_not_holder_cost():
     assert bar["window_60"]["semantics"] == "BAR_DERIVED_REFERENCE_PRICE_NOT_HOLDER_COST"
     assert context["composition"]["provider_vs_bar_relation"] == "SINGLE_SOURCE_ONLY"
     assert context["hard_veto"] is False
+    assert context["completed_bar_only"] is True
+    assert context["algorithm_version"] == "cost-structure-bar-reference-v1"
+    assert len(context["config_hash"]) == 64
 
 
 def test_provider_snapshot_is_current_only_and_exact_date_match_can_converge():

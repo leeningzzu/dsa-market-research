@@ -10,8 +10,6 @@ import pandas as pd
 
 if "litellm" not in sys.modules:
     sys.modules["litellm"] = MagicMock()
-if "json_repair" not in sys.modules:
-    sys.modules["json_repair"] = MagicMock()
 
 from data_provider.base import (
     BaseFetcher,

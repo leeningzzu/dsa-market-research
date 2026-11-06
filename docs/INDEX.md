@@ -7,6 +7,7 @@
 | 我现在要做什么 | 直接入口 |
 |---|---|
 | 先弄清 public code / private data / rollback | [authority 与隐私](OPERATOR_RUNBOOK.md#task-authority) |
+| 换账号／换电脑继续 STOCK_DSA 主线 | [本地／GitHub 无压缩续接](stock-dsa-github-reentry.md)（同机先读安装根 `STOCK_DSA_CURRENT.json`，跨机用 exact GitHub feature 或完整 bundle；随后运行 verifier） |
 | 配好 current GitHub repo，区分 CI、daily 与 Promotion | [部署](OPERATOR_RUNBOOK.md#task-start) |
 | 改邮箱、模型、多个 API Key | [配置](OPERATOR_RUNBOOK.md#task-config) |
 | 添加或取消自选股票、ETF | [自选列表](OPERATOR_RUNBOOK.md#task-watchlist) |

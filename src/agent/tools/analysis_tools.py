@@ -25,7 +25,9 @@ def _fetch_trend_data(stock_code: str):
     """Fetch historical OHLCV (DataFrame) for trend analysis. DB first, then DataFetcher fallback."""
     from src.services.history_loader import load_history_df
 
-    df, _ = load_history_df(stock_code, days=60)
+    df, _ = load_history_df(
+        stock_code, days=60, require_verified_identity=True,
+    )
     return df
 
 
@@ -115,7 +117,9 @@ def _handle_calculate_ma(stock_code: str, periods: Optional[str] = None, days: i
     """Calculate moving averages for arbitrary periods from historical K-line data."""
     from src.services.history_loader import load_history_df
 
-    df, source = load_history_df(stock_code, days=days)
+    df, source = load_history_df(
+        stock_code, days=days, require_verified_identity=True,
+    )
 
     if df is None or df.empty:
         return {"error": f"No historical data for {stock_code}"}
@@ -208,7 +212,11 @@ def _handle_get_volume_analysis(stock_code: str, days: int = 30) -> dict:
     from src.services.history_loader import load_history_df
     import pandas as pd
 
-    df, source = load_history_df(stock_code, days=max(days + 20, 60))
+    df, source = load_history_df(
+        stock_code,
+        days=max(days + 20, 60),
+        require_verified_identity=True,
+    )
 
     if df is None or df.empty:
         return {"error": f"No historical data for {stock_code}"}
@@ -324,7 +332,11 @@ def _handle_analyze_pattern(stock_code: str, days: int = 60) -> dict:
     """Detect common candlestick and chart patterns in recent price history."""
     from src.services.history_loader import load_history_df
 
-    df, source = load_history_df(stock_code, days=max(days, 120))
+    df, source = load_history_df(
+        stock_code,
+        days=max(days, 120),
+        require_verified_identity=True,
+    )
 
     if df is None or df.empty:
         return {"error": f"No historical data for {stock_code}"}

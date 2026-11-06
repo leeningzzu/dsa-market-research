@@ -32,18 +32,43 @@
 提示：优先级数字越小越优先，同优先级按初始化顺序排列
 """
 
-from .base import BaseFetcher, DataFetcherManager
-from .efinance_fetcher import EfinanceFetcher
-from .tencent_fetcher import TencentFetcher
-from .akshare_fetcher import AkshareFetcher, is_hk_stock_code
-from .tushare_fetcher import TushareFetcher
-from .pytdx_fetcher import PytdxFetcher
-from .baostock_fetcher import BaostockFetcher
-from .yfinance_fetcher import YfinanceFetcher
-from .longbridge_fetcher import LongbridgeFetcher
-from .finnhub_fetcher import FinnhubFetcher
-from .alphavantage_fetcher import AlphaVantageFetcher
-from .us_index_mapping import is_us_index_code, is_us_stock_code, get_us_index_yf_symbol, US_INDEX_MAPPING
+from importlib import import_module
+
+# Public API is unchanged. Loading a provenance helper must not instantiate all
+# optional quote vendors, trigger their patches, or require unrelated SDKs.
+# A named provider is imported only when its exported symbol is requested.
+_EXPORT_MODULES = {
+    "BaseFetcher": ".base",
+    "DataFetcherManager": ".base",
+    "EfinanceFetcher": ".efinance_fetcher",
+    "TencentFetcher": ".tencent_fetcher",
+    "AkshareFetcher": ".akshare_fetcher",
+    "TushareFetcher": ".tushare_fetcher",
+    "PytdxFetcher": ".pytdx_fetcher",
+    "BaostockFetcher": ".baostock_fetcher",
+    "YfinanceFetcher": ".yfinance_fetcher",
+    "LongbridgeFetcher": ".longbridge_fetcher",
+    "FinnhubFetcher": ".finnhub_fetcher",
+    "AlphaVantageFetcher": ".alphavantage_fetcher",
+    "is_us_index_code": ".us_index_mapping",
+    "is_us_stock_code": ".us_index_mapping",
+    "is_hk_stock_code": ".us_index_mapping",
+    "get_us_index_yf_symbol": ".us_index_mapping",
+    "US_INDEX_MAPPING": ".us_index_mapping",
+}
+
+
+def __getattr__(name: str):
+    module = _EXPORT_MODULES.get(name)
+    if module is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(import_module(module, __name__), name)
+    globals()[name] = value
+    return value
+
+
+def __dir__():
+    return sorted(set(globals()) | set(__all__))
 
 __all__ = [
     'BaseFetcher',

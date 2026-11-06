@@ -63,12 +63,17 @@ def fetch_cn_snapshot(source: str = "efinance") -> pd.DataFrame:
 
 
 def fetch_cn_etf_snapshot() -> pd.DataFrame:
-    """Adapt the existing DSA ETF provider snapshot into Screening schema."""
+    """Adapt the single DSA ETF provider owner into Screening schema."""
     from data_provider.akshare_fetcher import AkshareFetcher
 
     raw = AkshareFetcher().get_etf_realtime_snapshot()
-    if raw is None or raw.empty:
+    if raw is None:
         return pd.DataFrame()
+    source_attrs = dict(raw.attrs)
+    if raw.empty:
+        result = pd.DataFrame()
+        result.attrs.update(source_attrs)
+        return result
 
     aliases = {
         "code": "代码",
@@ -84,7 +89,10 @@ def fetch_cn_etf_snapshot() -> pd.DataFrame:
     result = pd.DataFrame(index=raw.index)
     for target, source in aliases.items():
         result[target] = raw[source] if source in raw.columns else pd.NA
-    result["code"] = result["code"].astype(str).str.strip().str.zfill(6)
+    codes = result["code"].astype(str).str.strip().str.lower()
+    codes = codes.str.replace(r"^(?:sh|sz)[.-]?", "", regex=True)
+    codes = codes.str.replace(r"[.-]?(?:sh|sz)$", "", regex=True)
+    result["code"] = codes.str.replace(r"\.0$", "", regex=True).str.zfill(6)
     result["name"] = result["name"].fillna("").astype(str)
     for column in (
         "price",
@@ -100,12 +108,20 @@ def fetch_cn_etf_snapshot() -> pd.DataFrame:
     result["pb_ratio"] = pd.NA
     result["industry"] = "ETF"
     result = result[result["code"].str.match(r"^(51|52|56|58|15|16|18)\d{4}$", na=False)]
-    result.attrs["snapshot_source"] = "dsa:akshare_etf"
-    result.attrs["source_errors"] = []
-    result.attrs["fallback_used"] = False
-    result.attrs["stale"] = False
-    result.attrs["stale_age_hours"] = None
-    return result.reset_index(drop=True)
+    result = result.reset_index(drop=True)
+    result.attrs.update({
+        "snapshot_source": source_attrs.get("snapshot_source")
+        or "dsa:akshare_etf",
+        "provider_route": source_attrs.get("provider_route"),
+        "source_errors": list(source_attrs.get("source_errors") or []),
+        "fallback_used": bool(source_attrs.get("fallback_used", False)),
+        "provider_fallback_used": bool(
+            source_attrs.get("provider_fallback_used", False)
+        ),
+        "stale": bool(source_attrs.get("stale", False)),
+        "stale_age_hours": source_attrs.get("stale_age_hours"),
+    })
+    return result
 
 
 def fetch_snapshot_with_fallback(
@@ -125,6 +141,11 @@ def fetch_snapshot_with_fallback(
         return _fetch_us_snapshot_with_fallback(required_columns)
     if asset_type == "etf":
         df = fetch_cn_etf_snapshot()
+        if df.empty and df.attrs.get("source_errors"):
+            raise RuntimeError(
+                "ETF snapshot sources failed: "
+                + "; ".join(str(item) for item in df.attrs["source_errors"])
+            )
         missing = _missing_required_columns(df, required_columns or [])
         if missing:
             raise RuntimeError(f"ETF snapshot missing required columns: {','.join(missing)}")

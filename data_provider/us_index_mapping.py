@@ -94,6 +94,22 @@ def is_us_stock_code(code: str) -> bool:
     return bool(_US_STOCK_PATTERN.match(normalized))
 
 
+def is_hk_stock_code(code: str) -> bool:
+    """Return whether *code* uses the supported Hong Kong stock format.
+
+    The classifier is deliberately provider-independent so calendar and routing
+    code never has to import AkShare, its network patches, or optional SDKs.
+    """
+    normalized = (code or "").strip().lower()
+    if normalized.endswith(".hk"):
+        numeric = normalized[:-3]
+        return numeric.isdigit() and 1 <= len(numeric) <= 5
+    if normalized.startswith("hk"):
+        numeric = normalized[2:]
+        return numeric.isdigit() and 1 <= len(numeric) <= 5
+    return normalized.isdigit() and 4 <= len(normalized) <= 5
+
+
 def get_us_index_yf_symbol(code: str) -> tuple:
     """
     获取美股指数的 Yahoo Finance 符号与中文名称。

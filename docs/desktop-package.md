@@ -231,7 +231,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build-backend.ps1
 bash scripts/build-backend-macos.sh
 ```
 
-该脚本会在安装依赖后执行 `--collect-all src.services.screening`、`--collect-all futu` 和 `--collect-data akshare`。构建完成后会通过冻结可执行文件校验 `src.services.screening.pipeline`、`futu`、`orjson` 均可导入，核对选股策略数量，并确认 AkShare 的 `file_fold/calendar.json` 已进入冻结产物，避免发行包在选股、热点题材、Futu 持仓导入或日线增强路径中因缺少模块/package data 降级。选股实现参考 AlphaSift。PR 主 CI 在 `requirements.txt`、Futu broker、Desktop 打包入口或相关 workflow 变化时，会分别运行 `desktop-futu-package-windows` 与 `desktop-futu-package-macos` 阻断检查。
+该脚本会在安装依赖后执行 `--collect-all src.services.screening`、`--collect-all futu` 和 `--collect-data akshare`。构建完成后会通过冻结可执行文件校验 `src.services.screening.pipeline`、`futu`、`orjson` 均可导入，核对选股策略数量，并确认 AkShare 日历数据已进入冻结产物：当前 wheel 使用 `data/calendar.json`，旧版本可能使用 `file_fold/calendar.json`；Windows/macOS 验证器优先检查当前路径，同时兼容旧路径，两者均缺失时仍会阻断构建，避免发行包因缺少 package data 降级。选股实现参考 AlphaSift。PR 主 CI 在 `requirements.txt`、Futu broker、Desktop 打包入口或相关 workflow 变化时，会分别运行 `desktop-futu-package-windows` 与 `desktop-futu-package-macos` 阻断检查。
 
 3) 打包 Electron 桌面应用
 
@@ -324,7 +324,7 @@ win-unpacked/
 
 PyInstaller 打包时缺少模块，需要在 Windows 与 macOS 后端构建脚本中同步增加 `--hidden-import`，并对冻结产物执行运行时导入校验。当前脚本会显式安装、冻结并探测 LiteLLM 运行路径需要的 `orjson`；若日志包含 `No module named 'orjson'`，请升级到修复版本并重新构建，不能只在已发布目录中手工安装依赖。
 
-如果日志提示缺少 `akshare/file_fold/calendar.json`，说明后端冻结产物没有完整收集 AkShare package data。请使用仓库当前的 `scripts/build-backend.ps1` 或 `scripts/build-backend-macos.sh` 重新构建；脚本会在生成桌面包前检查该文件，缺失时直接终止构建。
+如果日志提示缺少 AkShare 日历数据，说明后端冻结产物没有完整收集 AkShare package data。当前 AkShare wheel 使用 `akshare/data/calendar.json`，旧版本可能使用 `akshare/file_fold/calendar.json`；仓库中的 Windows/macOS 脚本按这两个明确路径校验，均缺失时会在生成桌面包前直接终止构建。
 
 ### UI 加载空白
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, time, timezone
+from datetime import date, datetime, time, timezone
 from hashlib import sha256
 import json
 from typing import Any
@@ -140,6 +140,20 @@ def validate_complete_cn_5m_sessions(
         raise IntradayBarError("expected session dates must be non-empty")
     if normalized_expected != sorted(normalized_expected):
         raise IntradayBarError("expected session dates must be strictly increasing")
+    # The provider frame cannot certify its own exchange-day membership.
+    # This uses the existing fail-closed CN exchange calendar, not the
+    # source-derived list, a weekday heuristic, or a new calendar owner.
+    from src.core.trading_calendar import resolve_session_range_fail_closed
+
+    exchange_sessions = resolve_session_range_fail_closed(
+        "cn",
+        date.fromisoformat(normalized_expected[0]),
+        date.fromisoformat(normalized_expected[-1]),
+    )
+    if exchange_sessions is None or [
+        day.isoformat() for day in exchange_sessions
+    ] != normalized_expected:
+        raise IntradayBarError("XSHG exchange calendar session mismatch")
 
     working = frame.copy()
     working["bar_end"] = pd.to_datetime(working["bar_end"], errors="coerce")
@@ -185,6 +199,96 @@ def validate_complete_cn_5m_sessions(
     }
 
 
+
+
+def validate_derived_complete_cn_sessions(
+    frame: pd.DataFrame, *, timeframe: str,
+) -> dict[str, Any]:
+    """Verify one 5m-derived frame against exact complete parent sessions.
+
+    This is source/session evidence, not usage rights, PIT, trading, or model
+    authority. A computed value and a self-described parent hash alone cannot
+    prove that the original five-minute sessions were complete.
+    """
+    if timeframe not in _TARGET_SIZE or not isinstance(frame, pd.DataFrame) or frame.empty:
+        raise IntradayBarError("derived session timeframe/input invalid")
+    try:
+        identity = extract_intraday_data_identity(frame, strict=True)
+    except IntradayDataIdentityError as exc:
+        raise IntradayBarError("derived session identity invalid") from exc
+    aggregation = frame.attrs.get("intraday_aggregation_receipt")
+    if not isinstance(aggregation, dict) or not isinstance(identity, dict):
+        raise IntradayBarError("derived aggregation provenance missing")
+    parent = aggregation.get("parent_complete_session_receipt")
+    if not isinstance(parent, dict):
+        raise IntradayBarError("complete 5m parent session receipt missing")
+    parent_hash = str(parent.get("identity_hash") or "")
+    output_hash = str(identity.get("identity_hash") or "")
+    session_dates = parent.get("expected_session_dates")
+    count = parent.get("session_count")
+    size = _TARGET_SIZE[timeframe]
+    per_day = 48 // size
+    if (
+        parent.get("schema_version") != "cn-complete-5m-session-set-v1"
+        or not isinstance(session_dates, list) or not session_dates
+        or not all(isinstance(d, str) and len(d) == 10 for d in session_dates)
+        or session_dates != sorted(set(session_dates))
+        or type(count) is not int or count != len(session_dates)
+        or parent.get("bars_per_session") != 48
+        or parent.get("row_count") != count * 48
+        or aggregation.get("schema_version") != SCHEMA_VERSION
+        or aggregation.get("algorithm_version") != ALGORITHM_VERSION
+        or aggregation.get("config_hash") != CONFIG_HASH
+        or aggregation.get("source_timeframe") != "5m"
+        or aggregation.get("target_timeframe") != timeframe
+        or aggregation.get("parent_identity_hash") != parent_hash
+        or aggregation.get("output_identity_hash") != output_hash
+        or aggregation.get("input_rows") != count * 48
+        or aggregation.get("output_rows") != count * per_day
+        or aggregation.get("dropped_incomplete_windows") != 0
+        or len(frame) != count * per_day
+        or len(parent_hash) != 64 or len(output_hash) != 64
+        or identity.get("parent_identity_hash") != parent_hash
+        or identity.get("derivation") != f"{ALGORITHM_VERSION}:{timeframe}"
+        or identity.get("timeframe") != timeframe
+    ):
+        raise IntradayBarError("derived session parent/child lineage mismatch")
+    if not {"bar_end", "session", "available_at"}.issubset(frame.columns):
+        raise IntradayBarError("derived session columns missing")
+    ends = pd.to_datetime(frame["bar_end"], errors="coerce")
+    available = pd.to_datetime(frame["available_at"], errors="coerce")
+    if (
+        ends.isna().any() or available.isna().any()
+        or ends.dt.tz is None or available.dt.tz is None
+        or ends.duplicated().any() or not ends.is_monotonic_increasing
+        or bool((available < ends).any())
+    ):
+        raise IntradayBarError("derived session timestamps invalid")
+    local_ends = ends.dt.tz_convert(CN_TIMEZONE).tolist()
+    expected_ends = []
+    expected_sessions = []
+    for day in session_dates:
+        for half in ("AM", "PM"):
+            five_minute_ends = _expected_half_session_labels(day, half)
+            expected_ends.extend(five_minute_ends[size - 1::size])
+            expected_sessions.extend([f"{day}:{half}"] * (24 // size))
+    if local_ends != expected_ends or frame["session"].astype(str).tolist() != expected_sessions:
+        raise IntradayBarError("derived session exact market grid mismatch")
+    return {
+        "schema_version": "cn-complete-derived-session-set-v1",
+        "timeframe": timeframe,
+        "source_timeframe": "5m",
+        "parent_identity_hash": parent_hash,
+        "identity_hash": output_hash,
+        "session_count": count,
+        "row_count": len(frame),
+        "bars_per_session": per_day,
+        "completed_bar_only": True,
+        "data_rights_admitted": False,
+        "independent_action_authority": False,
+        "strategy_admitted": False,
+        "learning_admitted": False,
+    }
 def aggregate_completed_intraday_bars(
     frame: pd.DataFrame,
     *,
@@ -219,6 +323,19 @@ def aggregate_completed_intraday_bars(
         raise IntradayBarError("source availability precedes bar_end")
     if working["code"].nunique(dropna=False) != 1 or working["data_source"].nunique(dropna=False) != 1:
         raise IntradayBarError("mixed code/provider in canonical 5m frame")
+    # Keep partial-window aggregation legal, but certify completeness only from
+    # the actual typed parent bars and exact XSHG right-edge calendar.
+    parent_complete_session_receipt = None
+    try:
+        local_dates = sorted({
+            pd.Timestamp(value).tz_convert(CN_TIMEZONE).date()
+            for value in working["bar_end"]
+        })
+        parent_complete_session_receipt = validate_complete_cn_5m_sessions(
+            frame, expected_session_dates=local_dates,
+        )
+    except (IntradayBarError, ValueError, TypeError, AttributeError):
+        pass
     include_amount = "amount" in working.columns and intraday_amount_unit_is_admitted(identity)
     size = _TARGET_SIZE[target]
     rows: list[dict[str, Any]] = []
@@ -294,6 +411,7 @@ def aggregate_completed_intraday_bars(
         "dropped_incomplete_windows": int(dropped),
         "parent_identity_hash": parent_hash,
         "output_identity_hash": derived["identity_hash"],
+        "parent_complete_session_receipt": parent_complete_session_receipt,
     }
     return result
 

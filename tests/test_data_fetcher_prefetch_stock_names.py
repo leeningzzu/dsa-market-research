@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, call, patch
 from types import SimpleNamespace
 
@@ -16,8 +17,12 @@ import pandas as pd
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from data_provider.base import DataFetcherManager
+from data_provider.daily_data_identity import (
+    build_daily_data_identity,
+    attach_daily_data_identity,
+)
 from data_provider.pytdx_fetcher import PytdxFetcher
-from src.core.pipeline import StockAnalysisPipeline
+from src.core.pipeline import StockAnalysisPipeline, _current_daily_window_plan
 
 
 class _DummyFetcher:
@@ -159,32 +164,43 @@ class TestPrefetchStockNames(unittest.TestCase):
         self.assertEqual(name, "平安银行")
         manager.get_realtime_quote.assert_called_once_with("000001.SZ", log_final_failure=False)
 
-    def test_fetch_and_save_stock_data_uses_lightweight_name_lookup(self):
+    def test_legacy_non_b1_fetch_uses_lightweight_name_lookup(self):
         pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+        pipeline.p0_bounded_trial = True
+        pipeline.p0_receipt_only = False
         pipeline.fetcher_manager = MagicMock()
         pipeline.db = MagicMock()
         pipeline.fetcher_manager.get_stock_name.return_value = "贵州茅台"
         pipeline.db.has_today_data.return_value = False
-        pipeline._resolve_resume_target_date = MagicMock(
-            return_value=pd.Timestamp("2026-10-12").date()
+        target_date = pd.Timestamp("2026-10-12").date()
+        pipeline._resolve_resume_target_date = MagicMock(return_value=target_date)
+        planned_start = _current_daily_window_plan(
+            market="cn", target_date=target_date,
+        )["start_date"]
+        # The name-lookup consumer must have typed OBSERVED source identity;
+        # a raw DataFrame is correctly rejected upstream.
+        frame = pd.DataFrame([{
+            "date": "2026-10-12", "open": 1.0, "high": 1.0,
+            "low": 1.0, "close": 1.0, "volume": 1,
+            "amount": 1.0, "pct_chg": 0.0, "data_source": "dummy",
+        }])
+        identity = build_daily_data_identity(
+            frame,
+            provider_identity="dummy", provider_route="unit.name_prefetch",
+            actual_response_branch="synthetic:qfq",
+            requested_adjustment_basis="qfq", observed_adjustment_basis="qfq",
+            basis_evidence="synthetic test contract only",
+            requested_start=planned_start.isoformat(),
+            requested_end=target_date.isoformat(),
+            currency="CNY", volume_unit="share", amount_unit="CNY",
+            identity_state="OBSERVED",
+            observed_at=datetime(2026, 10, 12, 12, tzinfo=timezone.utc),
+            instrument="600519",
         )
-        pipeline.fetcher_manager.get_daily_data.return_value = (
-            pd.DataFrame(
-                [
-                    {
-                        "date": "2026-03-27",
-                        "open": 1.0,
-                        "high": 1.0,
-                        "low": 1.0,
-                        "close": 1.0,
-                        "volume": 1,
-                        "amount": 1.0,
-                        "pct_chg": 0.0,
-                    }
-                ]
-            ),
-            "dummy",
-        )
+        attach_daily_data_identity(frame, identity)
+        pipeline.fetcher_manager.get_daily_data.return_value = (frame, "dummy")
+        # This legacy non-B1 test owns only name lookup and old persistence.
+        # Strict B1 NO_SEND run-local storage denial is covered separately.
         pipeline.db.save_daily_data.return_value = 1
 
         success, error = StockAnalysisPipeline.fetch_and_save_stock_data(pipeline, "600519")
@@ -192,17 +208,18 @@ class TestPrefetchStockNames(unittest.TestCase):
         self.assertTrue(success)
         self.assertIsNone(error)
         pipeline.fetcher_manager.get_stock_name.assert_called_once_with("600519", allow_realtime=False)
+        pipeline.db.save_daily_data.assert_called_once()
         fetch_args = pipeline.fetcher_manager.get_daily_data.call_args
         self.assertEqual(fetch_args.args, ("600519",))
         self.assertIn("start_date", fetch_args.kwargs)
         self.assertIn("end_date", fetch_args.kwargs)
         start = pd.Timestamp(fetch_args.kwargs["start_date"]).date()
         end = pd.Timestamp(fetch_args.kwargs["end_date"]).date()
-        self.assertEqual(end, pd.Timestamp("2026-10-12").date())
-        # B5 accepted independent method-window contract: 268 weekly bars
-        # and 140 monthly bars require the earlier completed XSHG history.
-        # The old 2023-06-01 name-prefetch fixture must not truncate MTF.
-        self.assertEqual(start, pd.Timestamp("2015-02-02").date())
+        self.assertEqual(end, target_date)
+        # The lightweight name path must consume the exact B5 method-window
+        # plan rather than a stale calendar date.  The independent XSHG 268-month
+        # test locks the current 2004-06-01 session boundary and holiday negatives.
+        self.assertEqual(start, planned_start)
         self.assertLess(start, pd.Timestamp("2023-06-01").date())
         self.assertNotEqual((end - start).days, 1100)
 

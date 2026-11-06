@@ -6,6 +6,7 @@ provider entitlement. Deferred methods cannot be enabled by a payload flag.
 """
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, replace
 from functools import lru_cache
@@ -17,9 +18,16 @@ from numbers import Real
 from pathlib import Path
 from typing import Any
 
+from src.services.data_object_admission import (
+    DataObjectAdmissionError,
+    compile_data_object_admission_view,
+    validate_compiled_data_object_admission,
+)
+
 MANIFEST_VERSION = "evidence-product-traceability-v1"
 TRACE_VERSION = "canonical-evidence-trace-v2"
 METHOD_EXECUTION_RECEIPT_VERSION = "method-execution-receipt-v1"
+DATA_OBJECT_SOURCE_OBSERVATION_VERSION = "data-object-source-observation-v1"
 STOCK_STRATEGY = "stock_trend_quality_pullback_v1"
 BASELINE_SHA256 = "039ca6394baf9cf39494cc29f512802b114c8227f8c965723197a8df4b9de823"
 BASELINE_BYTES = 125919
@@ -152,7 +160,7 @@ VALID_BINDING_TIMEFRAMES = frozenset({"asset", "daily", "multi", *TIMEFRAMES})
 VALID_METRIC_TIMEFRAMES = frozenset({"daily", "weekly", "monthly"})
 VALID_METRIC_UNITS = frozenset({
     "PRICE_BASIS_CURRENCY", "PRICE_BASIS_CURRENCY_PROXY", "ratio", "pct",
-    "annualized_pct", "index_0_100", "METHOD_NOT_ADMITTED",
+    "annualized_pct", "index_0_100", "SOURCE_VOLUME_UNITS", "METHOD_NOT_ADMITTED",
 })
 
 # This accepted contract is intentionally independent from the candidate tuples
@@ -161,10 +169,10 @@ ACCEPTED_REQUIREMENT_ROLES = frozenset({
     ("REGIME", "ADMITTED"), ("TREND_RS", "ADMITTED"), ("SUPPLY", "ADMITTED"),
     ("COST", "ADMITTED"), ("STRUCTURE", "ADMITTED"), ("MOMENTUM", "ADMITTED"),
     ("PATTERN", "ADMITTED"), ("MTF", "ADMITTED"),
-    ("QUALITY", "DEFERRED"), ("VALUATION", "DEFERRED"), ("DISTRIBUTION", "DEFERRED"),
+    ("QUALITY", "ADMITTED"), ("VALUATION", "ADMITTED"), ("DISTRIBUTION", "ADMITTED"),
     ("RISK_REWARD", "DEFERRED"), ("CANDLESTICK", "ADMITTED"),
-    ("EXTRA_INDICATORS", "DEFERRED"), ("AVWAP_PROFILE", "DEFERRED"),
-    ("CHAN", "DEFERRED"), ("WAVE", "DEFERRED"), ("ETF_SPECIFIC", "DEFERRED"),
+    ("EXTRA_INDICATORS", "ADMITTED"), ("AVWAP_PROFILE", "DEFERRED"),
+    ("CHAN", "ADMITTED"), ("WAVE", "DEFERRED"), ("ETF_SPECIFIC", "DEFERRED"),
     ("GLOBAL", "DEFERRED"), ("BREADTH", "DEFERRED"), ("PROBABILITY", "DEFERRED"),
     ("INTRADAY_60m", "DEFERRED"), ("INTRADAY_30m", "DEFERRED"),
     ("INTRADAY_15m", "DEFERRED"), ("INTRADAY_5m", "DEFERRED"),
@@ -189,6 +197,97 @@ COMPLETE_RESEARCH_UNIVERSE_PLANES = (
     ("DECISION", ("DECISION",)),
 )
 
+# Independent accepted Product scope. Candidate slot maps and data rows cannot
+# redefine their own completeness by deleting one valid-looking member.
+ACCEPTED_PRODUCT_SLOT_IDS = frozenset({
+    "first_screen.conclusion", "first_screen.price_or_valuation",
+    "first_screen.higher_timeframe_thesis", "first_screen.short_term_conflict_or_trigger",
+    "first_screen.supply_distribution_risk", "first_screen.trigger",
+    "first_screen.invalidation", "first_screen.material_risks",
+    "detail.timeframe.price_position", "detail.timeframe.trend_ma",
+    "detail.timeframe.volume_price", "detail.timeframe.cost_structure",
+    "detail.timeframe.price_structure", "detail.timeframe.momentum_divergence",
+    "detail.timeframe.pattern_trigger", "detail.timeframe.support_resistance",
+    "detail.timeframe.confirmation_invalidation", "asset.stock.quality_growth",
+    "asset.stock.valuation", "asset.etf.underlying_valuation",
+    "asset.etf.premium_discount", "asset.etf.liquidity_spread",
+    "asset.etf.tracking_concentration", "audit.coverage",
+    "audit.data_time_quality", "audit.historical_reference", "audit.current_probability",
+})
+ACCEPTED_PRODUCT_SLOT_REQUIREMENTS = frozenset({
+    "CANDLESTICK", "COST", "DECISION", "DISTRIBUTION", "ETF_SPECIFIC",
+    "INTRADAY_30m", "MOMENTUM", "MTF", "PATTERN", "PROBABILITY",
+    "QUALITY", "STRUCTURE", "SUPPLY", "VALUATION",
+})
+ACCEPTED_PRODUCT_SLOT_MAP_SHA256 = (
+    "ea0a935bf2b99056fa169ed8662a2a92b6c605a407dc12a1d7de134799d21f6d"
+)
+ACCEPTED_DATA_OBJECT_DOMAIN_COUNTS = {
+    "GLOBAL": 18,
+    "CN_MARKET": 18,
+    "SECTOR": 7,
+    "ETF": 12,
+    "STOCK": 17,
+    "RECORD": 4,
+}
+ACCEPTED_VALUATION_ROUTE_IDS = frozenset({
+    "MATURE_INDUSTRIAL_CONSUMER", "HIGH_GROWTH_TECH", "BANK", "INSURANCE",
+    "CYCLICAL_RESOURCE", "UTILITY_INFRASTRUCTURE", "REIT",
+    "LOSS_MAKING_EARLY_GROWTH", "ETF",
+})
+# Accepted Golden atoms that are more specific than the 76-object catalog.
+# They remain explicit UNKNOWN obligations until a dated producer is admitted.
+ACCEPTED_WHOLE_PRODUCT_ATOMIC_SUBFIELDS = frozenset({
+    "GLOBAL_US_ACTUAL_INFLATION", "GLOBAL_US_CORE_INFLATION",
+    "GLOBAL_US_SERVICE_INFLATION", "GLOBAL_US_5Y_INFLATION_EXPECTATION",
+    "GLOBAL_SOX_INDEX", "GLOBAL_TECH_ETF_FLOW",
+    "GLOBAL_SEMICONDUCTOR_SOFTWARE_RELATIVE",
+})
+ATOMIC_SUBFIELD_CATALOG = (
+    (
+        "GLOBAL_US_ACTUAL_INFLATION",
+        "美国整体通胀实际公布值及精确发布日期",
+        "monthly/released",
+    ),
+    (
+        "GLOBAL_US_CORE_INFLATION",
+        "美国核心通胀实际公布值及精确发布日期",
+        "monthly/released",
+    ),
+    (
+        "GLOBAL_US_SERVICE_INFLATION",
+        "美国服务通胀实际公布值及精确发布日期",
+        "monthly/released",
+    ),
+    (
+        "GLOBAL_US_5Y_INFLATION_EXPECTATION",
+        "美国5年通胀预期及观测时点",
+        "daily/close",
+    ),
+    (
+        "GLOBAL_SOX_INDEX",
+        "费城半导体指数价格与完成时点",
+        "daily/close",
+    ),
+    (
+        "GLOBAL_TECH_ETF_FLOW",
+        "美国科技ETF可核资金流及原生公布时点",
+        "daily/published",
+    ),
+    (
+        "GLOBAL_SEMICONDUCTOR_SOFTWARE_RELATIVE",
+        "半导体与软件资产相对强弱及一致基准",
+        "daily/close",
+    ),
+)
+CURRENT_PRODUCT_DATA_DOMAINS = frozenset({
+    "GLOBAL", "CN_MARKET", "SECTOR", "ETF", "STOCK",
+})
+FUTURE_RECORD_DATASET_IDS = frozenset({
+    "L_LEDGER", "L_OUTCOME", "L_PIT_MANIFEST", "L_IMMUTABLE_BYTES",
+})
+FULL_DOMAIN_DATA_GATE_SCHEMA_VERSION = "full-domain-data-gate-v2"
+
 
 class TraceabilityError(ValueError):
     """A binding or claimed observation exceeds its actual proof."""
@@ -208,6 +307,841 @@ def json_wire_equal(left: Any, right: Any) -> bool:
 
 def digest(value: Any) -> str:
     return sha256(canonical_json(value).encode("utf-8")).hexdigest()
+
+METHOD_WINDOW_READINESS_TRACE_VERSION = "asset-timeframe-method-window-readiness-v1"
+
+
+def compile_mtf_method_window_readiness_trace(
+    *,
+    asset_route: str,
+    instrument: str,
+    target_date: Any,
+    daily_window_plan: Any,
+    intraday_window_plan: Any,
+    multi_timeframe_structure_context: Any,
+    intraday_source_frames: Any = None,
+    daily_source_frame: Any = None,
+    formal_market_source_frames: Any = None,
+    formal_sector_source_frames: Any = None,
+) -> dict:
+    """Join existing acquisition plans with actual native MACD/RSI readiness.
+
+    This is a run-local trace projection, not a second planner, formula owner,
+    strategy score, data-rights grant, persistence permit, or learning label.
+    """
+
+    route = str(asset_route or "").strip().upper()
+    code = str(instrument or "").strip()
+    target = (
+        target_date.isoformat()
+        if hasattr(target_date, "isoformat")
+        else str(target_date or "").strip()
+    )
+    base = {
+        "schema_version": METHOD_WINDOW_READINESS_TRACE_VERSION,
+        "request_semantics_version": "planned-dispatched-separated-v1",
+        "asset_route": route,
+        "instrument": code,
+        "target_date": target,
+        "status": "UNKNOWN",
+        "reason": "TRACE_INPUT_NOT_ADMITTED",
+        "rows": [],
+        "strategy_admitted": False,
+        "learning_admitted": False,
+        "storage_admitted": False,
+        "consumer_scope": (
+            "Factor.MTF",
+            "Registry.timeframe_family_matrix.MOMENTUM",
+            "Notification.seven_timeframe",
+        ),
+    }
+
+    def finish(document: dict) -> dict:
+        document = dict(document)
+        document["trace_hash"] = digest(document)
+        return document
+
+    if route not in {"MARKET", "SECTOR", "ETF", "STOCK"} or not code or not target:
+        return finish(base)
+    if not all(isinstance(value, Mapping) for value in (
+        daily_window_plan, intraday_window_plan, multi_timeframe_structure_context,
+    )):
+        return finish(base)
+    if str(multi_timeframe_structure_context.get("target_date") or "") != target:
+        return finish({**base, "reason": "TARGET_DATE_MISMATCH"})
+    source_instrument = str(
+        multi_timeframe_structure_context.get("stock_code") or ""
+    ).strip()
+    if not source_instrument:
+        return finish({**base, "reason": "MTF_INSTRUMENT_IDENTITY_MISSING"})
+    if source_instrument != code:
+        return finish({**base, "reason": "MTF_INSTRUMENT_IDENTITY_MISMATCH"})
+    if str(daily_window_plan.get("target_date") or "") != target:
+        return finish({**base, "reason": "DAILY_PLAN_TARGET_DATE_MISMATCH"})
+    plan_hash = str(daily_window_plan.get("plan_hash") or "")
+    if len(plan_hash) != 64:
+        return finish({**base, "reason": "DAILY_PLAN_IDENTITY_MISSING"})
+    plan_identity_keys = (
+        "version", "market", "target_date", "timeframe_required_bars",
+        "source_only_timeframe_required_bars",
+        "declared_method_required_bars",
+        "non_recursive_effective_required_bars",
+        "method_required_bars", "method_window_classes",
+        "mtf_recursive_comparison_required_bars",
+        "mtf_recursive_calendar_status",
+    )
+    if "calendar_source_identity" in daily_window_plan:
+        plan_identity_keys += ("calendar_source_identity",)
+    if digest({key: daily_window_plan.get(key) for key in plan_identity_keys}) != plan_hash:
+        return finish({**base, "reason": "DAILY_PLAN_HASH_MISMATCH"})
+
+    from src.data.stock_mapping import resolve_cn_price_asset
+
+    expected_asset = resolve_cn_price_asset(code)
+    if (
+        route in {"STOCK", "ETF"} and expected_asset["market"] == "cn"
+        and (expected_asset["asset_route"] != route or expected_asset["status"] != "ADMITTED")
+    ):
+        return finish({**base, "reason": "PRICE_ASSET_ADMISSION_BINDING_INVALID"})
+    asset_admission = multi_timeframe_structure_context.get("asset_admission")
+    if asset_admission is not None:
+        if (
+            asset_admission != expected_asset
+            or expected_asset["status"] != "ADMITTED"
+            or expected_asset["asset_route"] != route
+        ):
+            return finish({**base, "reason": "PRICE_ASSET_ADMISSION_BINDING_INVALID"})
+
+    frames = multi_timeframe_structure_context.get("timeframes")
+    daily_frame_requirements = daily_window_plan.get("method_required_bars")
+    daily_requested = daily_window_plan.get("timeframe_required_bars")
+    recursive_requirements = daily_window_plan.get(
+        "mtf_recursive_comparison_required_bars"
+    )
+    recursive_plan_states = daily_window_plan.get("mtf_recursive_calendar_status")
+    minute_requirements = intraday_window_plan.get(
+        "method_required_bars_by_timeframe"
+    )
+    minute_sessions = intraday_window_plan.get("admission_sessions_by_timeframe")
+    bars_per_session = intraday_window_plan.get("bars_per_session")
+    if not all(isinstance(value, Mapping) for value in (
+        frames, daily_frame_requirements, daily_requested,
+        recursive_requirements, recursive_plan_states,
+        minute_requirements, minute_sessions, bars_per_session,
+    )):
+        return finish({**base, "reason": "PLAN_OR_RUNTIME_SHAPE_INVALID"})
+
+    daily_acquisition = None
+    daily_source_count = None
+    daily_source_hash = None
+    formal_market_receipts: dict[str, Any] = {}
+    formal_sector_receipts: dict[str, Any] = {}
+    formal_frames = (
+        formal_market_source_frames
+        if isinstance(formal_market_source_frames, Mapping)
+        else {}
+    )
+    sector_frames = (
+        formal_sector_source_frames
+        if isinstance(formal_sector_source_frames, Mapping)
+        else {}
+    )
+    if route == "MARKET" and formal_frames:
+        try:
+            from datetime import date
+            import pandas as pd
+            from data_provider.baostock_fetcher import (
+                verify_cn_index_completed_close_source_frame,
+            )
+            from data_provider.cn_index_minute_source import (
+                verify_cn_index_completed_5m_source_frame,
+            )
+            from src.core.trading_calendar import resolve_session_range_fail_closed
+
+            market_daily = formal_frames.get("daily")
+            market_five = formal_frames.get("5m")
+            daily_observation = verify_cn_index_completed_close_source_frame(
+                market_daily, trade_date=target,
+            )
+            minute_observation = verify_cn_index_completed_5m_source_frame(
+                market_five, trade_date=target,
+            )
+            if (
+                daily_observation.get("source_code") != code
+                or minute_observation.get("source_code") != code
+            ):
+                raise ValueError("formal market source instrument mismatch")
+            raw_daily = getattr(market_daily, "attrs", {}).get(
+                "cn_index_completed_close_source"
+            )
+            if not isinstance(raw_daily, Mapping):
+                raise ValueError("formal market daily receipt missing")
+            request_start = str(raw_daily.get("requested_start") or "")
+            request_end = str(raw_daily.get("requested_end") or "")
+            if request_end != target or not request_start:
+                raise ValueError("formal market daily request range invalid")
+            sessions = resolve_session_range_fail_closed(
+                "cn", date.fromisoformat(request_start), date.fromisoformat(target),
+            )
+            returned_dates = [
+                value.date()
+                for value in pd.to_datetime(market_daily["date"], errors="raise")
+            ]
+            if not sessions or returned_dates != sessions:
+                raise ValueError("formal market daily calendar binding mismatch")
+            daily_acquisition = {
+                "schema_version": "formal-cn-market-index-daily-source-v1",
+                "acquisition_mode": "VERIFIED_FORMAL_MARKET_INDEX_PROVIDER_CALL",
+                "request_evidence_status": "VERIFIED_FORMAL_MARKET_INDEX_PROVIDER_CALL",
+                "instrument": code,
+                "target_date": target,
+                "requested_session_count": len(sessions),
+                "actual_request_start": request_start,
+                "actual_request_end": target,
+                "cache_lookup_start": None,
+                "cache_lookup_end": None,
+                "receipt_hash": daily_observation["identity_hash"],
+                "persistence_status": "RIGHTS_NOT_ADMITTED_RUN_LOCAL_ONLY",
+            }
+            daily_source_count = len(market_daily)
+            daily_source_hash = daily_observation["identity_hash"]
+            formal_market_receipts = {
+                "daily": daily_observation,
+                "5m": minute_observation,
+            }
+        except (ValueError, TypeError, KeyError, AttributeError, IndexError):
+            return finish({**base, "reason": "FORMAL_MARKET_SOURCE_BINDING_INVALID"})
+    if route == "SECTOR" and sector_frames:
+        try:
+            from datetime import date
+            import pandas as pd
+            from src.services.formal_sector_context_service import (
+                verify_formal_cn_sector_5m_source_frame,
+                verify_formal_cn_sector_daily_source_frame,
+            )
+            from src.core.trading_calendar import resolve_session_range_fail_closed
+
+            sector_daily = sector_frames.get("daily")
+            sector_five = sector_frames.get("5m")
+            daily_observation = verify_formal_cn_sector_daily_source_frame(
+                sector_daily,
+                target_date=target,
+                expected_price_code=code,
+            )
+            minute_observation = verify_formal_cn_sector_5m_source_frame(
+                sector_five,
+                target_date=target,
+                expected_price_code=code,
+            )
+            if (
+                daily_observation.get("price_code") != code
+                or minute_observation.get("price_code") != code
+                or daily_observation.get("sector_id")
+                != minute_observation.get("sector_id")
+                or daily_observation.get("standard_id")
+                != minute_observation.get("standard_id")
+                or daily_observation.get("version")
+                != minute_observation.get("version")
+            ):
+                raise ValueError("formal sector source identity mismatch")
+            request_start = str(daily_observation.get("requested_start") or "")
+            request_end = str(daily_observation.get("requested_end") or "")
+            if request_end != target or not request_start:
+                raise ValueError("formal sector daily request range invalid")
+            sessions = resolve_session_range_fail_closed(
+                "cn", date.fromisoformat(request_start), date.fromisoformat(target),
+            )
+            returned_dates = [
+                value.date()
+                for value in pd.to_datetime(sector_daily["date"], errors="raise")
+            ]
+            if not sessions or returned_dates != sessions:
+                raise ValueError("formal sector daily calendar binding mismatch")
+            daily_acquisition = {
+                "schema_version": "formal-cn-sector-daily-source-v1",
+                "acquisition_mode": "VERIFIED_FORMAL_SECTOR_PROVIDER_CALL",
+                "request_evidence_status": "VERIFIED_FORMAL_SECTOR_PROVIDER_CALL",
+                "instrument": code,
+                "target_date": target,
+                "requested_session_count": len(sessions),
+                "actual_request_start": request_start,
+                "actual_request_end": target,
+                "cache_lookup_start": None,
+                "cache_lookup_end": None,
+                "receipt_hash": daily_observation["identity_hash"],
+                "persistence_status": "RIGHTS_NOT_ADMITTED_RUN_LOCAL_ONLY",
+            }
+            daily_source_count = len(sector_daily)
+            daily_source_hash = daily_observation["identity_hash"]
+            formal_sector_receipts = {
+                "daily": daily_observation,
+                "5m": minute_observation,
+            }
+        except (ValueError, TypeError, KeyError, AttributeError, IndexError):
+            return finish({**base, "reason": "FORMAL_SECTOR_SOURCE_BINDING_INVALID"})
+
+    daily_claim = (
+        None
+        if daily_acquisition is not None
+        else getattr(daily_source_frame, "attrs", {}).get(
+            "dsa_daily_acquisition_receipt"
+        )
+    )
+    if daily_acquisition is None and daily_source_frame is not None and daily_claim is None:
+        return finish({**base, "reason": "DAILY_ACQUISITION_BINDING_INVALID"})
+    if daily_acquisition is None and daily_claim is not None:
+        try:
+            from datetime import date
+            import pandas as pd
+            from data_provider.daily_data_identity import (
+                extract_daily_acquisition_receipt,
+                extract_daily_data_identity,
+                verified_observed_daily_frame_provider,
+            )
+            from src.core.trading_calendar import resolve_session_range_fail_closed
+
+            daily_identity = extract_daily_data_identity(
+                daily_source_frame, strict=True,
+            )
+            daily_receipt = extract_daily_acquisition_receipt(
+                daily_source_frame, strict=True,
+            )
+            if daily_identity is None or daily_receipt is None:
+                raise ValueError("missing daily acquisition identity")
+            if (
+                route == "ETF" and expected_asset["market"] == "cn"
+                and daily_identity.get("currency")
+                != expected_asset["product_profile"]["currency"]
+            ):
+                raise ValueError("ETF daily listing currency mismatch")
+            provider = verified_observed_daily_frame_provider(daily_source_frame)
+            if provider is None:
+                raise ValueError("daily source bytes are not content-bound")
+            expected_daily = {
+                "schema_version": "dsa-daily-acquisition-v1",
+                "caller": "StockAnalysisPipeline.fetch_and_save_stock_data",
+                "asset_route": route,
+                "instrument": code,
+                "target_date": target,
+                "plan_hash": plan_hash,
+                "source_identity_hash": daily_identity["identity_hash"],
+                "provider_identity": daily_identity["provider_identity"],
+                "provider_route": daily_identity["provider_route"],
+                "returned_start": daily_identity["returned_start"],
+                "returned_end": daily_identity["returned_end"],
+                "returned_base_bars": len(daily_source_frame),
+                "admitted_base_bars": len(daily_source_frame),
+                "actual_consumer": "StockAnalysisPipeline.analyze_stock",
+            }
+            if asset_admission is not None:
+                expected_daily["asset_admission"] = asset_admission
+            if any(
+                daily_receipt.get(key) != value
+                for key, value in expected_daily.items()
+            ):
+                raise ValueError("daily acquisition request/response mismatch")
+            if provider.casefold() != str(
+                daily_identity.get("provider_identity") or ""
+            ).casefold():
+                raise ValueError("daily provider binding mismatch")
+            if str(daily_identity.get("instrument") or "") != code:
+                raise ValueError("daily instrument binding mismatch")
+            plan_start_value = daily_window_plan.get("start_date")
+            plan_start = (
+                plan_start_value.isoformat()
+                if hasattr(plan_start_value, "isoformat")
+                else str(plan_start_value or "")
+            )
+            if (
+                daily_receipt.get("planned_start") != plan_start
+                or daily_receipt.get("planned_end") != target
+            ):
+                raise ValueError("daily acquisition plan range mismatch")
+            parsed = pd.to_datetime(
+                daily_source_frame["date"], errors="coerce",
+            )
+            if parsed.isna().any():
+                raise ValueError("daily source contains invalid dates")
+            returned_dates = [value.date() for value in parsed]
+            if len(set(returned_dates)) != len(returned_dates):
+                raise ValueError("daily source contains duplicate dates")
+            mode = daily_receipt.get("acquisition_mode")
+            if mode == "VERIFIED_PROVIDER_CALL":
+                count = daily_receipt.get("requested_session_count")
+                if type(count) is not int or count < 1:
+                    raise ValueError("daily provider request count is invalid")
+                if (
+                    daily_receipt.get("actual_request_start") != plan_start
+                    or daily_receipt.get("actual_request_end") != target
+                    or daily_receipt.get("cache_lookup_start") is not None
+                    or daily_receipt.get("cache_lookup_end") is not None
+                ):
+                    raise ValueError("daily provider request range is invalid")
+                sessions = resolve_session_range_fail_closed(
+                    str(daily_receipt.get("market") or ""),
+                    date.fromisoformat(plan_start),
+                    date.fromisoformat(target),
+                )
+                if (
+                    not sessions
+                    or len(sessions) != count
+                    or returned_dates != sessions[-len(returned_dates):]
+                ):
+                    raise ValueError("daily provider calendar binding mismatch")
+            elif mode == "VERIFIED_CACHE_HIT":
+                if (
+                    daily_receipt.get("requested_session_count") is not None
+                    or daily_receipt.get("actual_request_start") is not None
+                    or daily_receipt.get("actual_request_end") is not None
+                    or daily_receipt.get("cache_lookup_start") != plan_start
+                    or daily_receipt.get("cache_lookup_end") != target
+                ):
+                    raise ValueError("daily cache lookup identity is invalid")
+                sessions = resolve_session_range_fail_closed(
+                    str(daily_receipt.get("market") or ""),
+                    date.fromisoformat(plan_start),
+                    date.fromisoformat(target),
+                )
+                if not sessions or returned_dates != sessions:
+                    raise ValueError("daily cache calendar binding mismatch")
+            else:
+                raise ValueError("daily acquisition mode is invalid")
+            daily_acquisition = dict(daily_receipt)
+            daily_source_count = len(daily_source_frame)
+            daily_source_hash = daily_identity["identity_hash"]
+        except (
+            ValueError, TypeError, KeyError, AttributeError, IndexError,
+        ):
+            return finish({**base, "reason": "DAILY_ACQUISITION_BINDING_INVALID"})
+
+    acquisition = None
+    daily_window_extension = (
+        daily_acquisition.get("bounded_window_extension")
+        if isinstance(daily_acquisition, Mapping) else None
+    )
+    source_counts = {}
+    source_hashes = {}
+    source_frames = intraday_source_frames if isinstance(intraday_source_frames, Mapping) else {}
+    formal_minute_acquisition = None
+    active_formal_receipts = (
+        formal_market_receipts
+        if route == "MARKET"
+        else formal_sector_receipts
+        if route == "SECTOR"
+        else {}
+    )
+    active_formal_frames = formal_frames if route == "MARKET" else sector_frames
+    if route in {"MARKET", "SECTOR"} and active_formal_receipts:
+        source_frames = active_formal_frames
+        try:
+            from data_provider.intraday_data_identity import extract_intraday_data_identity
+
+            parent = extract_intraday_data_identity(source_frames["5m"], strict=True)
+            if parent is None:
+                raise ValueError("formal market/sector 5m identity missing")
+            minute_receipt = active_formal_receipts["5m"]
+            formal_minute_acquisition = {
+                "schema_version": (
+                    "formal-cn-market-index-5m-source-v1"
+                    if route == "MARKET"
+                    else "formal-cn-sector-5m-source-v1"
+                ),
+                "request_evidence_status": "VERIFIED_PROVIDER_RESPONSE_WITH_UNBOUNDED_START",
+                "instrument": code,
+                "target_date": target,
+                "actual_request_start": None,
+                "actual_request_end": target,
+                "receipt_hash": minute_receipt["receipt_sha256"],
+                "session_count": minute_receipt["session_count"],
+                "row_count": minute_receipt["row_count"],
+            }
+            for timeframe, data in source_frames.items():
+                if timeframe not in {"5m", "15m", "30m", "60m"}:
+                    continue
+                child = extract_intraday_data_identity(data, strict=True)
+                if (
+                    child is None
+                    or child.get("timeframe") != timeframe
+                    or set(data["code"].astype(str)) != {code}
+                    or (
+                        timeframe != "5m"
+                        and child.get("parent_identity_hash") != parent["identity_hash"]
+                    )
+                ):
+                    raise ValueError("formal market/sector derived timeframe identity mismatch")
+                source_counts[timeframe] = len(data)
+                source_hashes[timeframe] = child["identity_hash"]
+        except (ValueError, TypeError, KeyError, AttributeError):
+            return finish({
+                **base,
+                "reason": (
+                    "FORMAL_MARKET_SOURCE_BINDING_INVALID"
+                    if route == "MARKET"
+                    else "FORMAL_SECTOR_SOURCE_BINDING_INVALID"
+                ),
+            })
+    five_minute = source_frames.get("5m")
+    claim = getattr(five_minute, "attrs", {}).get("dsa_intraday_acquisition_receipt")
+    if claim is not None:
+        # Verify the original call receipt against the same source bytes. This
+        # proves a run-local provider-method seam, not vendor rights or HTTP I/O.
+        try:
+            from datetime import date, timedelta
+            from data_provider.daily_data_identity import sha256_payload
+            from data_provider.intraday_data_identity import extract_intraday_data_identity
+            from src.core.trading_calendar import resolve_forward_sessions_fail_closed
+
+            identity = extract_intraday_data_identity(five_minute, strict=True)
+            if not isinstance(claim, Mapping) or identity is None:
+                raise ValueError("missing acquisition identity")
+            expected = {
+                "schema_version": "dsa-intraday-acquisition-v1",
+                "caller": "StockAnalysisPipeline._load_current_stock_intraday_timeframes",
+                "asset_route": route, "instrument": code, "target_date": target,
+                "source_identity_hash": identity["identity_hash"],
+                "provider_identity": identity["provider_identity"],
+                "provider_route": identity["provider_route"],
+                "requested_start": identity["requested_start"],
+                "requested_end": identity["requested_end"],
+                "returned_base_bars": len(five_minute),
+                "provider_method_call_count": 1, "provider_http_request_count": None,
+            }
+            if asset_admission is not None:
+                expected["asset_admission"] = asset_admission
+            if any(claim.get(key) != value for key, value in expected.items()):
+                raise ValueError("acquisition request/response mismatch")
+            payload = {key: value for key, value in claim.items() if key != "receipt_hash"}
+            if claim.get("receipt_hash") != sha256_payload(payload):
+                raise ValueError("acquisition receipt hash mismatch")
+            count = claim.get("requested_session_count")
+            if type(count) is not int or count < 1 or count > 10000:
+                raise ValueError("invalid acquisition session count")
+            start = date.fromisoformat(claim["requested_start"])
+            sessions = resolve_forward_sessions_fail_closed("cn", start - timedelta(days=1), count)
+            if (
+                not sessions
+                or [day.isoformat() for day in sessions] != claim.get("requested_session_dates")
+                or sessions[-1].isoformat() != target
+                or claim["requested_end"] != target
+                or set(five_minute["code"].astype(str)) != {code}
+            ):
+                raise ValueError("acquisition calendar/instrument mismatch")
+            for timeframe, data in source_frames.items():
+                if timeframe not in {"5m", "15m", "30m", "60m"}:
+                    continue
+                child = extract_intraday_data_identity(data, strict=True)
+                if (
+                    child is None or child["timeframe"] != timeframe
+                    or set(data["code"].astype(str)) != {code}
+                    or (timeframe != "5m" and child.get("parent_identity_hash") != identity["identity_hash"])
+                ):
+                    raise ValueError("acquisition derived source mismatch")
+                source_counts[timeframe] = len(data)
+                source_hashes[timeframe] = child["identity_hash"]
+            if (
+                type(claim.get("admitted_session_count")) is not int
+                or claim["admitted_session_count"] * 48 != len(five_minute)
+                or claim["admitted_session_count"] > count
+            ):
+                raise ValueError("acquisition admitted coverage mismatch")
+            acquisition = dict(claim)
+        except (ValueError, TypeError, KeyError, AttributeError):
+            return finish({**base, "reason": "ACQUISITION_BINDING_INVALID"})
+
+    component_fields = (
+        ("MACD_STARTUP_COMPARISON", "macd_startup_stability", "MACD"),
+        ("RSI_STARTUP_COMPARISON", "rsi_startup_stability", "RSI"),
+    )
+    rows = []
+    for timeframe in TIMEFRAMES:
+        frame = frames.get(timeframe)
+        if not isinstance(frame, Mapping):
+            frame = {}
+        returned = frame.get("observations")
+        returned_bars = (
+            returned if type(returned) is int and returned >= 0 else None
+        )
+        for component, field, daily_method in component_fields:
+            if timeframe in {"monthly", "weekly", "daily"}:
+                if timeframe == "daily":
+                    requirements = daily_frame_requirements.get("daily")
+                    required = (
+                        requirements.get(daily_method)
+                        if isinstance(requirements, Mapping)
+                        else None
+                    )
+                else:
+                    required = recursive_requirements.get(component)
+                requested = daily_requested.get(timeframe)
+                plan_states = recursive_plan_states.get(timeframe)
+                plan_state = (
+                    plan_states.get(component)
+                    if isinstance(plan_states, Mapping)
+                    else "ACQUISITION_PLANNED"
+                )
+            else:
+                requirements = minute_requirements.get(timeframe)
+                required = (
+                    requirements.get(component)
+                    if isinstance(requirements, Mapping)
+                    else None
+                )
+                sessions = minute_sessions.get(timeframe)
+                per_session = bars_per_session.get(timeframe)
+                requested = (
+                    sessions * per_session
+                    if type(sessions) is int and type(per_session) is int
+                    else None
+                )
+                plan_state = "ACQUISITION_PLANNED"
+
+            receipt = frame.get(field)
+            state = str((receipt or {}).get("status") or "MISSING")
+            if state not in {"READY", "PARTIAL", "MISSING", "UNKNOWN"}:
+                state = "UNKNOWN"
+            reason = str(
+                (receipt or {}).get("reason") or "METHOD_EXECUTION_RECEIPT_MISSING"
+            )
+            if not isinstance(receipt, Mapping):
+                state, reason = "MISSING", "METHOD_EXECUTION_RECEIPT_MISSING"
+            elif receipt.get("strategy_admitted") is not False or receipt.get(
+                "learning_admitted"
+            ) is not False:
+                state, reason = "UNKNOWN", "METHOD_RECEIPT_AUTHORITY_ESCALATION"
+            elif type(required) is int and receipt.get("required_observations") != required:
+                state, reason = "UNKNOWN", "METHOD_REQUIRED_BARS_MISMATCH"
+            elif type(returned_bars) is int and receipt.get("observations") != returned_bars:
+                state, reason = "UNKNOWN", "METHOD_OBSERVATION_COUNT_MISMATCH"
+            elif (
+                state == "READY"
+                and type(required) is int
+                and type(returned_bars) is int
+                and returned_bars < required
+            ):
+                state, reason = "UNKNOWN", "OBSERVATIONS_BELOW_REQUIRED_BARS"
+            if timeframe in source_counts and returned_bars is not None and returned_bars > source_counts[timeframe]:
+                state, reason = "UNKNOWN", "METHOD_OBSERVATIONS_EXCEED_BOUND_SOURCE"
+            if timeframe in {"monthly", "weekly", "daily"}:
+                daily_bound = daily_acquisition is not None
+                daily_mode = (
+                    daily_acquisition.get("acquisition_mode")
+                    if daily_bound else None
+                )
+                actual_requested_bars = (
+                    daily_acquisition.get("requested_session_count")
+                    if daily_mode in {
+                        "VERIFIED_PROVIDER_CALL",
+                        "VERIFIED_FORMAL_MARKET_INDEX_PROVIDER_CALL",
+                        "VERIFIED_FORMAL_SECTOR_PROVIDER_CALL",
+                    }
+                    else None
+                )
+                request_evidence_status = (
+                    daily_acquisition.get("request_evidence_status")
+                    if daily_bound else "NOT_OBSERVED"
+                )
+                requested_bars_basis = (
+                    "EXACT_XSHG_SESSIONS_OF_SHARED_DAILY_PROVIDER_CALL_NOT_HTTP_COUNT"
+                    if daily_mode == "VERIFIED_PROVIDER_CALL"
+                    else (
+                        "EXACT_XSHG_SESSIONS_OF_FORMAL_INDEX_DAILY_PROVIDER_CALL_NOT_HTTP_COUNT"
+                        if daily_mode == "VERIFIED_FORMAL_MARKET_INDEX_PROVIDER_CALL"
+                        else (
+                            "EXACT_XSHG_SESSIONS_OF_FORMAL_SECTOR_DAILY_PROVIDER_CALL_NOT_HTTP_COUNT"
+                            if daily_mode == "VERIFIED_FORMAL_SECTOR_PROVIDER_CALL"
+                            else (
+                                "VERIFIED_CACHE_LOOKUP_NOT_A_NEW_PROVIDER_REQUEST"
+                                if daily_mode == "VERIFIED_CACHE_HIT"
+                                else "NO_BOUND_DAILY_DISPATCH_OR_CACHE_EVIDENCE"
+                            )
+                        )
+                    )
+                )
+                actual_request_start = (
+                    daily_acquisition.get("actual_request_start")
+                    if daily_bound else None
+                )
+                actual_request_end = (
+                    daily_acquisition.get("actual_request_end")
+                    if daily_bound else None
+                )
+                cache_lookup_start = (
+                    daily_acquisition.get("cache_lookup_start")
+                    if daily_bound else None
+                )
+                cache_lookup_end = (
+                    daily_acquisition.get("cache_lookup_end")
+                    if daily_bound else None
+                )
+                request_receipt_hash = (
+                    daily_acquisition.get("receipt_hash")
+                    if daily_bound else None
+                )
+                source_returned_bars = (
+                    daily_source_count if daily_bound else None
+                )
+                source_identity_hash = (
+                    daily_source_hash if daily_bound else None
+                )
+                persistence_status = (
+                    daily_acquisition.get("persistence_status")
+                    if daily_bound else None
+                )
+            else:
+                minute_bound = acquisition is not None and timeframe in source_counts
+                formal_minute_bound = (
+                    formal_minute_acquisition is not None
+                    and timeframe in source_counts
+                )
+                actual_requested_bars = (
+                    acquisition["requested_session_count"]
+                    * {"5m": 48, "15m": 16, "30m": 8, "60m": 4}[timeframe]
+                    if minute_bound else None
+                )
+                request_evidence_status = (
+                    "VERIFIED_PROVIDER_CALL"
+                    if minute_bound
+                    else (
+                        formal_minute_acquisition["request_evidence_status"]
+                        if formal_minute_bound
+                        else "NOT_OBSERVED"
+                    )
+                )
+                requested_bars_basis = (
+                    "CALENDAR_SLOTS_OF_SHARED_5M_CALL_NOT_HTTP_COUNT"
+                    if minute_bound
+                    else (
+                        (
+                            "FORMAL_INDEX_PROVIDER_RETENTION_RANGE_NOT_REQUEST_COUNT"
+                            if route == "MARKET"
+                            else "FORMAL_SECTOR_PROVIDER_RETENTION_RANGE_NOT_REQUEST_COUNT"
+                        )
+                        if formal_minute_bound
+                        else "NO_BOUND_INTRADAY_DISPATCH_EVIDENCE"
+                    )
+                )
+                actual_request_start = (                    acquisition["requested_start"] if minute_bound else None
+                )
+                actual_request_end = (
+                    acquisition["requested_end"]
+                    if minute_bound
+                    else (
+                        formal_minute_acquisition["actual_request_end"]
+                        if formal_minute_bound
+                        else None
+                    )
+                )
+                cache_lookup_start = None
+                cache_lookup_end = None
+                request_receipt_hash = (
+                    acquisition["receipt_hash"]
+                    if minute_bound
+                    else (
+                        formal_minute_acquisition["receipt_hash"]
+                        if formal_minute_bound
+                        else None
+                    )
+                )
+                source_returned_bars = source_counts.get(timeframe)
+                source_identity_hash = source_hashes.get(timeframe)
+                persistence_status = (
+                    "RIGHTS_NOT_ADMITTED_RUN_LOCAL_ONLY"
+                    if formal_minute_bound else None
+                )
+            if (
+                timeframe == "daily"
+                and daily_acquisition is not None
+                and returned_bars is not None
+                and returned_bars > daily_source_count
+            ):
+                state, reason = "UNKNOWN", "METHOD_OBSERVATIONS_EXCEED_BOUND_SOURCE"
+            active_daily_extension = (
+                daily_window_extension
+                if timeframe == "monthly"
+                and component == "MACD_STARTUP_COMPARISON"
+                else None
+            )
+            rows.append({
+                "timeframe": timeframe,
+                "method_id": "MTF_MOMENTUM_CONTEXT",
+                "component": component,
+                "window_class": "RECURSIVE_WARMUP",
+                "required_bars": required,
+                "planned_bars": requested,
+                "requested_bars": actual_requested_bars,
+                "request_evidence_status": request_evidence_status,
+                "requested_bars_basis": requested_bars_basis,
+                "actual_request_start": actual_request_start,
+                "actual_request_end": actual_request_end,
+                "cache_lookup_start": cache_lookup_start,
+                "cache_lookup_end": cache_lookup_end,
+                "request_receipt_hash": request_receipt_hash,
+                "source_returned_bars": source_returned_bars,
+                "source_identity_hash": source_identity_hash,
+                "persistence_status": persistence_status,
+                "bounded_window_extension_status": (
+                    active_daily_extension.get("final_status")
+                    if isinstance(active_daily_extension, Mapping) else None
+                ),
+                "bounded_window_extension_reason": (
+                    active_daily_extension.get("final_reason")
+                    if isinstance(active_daily_extension, Mapping) else None
+                ),
+                "bounded_window_extension_receipt_hash": (
+                    active_daily_extension.get("receipt_hash")
+                    if isinstance(active_daily_extension, Mapping) else None
+                ),
+                "bounded_window_extension_provider_calls": (
+                    active_daily_extension.get("provider_method_call_count")
+                    if isinstance(active_daily_extension, Mapping) else None
+                ),
+                "returned_bars": returned_bars,
+                "acquisition_plan_status": plan_state,
+                "status": state,
+                "reason": reason,
+                "source_window_sufficient": bool(
+                    type(required) is int
+                    and type(returned_bars) is int
+                    and returned_bars >= required
+                ),
+                "consumer_path": (
+                    "multi_timeframe_structure_context.timeframes."
+                    f"{timeframe}.{field}"
+                ),
+                "confirmed_at": None,
+                "invalidation": None,
+                "independent_action_authority": False,
+                "strategy_admitted": False,
+                "learning_admitted": False,
+            })
+
+    states = [row["status"] for row in rows]
+    if rows and all(state == "READY" for state in states):
+        status, reason = "READY", "ALL_TRACED_COMPONENTS_READY"
+    elif any(state in {"READY", "PARTIAL"} for state in states):
+        status, reason = "PARTIAL", "MIXED_METHOD_WINDOW_READINESS"
+    elif any(state == "UNKNOWN" for state in states):
+        status, reason = "UNKNOWN", "METHOD_WINDOW_READINESS_UNKNOWN"
+    else:
+        status, reason = "MISSING", "METHOD_WINDOW_READINESS_MISSING"
+    return finish({
+        **base,
+        "status": status,
+        "reason": reason,
+        "daily_plan_hash": daily_window_plan["plan_hash"],
+        "intraday_plan_hash": digest(intraday_window_plan),
+        "intraday_acquisition_receipt": acquisition,
+        "daily_acquisition_receipt": daily_acquisition,
+        "formal_market_source_receipts": formal_market_receipts or None,
+        "formal_sector_source_receipts": formal_sector_receipts or None,
+        "formal_market_minute_source_receipt": (
+            formal_minute_acquisition if route == "MARKET" else None
+        ),
+        "formal_sector_minute_source_receipt": (
+            formal_minute_acquisition if route == "SECTOR" else None
+        ),
+        "rows": rows,
+    })
 
 
 def at(value: Any, path: str) -> Any:
@@ -254,8 +1188,30 @@ EVIDENCE_BINDINGS = (
     EvidenceBinding("REGIME", "market_sector_regime", "src/services/factor_decision_summary.py", "_build_market_sector_regime_evidence", ("market_light", "stock_market_position"), "_MARKET_SECTOR_REGIME_VERSION", "UPSTREAM_REGIME_READINESS", "market_sector", "asset"),
     EvidenceBinding("TREND_RS", "trend_relative_strength", "src/services/factor_decision_summary.py", "_build_trend_relative_strength_evidence", ("date", "close", "data_source", "benchmark_close"), "_TREND_RELATIVE_STRENGTH_VERSION", "RELATIVE_STRENGTH_AND_TREND_OWNERS", "trend_price"),
     EvidenceBinding("SUPPLY", "supply_demand_volume_price", "src/services/supply_demand_service.py", "build_supply_demand_context", ("date", "high", "low", "close", "volume", "data_source"), "SUPPLY_DEMAND_SCHEMA_VERSION", "REQUIRED_OBSERVATIONS", "volume_pressure"),
+    EvidenceBinding(
+        "DISTRIBUTION", "distribution_risk_evidence",
+        "src/services/supply_demand_service.py", "compile_volume_price_phase_context",
+        ("supply_demand_context", "price_structure_context", "timeframe"),
+        "VOLUME_PRICE_PHASE_SCHEMA_VERSION", "NO_WARMUP",
+        "volume_price_structure_phase", timeframe="daily",
+        asset_routes=("STOCK", "ETF"),
+        implementation_state="EXISTING_REUSED",
+        reentry="CURRENT_COMPLETED_VOLUME_AND_CONFIRMED_STRUCTURE_PHASE",
+        ledger=True,
+    ),
     EvidenceBinding("COST", "cost_structure_evidence", "src/services/cost_structure_service.py", "build_cost_structure_context", ("date", "high", "low", "close", "volume", "data_source"), "COST_STRUCTURE_SCHEMA_VERSION", "REFERENCE_WINDOWS", "price_volume_cost"),
     EvidenceBinding("STRUCTURE", "price_structure_evidence", "src/services/price_structure_service.py", "build_price_structure_context", ("date", "open", "high", "low", "close", "data_source"), "PIVOT_ALGORITHM_VERSION", "MIN_OBSERVATIONS", "confirmed_price_swing"),
+    EvidenceBinding(
+        "CHAN", "chan_evidence",
+        "src/services/chan_feature_adapter.py", "build_chan_feature_context",
+        ("price_structure_evidence", "confirmed_pivots", "confirmed_swings"),
+        "CHAN_FEATURE_SCHEMA_VERSION", "NO_WARMUP",
+        "confirmed_price_swing", timeframe="daily",
+        asset_routes=("STOCK", "ETF"),
+        implementation_state="EXISTING_REUSED",
+        reentry="NARROW_CONFIRMED_PIVOT_SWING_PREFIX_REPLAY",
+        ledger=False,
+    ),
     EvidenceBinding("MOMENTUM", "volatility_momentum_evidence", "src/services/volatility_momentum_service.py", "build_volatility_momentum_context", ("date", "open", "high", "low", "close", "data_source"), "ALGORITHM_VERSION", "READY_OBSERVATIONS", "same_swing_momentum"),
     EvidenceBinding("PATTERN", "pattern_trigger_evidence", "src/services/pattern_trigger_service.py", "build_pattern_trigger_context", ("date", "open", "high", "low", "close", "volume", "data_source"), "ALGORITHM_VERSION", "MIN_OBSERVATIONS", "price_contraction"),
     EvidenceBinding(
@@ -272,6 +1228,59 @@ EVIDENCE_BINDINGS = (
         reentry="CURRENT_OWNER_VERSION_AND_OUTPUT_VALIDATION",
         ledger=False,
     ),
+    EvidenceBinding(
+        "QUALITY",
+        "quality_evidence",
+        "src/services/fundamental_quality_service.py",
+        "compile_fundamental_quality",
+        (
+            "asset_id", "asset_type", "currency", "financial_period_end",
+            "published_at", "financial_version", "data_admissions",
+            "metrics", "metric_sources",
+        ),
+        "SCHEMA_VERSION",
+        "REQUIRED_DATASET_IDS",
+        "fundamentals",
+        timeframe="asset",
+        asset_routes=("STOCK",),
+        implementation_state="EXISTING_REUSED",
+        reentry="CURRENT_DATED_FINANCIAL_INPUT_AND_SOURCE_ADMISSION",
+        ledger=False,
+    ),
+    EvidenceBinding(
+        "VALUATION",
+        "valuation_evidence",
+        "src/services/business_valuation_service.py",
+        "compile_business_valuation",
+        (
+            "route_id", "asset_id", "asset_type", "currency", "current_price",
+            "financial_period_end", "published_at", "financial_version",
+            "data_admissions", "inputs", "assumptions",
+        ),
+        "SCHEMA_VERSION",
+        "VALUATION_ROUTE_IDS",
+        "valuation",
+        timeframe="asset",
+        asset_routes=("STOCK", "ETF"),
+        implementation_state="EXISTING_REUSED",
+        reentry="CURRENT_ROUTE_INPUT_AND_SOURCE_ADMISSION",
+        ledger=False,
+    ),
+    EvidenceBinding(
+        "EXTRA_INDICATORS",
+        "volatility_momentum_evidence.context.extended_indicators",
+        "src/services/extended_indicator_service.py",
+        "build_extended_indicator_context",
+        ("date", "open", "high", "low", "close", "volume", "data_source"),
+        "ALGORITHM_VERSION",
+        "READY_OBSERVATIONS",
+        "extended_ohlcv_indicators",
+        timeframe="daily",
+        asset_routes=("STOCK", "ETF"),
+        implementation_state="EXISTING_REUSED",
+        reentry="SOURCE_BOUND_COMPLETED_BAR_EXTENDED_INDICATORS",
+        ledger=False,
+    ),
     EvidenceBinding("MTF", "multi_timeframe_structure_context", "src/services/multi_timeframe_structure_service.py", "build_multi_timeframe_structure_context", ("date", "open", "high", "low", "close", "volume", "data_source"), "ALGORITHM_VERSION", "TREND_MIN_BARS", "nested_price_structure", "multi"),
 )
 
@@ -284,13 +1293,8 @@ DEFERRED_BINDINGS = tuple(
     EvidenceBinding(rid, path, owner, "NOT_ADMITTED", fields, "NOT_ADMITTED", "NOT_ADMITTED", group,
                     timeframe=tf, implementation_state="DEFERRED_WITH_OWNER_AND_REENTRY", reentry=reentry, ledger=False)
     for rid, path, owner, fields, group, tf, reentry in (
-        ("QUALITY", "quality_evidence", "FACTOR:fundamental_quality", ("published_at", "financial_version", "cash_flow"), "fundamentals", "asset", "PIT_QUALITY_DATA_AND_METHOD_ADMISSION"),
-        ("VALUATION", "valuation_evidence", "FACTOR:valuation", ("published_at", "financial_version", "share_count", "valuation_assumptions"), "valuation", "asset", "BUSINESS_ROUTED_VALUATION_METHOD_ADMISSION"),
-        ("DISTRIBUTION", "distribution_risk_evidence", "FACTOR:distribution_risk", ("date", "open", "high", "low", "close", "volume"), "volume_pressure", "daily", "DETERMINISTIC_DISTRIBUTION_CLEAR_RESOLVER"),
         ("RISK_REWARD", "risk_reward_evidence", "FACTOR:execution", ("entry", "stop", "cost", "execution_identity"), "execution", "asset", "ACCEPTED_RISK_REWARD_RESOLVER"),
-        ("EXTRA_INDICATORS", "extended_indicator_evidence", "FACTOR:VolatilityMomentum", ("date", "open", "high", "low", "close", "volume"), "same_swing_momentum", "daily", "ADX_DMI_BOLLINGER_OBV_ADL_MFI_KDJ_INDEPENDENT_ADMISSION"),
         ("AVWAP_PROFILE", "anchored_cost_evidence", "FACTOR:CostStructure", ("anchor", "price_volume_distribution"), "price_volume_cost", "asset", "ANCHOR_AND_PRICE_VOLUME_METHOD_NOT_DAILY_PROXY"),
-        ("CHAN", "chan_evidence", "FACTOR:ChanFeatureAdapter", ("date", "open", "high", "low", "close"), "confirmed_price_swing", "multi", "NARROW_ADAPTER_BAR_REPLAY_NO_BACKFILL"),
         ("WAVE", "wave_evidence", "FACTOR:WaveShadow", ("date", "open", "high", "low", "close"), "confirmed_price_swing", "multi", "RESEARCH_SHADOW_ONLY"),
         ("ETF_SPECIFIC", "etf_specific_evidence", "FACTOR:ETF", ("nav", "nav_at", "shares", "bid", "ask", "tracking_error"), "etf_execution", "asset", "ETF_DATA_IDENTITY_AND_METHOD_ADMISSION"),
         ("GLOBAL", "global_evidence", "FACTOR:MarketGlobal", ("published_at", "currency", "macro_series_version"), "market_global", "asset", "GLOBAL_SOURCE_AND_DATE_ADMISSION"),
@@ -463,16 +1467,17 @@ METHOD_WINDOW_PROFILES = (
     ),
     MethodWindowProfile(
         "QUALITY", "QUALITY",
-        ("VINTAGE_ASOF",), ("asset",), (), "DEFERRED_WITH_OWNER_AND_REENTRY",
+        ("VINTAGE_ASOF",), ("asset",), ("asset",), "EXISTING_REUSED",
     ),
     MethodWindowProfile(
         "VALUATION", "VALUATION",
-        ("VINTAGE_ASOF",), ("asset",), (), "DEFERRED_WITH_OWNER_AND_REENTRY",
+        ("VINTAGE_ASOF", "CROSS_SECTIONAL_ASOF"), ("asset",), ("asset",),
+        "EXISTING_REUSED",
     ),
     MethodWindowProfile(
         "DISTRIBUTION", "DISTRIBUTION",
-        ("ADAPTIVE_CONTEXT", "INCREMENTAL_STATE_MACHINE"), TIMEFRAMES, (),
-        "DEFERRED_WITH_OWNER_AND_REENTRY",
+        ("ADAPTIVE_CONTEXT", "INCREMENTAL_STATE_MACHINE"), TIMEFRAMES, ("daily",),
+        "EXISTING_REUSED",
     ),
     MethodWindowProfile(
         "RISK_REWARD", "RISK_REWARD",
@@ -488,25 +1493,25 @@ METHOD_WINDOW_PROFILES = (
     ),
     MethodWindowProfile(
         "ADX_DMI", "EXTRA_INDICATORS",
-        ("FIXED_ROLLING", "RECURSIVE_WARMUP"), TIMEFRAMES, (),
-        "DEFERRED_WITH_OWNER_AND_REENTRY",
+        ("FIXED_ROLLING", "RECURSIVE_WARMUP"), TIMEFRAMES, TIMEFRAMES,
+        "EXISTING_REUSED",
     ),
     MethodWindowProfile(
         "BOLLINGER", "EXTRA_INDICATORS",
-        ("FIXED_ROLLING",), TIMEFRAMES, (), "DEFERRED_WITH_OWNER_AND_REENTRY",
+        ("FIXED_ROLLING",), TIMEFRAMES, TIMEFRAMES, "EXISTING_REUSED",
     ),
     MethodWindowProfile(
         "KDJ", "EXTRA_INDICATORS",
-        ("FIXED_ROLLING", "RECURSIVE_WARMUP"), TIMEFRAMES, (),
-        "DEFERRED_WITH_OWNER_AND_REENTRY",
+        ("FIXED_ROLLING", "RECURSIVE_WARMUP"), TIMEFRAMES, TIMEFRAMES,
+        "EXISTING_REUSED",
     ),
     MethodWindowProfile(
         "OBV_ADL", "EXTRA_INDICATORS",
-        ("RECURSIVE_WARMUP",), TIMEFRAMES, (), "DEFERRED_WITH_OWNER_AND_REENTRY",
+        ("FIXED_ROLLING",), TIMEFRAMES, TIMEFRAMES, "EXISTING_REUSED",
     ),
     MethodWindowProfile(
         "MFI", "EXTRA_INDICATORS",
-        ("FIXED_ROLLING",), TIMEFRAMES, (), "DEFERRED_WITH_OWNER_AND_REENTRY",
+        ("FIXED_ROLLING",), TIMEFRAMES, TIMEFRAMES, "EXISTING_REUSED",
     ),
     MethodWindowProfile(
         "VWAP", "AVWAP_PROFILE",
@@ -519,8 +1524,8 @@ METHOD_WINDOW_PROFILES = (
     ),
     MethodWindowProfile(
         "CHAN", "CHAN",
-        ("INCREMENTAL_STATE_MACHINE",), TIMEFRAMES, (),
-        "DEFERRED_WITH_OWNER_AND_REENTRY",
+        ("VARIABLE_STRUCTURE", "INCREMENTAL_STATE_MACHINE"), TIMEFRAMES, ("daily",),
+        "EXISTING_REUSED",
     ),
     MethodWindowProfile(
         "WAVE", "WAVE",
@@ -547,6 +1552,9 @@ METHOD_WINDOW_PROFILES = (
         ("VINTAGE_ASOF",), ("asset",), (), "DEFERRED_WITH_OWNER_AND_REENTRY",
     ),
 )
+
+
+DECLARED_METHOD_WINDOW_PROFILES = METHOD_WINDOW_PROFILES
 
 
 _METHOD_CONSUMER_CLASSIFICATION = {
@@ -599,13 +1607,62 @@ if frozenset(_METHOD_CONSUMER_CLASSIFICATION) != ACCEPTED_METHOD_WINDOW_IDS:
 INTRADAY_CONTEXT_METHOD_IDS = frozenset({
     "MTF_MA_LEVEL_ALIGNMENT",
     "MTF_MOMENTUM_CONTEXT",
-    "MTF_PRICE_STRUCTURE",  # 30m confirmed pivots: descriptive only; trigger gate stays deferred.
+    "MTF_PRICE_STRUCTURE",  # Confirmed 60/30/15/5m pivots are descriptive only; trigger gate stays deferred.
     "MA_SLOPE_CROSS",
     "MA_COMPRESSION_RELEASE",
 })
+SOURCE_BOUND_SUPPLY_METHOD_IDS = frozenset({
+    "SUPPLY_RELATIVE_VOLUME", "SUPPLY_DIRECTIONAL_VOLUME", "SUPPLY_CMF",
+})
+SOURCE_BOUND_COST_METHOD_IDS = frozenset({"COST_ROLLING_REFERENCE"})
+SOURCE_BOUND_RECURSIVE_METHOD_IDS = frozenset({"MACD", "RSI"})
+SOURCE_BOUND_RELATIVE_STRENGTH_METHOD_IDS = frozenset({"RELATIVE_STRENGTH"})
+SOURCE_BOUND_PATTERN_METHOD_IDS = frozenset({"CANDLESTICK"})
+SOURCE_BOUND_CLASSICAL_PATTERN_METHOD_IDS = frozenset({
+    "CUP_HANDLE", "DOUBLE_BOTTOM", "VCP", "FLAT_BASE", "TIGHT_CONSOLIDATION",
+})
+SOURCE_BOUND_MOMENTUM_METHOD_IDS = frozenset({
+    "ROC", "VOLATILITY_TR_SMA", "ATR_WILDER", "CONFIRMED_DIVERGENCE",
+})
+SOURCE_BOUND_EXTENDED_METHOD_IDS = frozenset({
+    "ADX_DMI", "BOLLINGER", "KDJ", "OBV_ADL", "MFI",
+})
+SOURCE_BOUND_TIMEFRAME_METHOD_IDS = (
+    SOURCE_BOUND_SUPPLY_METHOD_IDS
+    | SOURCE_BOUND_COST_METHOD_IDS
+    | SOURCE_BOUND_PATTERN_METHOD_IDS
+    | SOURCE_BOUND_CLASSICAL_PATTERN_METHOD_IDS
+    | SOURCE_BOUND_MOMENTUM_METHOD_IDS
+    | SOURCE_BOUND_EXTENDED_METHOD_IDS
+    | SOURCE_BOUND_RECURSIVE_METHOD_IDS
+    | SOURCE_BOUND_RELATIVE_STRENGTH_METHOD_IDS
+)
 _METHOD_CURRENT_EXECUTION_OVERRIDES = {
+    "RELATIVE_STRENGTH": TIMEFRAMES,
+    "SUPPLY_RELATIVE_VOLUME": TIMEFRAMES,
+    "SUPPLY_DIRECTIONAL_VOLUME": TIMEFRAMES,
+    "SUPPLY_CMF": TIMEFRAMES,
+    "COST_ROLLING_REFERENCE": TIMEFRAMES,
+    "MACD": TIMEFRAMES,
+    "RSI": TIMEFRAMES,
+    "CANDLESTICK": TIMEFRAMES,
+    "CUP_HANDLE": TIMEFRAMES,
+    "DOUBLE_BOTTOM": TIMEFRAMES,
+    "VCP": TIMEFRAMES,
+    "FLAT_BASE": TIMEFRAMES,
+    "TIGHT_CONSOLIDATION": TIMEFRAMES,
+    "ROC": TIMEFRAMES,
+    "VOLATILITY_TR_SMA": TIMEFRAMES,
+    "ATR_WILDER": TIMEFRAMES,
+    "CONFIRMED_DIVERGENCE": TIMEFRAMES,
+    "ADX_DMI": TIMEFRAMES,
+    "BOLLINGER": TIMEFRAMES,
+    "KDJ": TIMEFRAMES,
+    "OBV_ADL": TIMEFRAMES,
+    "MFI": TIMEFRAMES,
     "MTF_MA_LEVEL_ALIGNMENT": ("monthly", "weekly", "60m", "30m", "15m", "5m"),
     "MTF_MOMENTUM_CONTEXT": ("monthly", "weekly", "60m", "30m", "15m", "5m"),
+    "MTF_PRICE_STRUCTURE": NON_DAILY_TECHNICAL_TIMEFRAMES,
     "MA_SLOPE_CROSS": TIMEFRAMES,
     "MA_COMPRESSION_RELEASE": TIMEFRAMES,
 }
@@ -642,7 +1699,7 @@ STRATEGY_BINDINGS = (
     StrategyBinding("daily_trend_structure", "HARD_ELIGIBILITY", "MTF", "daily"),
     StrategyBinding("daily_pullback_or_supply_contraction", "HARD_ELIGIBILITY", "SUPPLY", "pullback"),
     StrategyBinding("volume_price_confirmation", "HARD_ELIGIBILITY", "SUPPLY", "volume"),
-    StrategyBinding("distribution_risk_clear", "HARD_ELIGIBILITY", "DISTRIBUTION", "deferred"),
+    StrategyBinding("distribution_risk_clear", "HARD_ELIGIBILITY", "DISTRIBUTION", "distribution"),
     StrategyBinding("thirty_minute_trigger", "HARD_ELIGIBILITY", "INTRADAY_30m", "deferred"),
     StrategyBinding("risk_reward", "HARD_ELIGIBILITY", "RISK_REWARD", "deferred"),
 )
@@ -654,9 +1711,21 @@ def strategy_contract_coverage() -> tuple:
 
 
 def ledger_evidence_keys() -> tuple[str, ...]:
-    # Existing v1 audit schema preserved; the registry owns this set from now on.
-    return ("strategy_id", "contract_version", "composite_score", "canonical_decision") + tuple(
-        b.path for b in EVIDENCE_BINDINGS if b.ledger)
+    """Return the immutable stock-factor-evidence-v1 audit field set."""
+    return (
+        "strategy_id", "contract_version", "composite_score", "canonical_decision",
+        "market_sector_regime", "trend_relative_strength",
+        "supply_demand_volume_price", "cost_structure_evidence",
+        "price_structure_evidence", "volatility_momentum_evidence",
+        "pattern_trigger_evidence", "multi_timeframe_structure_context",
+    )
+
+
+def current_manifest_evidence_keys() -> tuple[str, ...]:
+    """Return current traced evidence fields without redefining legacy v1."""
+    return (
+        "strategy_id", "contract_version", "composite_score", "canonical_decision",
+    ) + tuple(binding.path for binding in EVIDENCE_BINDINGS if binding.ledger)
 
 
 # Leaf identities are also the numeric/state learning allowlist. No paragraph is a feature.
@@ -688,8 +1757,13 @@ METRIC_BINDINGS = tuple(
      "kind": "number", "unit": "PRICE_BASIS_CURRENCY", "timeframe": tf}
     for tf in ("monthly", "weekly") for ma in ("ma5", "ma10", "ma20")
 ) + tuple(
-    {"id": "daily." + name, "requirement_id": "EXTRA_INDICATORS", "path": "extended_indicator_evidence." + name,
-     "kind": "number", "unit": "METHOD_NOT_ADMITTED", "timeframe": "daily"}
+    {"id": "daily." + name, "requirement_id": "EXTRA_INDICATORS",
+     "path": "volatility_momentum_evidence.context.extended_indicators.values." + name,
+     "kind": "number", "unit": (
+         "PRICE_BASIS_CURRENCY" if name in {"bollinger_upper", "bollinger_lower"}
+         else "SOURCE_VOLUME_UNITS" if name in {"obv", "adl"}
+         else "index_0_100"
+     ), "timeframe": "daily"}
     for name in ("adx", "plus_di", "minus_di", "bollinger_upper", "bollinger_lower", "kdj_k", "kdj_d", "kdj_j", "obv", "adl", "mfi")
 )
 
@@ -721,6 +1795,17 @@ def load_slot_map(document=None) -> dict:
             raise TraceabilityError("ORPHAN_PRODUCT_PATH")
     if len(set(ids)) != len(ids):
         raise TraceabilityError("DUPLICATE_PRODUCT_SLOT")
+    if frozenset(ids) != ACCEPTED_PRODUCT_SLOT_IDS or len(ids) != len(ACCEPTED_PRODUCT_SLOT_IDS):
+        raise TraceabilityError("PRODUCT_SLOT_SET_MISMATCH")
+    slot_requirements = frozenset(
+        requirement_id
+        for slot in slots
+        for requirement_id in slot["requirements"]
+    )
+    if slot_requirements != ACCEPTED_PRODUCT_SLOT_REQUIREMENTS:
+        raise TraceabilityError("PRODUCT_SLOT_REQUIREMENT_SET_MISMATCH")
+    if digest(document) != ACCEPTED_PRODUCT_SLOT_MAP_SHA256:
+        raise TraceabilityError("PRODUCT_SLOT_MAP_IDENTITY_MISMATCH")
     return document
 
 
@@ -771,7 +1856,7 @@ def manifest_document() -> dict:
             "metrics": METRIC_BINDINGS, "product_slots": load_slot_map(),
             "method_contracts": {b.requirement_id: method_contract(b) for b in EVIDENCE_BINDINGS},
             "strategy": {"strategy_id": STOCK_STRATEGY, "bindings": [asdict(b) for b in STRATEGY_BINDINGS]},
-            "ledger_keys": ledger_evidence_keys(), "timeframes": TIMEFRAMES,
+            "ledger_keys": current_manifest_evidence_keys(), "timeframes": TIMEFRAMES,
             "data_policy": {"completed_only": True, "source_mixing": False, "units": "EXPLICIT_SOURCE_UNITS",
                             "price_basis": "EXPLICIT_RAW_QFQ_HFQ", "availability": "KNOWN_AT_DECISION"},
             "product_policy": "SEMANTIC_SIDECAR_ONLY_NOT_RENDERED", "learning_policy": "NO_PROSE_FEATURES"}
@@ -840,10 +1925,17 @@ def _validate_method_window_profiles(
         for timeframe in profile.current_execution_timeframes:
             gate = intraday_gates.get(timeframe)
             if gate is not None and gate.implementation_state != "EXISTING_REUSED":
-                if profile.method_id not in INTRADAY_CONTEXT_METHOD_IDS:
+                if profile.method_id in INTRADAY_CONTEXT_METHOD_IDS:
+                    if profile.requirement_id != "MTF":
+                        raise TraceabilityError("INTRADAY_CONTEXT_METHOD_PARENT_MISMATCH:" + profile.method_id)
+                elif profile.method_id in SOURCE_BOUND_TIMEFRAME_METHOD_IDS:
+                    if profile.requirement_id not in {
+                        "TREND_RS", "SUPPLY", "COST", "CANDLESTICK",
+                        "MOMENTUM", "PATTERN", "EXTRA_INDICATORS",
+                    }:
+                        raise TraceabilityError("SOURCE_BOUND_METHOD_PARENT_MISMATCH:" + profile.method_id)
+                else:
                     raise TraceabilityError("CURRENT_EXECUTION_INTRADAY_GATE_DEFERRED:" + profile.method_id)
-                if profile.requirement_id != "MTF":
-                    raise TraceabilityError("INTRADAY_CONTEXT_METHOD_PARENT_MISMATCH:" + profile.method_id)
         covered_requirements.add(profile.requirement_id)
 
     if covered_requirements != expected_requirements:
@@ -888,6 +1980,10 @@ def compile_method_window_policy_view(profiles=None) -> dict:
         binding.requirement_id: binding
         for binding in EVIDENCE_BINDINGS + DEFERRED_BINDINGS
     }
+    declared_lookup = {
+        profile.method_id: profile
+        for profile in DECLARED_METHOD_WINDOW_PROFILES
+    }
     methods = []
     for profile in profiles:
         binding = binding_lookup[profile.requirement_id]
@@ -909,6 +2005,9 @@ def compile_method_window_policy_view(profiles=None) -> dict:
                 "asset_routes": binding.asset_routes,
                 "window_classes": profile.window_classes,
                 "target_timeframes": profile.target_timeframes,
+                "declared_execution_timeframes": declared_lookup[
+                    profile.method_id
+                ].current_execution_timeframes,
                 "current_execution_timeframes": profile.current_execution_timeframes,
                 "leaf_implementation_state": profile.implementation_state,
                 "parent_implementation_state": binding.implementation_state,
@@ -1123,6 +2222,153 @@ def _receipt_for(factor: Mapping, requirement_id: str) -> Any:
     return receipts.get(requirement_id) if isinstance(receipts, Mapping) else None
 
 
+def _validate_trend_rs_receipt(value: Mapping, body: Mapping) -> tuple[bool, str]:
+    """Validate either the accepted stock benchmark or typed ETF peer universe."""
+    identity = body.get("input_identity")
+    rs = value.get("relative_strength")
+    if not isinstance(identity, Mapping) or not isinstance(rs, Mapping):
+        return False, "RS_INPUT_IDENTITY_MISSING"
+    if rs.get("input_identity") != identity:
+        return False, "RS_WRAPPER_IDENTITY_MISMATCH"
+
+    schema = rs.get("schema_version")
+    if schema == "relative-strength-v1":
+        stock = identity.get("stock")
+        benchmark = identity.get("benchmark")
+        if not isinstance(stock, Mapping) or not isinstance(benchmark, Mapping):
+            return False, "RS_INPUT_IDENTITY_MISSING"
+        if not stock.get("data_snapshot_identity") or not benchmark.get("data_snapshot_identity"):
+            return False, "RS_INPUT_IDENTITY_MISSING"
+        if not stock.get("provider_identity") or not benchmark.get("provider_identity"):
+            return False, "RS_PROVIDER_IDENTITY_UNPROVEN"
+        if not stock.get("adjustment_basis") or stock.get("adjustment_basis") != benchmark.get("adjustment_basis"):
+            return False, "RS_PRICE_BASIS_UNPROVEN"
+        if stock.get("price_identity_reasons") or benchmark.get("price_identity_reasons"):
+            return False, "RS_PRICE_IDENTITY_UNPROVEN"
+        if str(rs.get("stock_code") or "").strip() != str(body.get("stock_code") or "").strip():
+            return False, "RS_STOCK_IDENTITY_MISMATCH"
+        if str(stock.get("stock_code") or "").strip() != str(body.get("stock_code") or "").strip():
+            return False, "RS_STOCK_INPUT_IDENTITY_MISMATCH"
+        if str(stock.get("market") or "").strip().lower() != str(body.get("market") or "").strip().lower():
+            return False, "RS_MARKET_IDENTITY_MISMATCH"
+        if str(stock.get("target_date") or "") != str(body.get("target_date") or ""):
+            return False, "RS_TARGET_IDENTITY_MISMATCH"
+        benchmark_payload = rs.get("benchmark")
+        if not isinstance(benchmark_payload, Mapping):
+            return False, "RS_BENCHMARK_IDENTITY_MISSING"
+        if str(benchmark.get("stock_code") or "").strip() != str(benchmark_payload.get("code") or "").strip():
+            return False, "RS_BENCHMARK_IDENTITY_MISMATCH"
+        quality = rs.get("data_quality")
+        if not isinstance(quality, Mapping) or quality.get("source_alignment") != "MATCHED":
+            return False, "RS_SOURCE_ALIGNMENT_UNPROVEN"
+        if str(benchmark_payload.get("source") or "").strip() != str(benchmark.get("provider_identity") or "").strip():
+            return False, "RS_BENCHMARK_SOURCE_MISMATCH"
+        if quality.get("stock_endpoint_sources") != [stock.get("provider_identity")]:
+            return False, "RS_STOCK_SOURCE_MISMATCH"
+        return True, "METHOD_INVOCATION_VERIFIED"
+
+    if schema != "etf-peer-relative-strength-v1":
+        return False, "RS_SCHEMA_MISMATCH"
+    if body.get("asset_route") != "ETF":
+        return False, "ETF_PEER_RS_ASSET_ROUTE_MISMATCH"
+    if identity.get("schema_version") != "etf-peer-universe-input-v1":
+        return False, "ETF_PEER_RS_INPUT_SCHEMA_MISMATCH"
+    target = identity.get("target")
+    peers = identity.get("peers")
+    if not isinstance(target, Mapping) or not isinstance(peers, list):
+        return False, "ETF_PEER_RS_INPUT_IDENTITY_MISSING"
+    if str(rs.get("etf_code") or "").strip() != str(body.get("stock_code") or "").strip():
+        return False, "ETF_PEER_RS_TARGET_IDENTITY_MISMATCH"
+    if str(target.get("stock_code") or "").strip() != str(body.get("stock_code") or "").strip():
+        return False, "ETF_PEER_RS_TARGET_INPUT_IDENTITY_MISMATCH"
+    if str(identity.get("market") or "").lower() != str(body.get("market") or "").lower():
+        return False, "ETF_PEER_RS_MARKET_IDENTITY_MISMATCH"
+    if str(identity.get("target_date") or "") != str(body.get("target_date") or ""):
+        return False, "ETF_PEER_RS_TARGET_DATE_MISMATCH"
+    provider = str(target.get("provider_identity") or "").strip()
+    basis = str(target.get("adjustment_basis") or "").strip()
+    target_hash = str(target.get("data_snapshot_identity") or "").strip()
+    if len(target_hash) != 64 or not provider:
+        return False, "ETF_PEER_RS_PROVIDER_IDENTITY_UNPROVEN"
+    if not basis:
+        return False, "ETF_PEER_RS_PRICE_BASIS_UNPROVEN"
+    if target.get("price_identity_reasons"):
+        return False, "ETF_PEER_RS_PRICE_IDENTITY_UNPROVEN"
+    if str(target.get("market") or "").lower() != str(body.get("market") or "").lower():
+        return False, "ETF_PEER_RS_MARKET_IDENTITY_MISMATCH"
+    if str(target.get("target_date") or "") != str(body.get("target_date") or ""):
+        return False, "ETF_PEER_RS_TARGET_DATE_MISMATCH"
+
+    peer_rows = rs.get("peers")
+    peer_universe = rs.get("peer_universe")
+    quality = rs.get("data_quality")
+    if not isinstance(peer_rows, list) or not isinstance(peer_universe, Mapping):
+        return False, "ETF_PEER_RS_UNIVERSE_MISSING"
+    if not isinstance(quality, Mapping) or quality.get("source_alignment") != "MATCHED":
+        return False, "ETF_PEER_RS_SOURCE_ALIGNMENT_UNPROVEN"
+    if quality.get("provider_identity") != provider or quality.get("adjustment_basis") != basis:
+        return False, "ETF_PEER_RS_SOURCE_OR_BASIS_MISMATCH"
+    if quality.get("exact_shared_endpoints") is not True:
+        return False, "ETF_PEER_RS_SHARED_ENDPOINTS_UNPROVEN"
+    minimum = peer_universe.get("minimum_required")
+    if type(minimum) is not int or minimum <= 0 or len(peers) < minimum:
+        return False, "ETF_PEER_RS_UNIVERSE_INSUFFICIENT"
+    if len(peers) != peer_universe.get("eligible_peer_count") or len(peer_rows) != len(peers):
+        return False, "ETF_PEER_RS_UNIVERSE_COUNT_MISMATCH"
+
+    identity_rows = []
+    seen_codes = set()
+    for peer in peers:
+        if not isinstance(peer, Mapping):
+            return False, "ETF_PEER_RS_PEER_IDENTITY_INVALID"
+        code = str(peer.get("stock_code") or "").strip()
+        peer_hash = str(peer.get("data_snapshot_identity") or "").strip()
+        if not code or code in seen_codes or len(peer_hash) != 64:
+            return False, "ETF_PEER_RS_PEER_IDENTITY_INVALID"
+        seen_codes.add(code)
+        if (
+            peer.get("provider_identity") != provider
+            or peer.get("adjustment_basis") != basis
+            or peer.get("price_identity_reasons")
+            or str(peer.get("market") or "").lower() != str(body.get("market") or "").lower()
+            or str(peer.get("target_date") or "") != str(body.get("target_date") or "")
+        ):
+            return False, "ETF_PEER_RS_PEER_SOURCE_OR_ASOF_MISMATCH"
+        identity_rows.append({"code": code, "input_identity_hash": peer_hash})
+    identity_rows = sorted(identity_rows, key=lambda row: row["code"])
+    payload_rows = sorted(
+        (
+            {"code": str(row.get("code") or "").strip(),
+             "input_identity_hash": str(row.get("input_identity_hash") or "").strip()}
+            for row in peer_rows if isinstance(row, Mapping)
+        ),
+        key=lambda row: row["code"],
+    )
+    if payload_rows != identity_rows:
+        return False, "ETF_PEER_RS_PEER_IDENTITY_MISMATCH"
+
+    universe_document = {
+        "target_code": str(body.get("stock_code") or "").strip(),
+        "target_identity_hash": target_hash,
+        "start_date": identity.get("start_date"),
+        "end_date": identity.get("end_date"),
+        "horizon_sessions": identity.get("horizon_sessions"),
+        "peer_identities": identity_rows,
+        "excluded_peers": identity.get("excluded_peers") or [],
+    }
+    expected_hash = sha256(json.dumps(
+        universe_document,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+    if identity.get("universe_hash") != expected_hash:
+        return False, "ETF_PEER_RS_UNIVERSE_HASH_MISMATCH"
+    if peer_universe.get("universe_hash") != expected_hash:
+        return False, "ETF_PEER_RS_WRAPPER_UNIVERSE_HASH_MISMATCH"
+    return True, "METHOD_INVOCATION_VERIFIED"
+
+
 def _receipt_state(binding: EvidenceBinding, value: Mapping, receipt: Any) -> tuple[bool, str]:
     if not isinstance(receipt, Mapping):
         return False, "METHOD_INVOCATION_RECEIPT_MISSING"
@@ -1150,7 +2396,7 @@ def _receipt_state(binding: EvidenceBinding, value: Mapping, receipt: Any) -> tu
     if body.get("output_hash") != digest(observed_output):
         return False, "METHOD_RECEIPT_OUTPUT_MISMATCH"
     if (
-        binding.requirement_id in {"SUPPLY", "COST", "STRUCTURE", "MOMENTUM", "PATTERN", "CANDLESTICK", "MTF"}
+        binding.requirement_id in {"SUPPLY", "DISTRIBUTION", "COST", "STRUCTURE", "CHAN", "MOMENTUM", "EXTRA_INDICATORS", "PATTERN", "CANDLESTICK", "MTF"}
         and isinstance(observed_output, Mapping)
     ):
         for key, receipt_key in (("stock_code", "stock_code"), ("market", "market"), ("target_date", "target_date")):
@@ -1158,7 +2404,7 @@ def _receipt_state(binding: EvidenceBinding, value: Mapping, receipt: Any) -> tu
             claimed = str(body.get(receipt_key) or "").strip().lower()
             if observed and observed != claimed:
                 return False, "METHOD_RECEIPT_" + key.upper() + "_MISMATCH"
-    if binding.requirement_id in {"SUPPLY", "COST", "STRUCTURE", "MOMENTUM", "PATTERN", "CANDLESTICK", "MTF"}:
+    if binding.requirement_id in {"SUPPLY", "DISTRIBUTION", "COST", "STRUCTURE", "CHAN", "MOMENTUM", "EXTRA_INDICATORS", "PATTERN", "CANDLESTICK", "MTF"}:
         identity = body.get("input_identity")
         if not isinstance(identity, Mapping) or not identity.get("data_snapshot_identity"):
             return False, "METHOD_INPUT_IDENTITY_MISSING"
@@ -1173,45 +2419,146 @@ def _receipt_state(binding: EvidenceBinding, value: Mapping, receipt: Any) -> tu
                 return False, "METHOD_INPUT_" + key.upper() + "_MISMATCH"
         if binding.requirement_id == "MTF" and value.get("data_snapshot_identity") != identity.get("data_snapshot_identity"):
             return False, "METHOD_INPUT_SNAPSHOT_MISMATCH"
+    if binding.requirement_id == "DISTRIBUTION":
+        if value.get("institutional_intent_claim") != "NOT_INFERRED":
+            return False, "DISTRIBUTION_INSTITUTIONAL_INTENT_OVERCLAIM"
+        if value.get("independent_action_authority") is not False:
+            return False, "DISTRIBUTION_ACTION_AUTHORITY_ESCALATION"
+        parent = dict(value)
+        output_receipt_hash = parent.pop("receipt_hash", None)
+        if len(str(output_receipt_hash or "")) != 64 or digest(parent) != output_receipt_hash:
+            return False, "DISTRIBUTION_OUTPUT_RECEIPT_INVALID"
+        upstream = body.get("upstream_hashes")
+        if not isinstance(upstream, Mapping) or any(
+            len(str(upstream.get(key) or "")) != 64
+            for key in ("supply_demand_context", "price_structure_context")
+        ):
+            return False, "DISTRIBUTION_UPSTREAM_IDENTITY_MISSING"
+    if binding.requirement_id == "CHAN":
+        from src.services.chan_feature_adapter import (
+            ChanFeatureError,
+            validate_chan_feature_context,
+        )
+        try:
+            validated_chan = validate_chan_feature_context(value)
+        except ChanFeatureError:
+            return False, "CHAN_OUTPUT_RECEIPT_INVALID"
+        if validated_chan.get("status") not in {"READY", "PARTIAL"}:
+            return False, "CHAN_OUTPUT_NOT_READY"
+        if validated_chan.get("full_chan_standard_claim") is not False:
+            return False, "CHAN_SCOPE_OVERCLAIM"
+        upstream = body.get("upstream_hashes")
+        if not isinstance(upstream, Mapping) or len(
+            str(upstream.get("price_structure_context") or "")
+        ) != 64:
+            return False, "CHAN_UPSTREAM_IDENTITY_MISSING"
+    if binding.requirement_id == "EXTRA_INDICATORS":
+        methods = value.get("methods")
+        values = value.get("values")
+        if (
+            value.get("schema_version") != "extended-indicator-evidence-v1"
+            or value.get("completed_bar_only") is not True
+            or value.get("status") not in {"READY", "PARTIAL"}
+            or not isinstance(methods, Mapping)
+            or set(methods) != SOURCE_BOUND_EXTENDED_METHOD_IDS
+            or not isinstance(values, Mapping)
+            or value.get("independent_action_authority") is not False
+            or value.get("strategy_admitted") is not False
+            or value.get("learning_admitted") is not False
+            or value.get("historical_pit_eligible") is not False
+        ):
+            return False, "EXTENDED_INDICATOR_OUTPUT_INVALID"
+        if any(
+            not isinstance(method, Mapping)
+            or method.get("independent_action_authority") is not False
+            for method in methods.values()
+        ):
+            return False, "EXTENDED_INDICATOR_METHOD_SCOPE_INVALID"
+        parents = body.get("upstream_hashes")
+        if not isinstance(parents, Mapping) or len(
+            str(parents.get("volatility_momentum_context") or "")
+        ) != 64:
+            return False, "EXTENDED_INDICATOR_PARENT_HASH_MISSING"
     if binding.requirement_id == "TREND_RS":
+        valid, reason = _validate_trend_rs_receipt(value, body)
+        if not valid:
+            return False, reason
+    if binding.requirement_id == "QUALITY":
+        from src.services.fundamental_quality_service import (
+            FundamentalQualityError,
+            validate_fundamental_quality,
+        )
+        try:
+            validated = validate_fundamental_quality(value)
+        except FundamentalQualityError:
+            return False, "QUALITY_OUTPUT_RECEIPT_INVALID"
+        if validated.get("status") != "READY":
+            return False, "QUALITY_OUTPUT_NOT_READY"
+        body_asset = str(body.get("stock_code") or "").strip().split(".")[-1]
+        value_asset = str(validated.get("asset_id") or "").strip().split(".")[-1]
+        if not body_asset or body_asset != value_asset:
+            return False, "QUALITY_ASSET_IDENTITY_MISMATCH"
+        if body.get("asset_route") != "STOCK":
+            return False, "QUALITY_ASSET_ROUTE_MISMATCH"
+        value_as_of = str(validated.get("as_of") or "")[:10]
+        receipt_target = str(body.get("target_date") or "")[:10]
+        if not value_as_of or value_as_of != receipt_target:
+            return False, "QUALITY_ASOF_RECEIPT_MISMATCH"
+        admission_hashes = tuple(validated.get("data_admission_hashes") or ())
         identity = body.get("input_identity")
-        stock = identity.get("stock") if isinstance(identity, Mapping) else None
-        benchmark = identity.get("benchmark") if isinstance(identity, Mapping) else None
-        if not isinstance(stock, Mapping) or not isinstance(benchmark, Mapping):
-            return False, "RS_INPUT_IDENTITY_MISSING"
-        if not stock.get("data_snapshot_identity") or not benchmark.get("data_snapshot_identity"):
-            return False, "RS_INPUT_IDENTITY_MISSING"
-        if not stock.get("provider_identity") or not benchmark.get("provider_identity"):
-            return False, "RS_PROVIDER_IDENTITY_UNPROVEN"
-        if not stock.get("adjustment_basis") or stock.get("adjustment_basis") != benchmark.get("adjustment_basis"):
-            return False, "RS_PRICE_BASIS_UNPROVEN"
-        if stock.get("price_identity_reasons") or benchmark.get("price_identity_reasons"):
-            return False, "RS_PRICE_IDENTITY_UNPROVEN"
-        rs = value.get("relative_strength")
-        if not isinstance(rs, Mapping) or rs.get("input_identity") != identity:
-            return False, "RS_WRAPPER_IDENTITY_MISMATCH"
-        if rs.get("schema_version") != "relative-strength-v1":
-            return False, "RS_SCHEMA_MISMATCH"
-        if str(rs.get("stock_code") or "").strip() != str(body.get("stock_code") or "").strip():
-            return False, "RS_STOCK_IDENTITY_MISMATCH"
-        if str(stock.get("stock_code") or "").strip() != str(body.get("stock_code") or "").strip():
-            return False, "RS_STOCK_INPUT_IDENTITY_MISMATCH"
-        if str(stock.get("market") or "").strip().lower() != str(body.get("market") or "").strip().lower():
-            return False, "RS_MARKET_IDENTITY_MISMATCH"
-        if str(stock.get("target_date") or "") != str(body.get("target_date") or ""):
-            return False, "RS_TARGET_IDENTITY_MISMATCH"
-        benchmark_payload = rs.get("benchmark")
-        if not isinstance(benchmark_payload, Mapping):
-            return False, "RS_BENCHMARK_IDENTITY_MISSING"
-        if str(benchmark.get("stock_code") or "").strip() != str(benchmark_payload.get("code") or "").strip():
-            return False, "RS_BENCHMARK_IDENTITY_MISMATCH"
-        quality = rs.get("data_quality")
-        if not isinstance(quality, Mapping) or quality.get("source_alignment") != "MATCHED":
-            return False, "RS_SOURCE_ALIGNMENT_UNPROVEN"
-        if str(benchmark_payload.get("source") or "").strip() != str(benchmark.get("provider_identity") or "").strip():
-            return False, "RS_BENCHMARK_SOURCE_MISMATCH"
-        if quality.get("stock_endpoint_sources") != [stock.get("provider_identity")]:
-            return False, "RS_STOCK_SOURCE_MISMATCH"
+        expected_identity = {
+            "quality_receipt_hash": validated.get("receipt_hash"),
+            "data_admission_hashes": admission_hashes,
+            "asset_id": validated.get("asset_id"),
+            "as_of": validated.get("as_of"),
+        }
+        if identity != expected_identity:
+            return False, "QUALITY_INPUT_IDENTITY_MISMATCH"
+        if body.get("upstream_hashes") != {
+            "data_admission_hashes": admission_hashes,
+        }:
+            return False, "QUALITY_DATA_ADMISSION_HASH_MISMATCH"
+    if binding.requirement_id == "VALUATION":
+        from src.services.business_valuation_service import (
+            BusinessValuationError,
+            validate_business_valuation,
+        )
+        try:
+            validated = validate_business_valuation(value)
+        except BusinessValuationError:
+            return False, "VALUATION_OUTPUT_RECEIPT_INVALID"
+        if validated.get("status") != "READY":
+            return False, "VALUATION_OUTPUT_NOT_READY"
+        body_asset = str(body.get("stock_code") or "").strip().split(".")[-1]
+        value_asset = str(validated.get("asset_id") or "").strip().split(".")[-1]
+        if not body_asset or body_asset != value_asset:
+            return False, "VALUATION_ASSET_IDENTITY_MISMATCH"
+        expected_route = (
+            "ETF" if validated.get("asset_type") == "etf" else "STOCK"
+        )
+        if body.get("asset_route") != expected_route:
+            return False, "VALUATION_ASSET_ROUTE_MISMATCH"
+        value_as_of = str(validated.get("as_of") or "")[:10]
+        receipt_target = str(body.get("target_date") or "")[:10]
+        if not value_as_of or value_as_of != receipt_target:
+            return False, "VALUATION_ASOF_RECEIPT_MISMATCH"
+        admission_hashes = tuple(validated.get("data_admission_hashes") or ())
+        identity = body.get("input_identity")
+        if not isinstance(identity, Mapping):
+            return False, "VALUATION_INPUT_IDENTITY_MISSING"
+        expected_identity = {
+            "valuation_receipt_hash": validated.get("receipt_hash"),
+            "data_admission_hashes": admission_hashes,
+            "route_id": validated.get("route_id"),
+            "asset_id": validated.get("asset_id"),
+            "as_of": validated.get("as_of"),
+        }
+        if identity != expected_identity:
+            return False, "VALUATION_INPUT_IDENTITY_MISMATCH"
+        if body.get("upstream_hashes") != {
+            "data_admission_hashes": admission_hashes,
+        }:
+            return False, "VALUATION_DATA_ADMISSION_HASH_MISMATCH"
     if binding.requirement_id == "REGIME":
         parents = body.get("upstream_hashes")
         daily = parents.get("daily_market_context") if isinstance(parents, Mapping) else None
@@ -1271,7 +2618,7 @@ def method_observation(
         return "UNKNOWN", "METHOD_VERSION_MISMATCH"
     if contract["config_hash"] and context.get("config_hash") != contract["config_hash"]:
         return "UNKNOWN", "METHOD_CONFIG_MISMATCH"
-    if binding.requirement_id in {"COST", "STRUCTURE", "MOMENTUM", "PATTERN", "CANDLESTICK", "MTF"} and context.get("completed_bar_only") is not True:
+    if binding.requirement_id in {"DISTRIBUTION", "COST", "STRUCTURE", "CHAN", "MOMENTUM", "PATTERN", "CANDLESTICK", "MTF"} and context.get("completed_bar_only") is not True:
         return "UNKNOWN", "COMPLETED_BAR_NOT_PROVEN"
     if state == "READY" and binding.timeframe == "daily" and isinstance(contract["warmup"], (int, tuple)):
         minimum = contract["warmup"]
@@ -1346,6 +2693,19 @@ def _resolve(binding: StrategyBinding, factor: Mapping) -> str:
         if _state(frame.get("price_structure")) != "READY" or _state(frame.get("trend")) != "READY":
             return "UNKNOWN"
         return {"BULLISH": "SATISFIED", "BEARISH": "FAILED"}.get(at(frame, "trend.direction"), "UNKNOWN")
+    if kind == "distribution":
+        phase = at(factor, "distribution_risk_evidence")
+        if _state(phase) not in {"READY", "PARTIAL"}:
+            return "UNKNOWN"
+        if phase.get("hard_veto") is True:
+            return "FAILED"
+        return (
+            "SATISFIED"
+            if phase.get("phase") in {
+                "ACCUMULATION_CANDIDATE", "WASHOUT_CANDIDATE", "MARKUP_CANDIDATE",
+            }
+            else "UNKNOWN"
+        )
     supply = at(factor, "supply_demand_volume_price")
     if _state(supply) != "READY" or _state(at(supply, "completed_bar_context")) != "READY":
         return "UNKNOWN"
@@ -1399,6 +2759,310 @@ def _mtf_method_matrix_state(method_id: str, factor: Mapping, timeframe: str, fa
     frame_state = _state(frame)
     if frame_state not in {"READY", "PARTIAL"}:
         return frame_state if frame_state in TIMEFRAME_FAMILY_MATRIX_STATES else "UNKNOWN", str(frame.get("reason") or "MTF_FRAME_NOT_READY")
+    if method_id in SOURCE_BOUND_RECURSIVE_METHOD_IDS:
+        receipt = frame.get("macd_startup_stability" if method_id == "MACD" else "rsi_startup_stability")
+        if not isinstance(receipt, Mapping):
+            return "MISSING", "TIMEFRAME_RECURSIVE_STARTUP_RECEIPT_MISSING"
+        status = str(receipt.get("status") or "UNKNOWN")
+        if status != "READY":
+            return (
+                status if status in {"MISSING", "UNKNOWN", "PARTIAL"} else "UNKNOWN",
+                str(receipt.get("reason") or "TIMEFRAME_RECURSIVE_NOT_ADMITTED"),
+            )
+        numeric = receipt.get("native_endpoint_values" if method_id == "MACD" else "reference_values")
+        if not isinstance(numeric, Mapping) or not numeric or not all(
+            isinstance(v, Real) and not isinstance(v, bool)
+            and math.isfinite(float(v)) for v in numeric.values()
+        ):
+            return "UNKNOWN", "TIMEFRAME_RECURSIVE_NATIVE_ENDPOINT_MISSING"
+        if timeframe in {"60m", "30m", "15m", "5m"}:
+            session = frame.get("completed_source_session_receipt")
+            if not isinstance(session, Mapping) or session.get("session_count", 0) < 10:
+                return "PARTIAL", "TIMEFRAME_RECURSIVE_COMPLETED_SESSION_NOT_PROVEN"
+        return "READY", "TIMEFRAME_NATIVE_RECURSIVE_SOURCE_BOUND"
+    if method_id in SOURCE_BOUND_EXTENDED_METHOD_IDS:
+        container = frame.get("volatility_momentum")
+        evidence = (
+            container.get("extended_indicators")
+            if isinstance(container, Mapping) else None
+        )
+        if not isinstance(evidence, Mapping):
+            return "MISSING", "TIMEFRAME_EXTENDED_INDICATOR_EVIDENCE_MISSING"
+        identity_hash = str(evidence.get("source_identity_hash") or "")
+        expected_identity_hash = str(
+            frame.get("intraday_identity_hash")
+            if timeframe in {"60m", "30m", "15m", "5m"}
+            else frame.get("source_identity_hash")
+            or at(factor, "multi_timeframe_structure_context.data_snapshot_identity")
+            or ""
+        )
+        if len(identity_hash) != 64 or identity_hash != expected_identity_hash:
+            return "UNKNOWN", "TIMEFRAME_EXTENDED_SOURCE_IDENTITY_MISMATCH"
+        if (
+            evidence.get("timeframe") != timeframe
+            or evidence.get("completed_bar_only") is not True
+            or evidence.get("independent_action_authority") is not False
+            or evidence.get("strategy_admitted") is not False
+            or evidence.get("learning_admitted") is not False
+            or evidence.get("historical_pit_eligible") is not False
+        ):
+            return "UNKNOWN", "TIMEFRAME_EXTENDED_SCOPE_INVALID"
+        methods = evidence.get("methods")
+        method = methods.get(method_id) if isinstance(methods, Mapping) else None
+        if not isinstance(method, Mapping):
+            return "MISSING", "TIMEFRAME_EXTENDED_METHOD_MISSING"
+        state = str(method.get("status") or "UNKNOWN")
+        if state != "READY":
+            return (
+                state if state in TIMEFRAME_FAMILY_MATRIX_STATES else "UNKNOWN",
+                str(method.get("reason") or "TIMEFRAME_EXTENDED_METHOD_NOT_READY"),
+            )
+        values = method.get("values")
+        expected_keys = {
+            "ADX_DMI": {"adx", "plus_di", "minus_di"},
+            "BOLLINGER": {"bollinger_upper", "bollinger_lower"},
+            "KDJ": {"kdj_k", "kdj_d", "kdj_j"},
+            "OBV_ADL": {"obv", "adl"},
+            "MFI": {"mfi"},
+        }[method_id]
+        if not isinstance(values, Mapping) or set(values) != expected_keys or not all(
+            isinstance(value, Real) and not isinstance(value, bool)
+            and math.isfinite(float(value)) for value in values.values()
+        ):
+            return "UNKNOWN", "TIMEFRAME_EXTENDED_NUMERIC_VALUES_INVALID"
+        return "READY", "TIMEFRAME_EXTENDED_SOURCE_BOUND_READY"
+    if method_id in SOURCE_BOUND_SUPPLY_METHOD_IDS:
+        evidence = frame.get("supply_demand")
+        if not isinstance(evidence, Mapping):
+            return "MISSING", "TIMEFRAME_SUPPLY_EVIDENCE_MISSING"
+        evidence_state = _state(evidence)
+        if evidence_state not in {"READY", "PARTIAL"}:
+            return (
+                evidence_state if evidence_state in TIMEFRAME_FAMILY_MATRIX_STATES else "UNKNOWN",
+                str(evidence.get("reason") or "TIMEFRAME_SUPPLY_EVIDENCE_NOT_READY"),
+            )
+        path = {
+            "SUPPLY_RELATIVE_VOLUME": ("relative_volume", ("volume_ratio_20d", "volume_ratio_20_completed_bars")),
+            "SUPPLY_DIRECTIONAL_VOLUME": ("directional_volume", ("signed_volume_balance",)),
+            "SUPPLY_CMF": ("close_location_flow", ("cmf_20",)),
+        }[method_id]
+        block = evidence.get(path[0])
+        values = [block.get(key) for key in path[1]] if isinstance(block, Mapping) else []
+        if not any(
+            isinstance(value, Real) and not isinstance(value, bool)
+            and math.isfinite(float(value)) for value in values
+        ):
+            return "MISSING", "TIMEFRAME_SUPPLY_METHOD_VALUE_MISSING"
+        return evidence_state, "TIMEFRAME_SOURCE_BOUND_SUPPLY_METHOD_OBSERVED"
+    if method_id in SOURCE_BOUND_COST_METHOD_IDS:
+        evidence = frame.get("cost_bar_reference")
+        if not isinstance(evidence, Mapping):
+            return "MISSING", "TIMEFRAME_COST_EVIDENCE_MISSING"
+        evidence_state = _state(evidence)
+        if evidence_state not in {"READY", "PARTIAL"}:
+            return (
+                evidence_state if evidence_state in TIMEFRAME_FAMILY_MATRIX_STATES else "UNKNOWN",
+                str(evidence.get("reason") or "TIMEFRAME_COST_EVIDENCE_NOT_READY"),
+            )
+        window_20 = evidence.get("window_20")
+        window_60 = evidence.get("window_60")
+        ready_20 = isinstance(window_20, Mapping) and window_20.get("status") == "READY"
+        ready_60 = isinstance(window_60, Mapping) and window_60.get("status") == "READY"
+        if ready_20 and ready_60 and evidence_state == "READY":
+            return "READY", "TIMEFRAME_SOURCE_BOUND_COST_20_60_READY"
+        if ready_20:
+            return "PARTIAL", "TIMEFRAME_SOURCE_BOUND_COST_20_ONLY"
+        return "MISSING", "TIMEFRAME_COST_WINDOWS_MISSING"
+    if method_id in SOURCE_BOUND_CLASSICAL_PATTERN_METHOD_IDS:
+        container = frame.get("pattern_trigger")
+        evidence = container.get("broad_patterns") if isinstance(container, Mapping) else None
+        if not isinstance(evidence, Mapping):
+            return "MISSING", "TIMEFRAME_CLASSICAL_PATTERN_EVIDENCE_MISSING"
+        evidence_state = _state(evidence)
+        if (
+            evidence_state == "PARTIAL"
+            and str(evidence.get("reason") or "")
+            in {"PRICE_STRUCTURE_NOT_READY", "PRICE_STRUCTURE_PROVENANCE_UNPROVEN"}
+        ):
+            # A bar carrier without a confirmed source-bound pivot proves only
+            # that the method was attempted. It is not Pattern evidence and
+            # must not open a V2.5 slot as EVIDENCE_AVAILABLE.
+            return "MISSING", "CONFIRMED_STRUCTURE_CONTEXT_MISSING"
+        if evidence_state not in {"READY", "PARTIAL"}:
+            return (
+                evidence_state if evidence_state in TIMEFRAME_FAMILY_MATRIX_STATES else "UNKNOWN",
+                str(evidence.get("reason") or "TIMEFRAME_CLASSICAL_PATTERN_NOT_READY"),
+            )
+        identity_hash = str(evidence.get("source_identity_hash") or "")
+        expected_identity_hash = str(
+            frame.get("intraday_identity_hash")
+            if timeframe in {"60m", "30m", "15m", "5m"}
+            else frame.get("source_identity_hash")
+            or at(factor, "multi_timeframe_structure_context.data_snapshot_identity")
+            or ""
+        )
+        patterns = evidence.get("patterns")
+        verified = bool(
+            evidence.get("timeframe") == timeframe
+            and evidence.get("completed_bar_only") is True
+            and len(identity_hash) == 64
+            and identity_hash == expected_identity_hash
+            and isinstance(patterns, list)
+            and all(
+                isinstance(pattern, Mapping)
+                and str(pattern.get("origin_time") or "")
+                and str(pattern.get("geometry_confirmed_at") or "")
+                and str(pattern.get("lifecycle") or "") in {"FORMING", "CONFIRMED", "FAILED"}
+                and str(pattern.get("correlation_group") or "").startswith("same_swing:")
+                and pattern.get("independent_action_authority") is False
+                and pattern.get("strategy_admitted") is False
+                and pattern.get("learning_admitted") is False
+                and pattern.get("data_rights_admitted") is False
+                for pattern in patterns
+            )
+            and evidence.get("independent_action_authority") is False
+            and evidence.get("strategy_admitted") is False
+            and evidence.get("learning_admitted") is False
+            and evidence.get("data_rights_admitted") is False
+        )
+        if not verified:
+            return "UNKNOWN", "TIMEFRAME_CLASSICAL_PATTERN_RECEIPT_UNBOUND"
+        selector = {
+            "CUP_HANDLE": ("CUP_BASE", None),
+            "DOUBLE_BOTTOM": ("DOUBLE_BOTTOM_BASE", None),
+            "VCP": ("CONTRACTION_BASE", "VCP"),
+            "FLAT_BASE": ("CONTRACTION_BASE", "FLAT_BASE"),
+            "TIGHT_CONSOLIDATION": ("CONTRACTION_BASE", "TIGHT_CONSOLIDATION"),
+        }[method_id]
+        observed = any(
+            pattern.get("pattern_type") == selector[0]
+            and (selector[1] is None or pattern.get("subtype") == selector[1])
+            for pattern in patterns
+        )
+        return (
+            evidence_state,
+            "TIMEFRAME_CLASSICAL_PATTERN_OBSERVED"
+            if observed else "TIMEFRAME_CLASSICAL_PATTERN_EVALUATED_NO_SIGNAL",
+        )
+    if method_id in SOURCE_BOUND_PATTERN_METHOD_IDS:
+        container = frame.get("pattern_trigger")
+        evidence = container.get("candlestick") if isinstance(container, Mapping) else None
+        if not isinstance(evidence, Mapping):
+            return "MISSING", "TIMEFRAME_CANDLESTICK_EVIDENCE_MISSING"
+        evidence_state = _state(evidence)
+        if evidence_state not in {"READY", "PARTIAL"}:
+            return (
+                evidence_state if evidence_state in TIMEFRAME_FAMILY_MATRIX_STATES else "UNKNOWN",
+                str(evidence.get("reason") or "TIMEFRAME_CANDLESTICK_EVIDENCE_NOT_READY"),
+            )
+        identity_hash = str(evidence.get("source_identity_hash") or "")
+        expected_identity_hash = str(
+            frame.get("intraday_identity_hash")
+            if timeframe in {"60m", "30m", "15m", "5m"}
+            else frame.get("source_identity_hash")
+            or at(factor, "multi_timeframe_structure_context.data_snapshot_identity")
+            or ""
+        )
+        events = evidence.get("events")
+        verified = bool(
+            evidence.get("timeframe") == timeframe
+            and evidence.get("completed_bar_only") is True
+            and len(identity_hash) == 64
+            and identity_hash == expected_identity_hash
+            and isinstance(events, list)
+            and all(
+                isinstance(event, Mapping)
+                and str(event.get("origin_time") or "")
+                and str(event.get("geometry_confirmed_at") or "")
+                and str(event.get("lifecycle") or "") in {"FORMING", "CONFIRMED", "FAILED"}
+                and event.get("independent_action_authority") is False
+                for event in events
+            )
+            and evidence.get("independent_action_authority") is False
+            and evidence.get("strategy_admitted") is False
+            and evidence.get("learning_admitted") is False
+            and evidence.get("data_rights_admitted") is False
+        )
+        return (
+            (evidence_state, "TIMEFRAME_SOURCE_BOUND_CANDLESTICK_OBSERVED")
+            if verified else ("UNKNOWN", "TIMEFRAME_CANDLESTICK_RECEIPT_UNBOUND")
+        )
+    if method_id in SOURCE_BOUND_MOMENTUM_METHOD_IDS:
+        evidence = frame.get("volatility_momentum")
+        if not isinstance(evidence, Mapping):
+            return "MISSING", "TIMEFRAME_VOLATILITY_MOMENTUM_EVIDENCE_MISSING"
+        evidence_state = _state(evidence)
+        if evidence_state not in {"READY", "PARTIAL"}:
+            return (
+                evidence_state if evidence_state in TIMEFRAME_FAMILY_MATRIX_STATES else "UNKNOWN",
+                str(evidence.get("reason") or "TIMEFRAME_VOLATILITY_MOMENTUM_NOT_READY"),
+            )
+        identity_hash = str(evidence.get("source_identity_hash") or "")
+        expected_identity_hash = str(
+            frame.get("intraday_identity_hash")
+            if timeframe in {"60m", "30m", "15m", "5m"}
+            else frame.get("source_identity_hash")
+            or at(factor, "multi_timeframe_structure_context.data_snapshot_identity")
+            or ""
+        )
+        if len(identity_hash) != 64 or identity_hash != expected_identity_hash:
+            return "UNKNOWN", "TIMEFRAME_MOMENTUM_SOURCE_IDENTITY_MISMATCH"
+        if method_id == "ROC":
+            momentum = evidence.get("momentum")
+            values = (
+                momentum.get("roc_20_completed_bars_pct"),
+                momentum.get("roc_60_completed_bars_pct"),
+            ) if isinstance(momentum, Mapping) else (None, None)
+            ready = [
+                isinstance(value, Real) and not isinstance(value, bool)
+                and math.isfinite(float(value)) for value in values
+            ]
+            if all(ready):
+                return "READY", "TIMEFRAME_ROC_20_60_READY"
+            if any(ready):
+                return "PARTIAL", "TIMEFRAME_ROC_20_ONLY"
+            return "MISSING", "TIMEFRAME_ROC_VALUES_MISSING"
+        if method_id == "VOLATILITY_TR_SMA":
+            volatility = evidence.get("volatility")
+            value = (
+                volatility.get("true_range_sma_20_completed_bars_pct")
+                if isinstance(volatility, Mapping) else None
+            )
+            return (
+                ("READY", "TIMEFRAME_TR_SMA_20_READY")
+                if isinstance(value, Real) and not isinstance(value, bool)
+                and math.isfinite(float(value))
+                else ("MISSING", "TIMEFRAME_TR_SMA_VALUE_MISSING")
+            )
+        if method_id == "ATR_WILDER":
+            volatility = evidence.get("volatility")
+            admission = (
+                volatility.get("atr_wilder_admission")
+                if isinstance(volatility, Mapping) else None
+            )
+            value = volatility.get("atr_wilder_14") if isinstance(volatility, Mapping) else None
+            state = str((admission or {}).get("status") or "MISSING")
+            if state == "READY" and isinstance(value, Real) and not isinstance(value, bool) and math.isfinite(float(value)):
+                return "READY", "TIMEFRAME_ATR_WILDER_READY"
+            return (
+                state if state in TIMEFRAME_FAMILY_MATRIX_STATES else "UNKNOWN",
+                str((admission or {}).get("reason") or "TIMEFRAME_ATR_WILDER_NOT_READY"),
+            )
+        divergence = evidence.get("confirmed_divergence")
+        state = _state(divergence)
+        if state == "READY" and isinstance(divergence, Mapping):
+            signals = divergence.get("signals")
+            if isinstance(signals, list) and all(
+                isinstance(signal, Mapping)
+                and str(signal.get("correlation_group") or "")
+                for signal in signals
+            ):
+                return "READY", "TIMEFRAME_CONFIRMED_DIVERGENCE_EVALUATED"
+            return "UNKNOWN", "TIMEFRAME_DIVERGENCE_CORRELATION_GROUP_UNBOUND"
+        return (
+            state if state in TIMEFRAME_FAMILY_MATRIX_STATES else "UNKNOWN",
+            str((divergence or {}).get("reason") or "TIMEFRAME_CONFIRMED_DIVERGENCE_NOT_READY"),
+        )
     if method_id == "MTF_MA_LEVEL_ALIGNMENT":
         trend = frame.get("trend")
         trend_state = _state(trend)
@@ -1477,7 +3141,7 @@ def _mtf_method_matrix_state(method_id: str, factor: Mapping, timeframe: str, fa
     if method_id == "MTF_PRICE_STRUCTURE":
         structure = frame.get("price_structure")
         state = _state(structure)
-        if timeframe in {"60m", "30m"} and state == "READY":
+        if timeframe in {"60m", "30m", "15m", "5m"} and state == "READY":
             methods = frame.get("admitted_methods")
             pivots = structure.get("pivots") if isinstance(structure, Mapping) else None
             identity_hash = str(frame.get("intraday_identity_hash") or "")
@@ -1522,6 +3186,603 @@ def _mtf_method_matrix_state(method_id: str, factor: Mapping, timeframe: str, fa
     return frame_state, "MTF_METHOD_FRAME_STATE"
 
 
+def _method_runtime_source_binding(
+    factor: Mapping,
+    binding: EvidenceBinding,
+    profile: MethodWindowProfile,
+    timeframe: str,
+    state: str,
+) -> dict:
+    """Bind a current method leaf to its deterministic source receipt.
+
+    The MTF carrier remains the preferred full-frame identity. This fallback is
+    only for daily canonical evidence whose deterministic owner retained a
+    completed-bar source receipt even when an MTF envelope was not supplied.
+    It never grants data rights, PIT, learning or action authority.
+    """
+    result = {
+        "timeframe": timeframe,
+        "binding_scope": "NONE",
+        "runtime_source_bound": False,
+        "completed_bar_only": False,
+        "observations": None,
+        "completed_through": None,
+        "source_alignment_state": "MISSING",
+        "sources": (),
+        "provider_identity": None,
+        "adjustment_basis": None,
+        "available_at_max": None,
+        "source_receipt_hash": None,
+        "identity_kind": None,
+        "data_rights_admitted": False,
+        "strategy_admitted": False,
+        "learning_admitted": False,
+        "independent_action_authority": False,
+    }
+    if state not in {"READY", "PARTIAL"}:
+        return result
+    carrier = _timeframe_runtime_binding(factor, timeframe)
+    if carrier.get("runtime_source_bound") is True:
+        return {
+            **result,
+            "binding_scope": "TIMEFRAME_CARRIER",
+            "runtime_source_bound": True,
+            "completed_bar_only": carrier.get("completed_bar_only") is True,
+            "observations": carrier.get("observations"),
+            "completed_through": carrier.get("completed_through"),
+            "source_alignment_state": carrier.get("source_alignment_state"),
+            "sources": tuple(carrier.get("sources") or ()),
+            "provider_identity": carrier.get("provider_identity"),
+            "adjustment_basis": carrier.get("adjustment_basis"),
+            "available_at_max": carrier.get("available_at_max"),
+            "source_receipt_hash": digest(carrier),
+            "identity_kind": "MTF_TIMEFRAME_SOURCE_CARRIER",
+        }
+    if timeframe != "daily":
+        return result
+    payload = at(factor, binding.path)
+    if not isinstance(payload, Mapping):
+        return result
+    context = payload.get("context")
+    context = context if isinstance(context, Mapping) else payload
+
+    completed_bar_only = context.get("completed_bar_only") is True
+    observations = None
+    completed_through = context.get("target_date") or context.get("end_date")
+    sources: tuple[str, ...] = ()
+    alignment_state = "MISSING"
+    algorithm_version = context.get("algorithm_version") or payload.get("version")
+    config_hash = context.get("config_hash")
+
+    alignment = context.get("source_alignment")
+    if isinstance(alignment, Mapping):
+        alignment_state = str(alignment.get("status") or "")
+        raw_sources = alignment.get("sources")
+        if isinstance(raw_sources, (list, tuple)):
+            sources = tuple(sorted({
+                str(item).strip() for item in raw_sources if str(item).strip()
+            }))
+        value = alignment.get("observations", context.get("observations"))
+        observations = value if type(value) is int and value > 0 else None
+        completed_through = completed_through or alignment.get("end_date")
+    elif binding.requirement_id == "SUPPLY":
+        completed = payload.get("completed_bar_context")
+        completed = completed if isinstance(completed, Mapping) else {}
+        quality = completed.get("data_quality")
+        quality = quality if isinstance(quality, Mapping) else {}
+        alignment_state = str(quality.get("source_alignment") or "")
+        raw_sources = quality.get("sources")
+        if isinstance(raw_sources, (list, tuple)):
+            sources = tuple(sorted({
+                str(item).strip() for item in raw_sources if str(item).strip()
+            }))
+        value = quality.get("observations")
+        observations = value if type(value) is int and value > 0 else None
+        completed_through = completed.get("target_date") or quality.get("end_date")
+        completed_bar_only = completed.get("completed_bar_only") is True
+        algorithm_version = (
+            completed.get("algorithm_version") or payload.get("version")
+        )
+        config_hash = completed.get("config_hash")
+    elif binding.requirement_id == "COST":
+        references = context.get("bar_reference_cost")
+        references = references if isinstance(references, Mapping) else {}
+        windows = [
+            value for key, value in references.items()
+            if key.startswith("window_") and isinstance(value, Mapping)
+            and value.get("status") == "READY"
+            and value.get("source_alignment") == "SINGLE_SOURCE"
+        ]
+        if windows:
+            source_set = {
+                str(source).strip()
+                for window in windows
+                for source in (window.get("sources") or ())
+                if str(source).strip()
+            }
+            sources = tuple(sorted(source_set))
+            alignment_state = "SINGLE_SOURCE" if len(sources) == 1 else "UNKNOWN"
+            observed = [window.get("observations") for window in windows]
+            observations = max(
+                (value for value in observed if type(value) is int and value > 0),
+                default=None,
+            )
+            completed_through = context.get("target_date") or max(
+                (str(window.get("end_date")) for window in windows if window.get("end_date")),
+                default=None,
+            )
+            completed_bar_only = context.get("completed_bar_only") is True
+            algorithm_version = payload.get("version")
+
+    source_bound = bool(
+        completed_bar_only
+        and alignment_state == "SINGLE_SOURCE"
+        and len(sources) == 1
+        and observations is not None
+        and completed_through
+    )
+    if not source_bound:
+        return {
+            **result,
+            "completed_bar_only": completed_bar_only,
+            "observations": observations,
+            "completed_through": completed_through,
+            "source_alignment_state": alignment_state or "UNKNOWN",
+            "sources": sources,
+        }
+    receipt = {
+        "requirement_id": binding.requirement_id,
+        "method_id": profile.method_id,
+        "timeframe": timeframe,
+        "canonical_path": binding.path,
+        "sources": sources,
+        "observations": observations,
+        "completed_through": completed_through,
+        "algorithm_version": algorithm_version,
+        "config_hash": config_hash,
+        "completed_bar_only": True,
+    }
+    source_receipt_hash = digest(receipt)
+    return {
+        **result,
+        "binding_scope": "METHOD_CANONICAL_EVIDENCE",
+        "runtime_source_bound": True,
+        "completed_bar_only": True,
+        "observations": observations,
+        "completed_through": completed_through,
+        "source_alignment_state": "SINGLE_SOURCE",
+        "sources": sources,
+        "provider_identity": sources[0],
+        "source_receipt_hash": source_receipt_hash,
+        "identity_kind": "METHOD_EVIDENCE_SOURCE_RECEIPT",
+    }
+
+
+def _cell_runtime_binding(frame_binding: Mapping, method_coverage: list[dict]) -> dict:
+    """Choose a source-bound frame receipt or a same-source method receipt."""
+    result = dict(frame_binding)
+    if result.get("runtime_source_bound") is True:
+        result["binding_scope"] = "TIMEFRAME_CARRIER"
+        result["bound_method_ids"] = tuple(
+            item["method_id"] for item in method_coverage
+            if item["state"] in {"READY", "PARTIAL"}
+        )
+        result["source_receipt_hashes"] = ()
+        return result
+    bindings = [
+        item.get("runtime_source_binding")
+        for item in method_coverage
+        if item.get("state") in {"READY", "PARTIAL"}
+        and isinstance(item.get("runtime_source_binding"), Mapping)
+        and item["runtime_source_binding"].get("runtime_source_bound") is True
+    ]
+    if not bindings:
+        result["binding_scope"] = "NONE"
+        result["bound_method_ids"] = ()
+        result["source_receipt_hashes"] = ()
+        return result
+    sources = tuple(sorted({
+        source for row in bindings for source in row.get("sources", ())
+    }))
+    hashes = tuple(sorted(str(row.get("source_receipt_hash")) for row in bindings))
+    if len(sources) != 1 or any(len(value) != 64 for value in hashes):
+        result["binding_scope"] = "METHOD_CANONICAL_EVIDENCE_UNALIGNED"
+        result["bound_method_ids"] = ()
+        result["source_receipt_hashes"] = hashes
+        return result
+    completed = tuple(sorted({
+        str(row.get("completed_through"))
+        for row in bindings if row.get("completed_through")
+    }))
+    observed = [row.get("observations") for row in bindings]
+    result.update({
+        "binding_scope": "METHOD_CANONICAL_EVIDENCE",
+        "runtime_source_bound": True,
+        "completed_bar_only": all(
+            row.get("completed_bar_only") is True for row in bindings
+        ),
+        "observations": max(
+            (value for value in observed if type(value) is int),
+            default=None,
+        ),
+        "completed_through": completed[-1] if completed else None,
+        "source_alignment_state": "SINGLE_SOURCE",
+        "sources": sources,
+        "provider_identity": sources[0],
+        "data_identity_hash": digest({
+            "method_source_receipt_hashes": hashes,
+        }),
+        "identity_kind": "METHOD_EVIDENCE_SOURCE_RECEIPT_SET",
+        "bound_method_ids": tuple(
+            item["method_id"] for item in method_coverage
+            if isinstance(item.get("runtime_source_binding"), Mapping)
+            and item["runtime_source_binding"].get("runtime_source_bound") is True
+        ),
+        "source_receipt_hashes": hashes,
+    })
+    return result
+
+
+_RS_ONLY_RECEIPT_FAILURES = frozenset({
+    "RS_INPUT_IDENTITY_MISSING",
+    "RS_PROVIDER_IDENTITY_UNPROVEN",
+    "RS_PRICE_BASIS_UNPROVEN",
+    "RS_PRICE_IDENTITY_UNPROVEN",
+    "RS_WRAPPER_IDENTITY_MISMATCH",
+    "RS_SCHEMA_MISMATCH",
+    "RS_STOCK_IDENTITY_MISMATCH",
+    "RS_STOCK_INPUT_IDENTITY_MISMATCH",
+    "RS_MARKET_IDENTITY_MISMATCH",
+    "RS_TARGET_IDENTITY_MISMATCH",
+    "RS_BENCHMARK_IDENTITY_MISSING",
+    "RS_BENCHMARK_IDENTITY_MISMATCH",
+    "RS_SOURCE_ALIGNMENT_UNPROVEN",
+    "RS_BENCHMARK_SOURCE_MISMATCH",
+    "ETF_PEER_RS_INPUT_SCHEMA_MISMATCH",
+    "ETF_PEER_RS_INPUT_IDENTITY_MISSING",
+    "ETF_PEER_RS_TARGET_IDENTITY_MISMATCH",
+    "ETF_PEER_RS_TARGET_INPUT_IDENTITY_MISMATCH",
+    "ETF_PEER_RS_MARKET_IDENTITY_MISMATCH",
+    "ETF_PEER_RS_TARGET_DATE_MISMATCH",
+    "ETF_PEER_RS_PROVIDER_IDENTITY_UNPROVEN",
+    "ETF_PEER_RS_PRICE_BASIS_UNPROVEN",
+    "ETF_PEER_RS_PRICE_IDENTITY_UNPROVEN",
+    "ETF_PEER_RS_UNIVERSE_MISSING",
+    "ETF_PEER_RS_SOURCE_ALIGNMENT_UNPROVEN",
+    "ETF_PEER_RS_SOURCE_OR_BASIS_MISMATCH",
+    "ETF_PEER_RS_SHARED_ENDPOINTS_UNPROVEN",
+    "ETF_PEER_RS_UNIVERSE_INSUFFICIENT",
+    "ETF_PEER_RS_UNIVERSE_COUNT_MISMATCH",
+    "ETF_PEER_RS_PEER_IDENTITY_INVALID",
+    "ETF_PEER_RS_PEER_SOURCE_OR_ASOF_MISMATCH",
+    "ETF_PEER_RS_PEER_IDENTITY_MISMATCH",
+    "ETF_PEER_RS_UNIVERSE_HASH_MISMATCH",
+    "ETF_PEER_RS_WRAPPER_UNIVERSE_HASH_MISMATCH",    "RS_STOCK_SOURCE_MISMATCH",
+})
+
+
+def _timeframe_relative_strength_state_and_binding(
+    factor: Mapping,
+    timeframe: str,
+) -> tuple[str, str, dict]:
+    """Validate one non-daily RS leaf against its exact target carrier."""
+    empty_binding = {
+        "timeframe": timeframe,
+        "binding_scope": "TIMEFRAME_RELATIVE_STRENGTH",
+        "runtime_source_bound": False,
+        "completed_bar_only": False,
+        "observations": None,
+        "completed_through": None,
+        "source_alignment_state": "MISSING",
+        "sources": (),
+        "provider_identity": None,
+        "adjustment_basis": None,
+        "available_at_max": None,
+        "source_receipt_hash": None,
+        "identity_kind": "TIMEFRAME_RELATIVE_STRENGTH_INPUT_PAIR",
+        "data_rights_admitted": False,
+        "strategy_admitted": False,
+        "learning_admitted": False,
+        "independent_action_authority": False,
+    }
+    frame = at(factor, f"multi_timeframe_structure_context.timeframes.{timeframe}")
+    frame = frame if isinstance(frame, Mapping) else {}
+    context = frame.get("relative_strength")
+    if not isinstance(context, Mapping):
+        return (
+            "MISSING", "TIMEFRAME_RELATIVE_STRENGTH_CONTEXT_MISSING",
+            empty_binding,
+        )
+    state = str(context.get("status") or "UNKNOWN").upper()
+    reason = str(
+        context.get("reason")
+        or "TIMEFRAME_RELATIVE_STRENGTH_STATE_UNSPECIFIED"
+    )
+    if str(context.get("timeframe") or timeframe) != timeframe:
+        return (
+            "UNKNOWN", "TIMEFRAME_RELATIVE_STRENGTH_TIMEFRAME_MISMATCH",
+            empty_binding,
+        )
+    if state not in {"READY", "PARTIAL"}:
+        return (
+            state if state in TIMEFRAME_FAMILY_MATRIX_STATES else "UNKNOWN",
+            reason,
+            empty_binding,
+        )
+    identity = context.get("input_identity")
+    quality = context.get("data_quality")
+    relative = context.get("relative")
+    if not all(isinstance(value, Mapping) for value in (identity, quality, relative)):
+        return (
+            "UNKNOWN", "TIMEFRAME_RELATIVE_STRENGTH_IDENTITY_MISSING",
+            empty_binding,
+        )
+    target_identity = identity.get("target")
+    if not isinstance(target_identity, Mapping):
+        return (
+            "UNKNOWN", "TIMEFRAME_RELATIVE_STRENGTH_IDENTITY_MISSING",
+            empty_binding,
+        )
+    target_hash = str(
+        target_identity.get("identity_hash")
+        or target_identity.get("data_snapshot_identity")
+        or ""
+    )
+    comparison_identities: list[Mapping[str, Any]] = []
+    comparison_hashes: list[str] = []
+    identity_kind = "TIMEFRAME_RELATIVE_STRENGTH_INPUT_PAIR"
+    schema = str(context.get("schema_version") or "")
+    if schema == "timeframe-etf-peer-relative-strength-v1":
+        peers = identity.get("peers")
+        if not isinstance(peers, (list, tuple)) or not peers:
+            return (
+                "UNKNOWN", "TIMEFRAME_ETF_PEER_RS_IDENTITY_MISSING",
+                empty_binding,
+            )
+        comparison_identities = [
+            peer for peer in peers if isinstance(peer, Mapping)
+        ]
+        if len(comparison_identities) != len(peers):
+            return (
+                "UNKNOWN", "TIMEFRAME_ETF_PEER_RS_IDENTITY_MISSING",
+                empty_binding,
+            )
+        identity_kind = "TIMEFRAME_ETF_PEER_UNIVERSE_INPUT"
+    else:
+        benchmark_identity = identity.get("benchmark")
+        if not isinstance(benchmark_identity, Mapping):
+            return (
+                "UNKNOWN", "TIMEFRAME_RELATIVE_STRENGTH_IDENTITY_MISSING",
+                empty_binding,
+            )
+        comparison_identities = [benchmark_identity]
+
+    target_provider = str(target_identity.get("provider_identity") or "").strip()
+    target_basis = str(
+        target_identity.get("adjustment_basis")
+        or target_identity.get("observed_adjustment_basis")
+        or ""
+    ).strip()
+    available_values = [str(target_identity.get("available_at_max") or "")]
+    for comparison in comparison_identities:
+        comparison_hash = str(
+            comparison.get("identity_hash")
+            or comparison.get("data_snapshot_identity")
+            or ""
+        )
+        comparison_hashes.append(comparison_hash)
+        provider = str(comparison.get("provider_identity") or "").strip()
+        basis = str(
+            comparison.get("adjustment_basis")
+            or comparison.get("observed_adjustment_basis")
+            or ""
+        ).strip()
+        available_values.append(str(comparison.get("available_at_max") or ""))
+        if (
+            len(comparison_hash) != 64
+            or provider != target_provider
+            or basis != target_basis
+            or str(comparison.get("timeframe") or timeframe) != timeframe
+            or comparison.get("completed_bar_only") is not True
+        ):
+            return (
+                "UNKNOWN", "TIMEFRAME_RELATIVE_STRENGTH_SOURCE_IDENTITY_UNPROVEN",
+                empty_binding,
+            )
+
+    carrier = _timeframe_runtime_binding(factor, timeframe)
+    if (
+        len(target_hash) != 64
+        or not target_provider
+        or not target_basis
+        or str(target_identity.get("timeframe") or timeframe) != timeframe
+        or target_identity.get("completed_bar_only") is not True
+        or quality.get("source_alignment") != "MATCHED"
+        or quality.get("exact_shared_endpoints") is not True
+        or carrier.get("runtime_source_bound") is not True
+        or target_hash != carrier.get("data_identity_hash")
+    ):
+        return (
+            "UNKNOWN", "TIMEFRAME_RELATIVE_STRENGTH_SOURCE_IDENTITY_UNPROVEN",
+            empty_binding,
+        )
+    numeric_keys = (
+        "excess_vs_peer_median_pct_points", "percentile", "rank"
+    ) if schema == "timeframe-etf-peer-relative-strength-v1" else (
+        "excess_return_pct_points", "relative_ratio_change_pct",
+    )
+    numeric = tuple(
+        relative.get(key) for key in numeric_keys
+        if isinstance(relative.get(key), Real)
+        and not isinstance(relative.get(key), bool)
+        and math.isfinite(float(relative.get(key)))
+    )
+    if not numeric:
+        return (
+            "UNKNOWN", "TIMEFRAME_RELATIVE_STRENGTH_NUMERIC_OUTPUT_MISSING",
+            empty_binding,
+        )
+    source_receipt_hash = digest({
+        "timeframe": timeframe,
+        "identity_kind": identity_kind,
+        "target_identity_hash": target_hash,
+        "comparison_identity_hashes": tuple(comparison_hashes),
+        "relative": dict(relative),
+        "data_quality": dict(quality),
+        "universe_hash": at(context, "peer_universe.universe_hash"),
+    })
+    binding = {
+        **empty_binding,
+        "binding_scope": identity_kind,
+        "identity_kind": identity_kind,
+        "runtime_source_bound": True,
+        "completed_bar_only": True,
+        "observations": context.get("horizon_bars"),
+        "completed_through": context.get("target_bar_end"),
+        "source_alignment_state": "MATCHED",
+        "sources": (target_provider,),
+        "provider_identity": target_provider,
+        "adjustment_basis": target_basis,
+        "available_at_max": max(available_values) or None,
+        "source_receipt_hash": source_receipt_hash,
+        "comparison_identity_hashes": tuple(comparison_hashes),
+        "data_identity_hash": digest({
+            "target": target_hash,
+            "comparisons": tuple(comparison_hashes),
+        }),
+    }
+    return state, reason, binding
+
+def _shared_regime_runtime_binding(
+    factor: Mapping,
+    observation: Mapping,
+) -> dict:
+    receipt = _receipt_for(factor, "REGIME")
+    receipt_hash = (
+        str(receipt.get("receipt_hash") or "")
+        if isinstance(receipt, Mapping) else ""
+    )
+    source_observations = at(factor, "market_sector_regime.source_observations")
+    source_observations = (
+        source_observations if isinstance(source_observations, Mapping) else {}
+    )
+    source_hashes = tuple(sorted(
+        digest(value) for value in source_observations.values()
+        if isinstance(value, Mapping)
+    ))
+    verified = bool(
+        observation.get("state") in {"READY", "PARTIAL"}
+        and observation.get("reason") == "METHOD_INVOCATION_VERIFIED"
+        and len(receipt_hash) == 64
+    )
+    return {
+        "timeframe": "asset",
+        "binding_scope": "SHARED_ASSET_CONTEXT_METHOD_RECEIPT",
+        "runtime_source_bound": verified,
+        "completed_bar_only": False,
+        "observations": len(source_observations) if source_observations else None,
+        "completed_through": (
+            receipt.get("target_date") if isinstance(receipt, Mapping) else None
+        ),
+        "source_alignment_state": "METHOD_RECEIPT_BOUND" if verified else "MISSING",
+        "sources": tuple(sorted(source_observations)),
+        "provider_identity": None,
+        "adjustment_basis": None,
+        "available_at_max": None,
+        "source_receipt_hash": receipt_hash if verified else None,
+        "source_observation_hashes": source_hashes,
+        "data_identity_hash": digest({
+            "method_receipt_hash": receipt_hash or None,
+            "source_observation_hashes": source_hashes,
+        }),
+        "identity_kind": "SHARED_ASSET_REGIME_CONTEXT",
+        "data_rights_admitted": False,
+        "strategy_admitted": False,
+        "learning_admitted": False,
+        "independent_action_authority": False,
+    }
+
+
+def _shared_regime_cell_method_observation(
+    profile: MethodWindowProfile,
+    factor: Mapping,
+    timeframe: str,
+    observations: Mapping[str, Mapping],
+) -> dict:
+    observation = observations.get("REGIME", {})
+    state = str(observation.get("state") or "UNKNOWN")
+    state = state if state in TIMEFRAME_FAMILY_MATRIX_STATES else "UNKNOWN"
+    reason = str(observation.get("reason") or "RUNTIME_OBSERVATION_UNKNOWN")
+    binding = next(item for item in EVIDENCE_BINDINGS if item.requirement_id == "REGIME")
+    runtime_source_binding = _shared_regime_runtime_binding(factor, observation)
+    method_receipt = {
+        "method_id": profile.method_id,
+        "requirement_id": "REGIME",
+        "timeframe": timeframe,
+        "family": "REGIME",
+        "projection_scope": "SHARED_ASSET_CONTEXT",
+        "owner": binding.owner,
+        "parent_callable": binding.callable_name,
+        "owner_source_sha256": _owner_source_sha256(binding.owner),
+        "parent_method_contract": method_contract(binding),
+        "canonical_path": binding.path,
+        "state": state,
+        "reason": reason,
+        "leaf_implementation_state": profile.implementation_state,
+        "runtime_source_binding": runtime_source_binding,
+        "cross_timeframe_vote_counting": False,
+    }
+    return {
+        "method_id": profile.method_id,
+        "requirement_id": "REGIME",
+        "consumer_scope": "ASSET_LAYER_SHARED_CONTEXT_PROJECTION",
+        "family_targets": ("REGIME",),
+        "canonical_path": binding.path,
+        "target_timeframes": TIMEFRAMES,
+        "current_execution_timeframes": TIMEFRAMES,
+        "leaf_implementation_state": profile.implementation_state,
+        "owner": binding.owner,
+        "parent_callable": binding.callable_name,
+        "owner_source_sha256": method_receipt["owner_source_sha256"],
+        "parent_method_contract": method_receipt["parent_method_contract"],
+        "method_receipt_hash": digest(method_receipt),
+        "runtime_source_binding": runtime_source_binding,
+        "state": state,
+        "reason": reason,
+        "correlation_group": binding.correlation_group,
+        "projection_scope": "SHARED_ASSET_CONTEXT",
+        "cross_timeframe_vote_counting": False,
+        "independent_action_authority": False,
+        "strategy_authority": "EXISTING_STRATEGY_MATRIX_ONLY",
+    }
+
+
+def _daily_ma_state_from_source_bound_absolute_trend(
+    factor: Mapping,
+    *,
+    state: str,
+    reason: str,
+) -> tuple[str, str]:
+    """Keep absolute daily MA independent from a missing peer-RS input.
+
+    This override is intentionally narrow: the shared TREND_RS output must
+    contain an actual absolute alignment, the failure must be RS-specific, and
+    the existing daily MTF carrier must be source-bound.  It never creates peer
+    RS, a strategy vote, or action authority.
+    """
+    if state in {"READY", "PARTIAL"} or reason not in _RS_ONLY_RECEIPT_FAILURES:
+        return state, reason
+    absolute = at(factor, "trend_relative_strength.absolute_trend")
+    if not isinstance(absolute, Mapping) or not str(
+        absolute.get("alignment") or ""
+    ).strip():
+        return state, reason
+    carrier = _timeframe_runtime_binding(factor, "daily")
+    if carrier.get("runtime_source_bound") is not True:
+        return state, reason
+    return "READY", "DAILY_MA_SOURCE_BOUND_RS_BENCHMARK_INDEPENDENT"
+
+
 def _matrix_method_observation(
     profile: MethodWindowProfile,
     factor: Mapping,
@@ -1537,10 +3798,24 @@ def _matrix_method_observation(
     canonical_path = binding.path
     if profile.requirement_id == "MTF":
         canonical_path = f"{binding.path}.timeframes.{timeframe}"
+    if profile.method_id == "RELATIVE_STRENGTH" and timeframe != "daily":
+        canonical_path = (
+            f"multi_timeframe_structure_context.timeframes.{timeframe}.relative_strength"
+        )
+    if profile.method_id == "CANDLESTICK" and timeframe != "daily":
+        canonical_path = (
+            f"multi_timeframe_structure_context.timeframes.{timeframe}."
+            "pattern_trigger.candlestick"
+        )
+    timeframe_rs_binding = None
     if profile.implementation_state != "EXISTING_REUSED":
         state, reason = "NOT_ADMITTED", binding.reentry
     elif timeframe not in profile.current_execution_timeframes:
         state, reason = "NOT_ADMITTED", "METHOD_TIMEFRAME_NOT_ADMITTED"
+    elif profile.method_id == "RELATIVE_STRENGTH" and timeframe != "daily":
+        state, reason, timeframe_rs_binding = (
+            _timeframe_relative_strength_state_and_binding(factor, timeframe)
+        )
     elif profile.requirement_id == "MTF":
         parent = observations.get("MTF", {})
         parent_state = str(parent.get("state") or "UNKNOWN")
@@ -1558,11 +3833,37 @@ def _matrix_method_observation(
             state, reason = _mtf_method_matrix_state(
                 profile.method_id, factor, timeframe, family
             )
+    elif profile.method_id in SOURCE_BOUND_TIMEFRAME_METHOD_IDS and timeframe != "daily":
+        parent = observations.get("MTF", {})
+        parent_state = str(parent.get("state") or "UNKNOWN")
+        parent_state = (
+            parent_state
+            if parent_state in TIMEFRAME_FAMILY_MATRIX_STATES
+            else "UNKNOWN"
+        )
+        if _receipt_required(factor) and parent_state not in {"READY", "PARTIAL"}:
+            state = parent_state
+            reason = str(
+                parent.get("reason") or "MTF_PARENT_OBSERVATION_NOT_ADMITTED"
+            )
+        else:
+            state, reason = _mtf_method_matrix_state(
+                profile.method_id, factor, timeframe, family,
+            )
+            carrier = _timeframe_runtime_binding(factor, timeframe)
+            if state in {"READY", "PARTIAL"} and carrier.get("runtime_source_bound") is not True:
+                state, reason = "UNKNOWN", "TIMEFRAME_SOURCE_CARRIER_UNBOUND"
     else:
         observation = observations.get(profile.requirement_id, {})
         state = str(observation.get("state") or "UNKNOWN")
         state = state if state in TIMEFRAME_FAMILY_MATRIX_STATES else "UNKNOWN"
         reason = str(observation.get("reason") or "RUNTIME_OBSERVATION_UNKNOWN")
+    if timeframe == "daily" and profile.method_id == "MA_LEVEL_ALIGNMENT_DAILY":
+        state, reason = _daily_ma_state_from_source_bound_absolute_trend(
+            factor,
+            state=state,
+            reason=reason,
+        )
     if state == "READY" and family == "TREND_RS" and profile.method_id in {
         "MTF_MA_LEVEL_ALIGNMENT", "MA_SLOPE_CROSS",
     } and timeframe != "daily":
@@ -1571,6 +3872,38 @@ def _matrix_method_observation(
         state, reason = "PARTIAL", "VOLUME_CONTEXT_ONLY_NO_FULL_SUPPLY_ALGORITHM"
     if state == "READY" and family == "MOMENTUM" and profile.method_id == "MTF_MOMENTUM_CONTEXT":
         state, reason = "PARTIAL", "MACD_RSI_CONTEXT_ONLY_NO_FULL_MOMENTUM_FAMILY"
+    runtime_source_binding = (
+        timeframe_rs_binding
+        if timeframe_rs_binding is not None
+        else _method_runtime_source_binding(
+            factor, binding, profile, timeframe, state,
+        )
+    )
+    parent_contract = (
+        method_contract(binding)
+        if binding.implementation_state == "EXISTING_REUSED"
+        else {"version": None, "warmup": None, "config_hash": None}
+    )
+    method_receipt = {
+        "method_id": profile.method_id,
+        "requirement_id": profile.requirement_id,
+        "timeframe": timeframe,
+        "family": family,
+        "owner": binding.owner,
+        "parent_callable": binding.callable_name,
+        "owner_source_sha256": (
+            _owner_source_sha256(binding.owner)
+            if binding.implementation_state == "EXISTING_REUSED"
+            else None
+        ),
+        "parent_method_contract": parent_contract,
+        "canonical_path": canonical_path,
+        "state": state,
+        "reason": reason,
+        "leaf_implementation_state": profile.implementation_state,
+        "runtime_source_binding": runtime_source_binding,
+    }
+    method_receipt["receipt_hash"] = digest(method_receipt)
     return {
         "method_id": profile.method_id,
         "requirement_id": profile.requirement_id,
@@ -1580,12 +3913,24 @@ def _matrix_method_observation(
         "target_timeframes": profile.target_timeframes,
         "current_execution_timeframes": profile.current_execution_timeframes,
         "leaf_implementation_state": profile.implementation_state,
+        "owner": binding.owner,
+        "parent_callable": binding.callable_name,
+        "owner_source_sha256": method_receipt["owner_source_sha256"],
+        "parent_method_contract": parent_contract,
+        "method_receipt_hash": method_receipt["receipt_hash"],
+        "runtime_source_binding": runtime_source_binding,
         "state": state,
         "reason": reason,
         "correlation_group": binding.correlation_group,
         "independent_action_authority": False,
         "strategy_authority": "EXISTING_STRATEGY_MATRIX_ONLY",
     }
+
+_AUXILIARY_CONTEXT_ONLY_REASONS = frozenset({
+    "MTF_HIGHER_VOLUME_CONTEXT_ONLY",
+    "MTF_VERIFIED_VOLUME_CONTEXT_ONLY",
+    "MACD_RSI_CONTEXT_ONLY_NO_FULL_MOMENTUM_FAMILY",
+})
 
 
 def _aggregate_family_state(method_coverage: list[dict]) -> tuple[str, str]:
@@ -1594,15 +3939,178 @@ def _aggregate_family_state(method_coverage: list[dict]) -> tuple[str, str]:
     current = [item for item in method_coverage if item["state"] != "NOT_ADMITTED"]
     if not current:
         return "NOT_ADMITTED", "NO_METHOD_ADMITTED_FOR_TIMEFRAME"
+    ready = [item for item in current if item["state"] == "READY"]
+    blocking_partial = [
+        item for item in current
+        if item["state"] == "PARTIAL"
+        and item.get("reason") not in _AUXILIARY_CONTEXT_ONLY_REASONS
+    ]
+    non_ready_non_auxiliary = [
+        item for item in current
+        if item["state"] != "READY"
+        and not (
+            item["state"] == "PARTIAL"
+            and item.get("reason") in _AUXILIARY_CONTEXT_ONLY_REASONS
+        )
+    ]
+    if ready and not non_ready_non_auxiliary:
+        return "READY", "PRIMARY_METHODS_READY_AUXILIARY_CONTEXT_DEDUPED"
     if any(item["state"] in {"READY", "PARTIAL"} for item in current):
         if all(item["state"] == "READY" for item in current):
             return "READY", "ALL_CURRENT_METHODS_READY"
-        return "PARTIAL", "PARTIAL_CURRENT_METHOD_COVERAGE"
+        if blocking_partial or ready:
+            return "PARTIAL", "PARTIAL_CURRENT_METHOD_COVERAGE"
+        return "PARTIAL", "AUXILIARY_CONTEXT_ONLY_PARTIAL"
     if any(item["state"] == "UNKNOWN" for item in current):
         return "UNKNOWN", "CURRENT_METHOD_STATE_UNKNOWN"
     if all(item["state"] == "NOT_APPLICABLE" for item in current):
         return "NOT_APPLICABLE", "CURRENT_METHOD_NOT_APPLICABLE"
     return "MISSING", "CURRENT_METHODS_MISSING"
+
+
+def _timeframe_runtime_binding(factor: Mapping, timeframe: str) -> dict:
+    """Bind one 7TF matrix row to the exact runtime carrier that produced it.
+
+    This receipt proves only source/clock/identity attachment for the current
+    matrix. It does not grant data rights, strategy authority, PIT eligibility
+    or numeric readiness to a MISSING/UNKNOWN/NOT_ADMITTED family.
+    """
+    parent = at(factor, "multi_timeframe_structure_context")
+    parent = parent if isinstance(parent, Mapping) else {}
+    frame = at(parent, "timeframes." + timeframe)
+    frame = frame if isinstance(frame, Mapping) else {}
+    frame_state = _state(frame) if frame else "MISSING"
+    if frame_state not in TIMEFRAME_FAMILY_MATRIX_STATES:
+        frame_state = "UNKNOWN"
+    alignment = frame.get("source_alignment")
+    alignment = alignment if isinstance(alignment, Mapping) else {}
+    alignment_state = str(alignment.get("status") or "")
+    if alignment_state not in {"SINGLE_SOURCE", "MISSING", "UNKNOWN", "NOT_APPLICABLE"}:
+        alignment_state = "UNKNOWN" if frame else "MISSING"
+    observations = frame.get("observations")
+    observations = observations if type(observations) is int and observations >= 0 else None
+    completed_through = (
+        frame.get("completed_through")
+        or frame.get("latest_bar_end")
+        or frame.get("latest_bar_date")
+    )
+    data_identity_hash = (
+        frame.get("intraday_identity_hash")
+        if timeframe in {"60m", "30m", "15m", "5m"}
+        else frame.get("source_identity_hash")
+        or parent.get("data_snapshot_identity")
+    )
+    data_identity_hash = str(data_identity_hash or "") or None
+    sources = alignment.get("sources")
+    sources = tuple(str(item) for item in sources) if isinstance(sources, (list, tuple)) else ()
+    runtime_source_bound = bool(
+        frame.get("completed_bar_only") is True
+        and alignment_state == "SINGLE_SOURCE"
+        and observations is not None
+        and observations > 0
+        and isinstance(data_identity_hash, str)
+        and len(data_identity_hash) == 64
+    )
+    return {
+        "timeframe": timeframe,
+        "frame_state": frame_state,
+        "completed_bar_only": frame.get("completed_bar_only") is True,
+        "observations": observations,
+        "completed_through": completed_through,
+        "source_alignment_state": alignment_state,
+        "sources": sources,
+        "provider_identity": parent.get("provider_identity") or (sources[0] if len(sources) == 1 else None),
+        "adjustment_basis": parent.get("adjustment_basis"),
+        "available_at_max": parent.get("available_at_max"),
+        "data_identity_hash": data_identity_hash,
+        "runtime_source_bound": runtime_source_bound,
+        "data_rights_admitted": False,
+        "strategy_admitted": False,
+        "learning_admitted": False,
+        "independent_action_authority": False,
+    }
+
+
+def validate_timeframe_family_matrix(matrix: Mapping) -> dict:
+    """Prove all 56 cells are executable; readiness remains a separate fact."""
+    if not isinstance(matrix, Mapping):
+        raise TraceabilityError("TIMEFRAME_FAMILY_MATRIX_INVALID")
+    cells = matrix.get("cells")
+    if not isinstance(cells, list) or len(cells) != 56:
+        raise TraceabilityError("TIMEFRAME_FAMILY_MATRIX_CELL_COUNT_MISMATCH")
+    expected = {(timeframe, family) for timeframe in TIMEFRAMES for family in TECHNICAL_EVIDENCE_FAMILIES}
+    actual = {
+        (str(cell.get("timeframe") or ""), str(cell.get("family") or ""))
+        for cell in cells if isinstance(cell, Mapping)
+    }
+    if actual != expected:
+        raise TraceabilityError("TIMEFRAME_FAMILY_MATRIX_CLOSED_WORLD_MISMATCH")
+    empty = []
+    for cell in cells:
+        cell_id = str(cell.get("cell_id") or "")
+        methods = cell.get("method_coverage")
+        if not isinstance(methods, list) or not methods:
+            empty.append(cell_id)
+            continue
+        if cell.get("implementation_state") != "EXECUTABLE":
+            raise TraceabilityError("TIMEFRAME_FAMILY_CELL_NOT_EXECUTABLE:" + cell_id)
+        reader = cell.get("reader_projection")
+        if (
+            not isinstance(reader, Mapping)
+            or reader.get("missingness_visible") is not True
+            or reader.get("numeric_requires_product_and_method_ready") is not True
+        ):
+            raise TraceabilityError("TIMEFRAME_FAMILY_READER_PROJECTION_INVALID:" + cell_id)
+        if cell.get("independent_action_authority") is not False:
+            raise TraceabilityError("TIMEFRAME_FAMILY_ACTION_AUTHORITY_FORBIDDEN:" + cell_id)
+        if cell.get("cross_timeframe_vote_counting") is not False:
+            raise TraceabilityError("TIMEFRAME_FAMILY_CROSS_TIMEFRAME_VOTE_FORBIDDEN:" + cell_id)
+        for method in methods:
+            if not isinstance(method, Mapping):
+                raise TraceabilityError("TIMEFRAME_FAMILY_METHOD_INVALID:" + cell_id)
+            required = (
+                method.get("method_id"), method.get("owner"),
+                method.get("canonical_path"), method.get("reason"),
+                method.get("correlation_group"),
+            )
+            if any(not str(value or "").strip() for value in required):
+                raise TraceabilityError("TIMEFRAME_FAMILY_METHOD_CONTRACT_INCOMPLETE:" + cell_id)
+            if len(str(method.get("method_receipt_hash") or "")) != 64:
+                raise TraceabilityError("TIMEFRAME_FAMILY_METHOD_RECEIPT_INVALID:" + cell_id)
+            if method.get("independent_action_authority") is not False:
+                raise TraceabilityError("TIMEFRAME_FAMILY_METHOD_AUTHORITY_FORBIDDEN:" + cell_id)
+    if empty:
+        raise TraceabilityError(
+            "TIMEFRAME_FAMILY_CELL_METHOD_EMPTY:" + ",".join(sorted(empty))
+        )
+    regime = [cell for cell in cells if cell.get("family") == "REGIME"]
+    if (
+        len(regime) != 7
+        or any(cell.get("projection_scope") != "SHARED_ASSET_CONTEXT" for cell in regime)
+        or any(cell.get("shared_parent_context") is not True for cell in regime)
+        or any({row.get("method_id") for row in cell.get("method_coverage") or ()}
+               != {"MARKET_SECTOR_REGIME"} for cell in regime)
+    ):
+        raise TraceabilityError("TIMEFRAME_FAMILY_REGIME_SHARED_CONTEXT_INVALID")
+    result = {
+        "schema_version": "timeframe-family-implementation-receipt-v1",
+        "implementation_complete": True,
+        "executable_cell_count": 56,
+        "empty_method_cell_ids": (),
+        "state_counts": dict(Counter(str(cell.get("state") or "UNKNOWN") for cell in cells)),
+        "source_bound_cell_count": sum(
+            1 for cell in cells
+            if (cell.get("runtime_binding") or {}).get("runtime_source_bound") is True
+        ),
+        "product_fact_ready_cell_count": sum(
+            1 for cell in cells if cell.get("product_fact_ready") is True
+        ),
+        "shared_regime_projection_count": len(regime),
+        "cross_timeframe_vote_counting": False,
+        "independent_action_authority": False,
+    }
+    result["receipt_hash"] = digest(result)
+    return result
 
 
 def compile_timeframe_family_matrix(factor: Mapping, *, observations=None, policy_view=None) -> dict:
@@ -1619,8 +4127,17 @@ def compile_timeframe_family_matrix(factor: Mapping, *, observations=None, polic
     cells = []
     matrix_method_ids = set()
     for timeframe in TIMEFRAMES:
+        runtime_binding = _timeframe_runtime_binding(factor, timeframe)
         for family in TECHNICAL_EVIDENCE_FAMILIES:
             method_coverage = []
+            if family == "REGIME":
+                regime_profile = profile_lookup["MARKET_SECTOR_REGIME"]
+                method_coverage.append(
+                    _shared_regime_cell_method_observation(
+                        regime_profile, factor, timeframe, observation_lookup,
+                    )
+                )
+                matrix_method_ids.add("MARKET_SECTOR_REGIME")
             for row in policy_view["methods"]:
                 if row["consumer_scope"] != "TECHNICAL_MATRIX" or family not in row["family_targets"] or timeframe not in row["target_timeframes"]:
                     continue
@@ -1651,11 +4168,62 @@ def compile_timeframe_family_matrix(factor: Mapping, *, observations=None, polic
                         frame_state = _state(frame)
                         if frame_state in {"READY", "PARTIAL", "MISSING", "UNKNOWN"}:
                             state, reason = frame_state, "MTF_FRAME_" + frame_state
-            cells.append({
+                        # A proven source-bound completed bridge is independent
+                        # from execution/trading authority. The parent .status
+                        # is intentionally still PARTIAL, keeping Gate4's
+                        # Execution veto unchanged.
+                        session = frame.get("completed_source_session_receipt")
+                        if (
+                            timeframe in {"60m", "30m", "15m", "5m"}
+                            and frame.get("evidence_state") == "READY"
+                            and frame.get("trigger_authority_state") == "NOT_ADMITTED"
+                            and frame.get("independent_action_authority") is False
+                            and runtime_binding.get("runtime_source_bound") is True
+                            and isinstance(session, Mapping)
+                            and session.get("session_count", 0) >= 10
+                            and session.get("identity_hash") == runtime_binding.get("data_identity_hash")
+                        ):
+                            state, reason = "READY", "MTF_SOURCE_BOUND_EVIDENCE_READY_TRIGGER_UNADMITTED"
+            cell_runtime_binding = _cell_runtime_binding(
+                runtime_binding, method_coverage,
+            )
+            projection_scope = (
+                "SHARED_ASSET_CONTEXT" if family == "REGIME" else "TIMEFRAME_LOCAL"
+            )
+            shared_parent_hash = (
+                digest({
+                    "requirement_id": "REGIME",
+                    "canonical_path": "market_sector_regime",
+                    "observation": observation_lookup.get("REGIME", {}),
+                })
+                if family == "REGIME" else None
+            )
+            cell = {
+                "cell_id": timeframe + ":" + family,
                 "timeframe": timeframe,
                 "family": family,
                 "state": state,
                 "reason": reason,
+                "implementation_state": "EXECUTABLE",
+                "projection_scope": projection_scope,
+                "shared_parent_context": family == "REGIME",
+                "shared_parent_hash": shared_parent_hash,
+                "cross_timeframe_vote_counting": False,
+                "fact_binding_state": (
+                    "SOURCE_BOUND"
+                    if cell_runtime_binding.get("runtime_source_bound") is True
+                    else "EXPLICIT_NONPRODUCT_OR_MISSINGNESS"
+                ),
+                "product_fact_ready": False,
+                "reader_projection": {
+                    "mode": "STATE_REASON_OR_SOURCE_BOUND_VALUES",
+                    "missingness_visible": True,
+                    "numeric_requires_product_and_method_ready": True,
+                    "shared_parent_not_repeated_vote": family == "REGIME",
+                },
+                # One immutable-value snapshot per cell; callers must not be
+                # able to mutate all eight families through a shared dict.
+                "runtime_binding": cell_runtime_binding,
                 "canonical_paths": tuple(dict.fromkeys(item["canonical_path"] for item in method_coverage)),
                 "available_paths": tuple(dict.fromkeys(item["canonical_path"] for item in method_coverage if item["state"] in {"READY", "PARTIAL"})),
                 "applicable_method_ids": tuple(item["method_id"] for item in method_coverage),
@@ -1665,10 +4233,20 @@ def compile_timeframe_family_matrix(factor: Mapping, *, observations=None, polic
                 "correlation_groups": tuple(dict.fromkeys(item["correlation_group"] for item in method_coverage)),
                 "independent_action_authority": False,
                 "strategy_authority": "EXISTING_STRATEGY_MATRIX_ONLY",
-            })
+            }
+            cell["cell_hash"] = digest(cell)
+            cells.append(cell)
     non_matrix_methods = []
     for profile in validate_method_window_profiles():
-        if profile.consumer_scope == "TECHNICAL_MATRIX":
+        # A method manually projected into the closed 7x8 matrix (currently the
+        # shared asset-level Regime parent) must not be duplicated in the
+        # non-matrix catalogue.  A duplicated row has no per-timeframe method
+        # receipt and can falsely invalidate an otherwise source-bound Stage-1
+        # invocation receipt.
+        if (
+            profile.consumer_scope == "TECHNICAL_MATRIX"
+            or profile.method_id in matrix_method_ids
+        ):
             continue
         binding = next(binding for binding in EVIDENCE_BINDINGS + DEFERRED_BINDINGS if binding.requirement_id == profile.requirement_id)
         observation = observation_lookup.get(profile.requirement_id, {})
@@ -1699,12 +4277,20 @@ def compile_timeframe_family_matrix(factor: Mapping, *, observations=None, polic
         "cells": cells,
         "non_matrix_methods": non_matrix_methods,
         "policy": {
+            "all_56_cells_have_executable_method_contract": True,
+            "regime_is_shared_asset_context_not_seven_votes": True,
+            "relative_strength_has_explicit_seven_timeframe_input_seam": True,
             "cell_state_is_family_availability_not_vote_count": True,
             "deferred_optional_methods_do_not_downgrade_admitted_family": True,
             "asset_research_model_methods_remain_closed_world_outside_matrix": True,
             "strategy_authority_remains_existing_strategy_matrix": True,
+            "every_cell_has_runtime_source_binding": True,
+            "cell_hash_covers_state_methods_and_runtime_binding": True,
         },
     }
+    document["implementation_receipt"] = validate_timeframe_family_matrix(document)
+    document["implementation_complete"] = True
+    document["executable_cell_count"] = 56
     document["matrix_hash"] = digest(document)
     return document
 
@@ -1730,6 +4316,17 @@ def _verified_typed_price_bar_scope(factor: Mapping) -> dict[str, dict]:
     provider = str(mtf.get("provider_identity") or "")
     basis = str(mtf.get("adjustment_basis") or "")
     observed = str(mtf.get("available_at_max") or "")
+    daily_identity = mtf.get("daily_data_identity") or {}
+    daily_route = str(daily_identity.get("provider_route") or "") if isinstance(daily_identity, Mapping) else ""
+    daily_currency = str(daily_identity.get("currency") or "UNKNOWN") if isinstance(daily_identity, Mapping) else "UNKNOWN"
+    daily_volume_unit = str(daily_identity.get("volume_unit") or "UNKNOWN") if isinstance(daily_identity, Mapping) else "UNKNOWN"
+    daily_amount_unit = str(daily_identity.get("amount_unit") or "UNKNOWN") if isinstance(daily_identity, Mapping) else "UNKNOWN"
+    daily_revision = _normalized_source_version_semantic(
+        daily_identity.get("revision") if isinstance(daily_identity, Mapping) else None
+    )
+    daily_vintage = _normalized_source_version_semantic(
+        daily_identity.get("vintage") if isinstance(daily_identity, Mapping) else None
+    )
     if not (target and provider and basis and observed):
         return {}
     if mtf.get("price_identity_reasons") or mtf.get("daily_data_identity_state") != "OBSERVED":
@@ -1737,7 +4334,12 @@ def _verified_typed_price_bar_scope(factor: Mapping) -> dict[str, dict]:
     scope = {}
     daily = frames.get("daily")
     identity = str(mtf.get("daily_data_identity_hash") or "")
+    # The existing MTF carrier publishes the exact consumed snapshot identity,
+    # not the provider frame's nested content hash. Bind both identities instead
+    # of adding a second provenance producer or guessing a hidden field.
+    daily_content = str(mtf.get("data_snapshot_identity") or "")
     if (isinstance(daily, Mapping) and len(identity) == 64
+        and len(daily_content) == 64
         and daily.get("status") == "READY"
         and daily.get("completed_bar_only") is True
         and daily.get("completed_through") == target
@@ -1745,7 +4347,24 @@ def _verified_typed_price_bar_scope(factor: Mapping) -> dict[str, dict]:
         scope["P_DAILY"] = {
             "state": "PARTIAL",
             "reason": "TYPED_1D_SOURCE_OBSERVED_RIGHTS_HISTORICAL_PIT_NOT_PROVEN",
-            "source_identity_hash": identity, "source_observed_at": observed,
+            "provider_identity": provider,
+            "source_identity_hash": identity,
+            "source_content_sha256": daily_content,
+            "source_observed_at": observed,
+            "source_available_at": observed,
+            "completed_through": target,
+            "adjustment_basis": basis,
+            "provider_route": daily_route,
+            "currency": daily_currency,
+            "volume_unit": daily_volume_unit,
+            "amount_unit": daily_amount_unit,
+            "units": {
+                "price": f"{daily_currency}_PER_LISTED_UNIT" if daily_currency != "UNKNOWN" else "UNKNOWN",
+                "volume": daily_volume_unit.upper(),
+                "amount": daily_amount_unit.upper(),
+            },
+            "revision": daily_revision,
+            "vintage": daily_vintage,
         }
     minute = frames.get("5m")
     session = minute.get("completed_source_session_receipt") if isinstance(minute, Mapping) else None
@@ -1778,29 +4397,65 @@ def _verified_typed_price_bar_scope(factor: Mapping) -> dict[str, dict]:
                 "state": "PARTIAL",
                 "reason": ("TYPED_5M_PRICE_ONLY_UNITS_UNKNOWN_RIGHTS_PIT_NOT_PROVEN"
                            if unknown_units else "TYPED_5M_SOURCE_RIGHTS_PIT_NOT_PROVEN"),
+                "provider_identity": session["provider_identity"],
+                "provider_route": session.get("provider_route"),
                 "source_identity_hash": minute_hash,
+                "source_content_sha256": session["content_sha256"],
                 "source_observed_at": session["observed_at"],
+                "source_available_at": session["available_at_max"],
+                "completed_through": target,
+                "adjustment_basis": session["observed_adjustment_basis"],
+                "currency": session["currency"],
+                "volume_unit": session["volume_unit"],
+                "amount_unit": session["amount_unit"],
                 "completed_sessions": sessions,
+                "units": {
+                    "price": f"{session['currency']}_PER_LISTED_UNIT",
+                    "volume": str(session["volume_unit"] or "UNKNOWN").upper(),
+                    "amount": str(session["amount_unit"] or "UNKNOWN").upper(),
+                },
+                "revision": _normalized_source_version_semantic(
+                    session.get("revision")
+                ),
+                "vintage": _normalized_source_version_semantic(
+                    session.get("vintage")
+                ),
             }
     return scope
 
 
 
-def _verified_cn_market_source_scope(factor: Mapping) -> dict[str, dict]:
-    """Admit only source identity for M_INDEX_CURRENT, never the index value."""
+def _verified_regime_source_carrier(
+    factor: Mapping,
+    evidence: Mapping,
+) -> bool:
+    """Verify the REGIME invocation identity without upgrading its output state.
+
+    A strict source receipt can remain independently visible when the composite
+    regime is UNKNOWN.  The method receipt still binds producer, output hash and
+    upstream identities; this helper grants no method readiness or action vote.
+    """
     if not _receipt_required(factor):
-        return {}
-    evidence = factor.get("market_sector_regime")
-    if not isinstance(evidence, Mapping):
-        return {}
-    binding = next(b for b in EVIDENCE_BINDINGS if b.requirement_id == "REGIME")
-    state, reason = method_observation(
+        return False
+    binding = next(
+        item for item in EVIDENCE_BINDINGS
+        if item.requirement_id == "REGIME"
+    )
+    valid, reason = _receipt_state(
         binding,
         evidence,
-        receipt=_receipt_for(factor, "REGIME"),
-        require_receipt=True,
+        _receipt_for(factor, "REGIME"),
     )
-    if state not in {"READY", "PARTIAL"} or reason != "METHOD_INVOCATION_VERIFIED":
+    return valid and reason == "METHOD_INVOCATION_VERIFIED"
+
+
+def _verified_cn_market_source_scope(factor: Mapping) -> dict[str, dict]:
+    """Admit only source identity for M_INDEX_CURRENT, never the index value."""
+    evidence = factor.get("market_sector_regime")
+    if (
+        not isinstance(evidence, Mapping)
+        or not _verified_regime_source_carrier(factor, evidence)
+    ):
         return {}
     sources = evidence.get("source_observations")
     observation = (
@@ -1860,6 +4515,1325 @@ def _verified_cn_market_source_scope(factor: Mapping) -> dict[str, dict]:
     }
 
 
+def _verified_cn_market_5m_source_scope(factor: Mapping) -> dict[str, dict]:
+    """Only a strict REGIME parent may carry a 5m source receipt forward.
+
+    Market index returns, numeric vote, warmup, storage, PIT and rights all
+    remain independent closed gates.
+    """
+    evidence = factor.get("market_sector_regime")
+    if (
+        not isinstance(evidence, Mapping)
+        or not _verified_regime_source_carrier(factor, evidence)
+    ):
+        return {}
+    sources = evidence.get("source_observations")
+    receipt = sources.get("M_INDEX_BARS") if isinstance(sources, Mapping) else None
+    upstream = evidence.get("upstream_identity")
+    market_context = upstream.get("daily_market_context") if isinstance(upstream, Mapping) else None
+    target = str(market_context.get("trade_date") or "") if isinstance(market_context, Mapping) else ""
+    expected = {
+        "schema_version": "cn-index-completed-5m-source-v1",
+        "dataset_id": "M_INDEX_BARS",
+        "source_state": "PARTIAL",
+        "provider_identity": "EastmoneyIndex5mAdapter",
+        "provider_route": "eastmoney.index_zh_a_hist_min_em|push2his/qt/stock/kline/get",
+        "completed_through": target,
+        "source_data_rights": "UNKNOWN",
+        "volume_unit": "UNKNOWN",
+        "amount_unit": "UNKNOWN",
+        "historical_pit_eligible": False,
+        "independent_source_value_admitted": True,
+        "native_recursive_stability_admitted": False,
+        "strategy_upgrade_authority": False,
+    }
+    if (
+        not target or not isinstance(receipt, Mapping)
+        or set(receipt) != set(expected) | {
+            "source_code", "observed_at", "content_sha256",
+            "identity_hash", "session_count", "row_count", "receipt_sha256",
+        }
+        or any(receipt.get(k) != v for k, v in expected.items())
+        or receipt.get("source_code") not in {"sh.000001", "sh.000300"}
+    ):
+        return {}
+    from data_provider.daily_data_identity import sha256_payload
+    if sha256_payload({k: v for k, v in receipt.items() if k != "receipt_sha256"}) != receipt.get("receipt_sha256"):
+        return {}
+    for key in ("content_sha256", "identity_hash"):
+        digest_text = str(receipt.get(key) or "")
+        if len(digest_text) != 64 or any(
+            ch not in "0123456789abcdef" for ch in digest_text.lower()
+        ):
+            return {}
+    sessions, rows = receipt.get("session_count"), receipt.get("row_count")
+    if (
+        type(sessions) is not int or type(rows) is not int or sessions < 1
+        or rows != 48 * sessions
+    ):
+        return {}
+    from datetime import datetime, date
+    from src.core.trading_calendar import resolve_latest_completed_session_fail_closed
+    try:
+        observed = datetime.fromisoformat(str(receipt.get("observed_at") or ""))
+        if observed.tzinfo is None or observed.utcoffset() is None:
+            return {}
+        if resolve_latest_completed_session_fail_closed("cn", current_time=observed) < date.fromisoformat(target):
+            return {}
+    except (TypeError, ValueError):
+        return {}
+    facts = {
+        "source_code": receipt["source_code"],
+        "timeframe": "5m",
+        "session_count": sessions,
+        "row_count": rows,
+        "bars_per_session": 48,
+        "completed_through": receipt["completed_through"],
+        "native_recursive_stability_admitted": False,
+    }
+    source_fact_hash = digest(facts)
+    source_observation_hash = digest({
+        "dataset_id": "M_INDEX_BARS",
+        "source_identity_hash": receipt["identity_hash"],
+        "source_content_sha256": receipt["content_sha256"],
+        "source_fact_hash": source_fact_hash,
+        "observed_at": receipt["observed_at"],
+    })
+    return {
+        "M_INDEX_BARS": {
+            "state": "PARTIAL",
+            "reason": (
+                "INDEX_5M_COMPLETED_SOURCE_VERIFIED_RECURSIVE_METHOD_NOT_ADMITTED_"
+                "TYPED_SOURCE_CHAIN"
+            ),
+            "provider_identity": receipt["provider_identity"],
+            "provider_route": receipt["provider_route"],
+            "producer_authority": (
+                "data_provider/cn_index_minute_source.py::"
+                "verify_cn_index_completed_5m_source_frame"
+            ),
+            "source_code": receipt["source_code"],
+            "completed_through": receipt["completed_through"],
+            "source_observed_at": receipt["observed_at"],
+            "source_available_at": receipt["observed_at"],
+            "source_identity_hash": receipt["identity_hash"],
+            "source_content_sha256": receipt["content_sha256"],
+            "source_fact_hash": source_fact_hash,
+            "source_observation_hash": source_observation_hash,
+            "source_data_rights": "UNKNOWN",
+            "units": {
+                "price": "INDEX_POINTS",
+                "volume": "UNKNOWN",
+                "amount": "UNKNOWN",
+            },
+            "currency": "UNKNOWN",
+            "adjustment_basis": "RAW_REQUESTED_OBSERVED_UNCLASSIFIED",
+            "revision": "UNKNOWN",
+            "vintage": "UNKNOWN",
+            "facts": facts,
+            "historical_pit_eligible": False,
+            "independent_source_value_admitted": True,
+            "native_recursive_stability_admitted": False,
+            "strategy_upgrade_authority": False,
+            "storage_admitted": False,
+            "learning_admitted": False,
+            "volume_unit": receipt["volume_unit"],
+            "amount_unit": receipt["amount_unit"],
+        },
+    }
+
+def _verified_cn_market_7tf_scope(factor: Mapping) -> dict[str, dict]:
+    """Project one verified formal-index 7TF context onto existing Market objects."""
+    if not _receipt_required(factor):
+        return {}
+    evidence = factor.get("market_sector_regime")
+    if not isinstance(evidence, Mapping):
+        return {}
+    parent = next(b for b in EVIDENCE_BINDINGS if b.requirement_id == "REGIME")
+    state, reason = method_observation(
+        parent,
+        evidence,
+        receipt=_receipt_for(factor, "REGIME"),
+        require_receipt=True,
+    )
+    if state not in {"READY", "PARTIAL"} or reason != "METHOD_INVOCATION_VERIFIED":
+        return {}
+    sources = evidence.get("source_observations")
+    context = sources.get("M_INDEX_7TF") if isinstance(sources, Mapping) else None
+    if not isinstance(context, Mapping):
+        return {}
+    try:
+        from src.services.multi_timeframe_structure_service import (
+            verify_formal_cn_market_index_7tf_context,
+        )
+
+        verified = verify_formal_cn_market_index_7tf_context(context)
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return {}
+    upstream = evidence.get("upstream_identity")
+    daily_upstream = (
+        upstream.get("daily_market_context")
+        if isinstance(upstream, Mapping)
+        else None
+    )
+    target = (
+        str(daily_upstream.get("trade_date") or "")
+        if isinstance(daily_upstream, Mapping)
+        else ""
+    )
+    if not target or verified.get("target_date") != target:
+        return {}
+    trace = verified.get("method_window_readiness_trace")
+    timeframes = verified.get("timeframes")
+    if not isinstance(trace, Mapping) or not isinstance(timeframes, Mapping):
+        return {}
+    rows = trace.get("rows")
+    if not isinstance(rows, list) or len(rows) != 14:
+        return {}
+    states = {
+        str(item.get("status") or "UNKNOWN")
+        for item in rows
+        if isinstance(item, Mapping)
+    }
+    if not states or not states <= {"READY", "PARTIAL", "MISSING", "UNKNOWN"}:
+        return {}
+    completed_timeframes = {
+        key: {
+            "status": str((timeframes.get(key) or {}).get("status") or "UNKNOWN"),
+            "observations": (timeframes.get(key) or {}).get("observations"),
+        }
+        for key in TIMEFRAMES
+    }
+    common = {
+        "state": "PARTIAL",
+        "reason": "FORMAL_INDEX_7TF_METHOD_TRACE_VERIFIED_RIGHTS_UNITS_PIT_NOT_ADMITTED",
+        "source_code": verified["source_code"],
+        "completed_through": verified["target_date"],
+        "source_identity_hash": verified["context_hash"],
+        "method_trace_hash": trace.get("trace_hash"),
+        "method_trace_status": trace.get("status"),
+        "timeframes": completed_timeframes,
+        "source_data_rights": "UNKNOWN",
+        "volume_unit": "UNKNOWN",
+        "amount_unit": "UNKNOWN",
+        "historical_pit_eligible": False,
+        "independent_source_value_admitted": False,
+        "strategy_upgrade_authority": False,
+        "storage_admitted": False,
+        "learning_admitted": False,
+    }
+    daily = verified.get("daily_source_observation")
+    minute = verified.get("minute_source_observation")
+    current = dict(common)
+    bars = dict(common)
+    if isinstance(daily, Mapping):
+        current.update({
+            "provider_identity": daily.get("provider_identity"),
+            "source_observed_at": daily.get("observed_at"),
+            "source_content_sha256": daily.get("content_sha256"),
+        })
+    if isinstance(minute, Mapping):
+        bars.update({
+            "provider_identity": minute.get("provider_identity"),
+            "source_observed_at": minute.get("observed_at"),
+            "source_content_sha256": minute.get("content_sha256"),
+            "completed_sessions": minute.get("session_count"),
+        })
+    return {
+        "M_INDEX_CURRENT": current,
+        "M_INDEX_BARS": bars,
+    }
+
+
+def _verified_cn_sector_scope(factor: Mapping) -> dict[str, dict]:
+    """Project one verified formal-Sector composite onto existing Sector objects."""
+    if not _receipt_required(factor):
+        return {}
+    evidence = factor.get("market_sector_regime")
+    if not isinstance(evidence, Mapping):
+        return {}
+    parent = next(b for b in EVIDENCE_BINDINGS if b.requirement_id == "REGIME")
+    state, reason = method_observation(
+        parent,
+        evidence,
+        receipt=_receipt_for(factor, "REGIME"),
+        require_receipt=True,
+    )
+    if state not in {"READY", "PARTIAL"} or reason != "METHOD_INVOCATION_VERIFIED":
+        return {}
+    sources = evidence.get("source_observations")
+    context = sources.get("S_FORMAL_CONTEXT") if isinstance(sources, Mapping) else None
+    if not isinstance(context, Mapping):
+        return {}
+    try:
+        from src.services.formal_sector_context_service import (
+            verify_formal_cn_sector_known_at_context,
+        )
+
+        verified = verify_formal_cn_sector_known_at_context(context)
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return {}
+    upstream = evidence.get("upstream_identity")
+    daily_upstream = (
+        upstream.get("daily_market_context")
+        if isinstance(upstream, Mapping)
+        else None
+    )
+    target = (
+        str(daily_upstream.get("trade_date") or "")
+        if isinstance(daily_upstream, Mapping)
+        else ""
+    )
+    if not target or verified.get("target_date") != target:
+        return {}
+    classification = verified.get("classification")
+    membership = verified.get("membership")
+    prices = verified.get("prices_7tf")
+    relative = verified.get("relative_strength")
+    nonprice = verified.get("nonprice")
+    if not all(
+        isinstance(item, Mapping)
+        for item in (classification, membership, prices, relative, nonprice)
+    ):
+        return {}
+    trace = prices.get("method_window_readiness_trace")
+    timeframes = prices.get("timeframes")
+    rows = trace.get("rows") if isinstance(trace, Mapping) else None
+    if (
+        not isinstance(trace, Mapping)
+        or not isinstance(timeframes, Mapping)
+        or not isinstance(rows, list)
+        or len(rows) != 14
+    ):
+        return {}
+    completed_timeframes = {
+        key: {
+            "status": str((timeframes.get(key) or {}).get("status") or "UNKNOWN"),
+            "observations": (timeframes.get(key) or {}).get("observations"),
+        }
+        for key in TIMEFRAMES
+    }
+    common = {
+        "state": "PARTIAL",
+        "reason": "FORMAL_SECTOR_COMPOSITE_VERIFIED_RIGHTS_PIT_NOT_ADMITTED",
+        "sector_id": verified.get("sector_id"),
+        "sector_name": verified.get("sector_name"),
+        "classification_standard": classification.get("standard_id"),
+        "classification_version": classification.get("version"),
+        "membership_denominator": membership.get("denominator"),
+        "completed_through": verified.get("target_date"),
+        "source_identity_hash": verified.get("context_hash"),
+        "source_data_rights": "UNKNOWN",
+        "historical_pit_eligible": False,
+        "independent_source_value_admitted": False,
+        "strategy_upgrade_authority": False,
+        "storage_admitted": False,
+        "learning_admitted": False,
+    }
+
+    def component_row(name: str, *, reason_code: str) -> dict:
+        component = nonprice.get(name)
+        row = dict(common)
+        if not isinstance(component, Mapping):
+            row.update({"state": "UNKNOWN", "reason": "FORMAL_SECTOR_COMPONENT_INVALID"})
+            return row
+        status = str(component.get("status") or "UNKNOWN")
+        if status == "MISSING":
+            row.update({
+                "state": "MISSING",
+                "reason": str(component.get("reason") or "FORMAL_SECTOR_COMPONENT_MISSING"),
+            })
+        elif status in {"READY", "PARTIAL"}:
+            row.update({
+                "state": "PARTIAL",
+                "reason": reason_code,
+                "source_observed_at": component.get("observed_at"),
+                "source_available_at": component.get("available_at"),
+                "provider_identity": component.get("provider_identity"),
+                "component": dict(component),
+            })
+        else:
+            row.update({"state": "UNKNOWN", "reason": "FORMAL_SECTOR_COMPONENT_STATE_INVALID"})
+        return row
+
+    classification_row = dict(common)
+    classification_row.update({
+        "reason": "FORMAL_SECTOR_CLASSIFICATION_AND_ASOF_MEMBERSHIP_VERIFIED_RIGHTS_PIT_NOT_ADMITTED",
+        "standard_name": classification.get("standard_name"),
+        "effective_from": classification.get("effective_from"),
+        "effective_to": classification.get("effective_to"),
+        "member_codes_sha256": membership.get("member_codes_sha256"),
+        "provider_identity": classification.get("provider_identity"),
+        "source_observed_at": classification.get("observed_at"),
+        "source_available_at": classification.get("available_at"),
+    })
+    price_row = dict(common)
+    price_row.update({
+        "reason": "FORMAL_SECTOR_7TF_AND_MARKET_RS_VERIFIED_RIGHTS_UNITS_PIT_NOT_ADMITTED",
+        "sector_price_code": verified.get("sector_price_code"),
+        "method_trace_hash": trace.get("trace_hash"),
+        "method_trace_status": trace.get("status"),
+        "timeframes": completed_timeframes,
+        "relative_strength": dict(relative),
+        "volume_unit": "UNKNOWN",
+        "amount_unit": "UNKNOWN",
+    })
+    return {
+        "S_CLASSIFICATION": classification_row,
+        "S_PRICES_RS": price_row,
+        "S_BREADTH": component_row(
+            "breadth", reason_code="FORMAL_SECTOR_BREADTH_WITH_EXACT_DENOMINATOR_VERIFIED"
+        ),
+        "S_TURNOVER": component_row(
+            "turnover", reason_code="FORMAL_SECTOR_TURNOVER_AND_MARKET_SHARE_VERIFIED"
+        ),
+        "S_FUND_FLOW": component_row(
+            "fund_flow", reason_code="FORMAL_SECTOR_FUND_FLOW_PROXY_BOUNDED_NO_INTENT_INFERENCE"
+        ),
+        "S_LEADER": component_row(
+            "leader", reason_code="FORMAL_SECTOR_LEADER_IS_RANK_ONLY_NOT_ACTION_AUTHORITY"
+        ),
+        "S_VALUATION": component_row(
+            "valuation", reason_code="FORMAL_SECTOR_DATED_VALUATION_EARNINGS_VINTAGE_VERIFIED"
+        ),
+    }
+
+
+def compile_atomic_subfield_obligations(factor: Mapping) -> list[dict]:
+    """Compile the seven exact Golden atoms without broad-proxy substitution."""
+    if not isinstance(factor, Mapping):
+        raise TraceabilityError("ATOMIC_SUBFIELD_FACTOR_INVALID")
+    catalog_ids = tuple(row[0] for row in ATOMIC_SUBFIELD_CATALOG)
+    if (
+        len(catalog_ids) != 7
+        or len(set(catalog_ids)) != 7
+        or frozenset(catalog_ids) != ACCEPTED_WHOLE_PRODUCT_ATOMIC_SUBFIELDS
+    ):
+        raise TraceabilityError("ATOMIC_SUBFIELD_CATALOG_MISMATCH")
+    observations = factor.get("atomic_subfield_source_observations")
+    if observations is None:
+        observations = {}
+    if not isinstance(observations, Mapping):
+        raise TraceabilityError("ATOMIC_SUBFIELD_SOURCE_OBSERVATIONS_INVALID")
+    unknown = sorted(set(str(key) for key in observations) - set(catalog_ids))
+    if unknown:
+        raise TraceabilityError(
+            "ATOMIC_SUBFIELD_SOURCE_OBSERVATION_ORPHAN:" + ",".join(unknown)
+        )
+    allowed_source_fields = {
+        "dataset_id", "state", "reason", "provider_identity",
+        "provider_route", "source_identity_hash", "source_content_sha256",
+        "source_observed_at", "source_available_at", "completed_through",
+        "units", "currency", "adjustment_basis", "revision", "vintage",
+        "facts", "source_fact_hash",
+    }
+    rows = []
+    for dataset_id, fact, frequency in ATOMIC_SUBFIELD_CATALOG:
+        row = {
+            "dataset_id": dataset_id,
+            "domain": "GLOBAL",
+            "fact_or_fields": fact,
+            "native_frequency": frequency,
+            "product_consumer": "MARKET_GLOBAL_TRANSMISSION",
+            "state": "UNKNOWN",
+            "reason": "NO_INDEPENDENT_TYPED_ATOMIC_SOURCE",
+            "independent_source_value_admitted": False,
+            "historical_pit_eligible": False,
+            "strategy_upgrade_authority": False,
+        }
+        source = observations.get(dataset_id)
+        if source is not None:
+            if not isinstance(source, Mapping):
+                raise TraceabilityError(
+                    "ATOMIC_SUBFIELD_SOURCE_OBSERVATION_INVALID:" + dataset_id
+                )
+            extra = set(source) - allowed_source_fields
+            if extra:
+                raise TraceabilityError(
+                    "ATOMIC_SUBFIELD_SOURCE_OBSERVATION_FIELD_INVALID:"
+                    + dataset_id + ":" + ",".join(sorted(extra))
+                )
+            if source.get("dataset_id") not in (None, "", dataset_id):
+                raise TraceabilityError(
+                    "ATOMIC_SUBFIELD_SOURCE_OBSERVATION_ID_MISMATCH:"
+                    + dataset_id
+                )
+            source_state = str(source.get("state") or "PARTIAL")
+            if source_state not in {"READY", "PARTIAL", "MISSING", "UNKNOWN"}:
+                raise TraceabilityError(
+                    "ATOMIC_SUBFIELD_SOURCE_OBSERVATION_STATE_INVALID:"
+                    + dataset_id
+                )
+            facts = source.get("facts")
+            fact_hash = str(source.get("source_fact_hash") or "").strip()
+            if source_state in {"READY", "PARTIAL"}:
+                if not isinstance(facts, Mapping) or not facts:
+                    raise TraceabilityError(
+                        "ATOMIC_SUBFIELD_SOURCE_FACTS_MISSING:" + dataset_id
+                    )
+                if len(fact_hash) != 64 or digest(facts) != fact_hash:
+                    raise TraceabilityError(
+                        "ATOMIC_SUBFIELD_SOURCE_FACT_HASH_MISMATCH:" + dataset_id
+                    )
+            elif facts not in (None, {}) or fact_hash:
+                raise TraceabilityError(
+                    "ATOMIC_SUBFIELD_UNOBSERVED_FACTS_FORBIDDEN:" + dataset_id
+                )
+            row.update({
+                key: value
+                for key, value in source.items()
+                if key not in {"dataset_id", "state", "reason"}
+            })
+            row["state"] = source_state
+            row["reason"] = str(
+                source.get("reason")
+                or "ATOMIC_SOURCE_OBSERVED_RIGHTS_NOT_ADMITTED"
+            )
+        rows.append(row)
+    return rows
+
+
+def _verified_data_object_source_scope(factor: Mapping) -> dict[str, dict]:
+    """Validate generic producer-owned non-price observations without inventing facts."""
+    raw = factor.get("data_object_source_observations")
+    if raw is None:
+        return {}
+    if not isinstance(raw, Mapping):
+        raise TraceabilityError("DATA_OBJECT_SOURCE_OBSERVATIONS_INVALID")
+    accepted_ids = {
+        dataset_id
+        for _domain, _consumer, entries in _DATA_OBJECT_CATALOG
+        for dataset_id, _fact, _frequency in entries
+    }
+    required = {
+        "schema_version", "dataset_id", "state", "reason_codes",
+        "provider_identity", "provider_route", "producer_authority",
+        "source_identity_hash", "source_content_sha256",
+        "source_observed_at", "source_available_at", "completed_through",
+        "units", "currency", "adjustment_basis", "revision", "vintage",
+        "historical_pit_eligible", "independent_source_value_admitted",
+        "strategy_upgrade_authority", "facts", "observation_hash",
+    }
+    result: dict[str, dict] = {}
+    for key, value in raw.items():
+        dataset_id = str(key or "").strip()
+        if dataset_id not in accepted_ids or not isinstance(value, Mapping):
+            raise TraceabilityError("DATA_OBJECT_SOURCE_OBSERVATION_ORPHAN")
+        row = dict(value)
+        if set(row) != required:
+            raise TraceabilityError(
+                "DATA_OBJECT_SOURCE_OBSERVATION_SCHEMA_MISMATCH:" + dataset_id
+            )
+        if (
+            row.get("schema_version") != DATA_OBJECT_SOURCE_OBSERVATION_VERSION
+            or row.get("dataset_id") != dataset_id
+            or row.get("state") not in {"READY", "PARTIAL"}
+            or not isinstance(row.get("reason_codes"), (list, tuple))
+            or not isinstance(row.get("units"), Mapping)
+            or not row.get("units")
+            or not isinstance(row.get("facts"), Mapping)
+            or row.get("historical_pit_eligible") is not False
+            or row.get("independent_source_value_admitted") is not True
+            or row.get("strategy_upgrade_authority") is not False
+        ):
+            raise TraceabilityError(
+                "DATA_OBJECT_SOURCE_OBSERVATION_INVALID:" + dataset_id
+            )
+        for hash_key in (
+            "source_identity_hash", "source_content_sha256", "observation_hash",
+        ):
+            digest_text = str(row.get(hash_key) or "").lower()
+            if len(digest_text) != 64 or any(
+                character not in "0123456789abcdef" for character in digest_text
+            ):
+                raise TraceabilityError(
+                    "DATA_OBJECT_SOURCE_OBSERVATION_HASH_INVALID:" + dataset_id
+                )
+        expected_hash = digest({
+            field: row[field] for field in row if field != "observation_hash"
+        })
+        if row["observation_hash"] != expected_hash:
+            raise TraceabilityError(
+                "DATA_OBJECT_SOURCE_OBSERVATION_HASH_MISMATCH:" + dataset_id
+            )
+        for text_key in (
+            "provider_identity", "provider_route", "producer_authority",
+            "source_observed_at", "source_available_at", "completed_through",
+            "currency", "adjustment_basis", "revision", "vintage",
+        ):
+            if not str(row.get(text_key) or "").strip():
+                raise TraceabilityError(
+                    "DATA_OBJECT_SOURCE_OBSERVATION_FIELD_MISSING:"
+                    + dataset_id + ":" + text_key
+                )
+        # A CSI index subset/price series is not the official effective-dated
+        # industry classification owner. Block replay of the revoked WIP route.
+        if dataset_id == "S_CLASSIFICATION" and (
+            row.get("provider_identity") in {
+                "CSIOfficialCurrentIndexConstituents", "CSIOfficialIndexPerformance",
+            }
+            or row.get("provider_route") in {
+                "https://www.csindex.com.cn/csindex-home/perf/index-perf",
+                "https://oss-ch.csindex.com.cn/static/html/csindex/public/uploads/"
+                "file/autofile/cons/000032cons.xls",
+            }
+            or "csi_sector_membership_source" in str(row.get("producer_authority") or "")
+        ):
+            raise TraceabilityError("CSI_SECTOR_SOURCE_OWNER_MISMATCH")
+        if (
+            dataset_id == "S_PRICES_RS"
+            and (
+                row.get("provider_identity") == "CSIOfficialIndexPerformance"
+                or row.get("provider_route") == (
+                    "https://www.csindex.com.cn/csindex-home/perf/index-perf"
+                )
+                or str(row.get("producer_authority") or "").endswith(
+                    "csi_sector_daily_rs_source.compile_csi_sector_daily_rs_source_observation"
+                )
+            )
+        ):
+            from data_provider.csi_sector_daily_rs_source import (
+                validate_csi_sector_daily_rs_source_only_observation,
+            )
+            try:
+                validate_csi_sector_daily_rs_source_only_observation(row)
+            except ValueError as exc:
+                raise TraceabilityError("CSI_SECTOR_RS_SOURCE_ONLY_INVALID:" + str(exc)) from exc
+        if dataset_id == "M_BASIC_BREADTH":
+            from data_provider.market_breadth_source import validate_market_breadth_observation
+            try:
+                validate_market_breadth_observation(row)
+            except ValueError as exc:
+                raise TraceabilityError("BREADTH_SOURCE_OBSERVATION_INVALID:" + str(exc)) from exc
+        if dataset_id == "M_INDEX_CURRENT":
+            from data_provider.sse_index_current_source import (
+                SSEIndexCurrentSourceError,
+                validate_sse_index_current_observation,
+            )
+            try:
+                validate_sse_index_current_observation(row)
+            except SSEIndexCurrentSourceError as exc:
+                raise TraceabilityError(
+                    "SSE_INDEX_CURRENT_SOURCE_OBSERVATION_INVALID:" + str(exc)
+                ) from exc
+        if dataset_id == "M_TURNOVER":
+            from data_provider.cn_exchange_turnover_source import (
+                CNExchangeTurnoverSourceError,
+                validate_cn_exchange_turnover_observation,
+            )
+            try:
+                validate_cn_exchange_turnover_observation(row)
+            except CNExchangeTurnoverSourceError as exc:
+                raise TraceabilityError(
+                    "CN_EXCHANGE_TURNOVER_SOURCE_OBSERVATION_INVALID:"
+                    + str(exc)
+                ) from exc
+        result[dataset_id] = {
+            "state": row["state"],
+            "reason": ",".join(str(item) for item in row["reason_codes"]),
+            "provider_identity": row["provider_identity"],
+            "provider_route": row["provider_route"],
+            "source_identity_hash": row["source_identity_hash"],
+            "source_content_sha256": row["source_content_sha256"],
+            "source_observed_at": row["source_observed_at"],
+            "source_available_at": row["source_available_at"],
+            "completed_through": row["completed_through"],
+            "units": dict(row["units"]),
+            "currency": row["currency"],
+            "adjustment_basis": row["adjustment_basis"],
+            "revision": _normalized_source_version_semantic(row["revision"]),
+            "vintage": _normalized_source_version_semantic(row["vintage"]),
+            "producer_authority": row["producer_authority"],
+            "source_fact_hash": digest(row["facts"]),
+            "source_observation_hash": row["observation_hash"],
+            "historical_pit_eligible": False,
+            "independent_source_value_admitted": True,
+            "strategy_upgrade_authority": False,
+        }
+    return result
+
+
+_UNKNOWN_SOURCE_VERSION_MARKERS = frozenset({
+    "UNKNOWN", "UNSPECIFIED", "MISSING", "MIXED", "NOT_PROVEN",
+    "UNVERIFIED", "NOT_APPLICABLE", "N/A", "NA",
+})
+
+
+def _normalized_source_version_semantic(value: Any) -> str:
+    """Collapse any composite with an unknown parent to exact UNKNOWN.
+
+    The protected v1 admission contract recognizes exact semantic states.  A
+    derived string such as PRICE=UNKNOWN|NAV=R1 must not turn an unknown parent
+    into a syntactically non-empty, apparently known revision or vintage.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return "UNKNOWN"
+    components = [text]
+    for separator in ("|", ";"):
+        components = [
+            part
+            for component in components
+            for part in component.split(separator)
+        ]
+    for component in components:
+        token = component.split("=", 1)[-1].strip().upper()
+        if (
+            token in _UNKNOWN_SOURCE_VERSION_MARKERS
+            or token.startswith("UNKNOWN_")
+            or token.endswith("_UNKNOWN")
+        ):
+            return "UNKNOWN"
+    return text
+
+
+def _valid_source_sha256(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    return len(text) == 64 and all(char in "0123456789abcdef" for char in text)
+
+
+def _typed_daily_source_semantics(identity: Any) -> dict | None:
+    """Extract exact daily-source semantics from an already verified method input.
+
+    This is a read-only projection. It neither fetches data nor grants Product,
+    storage, learning, redistribution, or action authority.
+    """
+    if not isinstance(identity, Mapping):
+        return None
+    provider = str(identity.get("provider_identity") or "").strip()
+    basis = str(identity.get("adjustment_basis") or "").strip()
+    snapshot = str(identity.get("data_snapshot_identity") or "").strip().lower()
+    daily = identity.get("daily_data_identity")
+    daily = dict(daily) if isinstance(daily, Mapping) else {}
+    route = str(
+        daily.get("provider_route") or identity.get("provider_route") or ""
+    ).strip()
+    content = str(
+        daily.get("content_sha256") or identity.get("source_content_sha256") or ""
+    ).strip().lower()
+    observed = str(
+        daily.get("observed_at")
+        or identity.get("snapshot_observed_at")
+        or identity.get("available_at_max")
+        or ""
+    ).strip()
+    available = str(identity.get("available_at_max") or observed).strip()
+    currency = str(daily.get("currency") or identity.get("currency") or "UNKNOWN").strip().upper()
+    volume_unit = str(daily.get("volume_unit") or identity.get("volume_unit") or "UNKNOWN").strip()
+    amount_unit = str(daily.get("amount_unit") or identity.get("amount_unit") or "UNKNOWN").strip()
+    revision = _normalized_source_version_semantic(
+        daily.get("revision") or identity.get("revision")
+    )
+    vintage = _normalized_source_version_semantic(
+        daily.get("vintage") or identity.get("vintage")
+    )
+    if (
+        not provider
+        or not basis
+        or not route
+        or not _valid_source_sha256(snapshot)
+        or not _valid_source_sha256(content)
+        or not observed
+        or not available
+        or identity.get("price_identity_reasons")
+    ):
+        return None
+    return {
+        "provider_identity": provider,
+        "provider_route": route,
+        "source_identity_hash": snapshot,
+        "source_content_sha256": content,
+        "source_observed_at": observed,
+        "source_available_at": available,
+        "completed_through": str(identity.get("target_date") or "").strip(),
+        "currency": currency or "UNKNOWN",
+        "volume_unit": volume_unit or "UNKNOWN",
+        "amount_unit": amount_unit or "UNKNOWN",
+        "adjustment_basis": basis,
+        "revision": revision or "UNKNOWN",
+        "vintage": vintage or "UNKNOWN",
+    }
+
+
+def _verified_cost_proxy_source_scope(factor: Mapping) -> dict[str, dict]:
+    """Bind the existing strict COST invocation to P_COST_PROXY source facts."""
+    if str(factor.get("asset_type") or "stock").lower() != "stock" or not _receipt_required(factor):
+        return {}
+    evidence = factor.get("cost_structure_evidence")
+    if not isinstance(evidence, Mapping):
+        return {}
+    binding = next(b for b in EVIDENCE_BINDINGS if b.requirement_id == "COST")
+    receipt = _receipt_for(factor, "COST")
+    state, reason = method_observation(
+        binding, evidence, receipt=receipt, require_receipt=True,
+    )
+    if state not in {"READY", "PARTIAL"} or reason != "METHOD_INVOCATION_VERIFIED":
+        return {}
+    context = evidence.get("context")
+    identity = receipt.get("input_identity") if isinstance(receipt, Mapping) else None
+    semantics = _typed_daily_source_semantics(identity)
+    if not isinstance(context, Mapping) or semantics is None:
+        return {}
+    if context.get("completed_bar_only") is not True:
+        return {}
+    bar = context.get("bar_reference_cost")
+    if not isinstance(bar, Mapping):
+        return {}
+    windows: dict[str, dict] = {}
+    for key, required in (("window_20", 20), ("window_60", 60)):
+        item = bar.get(key)
+        if not isinstance(item, Mapping):
+            continue
+        value = item.get("rolling_reference_price")
+        observations = item.get("observations")
+        if (
+            item.get("status") != "READY"
+            or item.get("source_alignment") != "SINGLE_SOURCE"
+            or not isinstance(value, Real)
+            or isinstance(value, bool)
+            or not math.isfinite(float(value))
+            or float(value) <= 0
+            or type(observations) is not int
+            or observations < required
+            or item.get("end_date") != semantics["completed_through"]
+            or tuple(item.get("sources") or ()) != (semantics["provider_identity"],)
+        ):
+            continue
+        windows[key] = {
+            "status": "READY",
+            "method": item.get("method"),
+            "semantics": item.get("semantics"),
+            "window_sessions": item.get("window_sessions"),
+            "observations": observations,
+            "start_date": item.get("start_date"),
+            "end_date": item.get("end_date"),
+            "rolling_reference_price": float(value),
+            "target_close": item.get("target_close"),
+            "close_distance_pct": item.get("close_distance_pct"),
+            "denominator_volume": item.get("denominator_volume"),
+        }
+    if not windows:
+        return {}
+    object_state = "READY" if set(windows) == {"window_20", "window_60"} else "PARTIAL"
+    facts = {
+        "schema_version": "typed-cost-proxy-source-v1",
+        "stock_code": str(context.get("stock_code") or factor.get("stock_code") or ""),
+        "market": str(context.get("market") or "").lower(),
+        "target_date": str(context.get("target_date") or ""),
+        "algorithm_version": context.get("algorithm_version"),
+        "config_hash": context.get("config_hash"),
+        **windows,
+    }
+    source_fact_hash = digest(facts)
+    row = {
+        "state": object_state,
+        "reason": (
+            "COST_PROXY_20_60_TYPED_SOURCE_READY_RIGHTS_PIT_NOT_ADMITTED"
+            if object_state == "READY"
+            else "COST_PROXY_PARTIAL_TYPED_SOURCE_RIGHTS_PIT_NOT_ADMITTED"
+        ),
+        **semantics,
+        "producer_authority": (
+            "src/services/cost_structure_service.py::build_cost_structure_context"
+        ),
+        "source_data_rights": "UNKNOWN",
+        "units": {
+            "rolling_reference_price": (
+                f"{semantics['currency']}_PER_LISTED_UNIT"
+                if semantics["currency"] != "UNKNOWN" else "UNKNOWN"
+            ),
+            "close_distance_pct": "PERCENTAGE_POINTS",
+            "denominator_volume": semantics["volume_unit"].upper(),
+        },
+        "facts": facts,
+        "source_fact_hash": source_fact_hash,
+        "historical_pit_eligible": False,
+        "independent_source_value_admitted": True,
+        "strategy_upgrade_authority": False,
+        "storage_admitted": False,
+        "learning_admitted": False,
+    }
+    row["source_observation_hash"] = digest({
+        "dataset_id": "P_COST_PROXY",
+        "source_identity_hash": row["source_identity_hash"],
+        "source_content_sha256": row["source_content_sha256"],
+        "source_fact_hash": source_fact_hash,
+        "producer_authority": row["producer_authority"],
+    })
+    return {"P_COST_PROXY": row}
+
+
+def _verified_etf_peer_rs_source_scope(factor: Mapping) -> dict[str, dict]:
+    """Bind an exact strict ETF peer universe to E_PEER_RS source facts."""
+    if str(factor.get("asset_type") or "stock").lower() != "etf" or not _receipt_required(factor):
+        return {}
+    evidence = factor.get("trend_relative_strength")
+    if not isinstance(evidence, Mapping):
+        return {}
+    binding = next(b for b in EVIDENCE_BINDINGS if b.requirement_id == "TREND_RS")
+    receipt = _receipt_for(factor, "TREND_RS")
+    state, reason = method_observation(
+        binding, evidence, receipt=receipt, require_receipt=True,
+    )
+    if state not in {"READY", "PARTIAL"} or reason != "METHOD_INVOCATION_VERIFIED":
+        return {}
+    peer_rs = evidence.get("relative_strength")
+    identity = receipt.get("input_identity") if isinstance(receipt, Mapping) else None
+    if (
+        not isinstance(peer_rs, Mapping)
+        or peer_rs.get("schema_version") != "etf-peer-relative-strength-v1"
+        or not isinstance(identity, Mapping)
+    ):
+        return {}
+    target_identity = identity.get("target")
+    peer_identities = identity.get("peers")
+    target_semantics = _typed_daily_source_semantics(target_identity)
+    if target_semantics is None or not isinstance(peer_identities, (list, tuple)):
+        return {}
+    peer_semantics = []
+    content_rows = []
+    observed_values = [target_semantics["source_observed_at"]]
+    available_values = [target_semantics["source_available_at"]]
+    revisions = {target_semantics["revision"]}
+    vintages = {target_semantics["vintage"]}
+    for peer in peer_identities:
+        semantics = _typed_daily_source_semantics(peer)
+        code = str(peer.get("stock_code") or "").strip() if isinstance(peer, Mapping) else ""
+        if (
+            semantics is None
+            or not code
+            or semantics["provider_identity"] != target_semantics["provider_identity"]
+            or semantics["provider_route"] != target_semantics["provider_route"]
+            or semantics["adjustment_basis"] != target_semantics["adjustment_basis"]
+            or semantics["currency"] != target_semantics["currency"]
+        ):
+            return {}
+        peer_semantics.append((code, semantics))
+        content_rows.append((code, semantics["source_content_sha256"]))
+        observed_values.append(semantics["source_observed_at"])
+        available_values.append(semantics["source_available_at"])
+        revisions.add(semantics["revision"])
+        vintages.add(semantics["vintage"])
+    universe = peer_rs.get("peer_universe")
+    relative = peer_rs.get("relative")
+    target = peer_rs.get("target")
+    if not all(isinstance(item, Mapping) for item in (universe, relative, target)):
+        return {}
+    if universe.get("eligible_peer_count") != len(peer_semantics):
+        return {}
+    facts = {
+        "schema_version": "typed-etf-peer-rs-source-v1",
+        "target_code": str(peer_rs.get("etf_code") or ""),
+        "market": str(peer_rs.get("market") or "").lower(),
+        "target_date": str(peer_rs.get("target_date") or ""),
+        "horizon_sessions": peer_rs.get("horizon_sessions"),
+        "start_date": peer_rs.get("start_date"),
+        "end_date": peer_rs.get("end_date"),
+        "target": dict(target),
+        "peer_universe": dict(universe),
+        "relative": dict(relative),
+    }
+    source_fact_hash = digest(facts)
+    row = {
+        "state": str(peer_rs.get("status") or state).upper(),
+        "reason": "ETF_PEER_RS_TYPED_UNIVERSE_READY_RIGHTS_PIT_NOT_ADMITTED",
+        "provider_identity": target_semantics["provider_identity"],
+        "provider_route": target_semantics["provider_route"],
+        "producer_authority": (
+            "src/services/relative_strength_service.py::"
+            "compute_etf_peer_relative_strength_context"
+        ),
+        "source_identity_hash": digest(identity),
+        "source_content_sha256": digest({
+            "target": target_semantics["source_content_sha256"],
+            "peers": tuple(sorted(content_rows)),
+        }),
+        "source_observed_at": max(observed_values),
+        "source_available_at": max(available_values),
+        "completed_through": str(peer_rs.get("target_date") or ""),
+        "source_data_rights": "UNKNOWN",
+        "units": {
+            "return": "PERCENT",
+            "excess_vs_peer_median": "PERCENTAGE_POINTS",
+            "percentile": "PERCENT",
+            "rank": "ORDINAL",
+            "peer_count": "COUNT",
+        },
+        "currency": target_semantics["currency"],
+        "adjustment_basis": target_semantics["adjustment_basis"],
+        "revision": _normalized_source_version_semantic(
+            next(iter(revisions)) if len(revisions) == 1 else "MIXED"
+        ),
+        "vintage": _normalized_source_version_semantic(
+            next(iter(vintages)) if len(vintages) == 1 else "MIXED"
+        ),
+        "facts": facts,
+        "source_fact_hash": source_fact_hash,
+        "historical_pit_eligible": False,
+        "independent_source_value_admitted": True,
+        "strategy_upgrade_authority": False,
+        "storage_admitted": False,
+        "learning_admitted": False,
+    }
+    row["source_observation_hash"] = digest({
+        "dataset_id": "E_PEER_RS",
+        "source_identity_hash": row["source_identity_hash"],
+        "source_content_sha256": row["source_content_sha256"],
+        "source_fact_hash": source_fact_hash,
+        "producer_authority": row["producer_authority"],
+    })
+    return {"E_PEER_RS": row}
+
+
+def _six_digit_asset_code(value: Any) -> str:
+    digits = "".join(character for character in str(value or "") if character.isdigit())
+    return digits[-6:] if len(digits) >= 6 else digits
+
+
+def _verified_generic_source_facts(
+    factor: Mapping,
+    dataset_id: str,
+    generic_source_scope: Mapping[str, Mapping],
+) -> dict | None:
+    row = generic_source_scope.get(dataset_id)
+    observations = factor.get("data_object_source_observations")
+    raw = observations.get(dataset_id) if isinstance(observations, Mapping) else None
+    facts = raw.get("facts") if isinstance(raw, Mapping) else None
+    if (
+        not isinstance(row, Mapping)
+        or not isinstance(facts, Mapping)
+        or not facts
+        or row.get("source_fact_hash") != digest(facts)
+    ):
+        return None
+    return dict(facts)
+
+
+def _verified_etf_premium_source_scope(
+    factor: Mapping,
+    *,
+    base_source_scope: Mapping[str, Mapping],
+    generic_source_scope: Mapping[str, Mapping],
+) -> dict[str, dict]:
+    """Compile daily-close versus official NAV without pretending it is IOPV."""
+    if (
+        str(factor.get("asset_type") or "stock").lower() != "etf"
+        or "E_PREMIUM" in generic_source_scope
+        or not _receipt_required(factor)
+    ):
+        return {}
+    price = base_source_scope.get("E_PRICE_1D")
+    nav = generic_source_scope.get("E_NAV_IOPV")
+    nav_facts = _verified_generic_source_facts(
+        factor, "E_NAV_IOPV", generic_source_scope,
+    )
+    evidence = factor.get("price_structure_evidence")
+    receipt = _receipt_for(factor, "STRUCTURE")
+    if not all(isinstance(item, Mapping) for item in (price, nav, nav_facts, evidence, receipt)):
+        return {}
+    binding = next(
+        item for item in EVIDENCE_BINDINGS if item.requirement_id == "STRUCTURE"
+    )
+    state, reason = method_observation(
+        binding, evidence, receipt=receipt, require_receipt=True,
+    )
+    context = evidence.get("context")
+    semantics = _typed_daily_source_semantics(receipt.get("input_identity"))
+    receipt_input = receipt.get("input_identity")
+    if (
+        state not in {"READY", "PARTIAL"}
+        or reason != "METHOD_INVOCATION_VERIFIED"
+        or not isinstance(context, Mapping)
+        or semantics is None
+        or context.get("completed_bar_only") is not True
+        or str(price.get("adjustment_basis") or "").upper() not in {"RAW", "UNADJUSTED"}
+        or str(semantics.get("adjustment_basis") or "").upper() not in {"RAW", "UNADJUSTED"}
+        or not isinstance(receipt_input, Mapping)
+        or price.get("source_identity_hash")
+        != receipt_input.get("daily_data_identity_hash")
+        or price.get("source_content_sha256")
+        != receipt_input.get("data_snapshot_identity")
+        or price.get("currency") != "CNY"
+        or nav.get("currency") != "CNY"
+    ):
+        return {}
+    close = context.get("current_close")
+    nav_value = nav_facts.get("nav_cny_per_share")
+    target = str(context.get("target_date") or "").strip()
+    fund_code = _six_digit_asset_code(nav_facts.get("fund_code"))
+    asset_code = _six_digit_asset_code(
+        context.get("stock_code") or factor.get("stock_code")
+    )
+    trading_day = str(nav_facts.get("trading_day") or "").strip()
+    if (
+        not isinstance(close, Real)
+        or isinstance(close, bool)
+        or not math.isfinite(float(close))
+        or float(close) <= 0
+        or not isinstance(nav_value, Real)
+        or isinstance(nav_value, bool)
+        or not math.isfinite(float(nav_value))
+        or float(nav_value) <= 0
+        or not target
+        or price.get("completed_through") != target
+        or nav.get("completed_through") != target
+        or trading_day != target
+        or not asset_code
+        or fund_code != asset_code
+    ):
+        return {}
+    premium_pct = (float(close) / float(nav_value) - 1.0) * 100.0
+    facts = {
+        "schema_version": "typed-etf-daily-premium-source-v1",
+        "fund_code": asset_code,
+        "trading_day": target,
+        "daily_close_cny_per_share": float(close),
+        "official_nav_cny_per_share": float(nav_value),
+        "premium_discount_pct": round(premium_pct, 8),
+        "comparison_basis": "DAILY_CLOSE_TO_OFFICIAL_NAV",
+        "iopv_value_used": False,
+        "unobserved_components": (
+            "INTRADAY_IOPV_VALUE",
+            "INTRADAY_IOPV_PUBLISHED_AT",
+            "INTRADAY_PRICE_ALIGNMENT",
+        ),
+        "full_intraday_premium_ready": False,
+    }
+    source_fact_hash = digest(facts)
+    row = {
+        "state": "PARTIAL",
+        "reason": (
+            "DAILY_CLOSE_OFFICIAL_NAV_PREMIUM_TYPED_"
+            "INTRADAY_IOPV_AND_RIGHTS_NOT_ADMITTED"
+        ),
+        "provider_identity": (
+            str(price.get("provider_identity")) + "+" + str(nav.get("provider_identity"))
+        ),
+        "provider_route": (
+            str(price.get("provider_route")) + "+" + str(nav.get("provider_route"))
+        ),
+        "producer_authority": (
+            "src/services/evidence_traceability_registry.py::"
+            "_verified_etf_premium_source_scope"
+        ),
+        "source_identity_hash": digest({
+            "price": price.get("source_identity_hash"),
+            "nav": nav.get("source_identity_hash"),
+            "structure_receipt": receipt.get("receipt_hash"),
+        }),
+        "source_content_sha256": digest({
+            "price": price.get("source_content_sha256"),
+            "nav": nav.get("source_content_sha256"),
+        }),
+        "source_observed_at": max(
+            str(price.get("source_observed_at")), str(nav.get("source_observed_at"))
+        ),
+        "source_available_at": max(
+            str(price.get("source_available_at")), str(nav.get("source_available_at"))
+        ),
+        "completed_through": target,
+        "source_data_rights": "UNKNOWN",
+        "units": {
+            "price": "CNY_PER_FUND_SHARE",
+            "nav": "CNY_PER_FUND_SHARE",
+            "premium_discount": "PERCENT",
+        },
+        "currency": "CNY",
+        "adjustment_basis": "RAW_DAILY_CLOSE_VS_OFFICIAL_NAV",
+        "revision": _normalized_source_version_semantic(
+            "PRICE=" + str(price.get("revision")) + "|NAV=" + str(nav.get("revision"))
+        ),
+        "vintage": _normalized_source_version_semantic(
+            "PRICE=" + str(price.get("vintage")) + "|NAV=" + str(nav.get("vintage"))
+        ),
+        "facts": facts,
+        "source_fact_hash": source_fact_hash,
+        "historical_pit_eligible": False,
+        "independent_source_value_admitted": True,
+        "strategy_upgrade_authority": False,
+        "storage_admitted": False,
+        "learning_admitted": False,
+    }
+    row["source_observation_hash"] = digest({
+        "dataset_id": "E_PREMIUM",
+        "source_identity_hash": row["source_identity_hash"],
+        "source_content_sha256": row["source_content_sha256"],
+        "source_fact_hash": source_fact_hash,
+        "producer_authority": row["producer_authority"],
+    })
+    return {"E_PREMIUM": row}
+
+
+def _verified_stock_execution_risk_source_scope(
+    factor: Mapping,
+    *,
+    base_source_scope: Mapping[str, Mapping],
+    generic_source_scope: Mapping[str, Mapping],
+) -> dict[str, dict]:
+    """Compile observed liquidity/session facts while retaining execution gaps."""
+    if (
+        str(factor.get("asset_type") or "stock").lower() != "stock"
+        or "P_EXEC_RISK" in generic_source_scope
+    ):
+        return {}
+    minute = base_source_scope.get("P_5M")
+    quote = generic_source_scope.get("P_QUOTE_LIQUID")
+    quote_facts = _verified_generic_source_facts(
+        factor, "P_QUOTE_LIQUID", generic_source_scope,
+    )
+    mtf = factor.get("multi_timeframe_structure_context")
+    frames = mtf.get("timeframes") if isinstance(mtf, Mapping) else None
+    five = frames.get("5m") if isinstance(frames, Mapping) else None
+    session = (
+        five.get("completed_source_session_receipt")
+        if isinstance(five, Mapping) else None
+    )
+    if not all(isinstance(item, Mapping) for item in (minute, quote, quote_facts, mtf, five, session)):
+        return {}
+    target = str(mtf.get("target_date") or "").strip()
+    asset_code = _six_digit_asset_code(mtf.get("stock_code") or factor.get("stock_code"))
+    quote_code = _six_digit_asset_code(quote_facts.get("stock_code"))
+    quote_date = str(
+        quote_facts.get("trade_date") or quote.get("completed_through") or ""
+    ).strip()
+    close = quote_facts.get("close")
+    volume = quote_facts.get("volume")
+    amount = quote_facts.get("amount")
+    turnover = quote_facts.get(
+        "turnover_rate_pct", quote_facts.get("turn")
+    )
+    pct_change = quote_facts.get("pct_change", quote_facts.get("pctChg"))
+    numeric = (close, volume, amount, turnover)
+    if (
+        not target
+        or not asset_code
+        or quote_code != asset_code
+        or quote_date != target
+        or minute.get("completed_through") != target
+        or quote.get("completed_through") != target
+        or quote.get("currency") != minute.get("currency")
+        or str(quote.get("adjustment_basis") or "").upper()
+        != str(minute.get("adjustment_basis") or "").upper()
+        or any(
+            not isinstance(value, Real)
+            or isinstance(value, bool)
+            or not math.isfinite(float(value))
+            for value in numeric
+        )
+        or float(close) <= 0
+        or float(volume) <= 0
+        or float(amount) <= 0
+        or float(turnover) < 0
+        or session.get("identity_state") != "OBSERVED"
+        or session.get("provider_identity") != minute.get("provider_identity")
+        or session.get("content_sha256") != minute.get("source_content_sha256")
+        or session.get("available_at_max") != minute.get("source_available_at")
+        or session.get("session_count") != minute.get("completed_sessions")
+        or session.get("bars_per_session") != 48
+    ):
+        return {}
+    facts = {
+        "schema_version": "typed-stock-execution-risk-partial-source-v1",
+        "stock_code": asset_code,
+        "trading_day": target,
+        "observed_components": (
+            "COMPLETED_XSHG_SESSION",
+            "DAILY_CLOSE_VOLUME_AMOUNT_TURNOVER",
+        ),
+        "unobserved_components": (
+            "SUSPENSION_STATUS",
+            "DAILY_PRICE_LIMIT_STATUS",
+            "BID_ASK_SPREAD",
+            "FEES_AND_TAXES",
+        ),
+        "daily_quote": {
+            "close": float(close),
+            "volume": float(volume),
+            "amount": float(amount),
+            "turnover_rate_pct": float(turnover),
+            "pct_change": (
+                float(pct_change)
+                if isinstance(pct_change, Real)
+                and not isinstance(pct_change, bool)
+                and math.isfinite(float(pct_change))
+                else None
+            ),
+            "adjustment_basis": quote.get("adjustment_basis"),
+        },
+        "completed_session": {
+            "calendar": session.get("session_calendar") or "XSHG",
+            "session_count": session.get("session_count"),
+            "bars_per_session": 48,
+            "completed_through": target,
+        },
+        "full_execution_risk_ready": False,
+    }
+    source_fact_hash = digest(facts)
+    row = {
+        "state": "PARTIAL",
+        "reason": (
+            "LIQUIDITY_AND_COMPLETED_SESSION_TYPED_"
+            "SUSPENSION_LIMIT_SPREAD_FEES_NOT_OBSERVED"
+        ),
+        "provider_identity": (
+            str(quote.get("provider_identity")) + "+" + str(minute.get("provider_identity"))
+        ),
+        "provider_route": (
+            str(quote.get("provider_route")) + "+" + str(minute.get("provider_route"))
+        ),
+        "producer_authority": (
+            "src/services/evidence_traceability_registry.py::"
+            "_verified_stock_execution_risk_source_scope"
+        ),
+        "source_identity_hash": digest({
+            "quote": quote.get("source_identity_hash"),
+            "minute": minute.get("source_identity_hash"),
+        }),
+        "source_content_sha256": digest({
+            "quote": quote.get("source_content_sha256"),
+            "minute": minute.get("source_content_sha256"),
+        }),
+        "source_observed_at": max(
+            str(quote.get("source_observed_at")), str(minute.get("source_observed_at"))
+        ),
+        "source_available_at": max(
+            str(quote.get("source_available_at")), str(minute.get("source_available_at"))
+        ),
+        "completed_through": target,
+        "source_data_rights": "UNKNOWN",
+        "units": {
+            "price": quote.get("units", {}).get("price", "UNKNOWN"),
+            "volume": quote.get("units", {}).get("volume", "UNKNOWN"),
+            "amount": quote.get("units", {}).get("amount", "UNKNOWN"),
+            "turnover_rate": quote.get("units", {}).get("turnover_rate", "PERCENT"),
+            "session_count": "COUNT",
+        },
+        "currency": quote.get("currency"),
+        "adjustment_basis": quote.get("adjustment_basis"),
+        "revision": _normalized_source_version_semantic(
+            "QUOTE=" + str(quote.get("revision")) + "|5M=" + str(minute.get("revision"))
+        ),
+        "vintage": _normalized_source_version_semantic(
+            "QUOTE=" + str(quote.get("vintage")) + "|5M=" + str(minute.get("vintage"))
+        ),
+        "facts": facts,
+        "source_fact_hash": source_fact_hash,
+        "historical_pit_eligible": False,
+        "independent_source_value_admitted": True,
+        "strategy_upgrade_authority": False,
+        "storage_admitted": False,
+        "learning_admitted": False,
+    }
+    row["source_observation_hash"] = digest({
+        "dataset_id": "P_EXEC_RISK",
+        "source_identity_hash": row["source_identity_hash"],
+        "source_content_sha256": row["source_content_sha256"],
+        "source_fact_hash": source_fact_hash,
+        "producer_authority": row["producer_authority"],
+    })
+    return {"P_EXEC_RISK": row}
+
+
 def _compile_accepted_data_object_scope(factor: Mapping) -> list[dict]:
     """Expose accepted DATA obligations, not invented data values or strategy votes."""
     rows = [
@@ -1901,6 +5875,36 @@ def _compile_accepted_data_object_scope(factor: Mapping) -> list[dict]:
     else:
         base_source_scope = {}
     market_source_scope = _verified_cn_market_source_scope(factor)
+    market_source_scope.update(_verified_cn_market_7tf_scope(factor))
+    # The direct strict 5m receipt is the native source identity for
+    # M_INDEX_BARS and therefore overrides only the broader formal projection.
+    market_source_scope.update(_verified_cn_market_5m_source_scope(factor))
+    sector_source_scope = _verified_cn_sector_scope(factor)
+    method_source_scope: dict[str, dict] = {}
+    method_source_scope.update(_verified_cost_proxy_source_scope(factor))
+    method_source_scope.update(_verified_etf_peer_rs_source_scope(factor))
+    generic_source_scope = _verified_data_object_source_scope(factor)
+    derived_source_scope: dict[str, dict] = {}
+    derived_source_scope.update(_verified_etf_premium_source_scope(
+        factor,
+        base_source_scope=base_source_scope,
+        generic_source_scope=generic_source_scope,
+    ))
+    derived_source_scope.update(_verified_stock_execution_risk_source_scope(
+        factor,
+        base_source_scope=base_source_scope,
+        generic_source_scope=generic_source_scope,
+    ))
+    occupied = (
+        set(base_source_scope)
+        | set(market_source_scope)
+        | set(sector_source_scope)
+        | set(method_source_scope)
+    )
+    if occupied & (set(generic_source_scope) | set(derived_source_scope)):
+        raise TraceabilityError("DATA_OBJECT_SOURCE_OBSERVATION_OWNER_CONFLICT")
+    if set(generic_source_scope) & set(derived_source_scope):
+        raise TraceabilityError("DERIVED_DATA_OBJECT_SOURCE_OWNER_CONFLICT")
     objects = []
     for dataset_id, domain, fact, frequency, consumer in rows:
         applicable = (
@@ -1925,9 +5929,280 @@ def _compile_accepted_data_object_scope(factor: Mapping) -> list[dict]:
             row.update(base_source_scope[dataset_id])
         if applicable and dataset_id in market_source_scope:
             row.update(market_source_scope[dataset_id])
+        if applicable and dataset_id in sector_source_scope:
+            row.update(sector_source_scope[dataset_id])
+        if applicable and dataset_id in method_source_scope:
+            row.update(method_source_scope[dataset_id])
+        if applicable and dataset_id in derived_source_scope:
+            row.update(derived_source_scope[dataset_id])
+        if applicable and dataset_id in generic_source_scope:
+            row.update(generic_source_scope[dataset_id])
         objects.append(row)
     return objects
 
+
+def compile_full_domain_data_gate(
+    data_objects: Any,
+    admission_view: Mapping | None = None,
+) -> dict:
+    """Account for all obligations without making future records block Product.
+
+    The 76-object catalog remains one closed world.  Current Product facts are
+    the GLOBAL/CN_MARKET/SECTOR/STOCK/ETF objects available at the research
+    as-of.  RECORD objects stay visible and independently admitted, but Ledger,
+    Outcome and PIT artifacts are later clocks and cannot be prerequisites for
+    the first truthful Product or first lawful recording.
+    """
+    if not isinstance(data_objects, (list, tuple)):
+        raise TraceabilityError("FULL_DOMAIN_DATA_OBJECTS_INVALID")
+    rows = []
+    for item in data_objects:
+        if not isinstance(item, Mapping):
+            raise TraceabilityError("FULL_DOMAIN_DATA_OBJECT_INVALID")
+        row = dict(item)
+        dataset_id = str(row.get("dataset_id") or "").strip()
+        domain = str(row.get("domain") or "").strip()
+        state = str(row.get("state") or "UNKNOWN").strip()
+        if not dataset_id or not domain:
+            raise TraceabilityError("FULL_DOMAIN_DATA_OBJECT_IDENTITY_MISSING")
+        if state not in TIMEFRAME_FAMILY_MATRIX_STATES:
+            raise TraceabilityError("FULL_DOMAIN_DATA_OBJECT_STATE_INVALID:" + dataset_id)
+        rows.append(row)
+
+    expected_catalog = {
+        dataset_id: {
+            "domain": domain,
+            "fact_or_fields": fact,
+            "native_frequency": frequency,
+            "product_consumer": consumer,
+        }
+        for domain, consumer, entries in _DATA_OBJECT_CATALOG
+        for dataset_id, fact, frequency in entries
+    }
+    expected_ids = frozenset(expected_catalog)
+    expected_current_product_ids = frozenset(
+        dataset_id
+        for dataset_id, binding in expected_catalog.items()
+        if binding["domain"] in CURRENT_PRODUCT_DATA_DOMAINS
+    )
+    expected_record_ids = frozenset(
+        dataset_id
+        for dataset_id, binding in expected_catalog.items()
+        if binding["domain"] == "RECORD"
+    )
+    if (
+        len(expected_current_product_ids) != 72
+        or expected_record_ids != FUTURE_RECORD_DATASET_IDS
+        or expected_current_product_ids & expected_record_ids
+        or expected_current_product_ids | expected_record_ids != expected_ids
+    ):
+        raise TraceabilityError("FULL_DOMAIN_STAGE_SCOPE_CONTRACT_MISMATCH")
+
+    ids = [str(row["dataset_id"]) for row in rows]
+    if len(ids) != 76 or len(set(ids)) != 76 or frozenset(ids) != expected_ids:
+        raise TraceabilityError("FULL_DOMAIN_DATA_OBJECT_SET_MISMATCH")
+    for row in rows:
+        dataset_id = str(row["dataset_id"])
+        expected_binding = expected_catalog[dataset_id]
+        actual_binding = {
+            key: str(row.get(key) or "") for key in expected_binding
+        }
+        if actual_binding != expected_binding:
+            raise TraceabilityError(
+                "FULL_DOMAIN_DATA_OBJECT_CATALOG_BINDING_MISMATCH:"
+                + dataset_id
+            )
+
+    domain_counts = {
+        domain: sum(str(row.get("domain") or "") == domain for row in rows)
+        for domain in ACCEPTED_DATA_OBJECT_DOMAIN_COUNTS
+    }
+    if domain_counts != ACCEPTED_DATA_OBJECT_DOMAIN_COUNTS:
+        raise TraceabilityError("FULL_DOMAIN_DATA_OBJECT_DOMAIN_COUNTS_MISMATCH")
+    if any(str(row.get("domain") or "") not in ACCEPTED_DATA_OBJECT_DOMAIN_COUNTS for row in rows):
+        raise TraceabilityError("FULL_DOMAIN_DATA_OBJECT_DOMAIN_INVALID")
+
+    applicable_ids = tuple(sorted(
+        str(row["dataset_id"])
+        for row in rows
+        if str(row.get("state") or "") != "NOT_APPLICABLE"
+    ))
+    current_product_applicable_ids = tuple(sorted(
+        str(row["dataset_id"])
+        for row in rows
+        if str(row.get("state") or "") != "NOT_APPLICABLE"
+        and str(row.get("domain") or "") in CURRENT_PRODUCT_DATA_DOMAINS
+    ))
+    record_applicable_ids = tuple(sorted(
+        str(row["dataset_id"])
+        for row in rows
+        if str(row.get("state") or "") != "NOT_APPLICABLE"
+        and str(row.get("domain") or "") == "RECORD"
+    ))
+    if frozenset(record_applicable_ids) != FUTURE_RECORD_DATASET_IDS:
+        raise TraceabilityError("FULL_DOMAIN_RECORD_SCOPE_MISMATCH")
+
+    state_counts = {
+        state: sum(str(row.get("state") or "") == state for row in rows)
+        for state in sorted(TIMEFRAME_FAMILY_MATRIX_STATES)
+    }
+    product_admitted_ids: tuple[str, ...] = ()
+    admission_state_counts = {}
+    if admission_view is not None:
+        if not isinstance(admission_view, Mapping):
+            raise TraceabilityError("FULL_DOMAIN_DATA_ADMISSION_VIEW_INVALID")
+        admission_rows = admission_view.get("objects")
+        if not isinstance(admission_rows, list):
+            raise TraceabilityError("FULL_DOMAIN_DATA_ADMISSION_ROWS_INVALID")
+        validated_rows = []
+        try:
+            for item in admission_rows:
+                validated_rows.append(validate_compiled_data_object_admission(item))
+        except DataObjectAdmissionError as exc:
+            raise TraceabilityError(str(exc)) from exc
+        admission_ids = [str(row.get("dataset_id") or "") for row in validated_rows]
+        if (
+            len(admission_ids) != 76
+            or len(set(admission_ids)) != 76
+            or frozenset(admission_ids) != expected_ids
+        ):
+            raise TraceabilityError("FULL_DOMAIN_DATA_ADMISSION_SET_MISMATCH")
+        object_applicability = {
+            str(row["dataset_id"]): str(row.get("state") or "") != "NOT_APPLICABLE"
+            for row in rows
+        }
+        if any(
+            bool(row.get("applicable")) != object_applicability[str(row["dataset_id"])]
+            for row in validated_rows
+        ):
+            raise TraceabilityError("FULL_DOMAIN_DATA_ADMISSION_APPLICABILITY_MISMATCH")
+        object_by_id = {
+            str(row["dataset_id"]): row for row in rows
+        }
+        for admission_row in validated_rows:
+            if admission_row.get("product_admitted") is not True:
+                continue
+            object_row = object_by_id[str(admission_row["dataset_id"])]
+            expected_runtime_binding = {
+                "runtime_provider_identity": object_row.get("provider_identity"),
+                "runtime_provider_route": object_row.get("provider_route"),
+                "runtime_source_identity_hash": object_row.get("source_identity_hash"),
+                "runtime_source_content_sha256": object_row.get("source_content_sha256"),
+                "runtime_source_observed_at": object_row.get("source_observed_at"),
+                "runtime_source_available_at": object_row.get("source_available_at"),
+                "runtime_completed_through": object_row.get("completed_through"),
+                "runtime_units": object_row.get("units"),
+                "runtime_currency": object_row.get("currency"),
+                "runtime_adjustment_basis": object_row.get("adjustment_basis"),
+                "runtime_revision": object_row.get("revision"),
+                "runtime_vintage": object_row.get("vintage"),
+            }
+            actual_runtime_binding = {
+                key: admission_row.get(key) for key in expected_runtime_binding
+            }
+            if not json_wire_equal(actual_runtime_binding, expected_runtime_binding):
+                raise TraceabilityError(
+                    "FULL_DOMAIN_DATA_ADMISSION_RUNTIME_BINDING_MISMATCH:"
+                    + str(admission_row["dataset_id"])
+                )
+        product_admitted_ids = tuple(sorted(
+            str(row["dataset_id"])
+            for row in validated_rows
+            if row.get("product_admitted") is True
+        ))
+        if set(product_admitted_ids) - set(applicable_ids):
+            raise TraceabilityError("FULL_DOMAIN_DATA_ADMISSION_NONAPPLICABLE_OBJECT")
+        admission_state_counts = {
+            state: sum(row.get("admission_state") == state for row in validated_rows)
+            for state in sorted({row.get("admission_state") for row in validated_rows})
+        }
+        if admission_view.get("product_admitted_count") != len(product_admitted_ids):
+            raise TraceabilityError("FULL_DOMAIN_DATA_ADMISSION_COUNT_MISMATCH")
+
+    admitted = set(product_admitted_ids)
+    # Rights admission makes an observed leaf displayable; it does not make an
+    # incomplete object satisfy the full-domain exit.  Product readiness needs
+    # both the exact operation admission and a producer-owned READY state.
+    ready_ids = {
+        str(row["dataset_id"])
+        for row in rows
+        if str(row.get("state") or "") == "READY"
+    }
+    ready_and_admitted = ready_ids & admitted
+    unresolved_all_ids = tuple(sorted(
+        set(applicable_ids) - ready_and_admitted
+    ))
+    current_product_admitted_ids = tuple(sorted(
+        set(current_product_applicable_ids) & admitted
+    ))
+    current_product_ready_ids = tuple(sorted(
+        set(current_product_applicable_ids) & ready_and_admitted
+    ))
+    record_admitted_ids = tuple(sorted(set(record_applicable_ids) & admitted))
+    record_ready_ids = tuple(sorted(
+        set(record_applicable_ids) & ready_and_admitted
+    ))
+    unresolved_product_ids = tuple(sorted(
+        set(current_product_applicable_ids) - set(current_product_ready_ids)
+    ))
+    unresolved_record_ids = tuple(sorted(
+        set(record_applicable_ids) - set(record_ready_ids)
+    ))
+    current_product_domain_counts = {
+        domain: sum(
+            str(row.get("domain") or "") == domain
+            and str(row.get("state") or "") != "NOT_APPLICABLE"
+            for row in rows
+        )
+        for domain in sorted(CURRENT_PRODUCT_DATA_DOMAINS)
+    }
+    document = {
+        "schema_version": FULL_DOMAIN_DATA_GATE_SCHEMA_VERSION,
+        "expected_object_count": 76,
+        "accounted_object_count": len(rows),
+        "domain_counts": domain_counts,
+        "state_counts": state_counts,
+        "applicable_object_count": len(applicable_ids),
+        "product_admitted_count": len(product_admitted_ids),
+        "admission_state_counts": admission_state_counts,
+        "current_product_domains": tuple(sorted(CURRENT_PRODUCT_DATA_DOMAINS)),
+        "current_product_domain_counts": current_product_domain_counts,
+        "current_product_expected_object_count": len(expected_current_product_ids),
+        "current_product_applicable_object_count": len(current_product_applicable_ids),
+        "current_product_admitted_count": len(current_product_admitted_ids),
+        "current_product_admitted_dataset_ids": current_product_admitted_ids,
+        "current_product_ready_count": len(current_product_ready_ids),
+        "current_product_ready_dataset_ids": current_product_ready_ids,
+        "record_object_count": len(record_applicable_ids),
+        "record_admitted_count": len(record_admitted_ids),
+        "record_admitted_dataset_ids": record_admitted_ids,
+        "record_ready_count": len(record_ready_ids),
+        "record_ready_dataset_ids": record_ready_ids,
+        "unresolved_product_dataset_ids": unresolved_product_ids,
+        "unresolved_record_dataset_ids": unresolved_record_ids,
+        "unresolved_all_applicable_dataset_ids": unresolved_all_ids,
+        "full_domain_accounted_pass": True,
+        "full_domain_product_ready": (
+            bool(current_product_applicable_ids) and not unresolved_product_ids
+        ),
+        "full_domain_all_obligations_ready": (
+            bool(applicable_ids) and not unresolved_all_ids
+        ),
+        "strategy_upgrade_authority": False,
+        "independent_action_authority": False,
+        "policy": {
+            "unknown_missing_and_not_admitted_remain_visible": True,
+            "not_applicable_is_not_failure": True,
+            "catalog_count_never_implies_product_readiness": True,
+            "every_product_ready_object_requires_validated_operation_admission": True,
+            "product_admission_without_object_ready_is_partial_not_full_domain": True,
+            "future_record_artifacts_remain_accounted_but_do_not_block_current_product": True,
+            "record_outcome_and_pit_have_independent_later_clocks": True,
+            "product_admission_does_not_grant_storage_training_or_action": True,
+        },
+    }
+    document["gate_hash"] = digest(document)
+    return document
 
 
 def compile_complete_research_universe_view(
@@ -2036,6 +6311,119 @@ def compile_complete_research_universe_view(
     if not isinstance(cells, list) or len(cells) != 56:
         raise TraceabilityError("COMPLETE_RESEARCH_UNIVERSE_TECHNICAL_MATRIX_INVALID")
 
+    matrix_state_counts = {
+        state: sum(1 for cell in cells if cell.get("state") == state)
+        for state in sorted(TIMEFRAME_FAMILY_MATRIX_STATES)
+    }
+    source_bound_timeframes = tuple(
+        timeframe for timeframe in TIMEFRAMES
+        if any(
+            cell.get("timeframe") == timeframe
+            and (cell.get("runtime_binding") or {}).get("runtime_source_bound") is True
+            for cell in cells
+        )
+    )
+    data_objects = _compile_accepted_data_object_scope(factor)
+    admission_receipts = factor.get("data_object_admission_receipts")
+    admission_view = None
+    if admission_receipts is not None:
+        if not isinstance(admission_receipts, Mapping):
+            raise TraceabilityError("DATA_OBJECT_ADMISSION_RECEIPTS_INVALID")
+        target_as_of = (
+            factor.get("research_as_of")
+            or at(factor, "multi_timeframe_structure_context.snapshot_observed_at")
+            or at(factor, "multi_timeframe_structure_context.available_at_max")
+            or at(factor, "shared_report_context.research_as_of")
+        )
+        # A Product receipt on a bare historical/legacy factor, or one with
+        # only a trade-date label, has no precise frozen known-at deadline.
+        # A valid hash and asserted rights alone cannot admit it to the
+        # current research consumer.
+        # Empty receipts are the lawful missing-data nontrigger; they must
+        # not fail the report, but also cannot produce a READY object.
+        if admission_receipts and not target_as_of:
+            raise TraceabilityError(
+                "DATA_OBJECT_ADMISSION_RESEARCH_ASOF_MISSING"
+            )
+        research_operation_id = str(factor.get("research_operation_id") or "").strip()
+        research_intended_use = str(factor.get("research_intended_use") or "").strip()
+        if admission_receipts and (
+            not research_operation_id or research_intended_use != "NO_SEND_RESEARCH"
+        ):
+            raise TraceabilityError(
+                "DATA_OBJECT_ADMISSION_OPERATION_CONTEXT_MISSING_OR_INVALID"
+            )
+        try:
+            admission_view = compile_data_object_admission_view(
+                data_objects,
+                admission_receipts,
+                as_of=target_as_of,
+                operation_id=research_operation_id,
+                intended_use=research_intended_use,
+            )
+        except DataObjectAdmissionError as exc:
+            raise TraceabilityError(str(exc)) from exc
+
+    atomic_obligations = compile_atomic_subfield_obligations(factor)
+    atomic_receipts = factor.get("atomic_subfield_admission_receipts")
+    if atomic_receipts is None:
+        atomic_receipts = {}
+    if not isinstance(atomic_receipts, Mapping):
+        raise TraceabilityError("ATOMIC_SUBFIELD_ADMISSION_RECEIPTS_INVALID")
+    atomic_target_as_of = (
+        factor.get("research_as_of")
+        or at(factor, "multi_timeframe_structure_context.snapshot_observed_at")
+        or at(factor, "multi_timeframe_structure_context.available_at_max")
+        or at(factor, "shared_report_context.research_as_of")
+    )
+    atomic_operation_id = str(
+        factor.get("research_operation_id") or ""
+    ).strip()
+    atomic_intended_use = str(
+        factor.get("research_intended_use") or ""
+    ).strip()
+    if atomic_receipts and not atomic_target_as_of:
+        raise TraceabilityError(
+            "ATOMIC_SUBFIELD_ADMISSION_RESEARCH_ASOF_MISSING"
+        )
+    if atomic_receipts and (
+        not atomic_operation_id or atomic_intended_use != "NO_SEND_RESEARCH"
+    ):
+        raise TraceabilityError(
+            "ATOMIC_SUBFIELD_ADMISSION_OPERATION_CONTEXT_MISSING_OR_INVALID"
+        )
+    try:
+        atomic_admission_view = compile_data_object_admission_view(
+            atomic_obligations,
+            atomic_receipts,
+            as_of=atomic_target_as_of,
+            operation_id=atomic_operation_id,
+            intended_use=atomic_intended_use,
+        )
+    except DataObjectAdmissionError as exc:
+        raise TraceabilityError(str(exc)) from exc
+    atomic_product_ids = tuple(sorted(
+        str(row.get("dataset_id") or "")
+        for row in atomic_admission_view.get("objects") or ()
+        if isinstance(row, Mapping) and row.get("product_admitted") is True
+    ))
+
+    valuation_route_ids = tuple(
+        _owner_literals("src/services/business_valuation_service.py").get(
+            "VALUATION_ROUTE_IDS", ()
+        )
+    )
+    if (
+        len(valuation_route_ids) != len(ACCEPTED_VALUATION_ROUTE_IDS)
+        or frozenset(valuation_route_ids) != ACCEPTED_VALUATION_ROUTE_IDS
+    ):
+        raise TraceabilityError("VALUATION_ROUTE_SET_MISMATCH")
+
+    full_domain_data_gate = compile_full_domain_data_gate(
+        data_objects,
+        admission_view,
+    )
+
     document = {
         "schema_version": COMPLETE_RESEARCH_UNIVERSE_SCHEMA_VERSION,
         "manifest_hash": MANIFEST_HASH,
@@ -2045,11 +6433,36 @@ def compile_complete_research_universe_view(
             "cell_count": len(cells),
             "timeframes": matrix.get("timeframes"),
             "families": matrix.get("families"),
+            "state_counts": matrix_state_counts,
+            "source_bound_timeframes": source_bound_timeframes,
+            "all_cells_have_runtime_binding": all(
+                isinstance(cell.get("runtime_binding"), Mapping) for cell in cells
+            ),
+            "all_cells_have_hash": all(
+                len(str(cell.get("cell_hash") or "")) == 64 for cell in cells
+            ),
         },
         "planes": planes,
         "requirements": requirements,
-        "data_objects": _compile_accepted_data_object_scope(factor),
+        "data_objects": data_objects,
         "data_objects_count": 76,
+        "valuation_route_ids": valuation_route_ids,
+        "known_atomic_subfield_obligations": tuple(sorted(
+            ACCEPTED_WHOLE_PRODUCT_ATOMIC_SUBFIELDS
+        )),
+        "atomic_subfield_obligations": atomic_obligations,
+        "atomic_subfield_admission": atomic_admission_view,
+        "atomic_subfield_admission_hash": atomic_admission_view["view_hash"],
+        "atomic_subfield_product_admitted_ids": atomic_product_ids,
+        "full_domain_data_gate": full_domain_data_gate,
+        "full_domain_data_gate_hash": full_domain_data_gate["gate_hash"],
+        **(
+            {
+                "data_object_admission": admission_view,
+                "data_object_admission_hash": admission_view["view_hash"],
+            }
+            if admission_view is not None else {}
+        ),
         "data_object_scope_schema": "accepted-data-obligation-scope-v1",
         "data_object_source_graph_sha256": ACCEPTED_DATA_OBJECT_GRAPH_SHA256,
         "data_object_subset_sha256": ACCEPTED_DATA_OBJECT_SUBSET_SHA256,
@@ -2060,6 +6473,8 @@ def compile_complete_research_universe_view(
             "methods": len(method_rows),
             "strategy_bindings": len(strategy_rows),
             "technical_matrix_cells": len(cells),
+            "atomic_subfields": len(atomic_obligations),
+            "atomic_subfields_product_admitted": len(atomic_product_ids),
         },
         "policy": {
             "timeframe_family_matrix_is_technical_subset_only": True,
@@ -2067,6 +6482,10 @@ def compile_complete_research_universe_view(
             "asset_research_model_layers_remain_in_same_closed_world": True,
             "same_source_same_swing_methods_are_not_independent_votes": True,
             "email_llm_are_projection_consumers_not_evidence_producers": True,
+            "data_object_rights_are_operation_specific_and_fail_closed": True,
+            "product_admission_never_implies_storage_training_or_redistribution": True,
+            "broad_global_objects_never_substitute_exact_atomic_subfields": True,
+            "atomic_subfields_reuse_operation_specific_admission": True,
         },
     }
     document["universe_hash"] = digest(document)
@@ -2123,6 +6542,176 @@ def validate_runtime_trace(factor: Mapping) -> dict:
     if not isinstance(actual, Mapping) or not json_wire_equal(actual, expected):
         raise TraceabilityError("RUNTIME_TRACE_MISSING_OR_STALE")
     return expected
+
+
+FOUNDATION_EVIDENCE_RECEIPT_VERSION = "foundation-7tf-eight-family-receipt-v1"
+
+
+def compile_foundation_evidence_receipt(
+    factor: Mapping,
+    *,
+    product_coverage: Mapping | None = None,
+) -> dict:
+    """Bind effective method scope, actual 7x8 evidence, Product data, and consumer.
+
+    This is an audit receipt over the existing Registry/Factor/V2.5 chain. It
+    neither clones indicator algorithms nor turns declared scope into runtime
+    readiness. Historical evidence remains descriptive unless it is the current
+    factor's exact runtime trace and operation-specific data admission.
+    """
+    trace = validate_runtime_trace(factor)
+    policy = compile_method_window_policy_view()
+    if trace.get("method_window_policy_hash") != policy.get("view_hash"):
+        raise TraceabilityError("FOUNDATION_METHOD_POLICY_IDENTITY_MISMATCH")
+    methods = tuple(dict(row) for row in policy.get("methods") or ())
+    if len(methods) != 43:
+        raise TraceabilityError("FOUNDATION_METHOD_COUNT_MISMATCH")
+    technical = tuple(
+        row for row in methods
+        if row.get("consumer_scope") == "TECHNICAL_MATRIX"
+        and row.get("leaf_implementation_state") == "EXISTING_REUSED"
+    )
+    target_pairs = sum(len(tuple(row.get("target_timeframes") or ())) for row in technical)
+    declared_pairs = sum(
+        len(tuple(row.get("declared_execution_timeframes") or ())) for row in technical
+    )
+    effective_pairs = sum(
+        len(tuple(row.get("current_execution_timeframes") or ())) for row in technical
+    )
+    override_rows = tuple(
+        {
+            "method_id": str(row.get("method_id") or ""),
+            "declared": tuple(row.get("declared_execution_timeframes") or ()),
+            "effective": tuple(row.get("current_execution_timeframes") or ()),
+        }
+        for row in technical
+        if tuple(row.get("declared_execution_timeframes") or ())
+        != tuple(row.get("current_execution_timeframes") or ())
+    )
+    # Accepted current engineering scope: 35 existing methods, including the
+    # five source-bound extended OHLCV methods across all seven timeframes.
+    # The original 43-method catalogue and immutable V2.5 Golden stay fixed;
+    # effective execution never implies current Product data or an extra vote.
+    if (len(technical), target_pairs, declared_pairs, effective_pairs, len(override_rows)) != (
+        30, 207, 69, 189, 22,
+    ):
+        raise TraceabilityError("FOUNDATION_EFFECTIVE_METHOD_SCOPE_MISMATCH")
+
+    matrix = trace.get("timeframe_family_matrix")
+    if not isinstance(matrix, Mapping) or matrix.get("schema_version") != "timeframe-family-matrix-v1":
+        raise TraceabilityError("FOUNDATION_MATRIX_MISSING")
+    cells = tuple(dict(row) for row in matrix.get("cells") or ())
+    if len(cells) != 56:
+        raise TraceabilityError("FOUNDATION_MATRIX_CELL_COUNT_MISMATCH")
+    implementation_receipt = validate_timeframe_family_matrix(matrix)
+    if not json_wire_equal(
+        matrix.get("implementation_receipt"), implementation_receipt,
+    ):
+        raise TraceabilityError("FOUNDATION_MATRIX_IMPLEMENTATION_RECEIPT_MISMATCH")
+    cell_rows = tuple({
+        "cell_id": row.get("cell_id"),
+        "timeframe": row.get("timeframe"),
+        "family": row.get("family"),
+        "state": row.get("state"),
+        "reason": row.get("reason"),
+        "current_method_ids": tuple(row.get("current_method_ids") or ()),
+        "deferred_method_ids": tuple(row.get("deferred_method_ids") or ()),
+        "available_paths": tuple(row.get("available_paths") or ()),
+        "runtime_source_bound": bool(
+            (row.get("runtime_binding") or {}).get("runtime_source_bound")
+        ),
+        "cell_hash": row.get("cell_hash"),
+    } for row in cells)
+    if any(row["state"] not in TIMEFRAME_FAMILY_MATRIX_STATES for row in cell_rows):
+        raise TraceabilityError("FOUNDATION_MATRIX_STATE_INVALID")
+
+    universe = trace.get("complete_research_universe")
+    gate = universe.get("full_domain_data_gate") if isinstance(universe, Mapping) else None
+    if not isinstance(gate, Mapping) or gate.get("full_domain_accounted_pass") is not True:
+        raise TraceabilityError("FOUNDATION_FULL_DOMAIN_GATE_MISSING")
+    admitted_ids = tuple(gate.get("current_product_admitted_dataset_ids") or ())
+    asset_type = str(factor.get("asset_type") or "stock").lower()
+    price_ids = (
+        ("E_PRICE_1D", "E_PRICE_5M")
+        if asset_type == "etf" else ("P_DAILY", "P_5M")
+    )
+    canonical = factor.get("canonical_decision")
+    if not isinstance(canonical, Mapping):
+        raise TraceabilityError("FOUNDATION_CANONICAL_DECISION_MISSING")
+
+    coverage_binding = None
+    if product_coverage is not None:
+        if not isinstance(product_coverage, Mapping):
+            raise TraceabilityError("FOUNDATION_PRODUCT_COVERAGE_INVALID")
+        if (
+            product_coverage.get("runtime_trace_hash") != trace.get("runtime_trace_hash")
+            or product_coverage.get("method_window_policy_hash") != policy.get("view_hash")
+            or product_coverage.get("timeframe_family_matrix_hash") != matrix.get("matrix_hash")
+            or len(tuple(product_coverage.get("slots") or ())) != 27
+        ):
+            raise TraceabilityError("FOUNDATION_PRODUCT_COVERAGE_BINDING_MISMATCH")
+        coverage_binding = {
+            "slot_count": 27,
+            "slot_state_counts": dict(Counter(
+                str(row.get("state") or "UNKNOWN")
+                for row in product_coverage.get("slots") or ()
+                if isinstance(row, Mapping)
+            )),
+            "coverage_hash": digest({
+                key: value for key, value in product_coverage.items()
+                if key not in {"receipt_hash", "foundation_evidence_receipt"}
+            }),
+        }
+
+    document = {
+        "schema_version": FOUNDATION_EVIDENCE_RECEIPT_VERSION,
+        "method_profile_count": len(methods),
+        "existing_method_count": sum(
+            row.get("leaf_implementation_state") == "EXISTING_REUSED" for row in methods
+        ),
+        "deferred_method_count": sum(
+            row.get("leaf_implementation_state") != "EXISTING_REUSED" for row in methods
+        ),
+        "technical_existing_method_count": len(technical),
+        "target_method_timeframe_pairs": target_pairs,
+        "declared_execution_pairs": declared_pairs,
+        "effective_execution_pairs": effective_pairs,
+        "effective_override_rows": override_rows,
+        "matrix_cell_count": len(cell_rows),
+        "matrix_state_counts": dict(Counter(row["state"] for row in cell_rows)),
+        "matrix_cells": cell_rows,
+        "matrix_implementation_receipt": implementation_receipt,
+        "all_56_cells_executable": (
+            implementation_receipt.get("implementation_complete") is True
+            and implementation_receipt.get("executable_cell_count") == 56
+        ),
+        "regime_shared_projection_count": implementation_receipt.get(
+            "shared_regime_projection_count"
+        ),
+        "current_product_admitted_dataset_ids": admitted_ids,
+        "price_dataset_ids": price_ids,
+        "admitted_price_dataset_ids": tuple(
+            dataset_id for dataset_id in price_ids if dataset_id in admitted_ids
+        ),
+        "canonical_decision_hash": digest(canonical),
+        "canonical_action": canonical.get("action"),
+        "canonical_hard_veto": canonical.get("hard_veto"),
+        "data_snapshot_identity": trace.get("data_snapshot_identity"),
+        "data_identity": trace.get("data_identity"),
+        "product_coverage_binding": coverage_binding,
+        "proof_scope": "CURRENT_FACTOR_RUNTIME_NOT_HISTORICAL_RECEIPT_REUSE",
+        "policy": {
+            "declaration_is_not_runtime_ready": True,
+            "effective_profiles_supersede_raw_constructor_scope": True,
+            "runtime_cell_state_requires_existing_producer_receipt": True,
+            "historical_execution_never_backfills_current_product": True,
+            "missing_unknown_and_not_admitted_remain_visible": True,
+            "seven_by_eight_is_coverage_not_votes": True,
+            "independent_action_authority": False,
+        },
+    }
+    document["receipt_hash"] = digest(document)
+    return document
 
 
 def learning_projection(factor: Mapping) -> dict:

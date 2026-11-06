@@ -167,6 +167,10 @@ class MarketOverview:
     limit_up_count: int = 0             # 涨停家数
     limit_down_count: int = 0           # 跌停家数
     total_amount: float = 0.0           # 两市成交额（亿元）
+    breadth_denominator: Optional[int] = None
+    market_universe_complete: bool = False
+    data_object_source_observations: Dict[str, Any] = field(default_factory=dict)
+    data_object_admissions: Dict[str, Any] = field(default_factory=dict)
     # north_flow: float = 0.0           # 北向资金净流入（亿元）- 已废弃，接口不可用
     
     # 板块涨幅榜
@@ -571,6 +575,14 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 
     def _get_market_statistics(self, overview: MarketOverview):
         """获取市场涨跌统计"""
+        # A failed refresh cannot leave a previous successful observation READY.
+        overview.up_count = overview.down_count = overview.flat_count = 0
+        overview.limit_up_count = overview.limit_down_count = 0
+        overview.total_amount = 0.0
+        overview.breadth_denominator = 0
+        overview.market_universe_complete = False
+        overview.data_object_source_observations = {}
+        overview.data_object_admissions = {}
         try:
             logger.info("[大盘] %s action=get_market_stats status=start", self._log_context())
 
@@ -578,11 +590,43 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 
             if stats:
                 overview.up_count = stats.get('up_count', 0)
+
                 overview.down_count = stats.get('down_count', 0)
                 overview.flat_count = stats.get('flat_count', 0)
                 overview.limit_up_count = stats.get('limit_up_count', 0)
                 overview.limit_down_count = stats.get('limit_down_count', 0)
                 overview.total_amount = stats.get('total_amount', 0.0)
+                # Preserve source receipts instead of silently reducing them to
+                # six scalars. Legacy counts alone never prove all-market coverage.
+                overview.breadth_denominator = stats.get('breadth_denominator')
+                from copy import deepcopy
+                from data_provider.market_breadth_source import validate_market_breadth_observation
+                source_rows = dict(stats.get('data_object_source_observations') or {})
+                observation = source_rows.get('M_BASIC_BREADTH')
+                if observation is not None:
+                    observation = validate_market_breadth_observation(
+                        observation, as_of=datetime.now().astimezone(),
+                    )
+                    if observation["completed_through"] > overview.date:
+                        raise ValueError("BREADTH_SOURCE_AFTER_REVIEW_DATE")
+                    if any(stats.get(key) != observation['facts'][key] for key in ('up_count', 'down_count', 'flat_count')):
+                        raise ValueError('BREADTH_CONSUMER_COUNT_MISMATCH')
+                overview.market_universe_complete = bool(
+                    observation
+                    and observation.get("facts", {}).get(
+                        "market_universe_complete"
+                    ) is True
+                )
+                overview.data_object_source_observations = (
+                    {'M_BASIC_BREADTH': deepcopy(observation)} if observation is not None else {}
+                )
+                admission_rows = stats.get("data_object_admissions") or {}
+                if not isinstance(admission_rows, dict) or set(admission_rows) - {"M_BASIC_BREADTH"}:
+                    raise ValueError("BREADTH_ADMISSION_ROWS_INVALID")
+                overview.data_object_admissions = deepcopy(admission_rows)
+                if "M_BASIC_BREADTH" in admission_rows:
+                    self._validated_market_stats_product_admission(overview)
+
 
                 logger.info(
                     "[大盘] %s action=get_market_stats status=success up=%s down=%s flat=%s "
@@ -600,9 +644,21 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 
         except Exception as e:
             logger.error("[大盘] %s action=get_market_stats status=failed error=%s", self._log_context(), e)
+            # Counts copied before receipt validation must not survive a
+            # malformed, future-dated or semantically conflicting receipt.
+            overview.up_count = overview.down_count = overview.flat_count = 0
+            overview.limit_up_count = overview.limit_down_count = 0
+            overview.total_amount = 0.0
+            overview.breadth_denominator = 0
+            overview.market_universe_complete = False
+            overview.data_object_source_observations = {}
+            overview.data_object_admissions = {}
 
     def _get_sector_rankings(self, overview: MarketOverview):
         """获取板块涨跌榜"""
+        # A failed/empty refresh must not replay the previous run's leaders.
+        overview.top_sectors = []
+        overview.bottom_sectors = []
         try:
             logger.info("[大盘] %s action=get_sector_rankings status=start", self._log_context())
 
@@ -626,6 +682,9 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 
     def _get_concept_rankings(self, overview: MarketOverview):
         """获取概念/题材涨跌榜（fail-open）。"""
+        # Preserve successful current observations, never stale fallback rows.
+        overview.top_concepts = []
+        overview.bottom_concepts = []
         try:
             logger.info("[大盘] %s action=get_concept_rankings status=start", self._log_context())
 
@@ -885,6 +944,54 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             "small_cap_role": combine_role(("mid_cap", "small_cap"), "中小盘"),
         }
 
+    @staticmethod
+    def _validated_market_stats_product_admission(
+        overview: MarketOverview,
+    ) -> Optional[Dict[str, Any]]:
+        """Return an exact compiled B1 decision bound to this breadth source."""
+        admissions = getattr(overview, "data_object_admissions", {})
+        if not isinstance(admissions, dict):
+            raise ValueError("BREADTH_ADMISSION_ROWS_INVALID")
+        raw = admissions.get("M_BASIC_BREADTH")
+        if raw is None:
+            return None
+
+        from data_provider.market_breadth_source import (
+            validate_market_breadth_observation,
+        )
+        from src.services.data_object_admission import (
+            DataObjectAdmissionError,
+            validate_compiled_data_object_admission,
+        )
+
+        admission = validate_compiled_data_object_admission(raw)
+        observation = validate_market_breadth_observation(
+            overview.data_object_source_observations.get("M_BASIC_BREADTH")
+        )
+        pairs = (
+            ("source_identity_hash", "source_identity_hash"),
+            ("content_sha256", "source_content_sha256"),
+            ("provider_identity", "provider_identity"),
+            ("provider_route", "provider_route"),
+            ("observed_at", "source_observed_at"),
+            ("available_at", "source_available_at"),
+            ("completed_through", "completed_through"),
+            ("units", "units"),
+            ("currency", "currency"),
+            ("adjustment_basis", "adjustment_basis"),
+            ("revision", "revision"),
+            ("vintage", "vintage"),
+        )
+        if (
+            admission.get("dataset_id") != "M_BASIC_BREADTH"
+            or admission.get("runtime_source_bound") is not True
+            or any(admission.get(left) != observation.get(right) for left, right in pairs)
+        ):
+            raise DataObjectAdmissionError(
+                "BREADTH_COMPILED_ADMISSION_SOURCE_MISMATCH"
+            )
+        return admission if admission.get("product_admitted") is True else None
+
     def _build_market_regime_brief(self, overview: MarketOverview) -> Dict[str, Any]:
         """Build deterministic market-width, role and limit-structure facts from the overview."""
         if not self.profile.has_market_stats:
@@ -912,6 +1019,44 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             breadth_state = "BALANCED"
             breadth_status = "READY"
 
+        coverage_scope = "LEGACY_COUNTS_UNVERIFIED"
+        missing_markets: List[str] = []
+        observation = overview.data_object_source_observations.get(
+            "M_BASIC_BREADTH"
+        )
+        if observation is not None:
+            from data_provider.market_breadth_source import (
+                validate_market_breadth_observation,
+            )
+            observation = validate_market_breadth_observation(
+                observation, as_of=datetime.now().astimezone(),
+            )
+            if observation["completed_through"] > overview.date:
+                raise ValueError("BREADTH_SOURCE_AFTER_REVIEW_DATE")
+            facts = observation["facts"]
+            if facts["market_universe_complete"] is True:
+                coverage_scope = "VERIFIED_COMPLETE_UNIVERSE"
+            else:
+                coverage_scope = "VERIFIED_PARTIAL_SH_SZ_EXCLUDES_BJ"
+                missing_markets = list(facts["missing_markets"])
+                breadth_status = "PARTIAL"
+        elif overview.breadth_denominator is not None:
+            coverage_scope = "OBSERVED_SUBSET"
+            if breadth_denominator > 0:
+                breadth_status = "PARTIAL"
+
+        observed_breadth_state = breadth_state
+        observed_denominator = breadth_denominator
+        observed_ratio = breadth_ratio
+        product_admitted = (
+            self._validated_market_stats_product_admission(overview) is not None
+        )
+        if not product_admitted:
+            breadth_state = "UNKNOWN"
+            breadth_denominator = 0
+            breadth_ratio = None
+            breadth_status = "PARTIAL" if observed_denominator > 0 else "MISSING"
+
         limit_up_count = max(0, int(overview.limit_up_count or 0))
         limit_down_count = max(0, int(overview.limit_down_count or 0))
         limit_total = limit_up_count + limit_down_count
@@ -932,6 +1077,10 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         else:
             speculative_state = "BALANCED"
             speculative_status = "READY"
+        observed_speculative_state = speculative_state
+        if limit_total > 0:
+            speculative_state = "UNKNOWN"
+            speculative_status = "PARTIAL"
 
         return {
             "schema_version": "market-regime-brief-v1",
@@ -941,20 +1090,36 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             "representative_index_roles": self._build_representative_index_roles(overview),
             "breadth": {
                 "status": breadth_status,
+                "coverage_scope": coverage_scope,
+                "product_admitted": product_admitted,
+                "missing_markets": missing_markets,
+                "completed_through": (
+                    observation.get("completed_through")
+                    if observation is not None else None
+                ),
+                "source_observation_hash": (
+                    overview.data_object_source_observations.get("M_BASIC_BREADTH", {}).get("observation_hash")
+                ),
+
                 "up_count": up_count,
                 "down_count": down_count,
                 "flat_count": flat_count,
+                "observed_denominator": observed_denominator or None,
+                "observed_ratio": observed_ratio,
+                "observed_state": observed_breadth_state,
                 "breadth_denominator": breadth_denominator or None,
                 "breadth_ratio": breadth_ratio,
                 "state": breadth_state,
             },
             "speculative_heat": {
+                "product_admitted": False,
                 "status": speculative_status,
                 "proxy": "limit_up_down_structure",
                 "limit_up_count": limit_up_count,
                 "limit_down_count": limit_down_count,
                 "limit_total": limit_total or None,
                 "limit_up_ratio": limit_up_ratio,
+                "observed_state": observed_speculative_state,
                 "state": speculative_state,
             },
         }
@@ -968,34 +1133,23 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         market_light_snapshot: Optional[Dict[str, Any]] = None,
         *,
         cn_index_completed_close_source: Optional[pd.DataFrame] = None,
+        cn_index_completed_5m_source: Optional[pd.DataFrame] = None,
     ) -> Dict[str, Any]:
         """Build the structured market-review contract consumed by API, Web, and notifications."""
         language = self._get_output_language()
         sections = self._split_report_sections(report)
         title = self._extract_report_title(report) or self._get_review_title(overview.date).lstrip("# ").strip()
         light = (
-            market_light_snapshot or self.build_market_light_snapshot(overview)
+            self.build_market_light_snapshot(overview)
             if self._supports_market_light()
             else None
         )
-        breadth_dimensions = None
-        if isinstance(light, dict):
-            dimensions = light.get("dimensions")
-            if isinstance(dimensions, dict):
-                breadth_dimensions = dimensions.get("breadth")
-
-        breadth_supported = bool(self.profile.has_market_stats)
-        if breadth_supported and isinstance(breadth_dimensions, dict) and "available" in breadth_dimensions:
-            breadth_supported = bool(breadth_dimensions.get("available"))
-
-        has_breadth_data = False
-        if breadth_supported:
-            if isinstance(breadth_dimensions, dict) and "available" in breadth_dimensions:
-                has_breadth_data = bool(breadth_dimensions.get("available"))
-            else:
-                breadth_available = overview.up_count + overview.down_count + overview.flat_count > 0
-                limit_available = overview.limit_up_count + overview.limit_down_count > 0
-                has_breadth_data = bool(breadth_available or limit_available)
+        if market_light_snapshot is not None and market_light_snapshot != light:
+            raise ValueError("MARKET_LIGHT_SNAPSHOT_MISMATCH")
+        has_breadth_data = bool(
+            self._validated_market_stats_product_admission(overview)
+            and overview.up_count + overview.down_count + overview.flat_count > 0
+        )
 
         payload = {
             "version": 1,
@@ -1056,6 +1210,35 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             payload["sections"] = self._split_report_sections(augmented_report)
             payload["cn_index_completed_close_source"] = observation
 
+        if cn_index_completed_5m_source is not None:
+            if self.region != "cn":
+                raise ValueError("INDEX_5M_SOURCE_REGION_MISMATCH")
+            from data_provider.cn_index_minute_source import (
+                verify_cn_index_completed_5m_source_frame,
+            )
+            minute = verify_cn_index_completed_5m_source_frame(
+                cn_index_completed_5m_source, trade_date=str(overview.date),
+            )
+            tick = chr(96)
+            source_block = (
+                "### 指数5分钟完成K线来源（源级PARTIAL；指标未升级）\n"
+                f"- {tick}M_INDEX_BARS{tick} / {tick}{minute['source_code']}{tick}: "
+                f"{tick}PARTIAL{tick}，已验证 {minute['session_count']}个完整交易日、"
+                f"{minute['row_count']}根5m，完成至 {minute['completed_through']}，"
+                f"实际观测于 {minute['observed_at']}。\n"
+                f"- 提供方 {minute['provider_identity']}；内容摘要 {tick}"
+                f"{minute['content_sha256']}{tick}；身份 {tick}"
+                f"{minute['identity_hash']}{tick}。\n"
+                "- 仅可由同源5m在交易时段内确定性导出15m／30m／60m；"
+                "实际历史不足时递归MACD/RSI、结构确认均不得补齐。"
+                "指数原始价量单位/复权返回证明、数据权利、历史PIT仍不足；"
+                "不得独立升级Market Light、canonical、BUY或模型概率。"
+            )
+            augmented = payload["markdown_report"].rstrip() + "\n\n" + source_block
+            payload["markdown_report"] = augmented
+            payload["sections"] = self._split_report_sections(augmented)
+            payload["cn_index_completed_5m_source"] = minute
+
         if light is not None:
             payload["market_light"] = light
 
@@ -1063,15 +1246,20 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         if market_brief:
             payload["market_brief"] = market_brief
 
+        if overview.data_object_source_observations:
+            from copy import deepcopy
+            payload["data_object_source_observations"] = deepcopy(overview.data_object_source_observations)
+
         if has_breadth_data:
+            breadth = market_brief["breadth"]
             payload["breadth"] = {
                 "up_count": overview.up_count,
                 "down_count": overview.down_count,
                 "flat_count": overview.flat_count,
-                "limit_up_count": overview.limit_up_count,
-                "limit_down_count": overview.limit_down_count,
-                "total_amount": overview.total_amount,
-                "turnover_unit": self._get_turnover_unit_label(),
+                "breadth_denominator": breadth["breadth_denominator"],
+                "breadth_ratio": breadth["breadth_ratio"],
+                "coverage_scope": breadth["coverage_scope"],
+                "completed_through": breadth["completed_through"],
             }
 
         return payload
@@ -1204,7 +1392,8 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 
     def _build_stats_block(self, overview: MarketOverview) -> str:
         """Build market statistics block."""
-        has_stats = overview.up_count or overview.down_count or overview.total_amount
+        breadth_admitted = self._validated_market_stats_product_admission(overview) is not None
+        has_stats = bool(breadth_admitted and (overview.up_count or overview.down_count or overview.flat_count))
         has_market_signal = bool(self._supports_market_light() and (overview.indices or has_stats))
         if not has_stats and not has_market_signal:
             return ""
@@ -1228,18 +1417,16 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 if lines:
                     lines.append("")
                 lines.append(
-                    f"- **Breadth**: Advancers {overview.up_count} / Decliners {overview.down_count} / "
-                    f"Flat {overview.flat_count}; "
-                    f"Limit-up {overview.limit_up_count} / Limit-down {overview.limit_down_count}; "
-                    f"Turnover {overview.total_amount:.0f} ({self._get_turnover_unit_label()})"
+                    f"- **Breadth**: Advancers {overview.up_count} / "
+                    f"Decliners {overview.down_count} / Flat {overview.flat_count}."
                 )
             return "\n".join(lines)
         lines = []
         score = light["score"] if isinstance(light, dict) else None
         label = light["temperature_label"] if isinstance(light, dict) else ""
-        participation = overview.up_count + overview.down_count
+        breadth_admitted = self._validated_market_stats_product_admission(overview) is not None
+        participation = overview.up_count + overview.down_count if breadth_admitted else 0
         up_ratio = overview.up_count / participation if participation else 0.0
-        limit_spread = overview.limit_up_count - overview.limit_down_count
         if (
             isinstance(light, dict)
             and score is not None
@@ -1265,8 +1452,6 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                     "| 指标 | 数值 | 观察 |",
                     "|------|------|------|",
                     f"| 上涨/下跌/平盘 | {overview.up_count} / {overview.down_count} / {overview.flat_count} | 上涨占比(不含平盘) {up_ratio:.1%} |",
-                    f"| 涨停/跌停 | {overview.limit_up_count} / {overview.limit_down_count} | 涨跌停差 {limit_spread:+d} |",
-                    f"| 两市成交额 | {overview.total_amount:.0f} 亿 | {self._describe_turnover(overview.total_amount)} |",
                 ]
             )
         return "\n".join(lines)
@@ -1323,7 +1508,8 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         return snapshot.model_dump()
 
     def _build_market_light_reasons_zh(self, overview: MarketOverview, score: int) -> List[str]:
-        participation = overview.up_count + overview.down_count
+        breadth_admitted = self._validated_market_stats_product_admission(overview) is not None
+        participation = overview.up_count + overview.down_count if breadth_admitted else 0
         up_ratio = overview.up_count / participation if participation else None
         reasons: List[str] = []
         if up_ratio is not None:
@@ -1355,16 +1541,13 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 )
             else:
                 reasons.append(f"{index.name} 持平，美股未来约30天风险压力变化不大")
-        if overview.limit_up_count or overview.limit_down_count:
-            reasons.append(f"涨跌停差 {overview.limit_up_count - overview.limit_down_count:+d}")
-        if not reasons and overview.total_amount:
-            reasons.append(f"成交额 {overview.total_amount:.0f} 亿，{self._describe_turnover(overview.total_amount)}")
         if not reasons:
-            reasons.append("结构化涨跌数据有限，按可用行情综合判断")
+            reasons.append("已准入的结构化市场数据有限，不使用来源级标量补票")
         return reasons[:4]
 
     def _build_market_light_reasons_en(self, overview: MarketOverview, score: int) -> List[str]:
-        participation = overview.up_count + overview.down_count
+        breadth_admitted = self._validated_market_stats_product_admission(overview) is not None
+        participation = overview.up_count + overview.down_count if breadth_admitted else 0
         up_ratio = overview.up_count / participation if participation else None
         reasons: List[str] = []
         if up_ratio is not None:
@@ -1397,12 +1580,8 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             reasons.append(
                 f"{index.name} {direction} {change_pct:+.2f}%; 30-day expected volatility / {pressure}"
             )
-        if overview.limit_up_count or overview.limit_down_count:
-            reasons.append(f"limit-up/down spread {overview.limit_up_count - overview.limit_down_count:+d}")
-        if not reasons and overview.total_amount:
-            reasons.append(f"turnover {overview.total_amount:.0f} ({self._get_turnover_unit_label()})")
         if not reasons:
-            reasons.append("limited structured breadth data; using available market inputs")
+            reasons.append("limited admitted structured market data; source-only scalars are not counted as votes")
         return reasons[:4]
 
     def _build_indices_block(self, overview: MarketOverview) -> str:
@@ -1571,7 +1750,10 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         """Build Market Light without mixing risk-pressure direction or missing neutral votes."""
 
         participants = overview.up_count + overview.down_count
-        breadth_available = bool(self.profile.has_market_stats and participants > 0)
+        breadth_available = bool(
+            self._validated_market_stats_product_admission(overview)
+            and participants > 0
+        )
         breadth_score = 50
         if breadth_available:
             breadth_score = int(overview.up_count / participants * 100)
@@ -1587,11 +1769,9 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             avg_change = sum(index_changes) / len(index_changes)
             index_score = int(max(0, min(100, 50 + avg_change * 12)))
 
-        limit_total = overview.limit_up_count + overview.limit_down_count
-        limit_available = bool(self.profile.has_market_stats and limit_total > 0)
+        # M_LIMIT is a separate data object; breadth admission cannot open it.
+        limit_available = False
         limit_score = 50
-        if limit_available:
-            limit_score = int(overview.limit_up_count / limit_total * 100)
 
         dimensions = {
             "breadth": {"score": breadth_score, "available": breadth_available},
@@ -1735,6 +1915,9 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
     def _build_review_prompt(self, overview: MarketOverview, news: List) -> str:
         """构建复盘报告 Prompt"""
         review_language = self._get_review_language()
+        market_stats_admitted = (
+            self._validated_market_stats_product_admission(overview) is not None
+        )
         # Korean reuses the English structural template but the model is told to
         # write the entire shell, headings, guidance and conclusion in Korean.
         shell_language_label = "Korean (한국어)" if self._get_output_language() == "ko" else "English"
@@ -1781,11 +1964,9 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         sector_block = ""
         data_limits_block = ""
         if review_language == "en":
-            if self.profile.has_market_stats:
+            if market_stats_admitted:
                 stats_block = f"""## Market Breadth
-- Advancers: {overview.up_count} | Decliners: {overview.down_count} | Flat: {overview.flat_count}
-- Limit-up: {overview.limit_up_count} | Limit-down: {overview.limit_down_count}
-- Turnover: {overview.total_amount:.0f} ({self._get_turnover_unit_label()})"""
+- Advancers: {overview.up_count} | Decliners: {overview.down_count} | Flat: {overview.flat_count}"""
 
             if self.profile.has_sector_rankings:
                 sector_block = f"""## Sector / Theme Performance
@@ -1795,20 +1976,30 @@ Concept leading: {top_concepts_text if top_concepts_text else "N/A"}
 Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
 
             data_limit_lines = []
-            if not self.profile.has_market_stats:
+            if self.profile.has_market_stats and not market_stats_admitted:
+                data_limit_lines.append(
+                    "- Source-level market statistics have no compiled Product admission; do not use their scalars in market tone, positioning, or action conclusions."
+                )
+            elif not self.profile.has_market_stats:
                 data_limit_lines.append(
                     "- Market breadth, aggregate turnover, participation, and fund-flow signals are not available for this market."
                 )
+            else:
+                data_limit_lines.append(
+                    "- Limit-up/down structure and aggregate turnover are separate unadmitted data objects."
+                )
             if not self.profile.has_sector_rankings:
                 data_limit_lines.append("- Sector/theme ranking data is not available for this market.")
+            elif any((overview.top_sectors, overview.bottom_sectors, overview.top_concepts, overview.bottom_concepts)):
+                data_limit_lines.append(
+                    "- Industry/concept rankings are source-level snapshots only; sector standard, as-of membership and cross-period RS remain unverified. Never use them as independent BUY or strategy-upgrade authority."
+                )
             if data_limit_lines:
                 data_limits_block = "## Data Limits\n" + "\n".join(data_limit_lines)
         else:
-            if self.profile.has_market_stats:
-                stats_block = f"""## 市场概况
-- 上涨: {overview.up_count} 家 | 下跌: {overview.down_count} 家 | 平盘: {overview.flat_count} 家
-- 涨停: {overview.limit_up_count} 家 | 跌停: {overview.limit_down_count} 家
-- 两市成交额: {overview.total_amount:.0f} 亿元"""
+            if market_stats_admitted:
+                stats_block = f"""## 市场宽度
+- 上涨: {overview.up_count} 家 | 下跌: {overview.down_count} 家 | 平盘: {overview.flat_count} 家"""
 
             if self.profile.has_sector_rankings:
                 sector_block = f"""## 板块表现
@@ -1818,10 +2009,16 @@ Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
 概念领跌: {bottom_concepts_text if bottom_concepts_text else "暂无数据"}"""
 
             data_limit_lines = []
-            if not self.profile.has_market_stats:
+            if self.profile.has_market_stats and not market_stats_admitted:
+                data_limit_lines.append("- 来源级市场统计尚未获得Product准入；不得把其中标量用于总体判断、仓位或行动结论。")
+            elif not self.profile.has_market_stats:
                 data_limit_lines.append("- 该市场暂无涨跌家数、涨跌停、成交额汇总、参与度或资金流信号。")
+            else:
+                data_limit_lines.append("- 涨跌停结构与两市成交额属于独立未准入对象，本次继续缺失。")
             if not self.profile.has_sector_rankings:
                 data_limit_lines.append("- 该市场暂无行业板块/概念题材涨跌榜。")
+            elif any((overview.top_sectors, overview.bottom_sectors, overview.top_concepts, overview.bottom_concepts)):
+                data_limit_lines.append("- 行业/概念榜单仅为来源级排序参考；行业分类标准、当时成员及跨周期RS未核验，不得作为独立BUY或升级依据。")
             if data_limit_lines:
                 data_limits_block = "## 数据边界\n" + "\n".join(data_limit_lines)
 
@@ -1844,8 +2041,8 @@ Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
                 else ""
             )
             market_summary_hint = (
-                "State the overall market tone, core conflict, index-role divergence, breadth and liquidity evidence without a fixed sentence limit."
-                if self.profile.has_market_stats
+                "State the overall market tone, core conflict, index-role divergence, and admitted breadth evidence without a fixed sentence limit."
+                if market_stats_admitted
                 else "State the overall market tone, core conflict, index moves and available news context without inventing missing breadth or flow evidence."
             )
         else:
@@ -1857,12 +2054,28 @@ Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
                 else ""
             )
             market_summary_hint = (
-                "先给市场状态与核心矛盾，再结合代表指数职责、涨跌家数分母、成交额和情绪证据展开；不设固定句数"
-                if self.profile.has_market_stats
+                "先给市场状态与核心矛盾，再结合代表指数职责和已准入的市场宽度证据展开；不设固定句数"
+                if market_stats_admitted
                 else "先给市场状态与核心矛盾，再结合指数表现和可用新闻线索展开；不要补写未提供的市场宽度或资金流数据"
             )
 
         output_template_sections = self._build_output_template_sections(review_language)
+        if self.profile.has_market_stats:
+            if review_language == "en":
+                output_template_sections = output_template_sections.replace(
+                    "(Interpret what turnover, participation, and flow signals imply.)",
+                    "(Interpret only Product-admitted breadth; limit structure and aggregate turnover remain missing.)" if market_stats_admitted else
+                    "(No Product-admitted breadth, limit structure, or aggregate turnover is available; do not quote source-only scalars.)",
+                )
+            else:
+                output_template_sections = output_template_sections.replace(
+                    "（用具体上涨/下跌/平盘家数、分母和涨跌停结构分别判断广度与投机热度；两者不得互相替代）",
+                    "（只解读已准入的上涨/下跌/平盘家数和分母；涨跌停与成交额属于独立缺口）" if market_stats_admitted else
+                    "（本次没有已准入的市场宽度或投机热度事实；不得引用来源级标量）",
+                ).replace(
+                    "（给出进攻/均衡/防守结论、仓位框架、今日优先观察项、触发失效条件；没有可核前次计划时明确说明无法比较）",
+                    "（只依据已准入证据给出条件式观察框架、触发与失效；没有可核前次计划时明确无法比较）",
+                )
         zh_market_scope_name = self._get_market_scope_name("zh")
         zh_report_title = f"{overview.date} 大盘复盘"
         if self.region in ("jp", "kr"):
@@ -2198,6 +2411,43 @@ Market conditions can change quickly. The data above is for reference only and d
             )
             return None
 
+    def _load_cn_index_completed_5m_source(self, overview: MarketOverview) -> Optional[pd.DataFrame]:
+        """Bounded M2 current-source-only index 5m; never historical PIT.
+
+        Only today's or the immediately previous completed XSHG session can
+        trigger a provider request, avoiding old MarketReview fixture dates
+        and any backfilled source masquerading as contemporaneous research.
+        """
+        if self.region != "cn":
+            return None
+        try:
+            from datetime import timezone
+            import exchange_calendars as xcals
+            from src.core.trading_calendar import resolve_latest_completed_session_fail_closed
+            from data_provider.cn_index_minute_source import get_cn_index_completed_5m_source
+
+            observed = datetime.now(timezone.utc)
+            latest = resolve_latest_completed_session_fail_closed(
+                "cn", current_time=observed,
+            )
+            if latest is None:
+                return None
+            trade_date = pd.Timestamp(str(overview.date)).date()
+            previous = xcals.get_calendar("XSHG").previous_session(
+                pd.Timestamp(latest),
+            ).date()
+            if trade_date not in {latest, previous}:
+                return None
+            return get_cn_index_completed_5m_source(
+                "sh.000001", target_date=trade_date, observed_at=observed,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[大盘] %s action=load_completed_index_5m_source status=failed error=%s",
+                self._log_context(), exc,
+            )
+            return None
+
     def _run_daily_review_parts(self) -> MarketLightReviewResult:
         """Run market review once and keep report/snapshot on the same overview."""
         logger.info("========== 开始大盘复盘分析 ==========")
@@ -2215,12 +2465,16 @@ Market conditions can change quickly. The data above is for reference only and d
         cn_index_completed_close_source = self._load_cn_index_completed_close_source(
             overview
         )
+        cn_index_completed_5m_source = self._load_cn_index_completed_5m_source(
+            overview
+        )
         structured_payload = self.build_market_review_payload(
             overview,
             news,
             report,
             snapshot,
             cn_index_completed_close_source=cn_index_completed_close_source,
+            cn_index_completed_5m_source=cn_index_completed_5m_source,
         )
 
         logger.info("========== 大盘复盘分析完成 ==========")
